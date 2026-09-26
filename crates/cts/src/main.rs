@@ -8,7 +8,7 @@ const DB_ENV: &str = "CTS_DB";
 const DATA_DIR: &str = "Library/Application Support/claude-todo-sessions";
 const DB_FILE: &str = "db.sqlite";
 const LOG_FILE: &str = "cts.log";
-const USAGE: &str = "usage: cts mcp | cts hook <session-start|user-prompt-submit|notification|stop|session-end>";
+const USAGE: &str = "usage: cts mcp | cts hook <session-start|user-prompt-submit|notification|post-tool-use|stop|session-end>";
 
 fn data_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();

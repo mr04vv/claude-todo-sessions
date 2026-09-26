@@ -31,6 +31,9 @@ fn handle(db: &Db, event: &str, i: &Input) -> Result<Option<String>, String> {
             return Ok(None);
         }
         "notification" => SessionState::NeedsInput,
+        // Approving a permission prompt fires no UserPromptSubmit, so a
+        // finished tool call is what moves needs_input back to running.
+        "post-tool-use" => SessionState::Running,
         "stop" => SessionState::Idle,
         "session-end" => SessionState::Ended,
         other => return Err(format!("unknown hook event: {other}")),
@@ -61,6 +64,7 @@ mod tests {
         for (event, want) in [
             ("user-prompt-submit", SessionState::Running),
             ("notification", SessionState::NeedsInput),
+            ("post-tool-use", SessionState::Running),
             ("stop", SessionState::Idle),
             ("session-end", SessionState::Ended),
         ] {

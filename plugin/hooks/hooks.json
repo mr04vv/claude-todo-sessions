@@ -31,6 +31,16 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/cts\" hook post-tool-use"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
