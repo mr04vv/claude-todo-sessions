@@ -1,3 +1,4 @@
+pub mod agents;
 pub mod cloud;
 pub mod desktop;
 pub mod launch;
@@ -394,6 +395,14 @@ impl Db {
     pub fn live_cloud_sessions(&self) -> Result<Vec<Session>> {
         self.query_sessions(
             "session_id LIKE 'cse\\_%' ESCAPE '\\' AND state != 'ended'",
+            None,
+        )
+    }
+
+    /// Local (hook- or `claude agents`-tracked) sessions not yet ended.
+    pub fn live_local_sessions(&self) -> Result<Vec<Session>> {
+        self.query_sessions(
+            "session_id NOT LIKE 'cse\\_%' ESCAPE '\\' AND state != 'ended'",
             None,
         )
     }

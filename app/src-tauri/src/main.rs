@@ -20,6 +20,14 @@ const DESKTOP_SESSIONS_DIR: &str = "Library/Application Support/Claude/claude-co
 const CLOUD_SYNC_INTERVAL: Duration = Duration::from_secs(30);
 /// How often the tray menu and notifications look at the DB.
 const WATCH_INTERVAL: Duration = Duration::from_secs(3);
+/// `claude agents --json` runs every this many watch ticks.
+const DISCOVER_EVERY_TICKS: u32 = 3;
+/// A local session missing from `claude agents` is ended only after this long
+/// without a state change, so one just started by a hook is not cut off.
+const DISCOVER_GRACE_SECS: i64 = 60;
+/// Where the CLIs live when the app is launched from Finder with a bare PATH.
+const EXTRA_PATH: &[&str] = &[".local/bin", ".cargo/bin"];
+const SYSTEM_PATHS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/run/current-system/sw/bin"];
 const TRAY_ID: &str = "main";
 const MENU_OPEN: &str = "open";
 const MENU_QUIT: &str = "quit";
@@ -61,6 +69,17 @@ fn err<E: ToString>(e: E) -> String {
     e.to_string()
 }
 
+/// A command with PATH extended to the usual CLI locations.
+fn cli(program: &str) -> Command {
+    let mut path: Vec<String> = EXTRA_PATH.iter().map(|p| home().join(p).to_string_lossy().into()).collect();
+    path.push(format!("/etc/profiles/per-user/{}/bin", std::env::var("USER").unwrap_or_default()));
+    path.extend(SYSTEM_PATHS.iter().map(|s| s.to_string()));
+    path.push(std::env::var("PATH").unwrap_or_default());
+    let mut cmd = Command::new(program);
+    cmd.env("PATH", path.join(":"));
+    cmd
+}
+
 #[derive(Serialize)]
 struct TodoView {
     #[serde(flatten)]
@@ -87,7 +106,7 @@ struct Board {
 }
 
 fn git_origin(cwd: &str) -> Option<String> {
-    let out = Command::new("git").args(["-C", cwd, "remote", "get-url", "origin"]).output().ok()?;
+    let out = cli("git").args(["-C", cwd, "remote", "get-url", "origin"]).output().ok()?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
@@ -226,7 +245,7 @@ fn unlink_session(state: State<AppState>, session_id: String) -> Result<(), Stri
 }
 
 fn open_url(url: &str) -> Result<(), String> {
-    let status = Command::new("open").arg(url).status().map_err(err)?;
+    let status = cli("open").arg(url).status().map_err(err)?;
     status.success().then_some(()).ok_or_else(|| format!("open {url} failed: {status}"))
 }
 
@@ -256,7 +275,7 @@ fn shell_quote(s: &str) -> String {
 }
 
 fn herdr(args: &[&str]) -> Result<String, String> {
-    let out = Command::new("herdr").args(args).output().map_err(|e| format!("herdr: {e}"))?;
+    let out = cli("herdr").args(args).output().map_err(|e| format!("herdr: {e}"))?;
     if !out.status.success() {
         return Err(format!("herdr {}: {}", args.join(" "), String::from_utf8_lossy(&out.stderr)));
     }
@@ -272,7 +291,7 @@ fn start_in_herdr(cwd: &str, label: &str, command: &str) -> Result<(), String> {
 
 // ponytail: Ghostty fallback is unverified; replace the flags if Ghostty rejects them.
 fn start_in_ghostty(cwd: &str, command: &str) -> Result<(), String> {
-    let status = Command::new("open")
+    let status = cli("open")
         .args(["-na", "Ghostty", "--args", &format!("--working-directory={cwd}"), "-e", "sh", "-lc", command])
         .status()
         .map_err(err)?;
@@ -344,14 +363,14 @@ struct IssueView {
 }
 
 fn ghq_root() -> Option<PathBuf> {
-    let out = Command::new("ghq").arg("root").output().ok()?;
+    let out = cli("ghq").arg("root").output().ok()?;
     out.status.success().then(|| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
 }
 
 /// Open issues assigned to the user that are not todos yet.
 #[tauri::command]
 fn gh_issues(state: State<AppState>) -> Result<Vec<IssueView>, String> {
-    let out = Command::new("gh")
+    let out = cli("gh")
         .args(["search", "issues", "--assignee", "@me", "--state", "open", "--limit", GH_ISSUE_LIMIT,
                "--json", "number,title,url,repository,updatedAt"])
         .output()
@@ -491,6 +510,41 @@ fn notify_waiting(session: Session) {
     });
 }
 
+/// Records every session `claude agents` reports, so sessions started before
+/// the hooks were installed still reach the inbox, and ends local sessions
+/// that are no longer reported.
+fn discover_sessions(db: &Db) -> Result<(), String> {
+    let out = cli("claude").args(["agents", "--json"]).output().map_err(|e| format!("claude agents: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("claude agents: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("claude agents output: {e}"))?;
+    let live = cts_core::agents::parse_agents(&json);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    for s in &live {
+        let known = db.get_session(&s.session_id).map_err(err)?;
+        // Hooks report state faster and more precisely; only fill in what they missed.
+        let stale = known.as_ref().is_none_or(|k| k.state != s.state && now - k.state_at > DISCOVER_GRACE_SECS);
+        if stale {
+            let cwd = known.as_ref().map(|k| k.cwd.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| s.cwd.clone());
+            db.record_session(&s.session_id, &cwd, s.state).map_err(err)?;
+        }
+        if let (Some(name), true) = (&s.name, known.as_ref().is_none_or(|k| k.title.is_none())) {
+            db.set_session_title(&s.session_id, name).map_err(err)?;
+        }
+    }
+    let listed: HashSet<&str> = live.iter().map(|s| s.session_id.as_str()).collect();
+    for k in db.live_local_sessions().map_err(err)? {
+        if !listed.contains(k.session_id.as_str()) && now - k.state_at > DISCOVER_GRACE_SECS {
+            db.record_session(&k.session_id, &k.cwd, SessionState::Ended).map_err(err)?;
+        }
+    }
+    Ok(())
+}
+
 /// Keeps the tray menu current and notifies once per session that starts
 /// waiting for input.
 fn watch_loop(app: AppHandle) {
@@ -500,7 +554,14 @@ fn watch_loop(app: AppHandle) {
     };
     let mut known: HashSet<String> = HashSet::new();
     let mut first = true;
+    let mut tick: u32 = 0;
     loop {
+        if tick % DISCOVER_EVERY_TICKS == 0 {
+            if let Err(e) = discover_sessions(&db) {
+                eprintln!("{e}");
+            }
+        }
+        tick = tick.wrapping_add(1);
         if let Ok(waiting) = db.linked_needs_input() {
             let now: HashSet<String> = waiting.iter().map(|s| s.session_id.clone()).collect();
             // Sessions already waiting at startup were notified by an earlier run, or never will be.

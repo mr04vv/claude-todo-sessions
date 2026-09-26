@@ -283,3 +283,13 @@ fn open_adds_repos_columns_to_old_tables() {
     let db = Db::open(&path).unwrap();
     assert!(db.get_todo(1).unwrap().unwrap().repos.is_empty());
 }
+
+#[test]
+fn live_local_sessions_excludes_cloud_and_ended() {
+    let (_d, db) = open();
+    db.record_session("local-live", "/w", SessionState::Idle).unwrap();
+    db.record_session("local-gone", "/w", SessionState::Ended).unwrap();
+    db.record_session("cse_1", "https://github.com/o/r", SessionState::Idle).unwrap();
+    let ids: Vec<String> = db.live_local_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
+    assert_eq!(ids, vec!["local-live"]);
+}
