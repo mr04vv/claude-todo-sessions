@@ -163,7 +163,8 @@ select {
   touch-action: none;
 }
 
-.card.selected {
+.card.selected,
+.inbox-item.selected {
   border-color: var(--accent);
 }
 
@@ -268,5 +269,25 @@ select {
 }
 
 .spacer {
+  flex: 1;
+}
+
+.overlay {
+  cursor: grabbing;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.2);
+}
+
+.drawer-title {
+  font-size: 15px;
+  overflow-wrap: anywhere;
+}
+
+.mono {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.actions select {
   flex: 1;
 }

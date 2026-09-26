@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   DndContext,
+  DragOverlay,
   PointerSensor,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragStartEvent,
 } from "@dnd-kit/core";
 import { api, isCloud, type Board, type Session, type SessionState, type Status, type Todo } from "./api";
 
@@ -92,10 +94,16 @@ function Column({ status, label, todos, selectedId, onSelect }: {
   );
 }
 
-function InboxItem({ session }: { session: Session }) {
+function InboxItem({ session, selected, onSelect }: { session: Session; selected: boolean; onSelect: () => void }) {
   const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id: `session:${session.session_id}` });
   return (
-    <div ref={setNodeRef} {...listeners} {...attributes} className={`inbox-item${isDragging ? " dragging" : ""}`}>
+    <div
+      ref={setNodeRef}
+      {...listeners}
+      {...attributes}
+      className={`inbox-item${selected ? " selected" : ""}${isDragging ? " dragging" : ""}`}
+      onClick={onSelect}
+    >
       <div className="card-title">{sessionLabel(session)}</div>
       <div className="card-meta">
         <StateBadge state={session.state} />
@@ -192,9 +200,55 @@ function Drawer({ todo, run, onClose }: {
   );
 }
 
+function SessionDrawer({ session, todos, run, onClose }: {
+  session: Session;
+  todos: Todo[];
+  run: (f: () => Promise<unknown>) => void;
+  onClose: () => void;
+}) {
+  const [target, setTarget] = useState<number | "">("");
+  return (
+    <aside className="drawer">
+      <header>
+        <span className="card-id">セッション</span>
+        <button className="ghost" onClick={onClose} aria-label="閉じる">
+          ×
+        </button>
+      </header>
+      <h3 className="drawer-title">{sessionLabel(session)}</h3>
+      <div className="card-meta">
+        <StateBadge state={session.state} />
+        <KindBadge session={session} />
+      </div>
+      <p className="muted mono">{session.cwd}</p>
+      <p className="muted mono">{session.session_id}</p>
+      <div className="actions">
+        <button onClick={() => run(() => api.openSession(session.session_id))}>開く</button>
+      </div>
+      <h3>todo に紐づける</h3>
+      <div className="actions">
+        <select value={target} onChange={(e) => setTarget(e.target.value === "" ? "" : Number(e.target.value))}>
+          <option value="">todo を選ぶ</option>
+          {todos.map((t) => (
+            <option key={t.id} value={t.id}>
+              #{t.id} {t.title}
+            </option>
+          ))}
+        </select>
+        <button disabled={target === ""} onClick={() => target !== "" && run(() => api.linkSession(session.session_id, target))}>
+          紐づける
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
+
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selection, setSelection] = useState<Selection>(null);
+  const [dragging, setDragging] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: DRAG_DISTANCE_PX } }));
@@ -214,7 +268,10 @@ export default function App() {
     f().then(refresh, (e) => setError(String(e)));
   };
 
+  const onDragStart = ({ active }: DragStartEvent) => setDragging(String(active.id));
+
   const onDragEnd = ({ active, over }: DragEndEvent) => {
+    setDragging(null);
     if (!over) return;
     const [kind, id] = String(active.id).split(/:(.*)/s);
     const [target, targetId] = String(over.id).split(/:(.*)/s);
@@ -230,13 +287,26 @@ export default function App() {
     const title = newTitle.trim();
     if (!title) return;
     setNewTitle("");
-    run(async () => setSelectedId((await api.createTodo({ title })).id));
+    run(async () => setSelection({ kind: "todo", id: (await api.createTodo({ title })).id }));
   };
 
-  const selected = board?.todos.find((t) => t.id === selectedId) ?? null;
+  const selectedTodo = selection?.kind === "todo" ? board?.todos.find((t) => t.id === selection.id) ?? null : null;
+  const selectedSession =
+    selection?.kind === "session" ? board?.inbox.find((s) => s.session_id === selection.id) ?? null : null;
+  const selectedId = selectedTodo?.id ?? null;
+  const overlay = (() => {
+    if (!dragging || !board) return null;
+    const [kind, id] = dragging.split(/:(.*)/s);
+    if (kind === "todo") {
+      const t = board.todos.find((x) => x.id === Number(id));
+      return t && <div className="card overlay"><span className="card-id">#{t.id}</span> {t.title}</div>;
+    }
+    const s = board.inbox.find((x) => x.session_id === id);
+    return s && <div className="inbox-item overlay">{sessionLabel(s)}</div>;
+  })();
 
   return (
-    <div className={`app${selected ? " with-drawer" : ""}`}>
+    <div className={`app${selectedTodo || selectedSession ? " with-drawer" : ""}`}>
       <header className="topbar">
         <h1>Todo Sessions</h1>
         <form onSubmit={addTodo}>
@@ -253,7 +323,7 @@ export default function App() {
           </button>
         </div>
       )}
-      <DndContext sensors={sensors} onDragEnd={onDragEnd}>
+      <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
         <main className="board">
           {COLUMNS.map((c) => (
             <Column
@@ -262,7 +332,7 @@ export default function App() {
               label={c.label}
               todos={board?.todos.filter((t) => t.status === c.status) ?? []}
               selectedId={selectedId}
-              onSelect={setSelectedId}
+              onSelect={(id) => setSelection({ kind: "todo", id })}
             />
           ))}
           <section className="column inbox">
@@ -270,11 +340,23 @@ export default function App() {
               受信箱 <span className="muted">{board?.inbox.length ?? 0}</span>
             </h2>
             <p className="muted hint">未紐づけのセッション。カードにドラッグして紐づけます。</p>
-            {board?.inbox.map((s) => <InboxItem key={s.session_id} session={s} />)}
+            {board?.inbox.map((s) => (
+              <InboxItem
+                key={s.session_id}
+                session={s}
+                selected={selectedSession?.session_id === s.session_id}
+                onSelect={() => setSelection({ kind: "session", id: s.session_id })}
+              />
+            ))}
           </section>
         </main>
+        {/* The overlay follows the pointer across columns; the originals stay in place. */}
+        <DragOverlay dropAnimation={null}>{overlay}</DragOverlay>
       </DndContext>
-      {selected && <Drawer todo={selected} run={run} onClose={() => setSelectedId(null)} />}
+      {selectedTodo && <Drawer todo={selectedTodo} run={run} onClose={() => setSelection(null)} />}
+      {selectedSession && board && (
+        <SessionDrawer session={selectedSession} todos={board.todos} run={run} onClose={() => setSelection(null)} />
+      )}
     </div>
   );
 }
