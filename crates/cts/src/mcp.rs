@@ -111,7 +111,7 @@ impl Server {
 
     #[tool(description = "Update a todo's title, status, memo or cwd. Omitted fields are unchanged.")]
     async fn update_todo(&self, Parameters(a): Parameters<UpdateArgs>) -> Result<String, String> {
-        let p = TodoPatch { title: a.title, status: parse_status(a.status)?, memo: a.memo, cwd: a.cwd };
+        let p = TodoPatch { title: a.title, status: parse_status(a.status)?, memo: a.memo, cwd: a.cwd, issue_url: None };
         json(&db()?.update_todo(a.id, p).map_err(|e| e.to_string())?)
     }
 

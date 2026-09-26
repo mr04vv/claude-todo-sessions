@@ -188,3 +188,15 @@ fn first_prompt_becomes_title_without_marker() {
     let t = db.get_session("s2").unwrap().unwrap().title.unwrap();
     assert_eq!(t.chars().count(), cts_core::TITLE_MAX_CHARS);
 }
+
+#[test]
+fn patch_sets_and_clears_issue_url_and_cwd() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("a")).unwrap();
+    let set = TodoPatch { issue_url: Some("https://github.com/o/r/issues/1".into()), cwd: Some("/w".into()), ..Default::default() };
+    let u = db.update_todo(t.id, set).unwrap();
+    assert_eq!((u.issue_url.as_deref(), u.cwd.as_deref()), (Some("https://github.com/o/r/issues/1"), Some("/w")));
+    let clear = TodoPatch { issue_url: Some(String::new()), cwd: Some(String::new()), ..Default::default() };
+    let u = db.update_todo(t.id, clear).unwrap();
+    assert_eq!((u.issue_url, u.cwd), (None, None));
+}

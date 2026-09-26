@@ -73,11 +73,13 @@ pub struct NewTodo {
 }
 
 #[derive(Debug, Default)]
+/// None leaves a field unchanged; an empty issue_url or cwd clears it.
 pub struct TodoPatch {
     pub title: Option<String>,
     pub status: Option<Status>,
     pub memo: Option<String>,
     pub cwd: Option<String>,
+    pub issue_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -269,10 +271,11 @@ impl Db {
                 title = COALESCE(?2, title),
                 status = COALESCE(?3, status),
                 memo = COALESCE(?4, memo),
-                cwd = COALESCE(?5, cwd),
+                cwd = CASE WHEN ?5 IS NULL THEN cwd ELSE NULLIF(?5, '') END,
+                issue_url = CASE WHEN ?7 IS NULL THEN issue_url ELSE NULLIF(?7, '') END,
                 updated_at = ?6
              WHERE id = ?1",
-            params![id, p.title, p.status.map(Status::as_str), p.memo, p.cwd, now()],
+            params![id, p.title, p.status.map(Status::as_str), p.memo, p.cwd, now(), p.issue_url],
         )?;
         if n == 0 {
             return Err(Error::TodoNotFound(id));
