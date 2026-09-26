@@ -222,3 +222,17 @@ fn issue_urls_already_imported() {
     let urls = db.issue_urls().unwrap();
     assert_eq!(urls, vec!["https://github.com/o/r/issues/1".to_string()]);
 }
+
+#[test]
+fn title_skips_system_reminder_blocks() {
+    let (_d, db) = open();
+    let prompt = "<system-reminder>\nThe user started this session without a folder.\n</system-reminder>\n[todo:1] README を直す";
+    db.on_prompt("s1", "/w", prompt).unwrap();
+    assert_eq!(db.get_session("s1").unwrap().unwrap().title.as_deref(), Some("README を直す"));
+
+    // A prompt that is only injected context leaves the title for a later prompt.
+    db.on_prompt("s2", "/w", "<system-reminder>\ncontext only\n</system-reminder>").unwrap();
+    assert_eq!(db.get_session("s2").unwrap().unwrap().title, None);
+    db.on_prompt("s2", "/w", "real prompt").unwrap();
+    assert_eq!(db.get_session("s2").unwrap().unwrap().title.as_deref(), Some("real prompt"));
+}

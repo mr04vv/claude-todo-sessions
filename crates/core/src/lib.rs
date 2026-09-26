@@ -203,10 +203,26 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
-/// The prompt without its `[todo:<id>]` marker, trimmed and cut to
-/// TITLE_MAX_CHARS, or None when nothing is left.
-fn title_from_prompt(prompt: &str) -> Option<String> {
+const REMINDER_OPEN: &str = "<system-reminder>";
+const REMINDER_CLOSE: &str = "</system-reminder>";
+
+/// Removes the context blocks Claude Desktop prepends to a prompt.
+fn strip_system_reminders(prompt: &str) -> String {
     let mut text = prompt.to_string();
+    while let Some(start) = text.find(REMINDER_OPEN) {
+        let end = match text[start..].find(REMINDER_CLOSE) {
+            Some(i) => start + i + REMINDER_CLOSE.len(),
+            None => text.len(),
+        };
+        text.replace_range(start..end, "");
+    }
+    text
+}
+
+/// The prompt without injected context blocks and its `[todo:<id>]` marker,
+/// trimmed and cut to TITLE_MAX_CHARS, or None when nothing is left.
+fn title_from_prompt(prompt: &str) -> Option<String> {
+    let mut text = strip_system_reminders(prompt);
     if let (Some(start), Some(_)) = (text.find(MARKER_PREFIX), parse_todo_marker(prompt)) {
         if let Some(len) = text[start..].find(']') {
             text.replace_range(start..=start + len, "");
