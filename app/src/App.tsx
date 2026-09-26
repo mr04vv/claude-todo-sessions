@@ -393,13 +393,27 @@ function Drawer({ todo, run, onClose }: {
   );
 }
 
-function SessionDrawer({ session, todos, run, onClose }: {
+function SessionDrawer({ session, todos, run, onClose, onCreated }: {
   session: Session;
   todos: Todo[];
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
+  onCreated: (todoId: number) => void;
 }) {
   const [target, setTarget] = useState<number | "">("");
+  const [newTitle, setNewTitle] = useState(session.title ?? "");
+  useEffect(() => setNewTitle(session.title ?? ""), [session.session_id, session.title]);
+  // A local session's cwd is a folder the todo can reuse; a cloud session's is a repo URL.
+  const cwd = session.cwd.startsWith("/") ? session.cwd : undefined;
+  const createAndLink = () => {
+    const title = newTitle.trim();
+    if (!title) return;
+    run(async () => {
+      const todo = await api.createTodo({ title, cwd });
+      await api.linkSession(session.session_id, todo.id);
+      onCreated(todo.id);
+    });
+  };
   return (
     <aside className="drawer">
       <header>
@@ -425,7 +439,14 @@ function SessionDrawer({ session, todos, run, onClose }: {
           開く
         </button>
       </div>
-      <h3>todo に紐づける</h3>
+      <h3>このセッションから todo を作る</h3>
+      <div className="actions">
+        <input value={newTitle} placeholder="todo のタイトル" onChange={(e) => setNewTitle(e.target.value)} />
+        <button className="primary" disabled={!newTitle.trim()} onClick={createAndLink}>
+          作って紐づける
+        </button>
+      </div>
+      <h3>既存の todo に紐づける</h3>
       <div className="actions">
         <select value={target} onChange={(e) => setTarget(e.target.value === "" ? "" : Number(e.target.value))}>
           <option value="">todo を選ぶ</option>
@@ -634,7 +655,13 @@ export default function App() {
       </DndContext>
       {selectedTodo && <Drawer todo={selectedTodo} run={run} onClose={() => setSelection(null)} />}
       {selectedSession && board && (
-        <SessionDrawer session={selectedSession} todos={board.todos} run={run} onClose={() => setSelection(null)} />
+        <SessionDrawer
+          session={selectedSession}
+          todos={board.todos}
+          run={run}
+          onClose={() => setSelection(null)}
+          onCreated={(id) => setSelection({ kind: "todo", id })}
+        />
       )}
       {importing && <ImportModal run={run} onClose={() => setImporting(false)} />}
     </div>

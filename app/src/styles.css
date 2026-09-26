@@ -512,9 +512,11 @@ select:focus {
   gap: 6px;
 }
 
-.actions select {
+.actions select,
+.actions input {
   flex: 1;
   width: auto;
+  min-width: 0;
 }
 
 .delete-confirm {
