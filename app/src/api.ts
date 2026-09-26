@@ -25,6 +25,8 @@ export interface Todo {
   sessions: Session[];
   /** `owner/repo` list: the todo's own, else derived from the issue URL or the working folder. */
   repos: string[];
+  /** True when `repos` was derived rather than set on the todo. */
+  repos_derived: boolean;
 }
 
 export interface Board {
@@ -65,7 +67,13 @@ export interface IssueImport {
   cwd?: string;
 }
 
+export interface LocalRepo {
+  key: string;
+  path: string;
+}
+
 export const api = {
+  localRepos: () => invoke<LocalRepo[]>("local_repos"),
   ghIssues: () => invoke<Issue[]>("gh_issues"),
   importIssues: (issues: IssueImport[]) => invoke<number>("import_issues", { issues }),
   board: () => invoke<Board>("board"),

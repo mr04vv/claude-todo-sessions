@@ -25,6 +25,9 @@ const MENU_OPEN: &str = "open";
 const MENU_QUIT: &str = "quit";
 const MENU_SESSION_PREFIX: &str = "session:";
 const GH_ISSUE_LIMIT: &str = "100";
+/// Folders (under $HOME) whose direct children are checkouts, besides the ghq root.
+// ponytail: fixed list; make it a setting if more roots are needed.
+const EXTRA_REPO_ROOTS: &[&str] = &["Works/Atrae"];
 /// Must match `identifier` in tauri.conf.json; notifications are posted as this app.
 const APP_ID: &str = "dev.mr04vv.todo-sessions";
 
@@ -65,6 +68,8 @@ struct TodoView {
     sessions: Vec<Session>,
     /// `owner/repo` list for grouping; several means the todo spans repos.
     repos: Vec<String>,
+    /// True when `repos` came from the issue URL or folder, not the todo's own list.
+    repos_derived: bool,
 }
 
 #[derive(Serialize)]
@@ -163,7 +168,12 @@ fn board(state: State<AppState>) -> Result<Board, String> {
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
         .into_iter()
-        .map(|(sessions, todo)| TodoView { repos: repos_of_todo(&state, &todo), sessions, todo })
+        .map(|(sessions, todo)| TodoView {
+            repos: repos_of_todo(&state, &todo),
+            repos_derived: todo.repos.is_empty(),
+            sessions,
+            todo,
+        })
         .collect();
     let inbox = inbox
         .into_iter()
@@ -389,6 +399,49 @@ fn import_issues(state: State<AppState>, issues: Vec<IssueImport>) -> Result<usi
     Ok(issues.len())
 }
 
+#[derive(Serialize)]
+struct LocalRepo {
+    /// `owner/repo`
+    key: String,
+    path: String,
+}
+
+fn git_dirs(root: &std::path::Path) -> Vec<PathBuf> {
+    std::fs::read_dir(root)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join(".git").exists())
+        .collect()
+}
+
+/// Checkouts on this machine: `<ghq root>/github.com/<owner>/<repo>` and the
+/// children of EXTRA_REPO_ROOTS, keyed by `owner/repo`.
+#[tauri::command]
+fn local_repos(state: State<AppState>) -> Result<Vec<LocalRepo>, String> {
+    let mut dirs = Vec::new();
+    if let Some(ghq) = ghq_root() {
+        for owner in std::fs::read_dir(ghq.join("github.com")).into_iter().flatten().flatten() {
+            dirs.extend(git_dirs(&owner.path()));
+        }
+    }
+    for root in EXTRA_REPO_ROOTS {
+        dirs.extend(git_dirs(&home().join(root)));
+    }
+    let mut repos: Vec<LocalRepo> = Vec::new();
+    for dir in dirs {
+        let path = dir.to_string_lossy().to_string();
+        let Some(key) = repo_of_cwd(&state, &path) else { continue };
+        // ghq checkouts come first, so they win over a second clone elsewhere.
+        if !repos.iter().any(|r| r.key == key) {
+            repos.push(LocalRepo { key, path });
+        }
+    }
+    repos.sort_by(|a, b| a.key.to_lowercase().cmp(&b.key.to_lowercase()));
+    Ok(repos)
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -547,7 +600,8 @@ fn main() {
             start_terminal,
             start_cloud,
             gh_issues,
-            import_issues
+            import_issues,
+            local_repos
         ])
         .run(tauri::generate_context!())
         .expect("run tauri app");

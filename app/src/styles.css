@@ -505,6 +505,40 @@ select:focus {
   margin-bottom: 4px;
 }
 
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+  min-height: 22px;
+  align-items: center;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 2px 0 8px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.chip.derived {
+  padding-right: 8px;
+  color: var(--text-2);
+  border-style: dashed;
+}
+
+.chip-remove {
+  width: 18px;
+  height: 18px;
+  font-size: 13px;
+  line-height: 1;
+}
+
 .props {
   display: grid;
   grid-template-columns: 48px 1fr;

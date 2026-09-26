@@ -18,6 +18,7 @@ import {
   issueRef,
   type Board,
   type Issue,
+  type LocalRepo,
   type Session,
   type SessionState,
   type Status,
@@ -44,13 +45,14 @@ const collision: CollisionDetection = ({ active, collisionRect, droppableRects, 
     .map((c) => ({ id: c.id }));
 };
 
-const OTHER_LANE = "その他";
+/// Todos start here, unattached to any repository, and move once a repo is picked.
+const BACKLOG_LANE = "バックログ";
 const MULTI_LANE = "複数リポジトリ";
 
 /// Lane a todo or session belongs to: its one repo, the shared multi-repo
-/// lane when it spans several, or "その他" when none is known.
+/// lane when it spans several, or the backlog when none is known.
 function laneKey(repos: string[] | undefined): string {
-  if (!repos || repos.length === 0) return OTHER_LANE;
+  if (!repos || repos.length === 0) return BACKLOG_LANE;
   return repos.length === 1 ? repos[0] : MULTI_LANE;
 }
 
@@ -66,7 +68,7 @@ interface Lane {
   latest: number;
 }
 
-/// One lane per repository; todos and inbox sessions without one share "その他", shown last.
+/// One lane per repository; todos and inbox sessions without one share the backlog.
 function buildLanes(board: Board): Lane[] {
   const lanes = new Map<string, Lane>();
   const lane = (repos: string[] | undefined) => {
@@ -85,8 +87,9 @@ function buildLanes(board: Board): Lane[] {
     l.inbox.push(s);
     l.latest = Math.max(l.latest, s.state_at);
   }
-  // Per-repo lanes by recent activity, then the multi-repo lane, then "その他".
-  const rank = (key: string) => (key === OTHER_LANE ? 2 : key === MULTI_LANE ? 1 : 0);
+  // Backlog first (new todos land there), per-repo lanes by recent activity, multi-repo last.
+  if (!lanes.has(BACKLOG_LANE)) lanes.set(BACKLOG_LANE, { key: BACKLOG_LANE, todos: [], inbox: [], latest: 0 });
+  const rank = (key: string) => (key === BACKLOG_LANE ? 0 : key === MULTI_LANE ? 2 : 1);
   return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || b.latest - a.latest);
 }
 
@@ -326,6 +329,50 @@ function SessionRow({ session, run, onUnlink }: {
   );
 }
 
+function RepoPicker({ todo, update }: { todo: Todo; update: (u: Parameters<typeof api.updateTodo>[1]) => void }) {
+  const [local, setLocal] = useState<LocalRepo[]>([]);
+  useEffect(() => {
+    api.localRepos().then(setLocal, () => setLocal([]));
+  }, []);
+  // Derived repos are not stored on the todo; picking one starts an explicit list.
+  const own = todo.repos_derived ? [] : todo.repos;
+  const add = (key: string) => {
+    if (!key || own.includes(key)) return;
+    const repos = [...own, key];
+    // The first repo picked also becomes the working folder unless one is set.
+    const path = local.find((r) => r.key === key)?.path;
+    update(todo.cwd || !path ? { repos } : { repos, cwd: path });
+  };
+  const remove = (key: string) => update({ repos: own.filter((r) => r !== key) });
+  const choices = local.filter((r) => !own.includes(r.key));
+  return (
+    <div className="field">
+      <span>リポジトリ{todo.repos_derived && todo.repos.length > 0 && "（issue URL / 作業フォルダから判定）"}</span>
+      <div className="chips">
+        {todo.repos.map((r) => (
+          <span key={r} className={`chip${todo.repos_derived ? " derived" : ""}`} title={r}>
+            {r}
+            {!todo.repos_derived && (
+              <button className="ghost icon chip-remove" onClick={() => remove(r)} aria-label={`${r} を外す`}>
+                ×
+              </button>
+            )}
+          </span>
+        ))}
+        {todo.repos.length === 0 && <span className="muted">未設定（バックログ）</span>}
+      </div>
+      <select value="" onChange={(e) => add(e.target.value)}>
+        <option value="">リポジトリを追加…</option>
+        {choices.map((r) => (
+          <option key={r.key} value={r.key}>
+            {r.key}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function Drawer({ todo, run, onClose }: {
   todo: Todo;
   run: (f: () => Promise<unknown>) => void;
@@ -365,12 +412,7 @@ function Drawer({ todo, run, onClose }: {
           ))}
         </select>
       </label>
-      <Field
-        label="リポジトリ（owner/repo、カンマ区切り。空なら issue URL や作業フォルダから判定）"
-        value={todo.repos.join(", ")}
-        placeholder="Atrae/wevox-mono-web, Atrae/wevox-rest-bff"
-        onSave={(v) => update({ repos: v.split(",").map((r) => r.trim()).filter(Boolean) })}
-      />
+      <RepoPicker todo={todo} update={update} />
       <Field label="Issue / PR URL" value={todo.issue_url ?? ""} placeholder="https://github.com/…" onSave={(issue_url) => update({ issue_url })} />
       <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
       <Field label="メモ" value={todo.memo ?? ""} multiline onSave={(memo) => update({ memo })} />
