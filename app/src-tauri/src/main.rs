@@ -166,6 +166,11 @@ struct TodoUpdate {
     repos: Option<Vec<String>>,
 }
 
+/// Sessions archived in Claude Desktop stay out of the inbox and notifications.
+fn desktop_archived() -> HashSet<String> {
+    cts_core::desktop::archived_cli_ids(&home().join(DESKTOP_SESSIONS_DIR))
+}
+
 #[tauri::command]
 fn board(state: State<AppState>) -> Result<Board, String> {
     let (todos, inbox) = {
@@ -176,11 +181,12 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             .into_iter()
             .map(|todo| Ok((db.sessions_for_todo(todo.id).map_err(err)?, todo)))
             .collect::<Result<Vec<_>, String>>()?;
+        let archived = desktop_archived();
         let inbox: Vec<Session> = db
             .unlinked_sessions()
             .map_err(err)?
             .into_iter()
-            .filter(|s| s.state != SessionState::Ended)
+            .filter(|s| s.state != SessionState::Ended && !archived.contains(&s.session_id))
             .collect();
         (todos, inbox)
     };
@@ -562,7 +568,9 @@ fn watch_loop(app: AppHandle) {
             }
         }
         tick = tick.wrapping_add(1);
-        if let Ok(waiting) = db.linked_needs_input() {
+        if let Ok(mut waiting) = db.linked_needs_input() {
+            let archived = desktop_archived();
+            waiting.retain(|s| !archived.contains(&s.session_id));
             let now: HashSet<String> = waiting.iter().map(|s| s.session_id.clone()).collect();
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
             if !first {
