@@ -181,30 +181,36 @@ impl Client {
     }
 }
 
-fn sync_one(db: &Db, client: &mut Client, s: &Value) -> Result<bool, String> {
+enum Outcome {
+    Skipped,
+    Recorded,
+    Linked,
+}
+
+fn sync_one(db: &Db, client: &mut Client, s: &Value) -> Result<Outcome, String> {
     let id = s["id"].as_str().ok_or("session without id")?;
     let state = map_state(s);
     let known = db.get_session(id).map_err(|e| e.to_string())?;
     // Archived sessions we never saw would only clutter the inbox.
     if known.is_none() && state == SessionState::Ended {
-        return Ok(false);
+        return Ok(Outcome::Skipped);
     }
     db.record_session(id, &repo_url(s).unwrap_or_default(), state).map_err(|e| e.to_string())?;
     let unlinked = known.is_none_or(|k| k.todo_id.is_none());
     if !unlinked || db.marker_checked(id).map_err(|e| e.to_string())? {
-        return Ok(false);
+        return Ok(Outcome::Recorded);
     }
     let events = client.get(&format!("/v1/code/sessions/{id}/events?cursor={EVENTS_HEAD_CURSOR}"))?;
     // No user event yet means the session is still starting: look again next time.
-    let Some(prompt) = first_user_prompt(&events) else { return Ok(false) };
+    let Some(prompt) = first_user_prompt(&events) else { return Ok(Outcome::Recorded) };
     let linked = db.link_by_marker(id, &prompt).map_err(|e| e.to_string())?.is_some();
     db.mark_marker_checked(id).map_err(|e| e.to_string())?;
-    Ok(linked)
+    Ok(if linked { Outcome::Linked } else { Outcome::Recorded })
 }
 
 /// Records cloud sessions' states and links unlinked ones whose first prompt
 /// carries a `[todo:<id>]` marker. One session failing does not stop the rest.
-fn sync(db: &Db) -> Result<(usize, usize, Vec<String>), String> {
+fn sync(db: &Db) -> Result<(usize, usize, usize, Vec<String>), String> {
     let mut client = Client::new()?;
     let list = client.get(&format!("/v1/code/sessions?limit={LIST_LIMIT}"))?;
     let sessions: Vec<Value> = list["data"]
@@ -214,21 +220,25 @@ fn sync(db: &Db) -> Result<(usize, usize, Vec<String>), String> {
         .filter(|s| is_cloud(s))
         .cloned()
         .collect();
-    let (mut linked, mut errors) = (0, Vec::new());
+    let (mut recorded, mut linked, mut errors) = (0, 0, Vec::new());
     for s in &sessions {
         match sync_one(db, &mut client, s) {
-            Ok(true) => linked += 1,
-            Ok(false) => {}
+            Ok(Outcome::Skipped) => {}
+            Ok(Outcome::Recorded) => recorded += 1,
+            Ok(Outcome::Linked) => {
+                recorded += 1;
+                linked += 1;
+            }
             Err(e) => errors.push(e),
         }
     }
-    Ok((sessions.len(), linked, errors))
+    Ok((sessions.len(), recorded, linked, errors))
 }
 
 pub fn run() -> Result<(), String> {
     let db = crate::open_db()?;
-    let (seen, linked, errors) = sync(&db)?;
-    println!("synced {seen} cloud sessions, linked {linked}");
+    let (seen, recorded, linked, errors) = sync(&db)?;
+    println!("{seen} cloud sessions seen, {recorded} recorded, {linked} linked");
     if errors.is_empty() {
         return Ok(());
     }
