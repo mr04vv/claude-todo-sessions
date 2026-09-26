@@ -42,6 +42,21 @@ claude plugin install todo-sessions@claude-todo-sessions
 claude --plugin-dir ./plugin
 ```
 
+## アプリ
+
+`app/` は Tauri + React のデスクトップアプリです。todo / doing / done の3列のカンバンと、未紐づけのセッションを並べる受信箱があります。
+
+```sh
+cd app
+pnpm install
+pnpm tauri dev      # 開発用に起動
+pnpm tauri build    # target/release/bundle/macos/Todo Sessions.app を作成
+```
+
+- カードを列のあいだで動かすと status が変わり、受信箱のセッションをカードに落とすと紐づきます
+- カードをクリックすると詳細パネルが開きます。セッションを開いたり、新しく始めたりできます（Desktop / クラウド / ターミナル（herdr））
+- アプリは30秒ごとに cloud sync を実行します
+
 ## 使い方
 
 - セッションの中で「この作業を todo #3 に紐づけて」「todo を一覧して」のように頼むと、Claude が MCP ツールを使って操作します
