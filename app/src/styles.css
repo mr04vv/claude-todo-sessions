@@ -176,6 +176,8 @@ select:focus {
 .board-inner {
   max-width: var(--content-width);
   margin: 0 auto;
+  /* Own compositing layer so re-layout after the drawer toggles repaints fully. */
+  transform: translateZ(0);
 }
 
 .topbar-inner {
@@ -227,7 +229,8 @@ select:focus {
   padding: 0 24px 32px;
   height: calc(100vh - 48px);
   overflow: auto;
-  transition: padding-right 0.15s;
+  /* No transition here: animating the scroll container's padding left
+     off-screen rows unpainted in the Tauri webview. */
 }
 
 .col-heads,

@@ -89,10 +89,11 @@ function buildLanes(board: Board): Lane[] {
     l.inbox.push(s);
     l.latest = Math.max(l.latest, s.state_at);
   }
-  // The backlog has its own page; per-repo lanes by recent activity, multi-repo last.
+  // The backlog has its own page. Lanes keep a fixed alphabetical order so a
+  // moved card never reshuffles the board; the multi-repo lane stays last.
   lanes.delete(BACKLOG_LANE);
   const rank = (key: string) => (key === MULTI_LANE ? 1 : 0);
-  return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || b.latest - a.latest);
+  return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key, "en", { sensitivity: "base" }));
 }
 
 function loadView(): View {
@@ -274,7 +275,7 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
               key={c.status}
               status={c.status}
               laneKey={lane.key}
-              todos={lane.todos.filter((t) => t.status === c.status)}
+              todos={lane.todos.filter((t) => t.status === c.status).sort((a, b) => a.id - b.id)}
               selectedId={selectedId}
               onSelect={onSelectTodo}
               onOpen={onOpen}
