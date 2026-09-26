@@ -27,7 +27,12 @@ import {
 
 const REFRESH_MS = 3000;
 const VIEW_KEY = "view";
-type View = "board" | "backlog";
+type View = "board" | "list" | "backlog";
+const VIEWS: { key: View; label: string }[] = [
+  { key: "board", label: "ボード" },
+  { key: "list", label: "リスト" },
+  { key: "backlog", label: "バックログ" },
+];
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
 
@@ -98,7 +103,8 @@ function buildLanes(board: Board): Lane[] {
 
 function loadView(): View {
   try {
-    return localStorage.getItem(VIEW_KEY) === "backlog" ? "backlog" : "board";
+    const v = localStorage.getItem(VIEW_KEY);
+    return VIEWS.some((x) => x.key === v) ? (v as View) : "board";
   } catch {
     return "board";
   }
@@ -720,6 +726,80 @@ function BacklogPage({ board, local, selectedId, selectedSessionId, run, onSelec
   );
 }
 
+/// Status order for the list: what is in progress first, done last.
+const STATUS_RANK: Record<Status, number> = { doing: 0, todo: 1, done: 2 };
+
+function ListPage({ board, selectedId, run, onSelectTodo }: {
+  board: Board;
+  selectedId: number | null;
+  run: (f: () => Promise<unknown>) => void;
+  onSelectTodo: (id: number) => void;
+}) {
+  const lanes = buildLanes(board);
+  if (lanes.length === 0) {
+    return <p className="muted empty">リポジトリに紐づいた todo はまだありません。</p>;
+  }
+  return (
+    <div className="listview">
+      {lanes.map((lane) => {
+        const [owner, name] = lane.key.includes("/") ? lane.key.split(/\/(.*)/s) : [null, lane.key];
+        const todos = [...lane.todos].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
+        return (
+          <section key={lane.key}>
+            <h2>
+              {owner && <span className="muted">{owner}/</span>}
+              <span className="lane-name">{name}</span>
+              <span className="count">{todos.length}</span>
+            </h2>
+            <ul className="list">
+              {todos.map((t) => {
+                const live = t.sessions.filter((x) => x.state !== "ended");
+                const direct = live.length === 1 ? live[0] : t.sessions.length === 1 ? t.sessions[0] : null;
+                const states = new Set(live.map((x) => x.state));
+                return (
+                  <li key={t.id} className={`list-row${t.id === selectedId ? " selected" : ""}`} onClick={() => onSelectTodo(t.id)}>
+                    <select
+                      className="status-select"
+                      value={t.status}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => run(() => api.updateTodo(t.id, { status: e.target.value as Status }))}
+                    >
+                      {COLUMNS.map((c) => (
+                        <option key={c.status} value={c.status}>
+                          {c.label}
+                        </option>
+                      ))}
+                    </select>
+                    <span className="mono muted">{issueRef(t.issue_url) ?? `#${t.id}`}</span>
+                    <span className="list-title">{t.title}</span>
+                    {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
+                      <StateBadge key={st} state={st} />
+                    ))}
+                    {live.length > 1 && <span className="muted">{live.length} sessions</span>}
+                    <span className="muted">{ago(t.updated_at)}</span>
+                    {direct && (
+                      <button
+                        className="card-open"
+                        title={`${sessionLabel(direct)} を開く`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          run(() => api.openSession(direct.session_id));
+                        }}
+                      >
+                        開く ↗
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
 
 export default function App() {
@@ -811,12 +891,12 @@ export default function App() {
         <div className="topbar-inner">
           <h1>Todo Sessions</h1>
           <div className="segmented" role="tablist">
-            <button role="tab" aria-selected={view === "board"} className={view === "board" ? "on" : ""} onClick={() => setView("board")}>
-              ボード
-            </button>
-            <button role="tab" aria-selected={view === "backlog"} className={view === "backlog" ? "on" : ""} onClick={() => setView("backlog")}>
-              バックログ <span className="count">{board?.todos.filter((t) => t.repos.length === 0).length ?? 0}</span>
-            </button>
+            {VIEWS.map((v) => (
+              <button key={v.key} role="tab" aria-selected={view === v.key} className={view === v.key ? "on" : ""} onClick={() => setView(v.key)}>
+                {v.label}
+                {v.key === "backlog" && <span className="count"> {board?.todos.filter((t) => t.repos.length === 0).length ?? 0}</span>}
+              </button>
+            ))}
           </div>
           <form onSubmit={addTodo}>
             <input value={newTitle} placeholder="新しい todo…" onChange={(e) => setNewTitle(e.target.value)} />
@@ -839,6 +919,9 @@ export default function App() {
       <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
         <main className="board">
           <div className="board-inner">
+          {view === "list" && board && (
+            <ListPage board={board} selectedId={selectedId} run={run} onSelectTodo={(id) => setSelection({ kind: "todo", id })} />
+          )}
           {view === "backlog" && board && (
             <BacklogPage
               board={board}
