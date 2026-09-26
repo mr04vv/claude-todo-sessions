@@ -69,7 +69,7 @@ pub fn first_user_prompt(events: &Value) -> Option<String> {
         .map(|(_, text)| text)
 }
 
-pub fn create_body(env_id: &str, repo_url: &str, prompt: &str, title: &str, uuid: &str) -> Value {
+pub fn create_body(env_id: &str, repo_url: &str, branch: &str, prompt: &str, title: &str, uuid: &str) -> Value {
     json!({
         "title": title,
         "events": [{"type": "event", "data": {
@@ -78,7 +78,11 @@ pub fn create_body(env_id: &str, repo_url: &str, prompt: &str, title: &str, uuid
         }}],
         "session_context": {
             "sources": [{"type": "git_repository", "url": repo_url}],
-            "outcomes": [],
+            "outcomes": [{"type": "git_repository", "git_info": {
+                "type": "github",
+                "repo": repo_url.trim_start_matches("https://github.com/"),
+                "branches": [branch],
+            }}],
             "environment_variables": {},
         },
         "environment_id": env_id,
@@ -177,6 +181,9 @@ fn refresh(creds: &Value) -> Result<Value, String> {
 const CREATE_BETA: &str = "ccr-byoc-2025-07-29";
 const CLAUDE_JSON: &str = ".claude.json";
 const RECENT_SESSIONS_FOR_ENV: u32 = 20;
+/// Branch Claude pushes to, like the ones the CLI and Desktop create.
+const BRANCH_PREFIX: &str = "claude/";
+const BRANCH_SUFFIX_LEN: usize = 6;
 
 fn api_post(token: &str, path: &str, org: &str, body: &Value) -> Result<Value, ureq::Error> {
     ureq::post(format!("{API_BASE}{path}"))
@@ -259,7 +266,9 @@ pub fn create_session(db: &Db, todo_id: i64, repo_url: &str, title: &str) -> Res
         .ok_or("no cloud session to take an environment from; start one on claude.ai/code first")?
         .to_string();
     let prompt = crate::launch::start_prompt(todo_id, title);
-    let body = create_body(&env_id, repo_url, &prompt, title, &uuid::Uuid::new_v4().to_string());
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let branch = format!("{BRANCH_PREFIX}todo-{todo_id}-{}", &uuid[..BRANCH_SUFFIX_LEN]);
+    let body = create_body(&env_id, repo_url, &branch, &prompt, title, &uuid);
     let created = client.post("/v1/sessions", &organization_uuid()?, &body)?;
     let id = created["id"]
         .as_str()
@@ -348,7 +357,7 @@ mod tests {
 
     #[test]
     fn create_body_carries_marker_prompt_and_repo() {
-        let b = create_body("env_1", "https://github.com/o/r", "[todo:2] go", "go", "u-1");
+        let b = create_body("env_1", "https://github.com/o/r", "claude/todo-2-ab12", "[todo:2] go", "go", "u-1");
         assert_eq!(b["environment_id"], "env_1");
         assert_eq!(b["title"], "go");
         assert_eq!(b["session_context"]["sources"][0], json!({"type": "git_repository", "url": "https://github.com/o/r"}));
@@ -357,6 +366,11 @@ mod tests {
         assert_eq!(ev["data"]["type"], "user");
         assert_eq!(ev["data"]["uuid"], "u-1");
         assert_eq!(ev["data"]["message"], json!({"role": "user", "content": "[todo:2] go"}));
+        // Without an outcome the session has no GitHub repo/branch to work on.
+        assert_eq!(
+            b["session_context"]["outcomes"][0],
+            json!({"type": "git_repository", "git_info": {"type": "github", "repo": "o/r", "branches": ["claude/todo-2-ab12"]}})
+        );
     }
 
     #[test]
