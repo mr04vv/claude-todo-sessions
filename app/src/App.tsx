@@ -632,15 +632,17 @@ export default function App() {
   return (
     <div className={`app${selectedTodo || selectedSession ? " with-drawer" : ""}`}>
       <header className="topbar">
-        <h1>Todo Sessions</h1>
-        <form onSubmit={addTodo}>
-          <input value={newTitle} placeholder="新しい todo…" onChange={(e) => setNewTitle(e.target.value)} />
-          <button type="submit" disabled={!newTitle.trim()}>
-            追加
-          </button>
-        </form>
-        <button onClick={() => setImporting(true)}>issue を取り込む</button>
-        <span className="muted sync">{board?.sync_status}</span>
+        <div className="topbar-inner">
+          <h1>Todo Sessions</h1>
+          <form onSubmit={addTodo}>
+            <input value={newTitle} placeholder="新しい todo…" onChange={(e) => setNewTitle(e.target.value)} />
+            <button type="submit" disabled={!newTitle.trim()}>
+              追加
+            </button>
+          </form>
+          <button onClick={() => setImporting(true)}>issue を取り込む</button>
+          <span className="muted sync">{board?.sync_status}</span>
+        </div>
       </header>
       {error && (
         <div className="error" role="alert">
@@ -652,6 +654,7 @@ export default function App() {
       )}
       <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
         <main className="board">
+          <div className="board-inner">
           <div className="col-heads">
             {COLUMNS.map((c) => (
               <h2 key={c.status}>
@@ -679,6 +682,7 @@ export default function App() {
           {board && board.todos.length === 0 && board.inbox.length === 0 && (
             <p className="muted empty">todo がありません。上の欄から追加するか、issue を取り込んでください。</p>
           )}
+          </div>
         </main>
         {/* The overlay follows the pointer across columns; the originals stay in place. */}
         <DragOverlay dropAnimation={null}>{overlay}</DragOverlay>
