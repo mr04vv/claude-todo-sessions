@@ -1,3 +1,14 @@
 target/
 *.sqlite
 *.sqlite-*
+node_modules/
+app/dist/
+*.tsbuildinfo
+app/src-tauri/gen/
+# Icons `tauri icon` generates for platforms this app does not target
+app/src-tauri/icons/android/
+app/src-tauri/icons/ios/
+app/src-tauri/icons/Square*
+app/src-tauri/icons/StoreLogo.png
+app/src-tauri/icons/64x64.png
+app/src-tauri/icons/icon.ico
