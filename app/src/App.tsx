@@ -3,7 +3,6 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
-  pointerWithin,
   useDraggable,
   useDroppable,
   useSensor,
@@ -18,11 +17,20 @@ const REFRESH_MS = 3000;
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
 
-/// Cards sit inside columns, so both are under the pointer. Sessions only
-/// drop onto cards and todos only onto columns.
-const collision: CollisionDetection = (args) => {
-  const want = String(args.active.id).startsWith("session:") ? "card:" : "col:";
-  return pointerWithin(args).filter((c) => String(c.id).startsWith(want));
+/// Cards sit inside columns, so a point is inside both. Sessions only drop
+/// onto cards and todos only onto columns. The point is the centre of the
+/// dragged item rather than the pointer, whose coordinates did not match the
+/// droppables inside the Tauri webview.
+const collision: CollisionDetection = ({ active, collisionRect, droppableRects, droppableContainers }) => {
+  const want = String(active.id).startsWith("session:") ? "card:" : "col:";
+  const x = collisionRect.left + collisionRect.width / 2;
+  const y = collisionRect.top + collisionRect.height / 2;
+  return droppableContainers
+    .filter((c) => {
+      const r = droppableRects.get(c.id);
+      return String(c.id).startsWith(want) && r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    })
+    .map((c) => ({ id: c.id }));
 };
 
 const COLUMNS: { status: Status; label: string }[] = [
