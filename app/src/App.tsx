@@ -45,6 +45,17 @@ const collision: CollisionDetection = ({ active, collisionRect, droppableRects, 
 };
 
 const OTHER_LANE = "その他";
+const MULTI_LANE = "複数リポジトリ";
+
+/// Lane a todo or session belongs to: its one repo, the shared multi-repo
+/// lane when it spans several, or "その他" when none is known.
+function laneKey(repos: string[] | undefined): string {
+  if (!repos || repos.length === 0) return OTHER_LANE;
+  return repos.length === 1 ? repos[0] : MULTI_LANE;
+}
+
+/// "Atrae/wevox-rest-bff" → "wevox-rest-bff" for compact tags.
+const repoName = (repo: string) => repo.split("/").pop() ?? repo;
 const COLLAPSED_KEY = "collapsedLanes";
 
 interface Lane {
@@ -58,27 +69,25 @@ interface Lane {
 /// One lane per repository; todos and inbox sessions without one share "その他", shown last.
 function buildLanes(board: Board): Lane[] {
   const lanes = new Map<string, Lane>();
-  const lane = (repo: string | null | undefined) => {
-    const key = repo ?? OTHER_LANE;
+  const lane = (repos: string[] | undefined) => {
+    const key = laneKey(repos);
     let l = lanes.get(key);
     if (!l) lanes.set(key, (l = { key, todos: [], inbox: [], latest: 0 }));
     return l;
   };
   for (const t of board.todos) {
-    const l = lane(t.repo);
+    const l = lane(t.repos);
     l.todos.push(t);
     l.latest = Math.max(l.latest, t.updated_at, ...t.sessions.map((s) => s.state_at));
   }
   for (const s of board.inbox) {
-    const l = lane(s.repo);
+    const l = lane(s.repos);
     l.inbox.push(s);
     l.latest = Math.max(l.latest, s.state_at);
   }
-  return [...lanes.values()].sort((a, b) => {
-    if (a.key === OTHER_LANE) return 1;
-    if (b.key === OTHER_LANE) return -1;
-    return b.latest - a.latest;
-  });
+  // Per-repo lanes by recent activity, then the multi-repo lane, then "その他".
+  const rank = (key: string) => (key === OTHER_LANE ? 2 : key === MULTI_LANE ? 1 : 0);
+  return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || b.latest - a.latest);
 }
 
 function loadCollapsed(): Set<string> {
@@ -140,7 +149,7 @@ function TodoCard({ todo, selected, onSelect }: { todo: Todo; selected: boolean;
   const live = todo.sessions.filter((s) => s.state !== "ended");
   const states = new Set(live.map((s) => s.state));
   const ref = issueRef(todo.issue_url);
-  const repo = ref?.split("#")[0].split("/")[1] ?? (todo.cwd ? basename(todo.cwd) : null);
+  const tags = todo.repos.length > 0 ? todo.repos.map(repoName) : todo.cwd ? [basename(todo.cwd)] : [];
   return (
     <div
       ref={(el) => {
@@ -161,7 +170,11 @@ function TodoCard({ todo, selected, onSelect }: { todo: Todo; selected: boolean;
         {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
           <StateBadge key={st} state={st} />
         ))}
-        {repo && <span className="tag">{repo}</span>}
+        {tags.map((t) => (
+          <span key={t} className="tag" title={todo.repos.join(", ")}>
+            {t}
+          </span>
+        ))}
         {live.length > 0 && <span className="muted">{live.length} sessions</span>}
       </div>
     </div>
@@ -251,7 +264,12 @@ function InboxItem({ session, selected, onSelect }: { session: Session; selected
       <div className="card-title">{sessionLabel(session)}</div>
       <div className="card-meta">
         <StateBadge state={session.state} />
-        <span className="muted ellipsis">{basename(session.cwd)}</span>
+        {(session.repos ?? []).map((r) => (
+          <span key={r} className="tag" title={r}>
+            {repoName(r)}
+          </span>
+        ))}
+        {(session.repos ?? []).length === 0 && <span className="muted ellipsis">{basename(session.cwd)}</span>}
       </div>
     </div>
   );
@@ -347,6 +365,12 @@ function Drawer({ todo, run, onClose }: {
           ))}
         </select>
       </label>
+      <Field
+        label="リポジトリ（owner/repo、カンマ区切り。空なら issue URL や作業フォルダから判定）"
+        value={todo.repos.join(", ")}
+        placeholder="Atrae/wevox-mono-web, Atrae/wevox-rest-bff"
+        onSave={(v) => update({ repos: v.split(",").map((r) => r.trim()).filter(Boolean) })}
+      />
       <Field label="Issue / PR URL" value={todo.issue_url ?? ""} placeholder="https://github.com/…" onSave={(issue_url) => update({ issue_url })} />
       <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
       <Field label="メモ" value={todo.memo ?? ""} multiline onSave={(memo) => update({ memo })} />
@@ -409,7 +433,7 @@ function SessionDrawer({ session, todos, run, onClose, onCreated }: {
     const title = newTitle.trim();
     if (!title) return;
     run(async () => {
-      const todo = await api.createTodo({ title, cwd });
+      const todo = await api.createTodo({ title, cwd, repos: session.repos ?? [] });
       await api.linkSession(session.session_id, todo.id);
       onCreated(todo.id);
     });
@@ -429,6 +453,12 @@ function SessionDrawer({ session, todos, run, onClose, onCreated }: {
         <span className="muted">{ago(session.state_at)}</span>
       </div>
       <dl className="props">
+        {(session.repos ?? []).length > 0 && (
+          <>
+            <dt>repo</dt>
+            <dd>{(session.repos ?? []).join(", ")}</dd>
+          </>
+        )}
         <dt>場所</dt>
         <dd className="mono">{session.cwd}</dd>
         <dt>ID</dt>

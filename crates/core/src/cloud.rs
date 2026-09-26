@@ -46,6 +46,27 @@ pub fn repo_url(session: &Value) -> Option<String> {
         .map(Into::into)
 }
 
+/// `owner/repo` list of a session: the push targets (outcomes), or every
+/// source when nothing is pushed, e.g. a read-only investigation.
+pub fn repo_keys(session: &Value) -> Vec<String> {
+    let git = |v: &Value, kind: &str| {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter(|x| x["type"] == "git_repository")
+            .filter_map(|x| match kind {
+                "outcomes" => x["git_info"]["repo"].as_str().map(Into::into),
+                _ => x["url"].as_str().and_then(crate::launch::repo_key),
+            })
+            .collect::<Vec<String>>()
+    };
+    let outcomes = git(&session["config"]["outcomes"], "outcomes");
+    if !outcomes.is_empty() {
+        return outcomes;
+    }
+    git(&session["config"]["sources"], "sources")
+}
+
 fn message_text(content: &Value) -> Option<String> {
     match content {
         Value::String(s) => Some(s.clone()),
@@ -71,7 +92,17 @@ pub fn first_user_prompt(events: &Value) -> Option<String> {
         .map(|(_, text)| text)
 }
 
-pub fn create_body(env_id: &str, repo_url: &str, branch: &str, prompt: &str, title: &str, uuid: &str) -> Value {
+/// `repos` are `owner/repo`; every one becomes a source and a push target
+/// on the same branch name.
+pub fn create_body(env_id: &str, repos: &[String], branch: &str, prompt: &str, title: &str, uuid: &str) -> Value {
+    let sources: Vec<Value> = repos
+        .iter()
+        .map(|r| json!({"type": "git_repository", "url": format!("https://github.com/{r}")}))
+        .collect();
+    let outcomes: Vec<Value> = repos
+        .iter()
+        .map(|r| json!({"type": "git_repository", "git_info": {"type": "github", "repo": r, "branches": [branch]}}))
+        .collect();
     json!({
         "title": title,
         "events": [{"type": "event", "data": {
@@ -79,12 +110,8 @@ pub fn create_body(env_id: &str, repo_url: &str, branch: &str, prompt: &str, tit
             "message": {"role": "user", "content": prompt},
         }}],
         "session_context": {
-            "sources": [{"type": "git_repository", "url": repo_url}],
-            "outcomes": [{"type": "git_repository", "git_info": {
-                "type": "github",
-                "repo": repo_url.trim_start_matches("https://github.com/"),
-                "branches": [branch],
-            }}],
+            "sources": sources,
+            "outcomes": outcomes,
             "environment_variables": {},
         },
         "environment_id": env_id,
@@ -283,7 +310,9 @@ impl Client {
 /// links it right away. Returns the `cse_…` id.
 // ponytail: reuses the environment of the latest cloud session; add an
 // environment picker if more than one environment is in use.
-pub fn create_session(db: &Db, todo_id: i64, repo_url: &str, title: &str) -> Result<String, String> {
+pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str) -> Result<String, String> {
+    let main = repos.first().ok_or("no repository to start the cloud session in")?;
+    let repo_url = format!("https://github.com/{main}");
     let mut client = Client::new()?;
     let recent = client.get(&format!("/v1/code/sessions?limit={RECENT_SESSIONS_FOR_ENV}"))?;
     let env_id = recent["data"]
@@ -297,13 +326,14 @@ pub fn create_session(db: &Db, todo_id: i64, repo_url: &str, title: &str) -> Res
     let prompt = crate::launch::start_prompt(todo_id, title);
     let uuid = uuid::Uuid::new_v4().to_string();
     let branch = format!("{BRANCH_PREFIX}todo-{todo_id}-{}", &uuid[..BRANCH_SUFFIX_LEN]);
-    let body = create_body(&env_id, repo_url, &branch, &prompt, title, &uuid);
+    let body = create_body(&env_id, repos, &branch, &prompt, title, &uuid);
     let created = client.post("/v1/sessions", &organization_uuid()?, &body)?;
     let id = created["id"]
         .as_str()
         .and_then(code_session_id)
         .ok_or("create response has no session id")?;
-    db.record_session(&id, repo_url, SessionState::Idle).map_err(|e| e.to_string())?;
+    db.record_session(&id, &repo_url, SessionState::Idle).map_err(|e| e.to_string())?;
+    db.set_session_repos(&id, repos).map_err(|e| e.to_string())?;
     db.set_session_title(&id, title).map_err(|e| e.to_string())?;
     db.link_session(&id, todo_id).map_err(|e| e.to_string())?;
     db.mark_marker_checked(&id).map_err(|e| e.to_string())?;
@@ -325,6 +355,7 @@ fn sync_one(db: &Db, client: &mut Client, s: &Value) -> Result<Outcome, String> 
         return Ok(Outcome::Skipped);
     }
     db.record_session(id, &repo_url(s).unwrap_or_default(), state).map_err(|e| e.to_string())?;
+    db.set_session_repos(id, &repo_keys(s)).map_err(|e| e.to_string())?;
     if let Some(title) = s["title"].as_str().filter(|t| !t.is_empty()) {
         db.set_session_title(id, title).map_err(|e| e.to_string())?;
     }
@@ -399,8 +430,20 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn repo_keys_prefer_push_targets_over_sources() {
+        let s = json!({"config": {
+            "sources": [{"type": "git_repository", "url": "https://github.com/o/a"}, {"type": "git_repository", "url": "https://github.com/o/shared"}],
+            "outcomes": [{"type": "git_repository", "git_info": {"type": "github", "repo": "o/a"}}],
+        }});
+        assert_eq!(repo_keys(&s), vec!["o/a"]);
+        let only_sources = json!({"config": {"sources": [{"type": "git_repository", "url": "https://github.com/o/a"}, {"type": "git_repository", "url": "https://github.com/o/b"}], "outcomes": []}});
+        assert_eq!(repo_keys(&only_sources), vec!["o/a", "o/b"]);
+        assert!(repo_keys(&json!({})).is_empty());
+    }
+
+    #[test]
     fn create_body_carries_marker_prompt_and_repo() {
-        let b = create_body("env_1", "https://github.com/o/r", "claude/todo-2-ab12", "[todo:2] go", "go", "u-1");
+        let b = create_body("env_1", &["o/r".into()], "claude/todo-2-ab12", "[todo:2] go", "go", "u-1");
         assert_eq!(b["environment_id"], "env_1");
         assert_eq!(b["title"], "go");
         assert_eq!(b["session_context"]["sources"][0], json!({"type": "git_repository", "url": "https://github.com/o/r"}));
@@ -414,6 +457,15 @@ mod tests {
             b["session_context"]["outcomes"][0],
             json!({"type": "git_repository", "git_info": {"type": "github", "repo": "o/r", "branches": ["claude/todo-2-ab12"]}})
         );
+    }
+
+    #[test]
+    fn create_body_lists_every_repo() {
+        let b = create_body("env_1", &["o/a".into(), "o/b".into()], "claude/x", "p", "t", "u");
+        assert_eq!(b["session_context"]["sources"].as_array().unwrap().len(), 2);
+        assert_eq!(b["session_context"]["sources"][1]["url"], "https://github.com/o/b");
+        assert_eq!(b["session_context"]["outcomes"][1]["git_info"]["repo"], "o/b");
+        assert_eq!(b["session_context"]["outcomes"][1]["git_info"]["branches"], json!(["claude/x"]));
     }
 
     #[test]

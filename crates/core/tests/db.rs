@@ -22,6 +22,7 @@ fn create_and_get_todo() {
             issue_url: Some("https://github.com/o/r/issues/1".into()),
             cwd: Some("/tmp/r".into()),
             memo: Some("memo".into()),
+            ..Default::default()
         })
         .unwrap();
     assert_eq!(t.status, Status::Todo);
@@ -245,4 +246,40 @@ fn live_cloud_sessions_excludes_local_and_ended() {
     db.record_session("local-uuid", "/w", SessionState::Idle).unwrap();
     let ids: Vec<String> = db.live_cloud_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
     assert_eq!(ids, vec!["cse_live"]);
+}
+
+#[test]
+fn todos_and_sessions_keep_a_repo_list() {
+    let (_d, db) = open();
+    let t = db
+        .create_todo(NewTodo { title: "a".into(), repos: vec!["o/r".into(), "o/s".into()], ..Default::default() })
+        .unwrap();
+    assert_eq!(t.repos, vec!["o/r", "o/s"]);
+    let u = db.update_todo(t.id, TodoPatch { repos: Some(vec!["o/x".into()]), ..Default::default() }).unwrap();
+    assert_eq!(u.repos, vec!["o/x"]);
+    let u = db.update_todo(t.id, TodoPatch { repos: Some(vec![]), ..Default::default() }).unwrap();
+    assert!(u.repos.is_empty());
+
+    db.record_session("cse_1", "https://github.com/o/r", SessionState::Idle).unwrap();
+    assert!(db.get_session("cse_1").unwrap().unwrap().repos.is_empty());
+    db.set_session_repos("cse_1", &["o/r".into(), "o/s".into()]).unwrap();
+    assert_eq!(db.get_session("cse_1").unwrap().unwrap().repos, vec!["o/r", "o/s"]);
+}
+
+#[test]
+fn open_adds_repos_columns_to_old_tables() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo',
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL);
+         INSERT INTO todos (title, updated_at) VALUES ('old', 0);
+         CREATE TABLE sessions (session_id TEXT PRIMARY KEY, todo_id INTEGER, cwd TEXT NOT NULL,
+         state TEXT NOT NULL, state_at INTEGER NOT NULL, title TEXT);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert!(db.get_todo(1).unwrap().unwrap().repos.is_empty());
 }

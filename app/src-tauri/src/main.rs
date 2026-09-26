@@ -63,15 +63,15 @@ struct TodoView {
     #[serde(flatten)]
     todo: Todo,
     sessions: Vec<Session>,
-    /// `owner/repo` the todo belongs to, for grouping.
-    repo: Option<String>,
+    /// `owner/repo` list for grouping; several means the todo spans repos.
+    repos: Vec<String>,
 }
 
 #[derive(Serialize)]
 struct SessionView {
     #[serde(flatten)]
     session: Session,
-    repo: Option<String>,
+    repos: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -102,11 +102,24 @@ fn repo_of_cwd(state: &AppState, cwd: &str) -> Option<String> {
         .clone()
 }
 
-fn repo_of_todo(state: &AppState, todo: &Todo) -> Option<String> {
+/// The todo's own list, else the repo of its issue URL, else of its folder.
+fn repos_of_todo(state: &AppState, todo: &Todo) -> Vec<String> {
+    if !todo.repos.is_empty() {
+        return todo.repos.clone();
+    }
     todo.issue_url
         .as_deref()
         .and_then(launch::repo_key)
         .or_else(|| todo.cwd.as_deref().and_then(|c| repo_of_cwd(state, c)))
+        .into_iter()
+        .collect()
+}
+
+fn repos_of_session(state: &AppState, session: &Session) -> Vec<String> {
+    if !session.repos.is_empty() {
+        return session.repos.clone();
+    }
+    repo_of_cwd(state, &session.cwd).into_iter().collect()
 }
 
 #[derive(Deserialize)]
@@ -115,6 +128,8 @@ struct TodoInput {
     issue_url: Option<String>,
     cwd: Option<String>,
     memo: Option<String>,
+    #[serde(default)]
+    repos: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -124,6 +139,7 @@ struct TodoUpdate {
     memo: Option<String>,
     cwd: Option<String>,
     issue_url: Option<String>,
+    repos: Option<Vec<String>>,
 }
 
 #[tauri::command]
@@ -147,11 +163,11 @@ fn board(state: State<AppState>) -> Result<Board, String> {
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
         .into_iter()
-        .map(|(sessions, todo)| TodoView { repo: repo_of_todo(&state, &todo), sessions, todo })
+        .map(|(sessions, todo)| TodoView { repos: repos_of_todo(&state, &todo), sessions, todo })
         .collect();
     let inbox = inbox
         .into_iter()
-        .map(|session| SessionView { repo: repo_of_cwd(&state, &session.cwd), session })
+        .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
     Ok(Board { todos, inbox, sync_status })
@@ -166,6 +182,7 @@ fn create_todo(state: State<AppState>, input: TodoInput) -> Result<Todo, String>
         issue_url: blank(input.issue_url),
         cwd: blank(input.cwd),
         memo: blank(input.memo),
+        repos: input.repos,
     })
     .map_err(err)
 }
@@ -178,6 +195,7 @@ fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<To
         memo: update.memo,
         cwd: update.cwd,
         issue_url: update.issue_url,
+        repos: update.repos,
     };
     state.db.lock().map_err(err)?.update_todo(id, patch).map_err(err)
 }
@@ -277,15 +295,13 @@ fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
 
 #[tauri::command]
 fn start_cloud(state: State<AppState>, todo_id: i64) -> Result<(), String> {
+    let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
+    let repos = repos_of_todo(&state, &todo);
+    if repos.is_empty() {
+        return Err("GitHub のリポジトリが分かりません。リポジトリ欄か issue URL か、GitHub を origin に持つ cwd を設定してください".into());
+    }
     let db = state.db.lock().map_err(err)?;
-    let todo = todo_or_err(&db, todo_id)?;
-    let repo = todo
-        .issue_url
-        .as_deref()
-        .and_then(launch::github_repo_url)
-        .or_else(|| todo.cwd.as_deref().and_then(git_origin).as_deref().and_then(launch::github_repo_url))
-        .ok_or("GitHub のリポジトリが分かりません。issue URL か、GitHub を origin に持つ cwd を設定してください")?;
-    let id = cts_core::cloud::create_session(&db, todo.id, &repo, &todo.title)?;
+    let id = cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title)?;
     drop(db);
     open_url(&launch::jump_url(&id, None))
 }
@@ -361,8 +377,14 @@ struct IssueImport {
 fn import_issues(state: State<AppState>, issues: Vec<IssueImport>) -> Result<usize, String> {
     let db = state.db.lock().map_err(err)?;
     for i in &issues {
-        db.create_todo(NewTodo { title: i.title.clone(), issue_url: Some(i.url.clone()), cwd: i.cwd.clone(), memo: None })
-            .map_err(err)?;
+        db.create_todo(NewTodo {
+            title: i.title.clone(),
+            issue_url: Some(i.url.clone()),
+            cwd: i.cwd.clone(),
+            memo: None,
+            repos: Vec::new(),
+        })
+        .map_err(err)?;
     }
     Ok(issues.len())
 }

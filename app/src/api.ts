@@ -10,8 +10,8 @@ export interface Session {
   cwd: string;
   state: SessionState;
   state_at: number;
-  /** `owner/repo`, present on inbox sessions. */
-  repo?: string | null;
+  /** `owner/repo` list; the first is where the session pushes. Present on inbox sessions. */
+  repos?: string[];
 }
 
 export interface Todo {
@@ -23,8 +23,8 @@ export interface Todo {
   memo: string | null;
   updated_at: number;
   sessions: Session[];
-  /** `owner/repo` derived from the issue URL or the working folder. */
-  repo: string | null;
+  /** `owner/repo` list: the todo's own, else derived from the issue URL or the working folder. */
+  repos: string[];
 }
 
 export interface Board {
@@ -38,6 +38,7 @@ export interface TodoInput {
   issue_url?: string;
   cwd?: string;
   memo?: string;
+  repos?: string[];
 }
 
 export interface TodoUpdate {
@@ -46,6 +47,7 @@ export interface TodoUpdate {
   memo?: string;
   cwd?: string;
   issue_url?: string;
+  repos?: string[];
 }
 
 export interface Issue {

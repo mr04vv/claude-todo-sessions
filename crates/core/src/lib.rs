@@ -62,6 +62,8 @@ pub struct Todo {
     pub cwd: Option<String>,
     pub memo: Option<String>,
     pub updated_at: i64,
+    /// `owner/repo` list the todo spans; the first one is the main repo.
+    pub repos: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +72,7 @@ pub struct NewTodo {
     pub issue_url: Option<String>,
     pub cwd: Option<String>,
     pub memo: Option<String>,
+    pub repos: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -80,6 +83,7 @@ pub struct TodoPatch {
     pub memo: Option<String>,
     pub cwd: Option<String>,
     pub issue_url: Option<String>,
+    pub repos: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -90,6 +94,8 @@ pub struct Session {
     pub cwd: String,
     pub state: SessionState,
     pub state_at: i64,
+    /// `owner/repo` list a cloud session works on; the first one is where it pushes.
+    pub repos: Vec<String>,
 }
 
 /// Hooks from parallel sessions write to the same file.
@@ -106,7 +112,8 @@ CREATE TABLE IF NOT EXISTS todos (
     issue_url TEXT,
     cwd TEXT,
     memo TEXT,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    repos TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -114,15 +121,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     cwd TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('running', 'needs_input', 'idle', 'ended')),
     state_at INTEGER NOT NULL,
-    title TEXT
+    title TEXT,
+    repos TEXT
 );
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
 );
 ";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at";
-const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos";
+const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos";
 
 impl Status {
     fn as_str(self) -> &'static str {
@@ -176,6 +184,7 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         cwd: r.get(4)?,
         memo: r.get(5)?,
         updated_at: r.get(6)?,
+        repos: split_repos(r.get(7)?),
     })
 }
 
@@ -187,18 +196,36 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         state: SessionState::parse(&r.get::<_, String>(3)?),
         state_at: r.get(4)?,
         title: r.get(5)?,
+        repos: split_repos(r.get(6)?),
     })
+}
+
+/// Repo lists are stored comma-separated; NULL or "" means none.
+const REPOS_SEPARATOR: char = ',';
+
+fn join_repos(repos: &[String]) -> Option<String> {
+    (!repos.is_empty()).then(|| repos.join(&REPOS_SEPARATOR.to_string()))
+}
+
+fn split_repos(raw: Option<String>) -> Vec<String> {
+    raw.unwrap_or_default()
+        .split(REPOS_SEPARATOR)
+        .filter(|r| !r.is_empty())
+        .map(Into::into)
+        .collect()
 }
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    let has_title: bool = conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'title'",
-        [],
-        |r| r.get::<_, i64>(0).map(|n| n > 0),
-    )?;
-    if !has_title {
-        conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT", [])?;
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos")] {
+        let exists: bool = conn.query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !exists {
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"), [])?;
+        }
     }
     Ok(())
 }
@@ -259,8 +286,8 @@ impl Db {
 
     pub fn create_todo(&self, t: NewTodo) -> Result<Todo> {
         self.conn.execute(
-            "INSERT INTO todos (title, issue_url, cwd, memo, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![t.title, t.issue_url, t.cwd, t.memo, now()],
+            "INSERT INTO todos (title, issue_url, cwd, memo, updated_at, repos) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![t.title, t.issue_url, t.cwd, t.memo, now(), join_repos(&t.repos)],
         )?;
         let id = self.conn.last_insert_rowid();
         self.get_todo(id)?.ok_or(Error::TodoNotFound(id))
@@ -289,9 +316,20 @@ impl Db {
                 memo = COALESCE(?4, memo),
                 cwd = CASE WHEN ?5 IS NULL THEN cwd ELSE NULLIF(?5, '') END,
                 issue_url = CASE WHEN ?7 IS NULL THEN issue_url ELSE NULLIF(?7, '') END,
+                repos = CASE WHEN ?8 IS NULL THEN repos ELSE NULLIF(?8, '') END,
                 updated_at = ?6
              WHERE id = ?1",
-            params![id, p.title, p.status.map(Status::as_str), p.memo, p.cwd, now(), p.issue_url],
+            params![
+                id,
+                p.title,
+                p.status.map(Status::as_str),
+                p.memo,
+                p.cwd,
+                now(),
+                p.issue_url,
+                // Some(vec![]) clears; None keeps.
+                p.repos.as_deref().map(|r| join_repos(r).unwrap_or_default()),
+            ],
         )?;
         if n == 0 {
             return Err(Error::TodoNotFound(id));
@@ -391,6 +429,12 @@ impl Db {
     }
 
     /// Whether a cloud session's first prompt was already searched for a marker.
+    pub fn set_session_repos(&self, id: &str, repos: &[String]) -> Result<()> {
+        self.conn
+            .execute("UPDATE sessions SET repos = ?2 WHERE session_id = ?1", params![id, join_repos(repos)])?;
+        Ok(())
+    }
+
     pub fn set_session_title(&self, id: &str, title: &str) -> Result<()> {
         self.conn
             .execute("UPDATE sessions SET title = ?2 WHERE session_id = ?1", params![id, title])?;
