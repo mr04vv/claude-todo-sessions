@@ -477,9 +477,9 @@ function Drawer({ todo, local, run, onClose }: {
         onSave={(prompt) => update({ prompt })}
       />
       <div className="actions">
-        <button onClick={() => run(() => api.startDesktop(todo.id))}>Desktop</button>
-        <button onClick={() => run(() => api.startCloud(todo.id))}>クラウド</button>
-        <button onClick={() => run(() => api.startTerminal(todo.id))}>ターミナル</button>
+        <button onClick={() => run(() => api.startCloud(todo.id))}>Cloud（Desktop）</button>
+        <button onClick={() => run(() => api.startDesktop(todo.id))}>Local（Desktop）</button>
+        <button onClick={() => run(() => api.startTerminal(todo.id))}>Local（ターミナル）</button>
       </div>
 
       <h3>セッション</h3>
