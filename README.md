@@ -24,11 +24,7 @@ cargo build --release
 cargo test
 ```
 
-nix の gcc が `cc` になっている環境では、リンク時に `-liconv` が見つからずビルドに失敗します。その場合は macOS 標準のコンパイラを指定してください。
-
-```sh
-export CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/usr/bin/cc CC=/usr/bin/cc
-```
+`.cargo/config.toml` で、リンカと C コンパイラに macOS 標準の `/usr/bin/cc` を指定しています。nix の gcc が `cc` になっている環境では、`-liconv` が見つからずビルドに失敗するためです。
 
 ## インストール
 

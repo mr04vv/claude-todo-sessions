@@ -1,0 +1,6 @@
+# nix's gcc on this machine cannot find libiconv; use the macOS toolchain.
+[target.aarch64-apple-darwin]
+linker = "/usr/bin/cc"
+
+[env]
+CC = "/usr/bin/cc"
