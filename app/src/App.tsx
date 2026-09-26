@@ -3,10 +3,12 @@ import {
   DndContext,
   DragOverlay,
   PointerSensor,
+  pointerWithin,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -15,6 +17,13 @@ import { api, isCloud, type Board, type Session, type SessionState, type Status,
 const REFRESH_MS = 3000;
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
+
+/// Cards sit inside columns, so both are under the pointer. Sessions only
+/// drop onto cards and todos only onto columns.
+const collision: CollisionDetection = (args) => {
+  const want = String(args.active.id).startsWith("session:") ? "card:" : "col:";
+  return pointerWithin(args).filter((c) => String(c.id).startsWith(want));
+};
 
 const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "todo" },
@@ -323,7 +332,7 @@ export default function App() {
           </button>
         </div>
       )}
-      <DndContext sensors={sensors} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
+      <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
         <main className="board">
           {COLUMNS.map((c) => (
             <Column
