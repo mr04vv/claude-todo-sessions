@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, State, WindowEvent};
-use tauri_plugin_notification::NotificationExt;
+use mac_notification_sys::{Notification, NotificationResponse};
 
 const DB_ENV: &str = "CTS_DB";
 const DATA_DIR: &str = "Library/Application Support/claude-todo-sessions";
@@ -25,6 +25,8 @@ const MENU_OPEN: &str = "open";
 const MENU_QUIT: &str = "quit";
 const MENU_SESSION_PREFIX: &str = "session:";
 const GH_ISSUE_LIMIT: &str = "100";
+/// Must match `identifier` in tauri.conf.json; notifications are posted as this app.
+const APP_ID: &str = "dev.mr04vv.todo-sessions";
 
 struct AppState {
     db: Mutex<Db>,
@@ -345,6 +347,29 @@ fn tray_menu(app: &AppHandle, waiting: &[Session]) -> tauri::Result<Menu<tauri::
     Menu::with_items(app, &refs)
 }
 
+/// Posts a notification for a session waiting for input and opens the session
+/// when the notification is clicked. The thread lives until the notification
+/// is clicked or removed from Notification Center.
+fn notify_waiting(session: Session) {
+    std::thread::spawn(move || {
+        let label = session.title.clone().unwrap_or_else(|| session.session_id.clone());
+        let response = Notification::new()
+            .title("入力待ち")
+            .message(&label)
+            .wait_for_click(true)
+            .send();
+        match response {
+            Ok(NotificationResponse::Click) => {
+                if let Err(e) = open_session(session.session_id) {
+                    eprintln!("{e}");
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("notification: {e}"),
+        }
+    });
+}
+
 /// Keeps the tray menu current and notifies once per session that starts
 /// waiting for input.
 fn watch_loop(app: AppHandle) {
@@ -360,12 +385,7 @@ fn watch_loop(app: AppHandle) {
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
             if !first {
                 for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
-                    let _ = app
-                        .notification()
-                        .builder()
-                        .title("入力待ち")
-                        .body(s.title.as_deref().unwrap_or(&s.session_id))
-                        .show();
+                    notify_waiting(s.clone());
                 }
             }
             if first || now != known {
@@ -399,11 +419,14 @@ fn sync_loop(status: impl Fn(String)) {
 fn main() {
     let db = open_db().expect("open database");
     tauri::Builder::default()
-        .plugin(tauri_plugin_notification::init())
         .manage(AppState { db: Mutex::new(db), sync_status: Mutex::new("cloud: 同期待ち".into()) })
         .setup(|app| {
             // Menu bar app: no Dock icon, closing the window only hides it.
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            // Without this the crate would post notifications as another app.
+            if let Err(e) = mac_notification_sys::set_application(APP_ID) {
+                eprintln!("notification app id: {e}");
+            }
             TrayIconBuilder::with_id(TRAY_ID)
                 .icon(app.default_window_icon().cloned().ok_or("no app icon")?)
                 .icon_as_template(true)
