@@ -69,6 +69,31 @@ pub fn first_user_prompt(events: &Value) -> Option<String> {
         .map(|(_, text)| text)
 }
 
+pub fn create_body(env_id: &str, repo_url: &str, prompt: &str, title: &str, uuid: &str) -> Value {
+    json!({
+        "title": title,
+        "events": [{"type": "event", "data": {
+            "uuid": uuid, "session_id": "", "type": "user", "parent_tool_use_id": null,
+            "message": {"role": "user", "content": prompt},
+        }}],
+        "session_context": {
+            "sources": [{"type": "git_repository", "url": repo_url}],
+            "outcomes": [],
+            "environment_variables": {},
+        },
+        "environment_id": env_id,
+    })
+}
+
+/// The create API answers `session_…`; the code-sessions API lists the same
+/// session as `cse_…`.
+pub fn code_session_id(created_id: &str) -> Option<String> {
+    if created_id.starts_with("cse_") {
+        return Some(created_id.into());
+    }
+    created_id.strip_prefix("session_").map(|rest| format!("cse_{rest}"))
+}
+
 pub fn needs_refresh(expires_at_ms: i64, now_ms: i64) -> bool {
     now_ms + REFRESH_MARGIN_MS >= expires_at_ms
 }
@@ -148,6 +173,33 @@ fn refresh(creds: &Value) -> Result<Value, String> {
     Ok(updated)
 }
 
+/// Header set the sessions create API needs on top of the OAuth ones.
+const CREATE_BETA: &str = "ccr-byoc-2025-07-29";
+const CLAUDE_JSON: &str = ".claude.json";
+const RECENT_SESSIONS_FOR_ENV: u32 = 20;
+
+fn api_post(token: &str, path: &str, org: &str, body: &Value) -> Result<Value, ureq::Error> {
+    ureq::post(format!("{API_BASE}{path}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .header("anthropic-beta", CREATE_BETA)
+        .header("x-organization-uuid", org)
+        .send_json(body)?
+        .body_mut()
+        .read_json()
+}
+
+fn organization_uuid() -> Result<String, String> {
+    let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
+    let path = std::path::Path::new(&home).join(CLAUDE_JSON);
+    let raw = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let v: Value = serde_json::from_slice(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
+    v["oauthAccount"]["organizationUuid"]
+        .as_str()
+        .map(Into::into)
+        .ok_or_else(|| format!("{} has no oauthAccount.organizationUuid", path.display()))
+}
+
 fn api_get(token: &str, path: &str) -> Result<Value, ureq::Error> {
     ureq::get(format!("{API_BASE}{path}"))
         .header("Authorization", format!("Bearer {token}"))
@@ -179,6 +231,45 @@ impl Client {
             r => r.map_err(|e| format!("GET {path}: {e}")),
         }
     }
+
+    fn post(&mut self, path: &str, org: &str, body: &Value) -> Result<Value, String> {
+        match api_post(&access_token(&self.creds)?, path, org, body) {
+            Err(ureq::Error::StatusCode(401)) => {
+                self.creds = refresh(&self.creds)?;
+                api_post(&access_token(&self.creds)?, path, org, body).map_err(|e| format!("POST {path}: {e}"))
+            }
+            r => r.map_err(|e| format!("POST {path}: {e}")),
+        }
+    }
+}
+
+/// Creates a cloud session whose first prompt is `[todo:<id>] <title>` and
+/// links it right away. Returns the `cse_…` id.
+// ponytail: reuses the environment of the latest cloud session; add an
+// environment picker if more than one environment is in use.
+pub fn create_session(db: &Db, todo_id: i64, repo_url: &str, title: &str) -> Result<String, String> {
+    let mut client = Client::new()?;
+    let recent = client.get(&format!("/v1/code/sessions?limit={RECENT_SESSIONS_FOR_ENV}"))?;
+    let env_id = recent["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|s| is_cloud(s))
+        .and_then(|s| s["environment_id"].as_str())
+        .ok_or("no cloud session to take an environment from; start one on claude.ai/code first")?
+        .to_string();
+    let prompt = crate::launch::start_prompt(todo_id, title);
+    let body = create_body(&env_id, repo_url, &prompt, title, &uuid::Uuid::new_v4().to_string());
+    let created = client.post("/v1/sessions", &organization_uuid()?, &body)?;
+    let id = created["id"]
+        .as_str()
+        .and_then(code_session_id)
+        .ok_or("create response has no session id")?;
+    db.record_session(&id, repo_url, SessionState::Idle).map_err(|e| e.to_string())?;
+    db.set_session_title(&id, title).map_err(|e| e.to_string())?;
+    db.link_session(&id, todo_id).map_err(|e| e.to_string())?;
+    db.mark_marker_checked(&id).map_err(|e| e.to_string())?;
+    Ok(id)
 }
 
 enum Outcome {
@@ -196,6 +287,9 @@ fn sync_one(db: &Db, client: &mut Client, s: &Value) -> Result<Outcome, String> 
         return Ok(Outcome::Skipped);
     }
     db.record_session(id, &repo_url(s).unwrap_or_default(), state).map_err(|e| e.to_string())?;
+    if let Some(title) = s["title"].as_str().filter(|t| !t.is_empty()) {
+        db.set_session_title(id, title).map_err(|e| e.to_string())?;
+    }
     let unlinked = known.is_none_or(|k| k.todo_id.is_none());
     if !unlinked || db.marker_checked(id).map_err(|e| e.to_string())? {
         return Ok(Outcome::Recorded);
@@ -251,6 +345,26 @@ pub fn sync(db: &Db) -> Result<SyncReport, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn create_body_carries_marker_prompt_and_repo() {
+        let b = create_body("env_1", "https://github.com/o/r", "[todo:2] go", "go", "u-1");
+        assert_eq!(b["environment_id"], "env_1");
+        assert_eq!(b["title"], "go");
+        assert_eq!(b["session_context"]["sources"][0], json!({"type": "git_repository", "url": "https://github.com/o/r"}));
+        let ev = &b["events"][0];
+        assert_eq!(ev["type"], "event");
+        assert_eq!(ev["data"]["type"], "user");
+        assert_eq!(ev["data"]["uuid"], "u-1");
+        assert_eq!(ev["data"]["message"], json!({"role": "user", "content": "[todo:2] go"}));
+    }
+
+    #[test]
+    fn created_session_id_maps_to_code_session_id() {
+        assert_eq!(code_session_id("session_013cYH").as_deref(), Some("cse_013cYH"));
+        assert_eq!(code_session_id("cse_1").as_deref(), Some("cse_1"));
+        assert_eq!(code_session_id("weird"), None);
+    }
 
     #[test]
     fn maps_worker_status_and_archive() {

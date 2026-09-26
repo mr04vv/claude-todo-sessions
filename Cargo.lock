@@ -136,12 +136,10 @@ dependencies = [
  "cts-core",
  "rmcp",
  "schemars",
- "security-framework",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
- "ureq",
 ]
 
 [[package]]
@@ -149,8 +147,12 @@ name = "cts-core"
 version = "0.1.0"
 dependencies = [
  "rusqlite",
+ "security-framework",
  "serde",
+ "serde_json",
  "tempfile",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]

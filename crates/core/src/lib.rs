@@ -1,4 +1,6 @@
 pub mod cloud;
+pub mod desktop;
+pub mod launch;
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -81,6 +83,7 @@ pub struct TodoPatch {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Session {
     pub session_id: String,
+    pub title: Option<String>,
     pub todo_id: Option<i64>,
     pub cwd: String,
     pub state: SessionState,
@@ -90,6 +93,8 @@ pub struct Session {
 /// Hooks from parallel sessions write to the same file.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MARKER_PREFIX: &str = "[todo:";
+/// Session titles are derived from the first prompt and cut to this length.
+pub const TITLE_MAX_CHARS: usize = 80;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS todos (
@@ -106,7 +111,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
     cwd TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN ('running', 'needs_input', 'idle', 'ended')),
-    state_at INTEGER NOT NULL
+    state_at INTEGER NOT NULL,
+    title TEXT
 );
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
@@ -114,7 +120,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 ";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at";
-const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at";
+const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title";
 
 impl Status {
     fn as_str(self) -> &'static str {
@@ -178,7 +184,34 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         cwd: r.get(2)?,
         state: SessionState::parse(&r.get::<_, String>(3)?),
         state_at: r.get(4)?,
+        title: r.get(5)?,
     })
+}
+
+/// Upgrades databases created before a column existed.
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let has_title: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'title'",
+        [],
+        |r| r.get::<_, i64>(0).map(|n| n > 0),
+    )?;
+    if !has_title {
+        conn.execute("ALTER TABLE sessions ADD COLUMN title TEXT", [])?;
+    }
+    Ok(())
+}
+
+/// The prompt without its `[todo:<id>]` marker, trimmed and cut to
+/// TITLE_MAX_CHARS, or None when nothing is left.
+fn title_from_prompt(prompt: &str) -> Option<String> {
+    let mut text = prompt.to_string();
+    if let (Some(start), Some(_)) = (text.find(MARKER_PREFIX), parse_todo_marker(prompt)) {
+        if let Some(len) = text[start..].find(']') {
+            text.replace_range(start..=start + len, "");
+        }
+    }
+    let t: String = text.trim().chars().take(TITLE_MAX_CHARS).collect();
+    (!t.is_empty()).then_some(t)
 }
 
 /// Returns the id in the first `[todo:<digits>]` of the prompt.
@@ -202,6 +235,7 @@ impl Db {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        migrate(&conn)?;
         Ok(Db { conn })
     }
 
@@ -317,6 +351,12 @@ impl Db {
     }
 
     /// Whether a cloud session's first prompt was already searched for a marker.
+    pub fn set_session_title(&self, id: &str, title: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE sessions SET title = ?2 WHERE session_id = ?1", params![id, title])?;
+        Ok(())
+    }
+
     pub fn marker_checked(&self, id: &str) -> Result<bool> {
         Ok(self
             .conn
@@ -349,6 +389,12 @@ impl Db {
     /// `[todo:<id>]` marker. Returns the todo id it linked to, if any.
     pub fn on_prompt(&self, id: &str, cwd: &str, prompt: &str) -> Result<Option<i64>> {
         self.record_session(id, cwd, SessionState::Running)?;
+        if let Some(title) = title_from_prompt(prompt) {
+            self.conn.execute(
+                "UPDATE sessions SET title = ?2 WHERE session_id = ?1 AND title IS NULL",
+                params![id, title],
+            )?;
+        }
         self.link_by_marker(id, prompt)
     }
 }

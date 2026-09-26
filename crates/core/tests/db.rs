@@ -157,3 +157,34 @@ fn link_by_marker_links_recorded_session_without_changing_state() {
     let s = db.get_session("cse_1").unwrap().unwrap();
     assert_eq!((s.todo_id, s.state), (Some(t.id), SessionState::Idle));
 }
+
+#[test]
+fn open_adds_title_column_to_old_sessions_table() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, todo_id INTEGER, cwd TEXT NOT NULL,
+         state TEXT NOT NULL, state_at INTEGER NOT NULL);
+         INSERT INTO sessions VALUES ('s1', NULL, '/w', 'idle', 0);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.get_session("s1").unwrap().unwrap().title, None);
+    db.set_session_title("s1", "t").unwrap();
+    assert_eq!(db.get_session("s1").unwrap().unwrap().title.as_deref(), Some("t"));
+}
+
+#[test]
+fn first_prompt_becomes_title_without_marker() {
+    let (_d, db) = open();
+    db.on_prompt("s1", "/w", "[todo:9]  fix the login bug").unwrap();
+    db.on_prompt("s1", "/w", "second prompt").unwrap();
+    assert_eq!(db.get_session("s1").unwrap().unwrap().title.as_deref(), Some("fix the login bug"));
+
+    let long = "あ".repeat(200);
+    db.on_prompt("s2", "/w", &long).unwrap();
+    let t = db.get_session("s2").unwrap().unwrap().title.unwrap();
+    assert_eq!(t.chars().count(), cts_core::TITLE_MAX_CHARS);
+}
