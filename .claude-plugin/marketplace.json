@@ -1,0 +1,13 @@
+{
+  "name": "claude-todo-sessions",
+  "owner": {
+    "name": "mr04vv"
+  },
+  "plugins": [
+    {
+      "name": "todo-sessions",
+      "source": "./plugin",
+      "description": "Link todos and GitHub issues to Claude Code sessions"
+    }
+  ]
+}
