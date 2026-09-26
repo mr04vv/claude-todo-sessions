@@ -518,6 +518,16 @@ select {
   padding-right: calc(var(--drawer-w) + 14px);
 }
 
+/* Content sits in a centred column, like a Notion page, instead of spanning the window. */
+.toolbar,
+.content,
+.main > .error {
+  width: 100%;
+  max-width: var(--content-w);
+  margin-left: auto;
+  margin-right: auto;
+}
+
 .toolbar {
   display: flex;
   align-items: center;
