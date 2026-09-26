@@ -460,6 +460,15 @@ select:focus {
   width: auto;
 }
 
+.delete-confirm {
+  margin-top: 24px;
+  align-items: center;
+}
+
+.delete-confirm > span {
+  flex-basis: 100%;
+}
+
 .sessions {
   list-style: none;
   padding: 0;

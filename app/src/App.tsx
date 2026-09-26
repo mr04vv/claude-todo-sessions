@@ -218,6 +218,9 @@ function Drawer({ todo, run, onClose }: {
 }) {
   const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
   const ref = issueRef(todo.issue_url);
+  // window.confirm never returns true inside the Tauri webview, so confirm in place.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  useEffect(() => setConfirmingDelete(false), [todo.id]);
   return (
     <aside className="drawer">
       <header>
@@ -266,18 +269,29 @@ function Drawer({ todo, run, onClose }: {
         ))}
       </ul>
 
-      <button
-        className="ghost danger"
-        onClick={() =>
-          window.confirm(`#${todo.id} を削除しますか？`) &&
-          run(async () => {
-            await api.deleteTodo(todo.id);
-            onClose();
-          })
-        }
-      >
-        todo を削除
-      </button>
+      {confirmingDelete ? (
+        <div className="actions delete-confirm">
+          <span className="muted">#{todo.id} を削除しますか？ 紐づいたセッションは受信箱に戻ります。</span>
+          <button
+            className="danger"
+            onClick={() =>
+              run(async () => {
+                await api.deleteTodo(todo.id);
+                onClose();
+              })
+            }
+          >
+            削除する
+          </button>
+          <button className="ghost" onClick={() => setConfirmingDelete(false)}>
+            やめる
+          </button>
+        </div>
+      ) : (
+        <button className="ghost danger" onClick={() => setConfirmingDelete(true)}>
+          todo を削除
+        </button>
+      )}
     </aside>
   );
 }
