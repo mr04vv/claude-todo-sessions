@@ -10,6 +10,8 @@ export interface Session {
   cwd: string;
   state: SessionState;
   state_at: number;
+  /** `owner/repo`, present on inbox sessions. */
+  repo?: string | null;
 }
 
 export interface Todo {
@@ -21,6 +23,8 @@ export interface Todo {
   memo: string | null;
   updated_at: number;
   sessions: Session[];
+  /** `owner/repo` derived from the issue URL or the working folder. */
+  repo: string | null;
 }
 
 export interface Board {

@@ -1,6 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -32,6 +32,8 @@ struct AppState {
     db: Mutex<Db>,
     /// Result of the last cloud sync, shown in the header.
     sync_status: Mutex<String>,
+    /// `owner/repo` per working directory, from `git remote get-url origin`.
+    origin_cache: Mutex<HashMap<String, Option<String>>>,
 }
 
 fn home() -> PathBuf {
@@ -61,13 +63,50 @@ struct TodoView {
     #[serde(flatten)]
     todo: Todo,
     sessions: Vec<Session>,
+    /// `owner/repo` the todo belongs to, for grouping.
+    repo: Option<String>,
+}
+
+#[derive(Serialize)]
+struct SessionView {
+    #[serde(flatten)]
+    session: Session,
+    repo: Option<String>,
 }
 
 #[derive(Serialize)]
 struct Board {
     todos: Vec<TodoView>,
-    inbox: Vec<Session>,
+    inbox: Vec<SessionView>,
     sync_status: String,
+}
+
+fn git_origin(cwd: &str) -> Option<String> {
+    let out = Command::new("git").args(["-C", cwd, "remote", "get-url", "origin"]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// `owner/repo` for a working directory: from its path when laid out like
+/// ghq, otherwise from the git remote (cached, since the board polls).
+fn repo_of_cwd(state: &AppState, cwd: &str) -> Option<String> {
+    if cwd.is_empty() {
+        return None;
+    }
+    if let Some(key) = launch::repo_key(cwd) {
+        return Some(key);
+    }
+    let mut cache = state.origin_cache.lock().ok()?;
+    cache
+        .entry(cwd.to_string())
+        .or_insert_with(|| git_origin(cwd).as_deref().and_then(launch::repo_key))
+        .clone()
+}
+
+fn repo_of_todo(state: &AppState, todo: &Todo) -> Option<String> {
+    todo.issue_url
+        .as_deref()
+        .and_then(launch::repo_key)
+        .or_else(|| todo.cwd.as_deref().and_then(|c| repo_of_cwd(state, c)))
 }
 
 #[derive(Deserialize)]
@@ -89,18 +128,30 @@ struct TodoUpdate {
 
 #[tauri::command]
 fn board(state: State<AppState>) -> Result<Board, String> {
-    let db = state.db.lock().map_err(err)?;
-    let todos = db
-        .list_todos(None)
-        .map_err(err)?
+    let (todos, inbox) = {
+        let db = state.db.lock().map_err(err)?;
+        let todos = db
+            .list_todos(None)
+            .map_err(err)?
+            .into_iter()
+            .map(|todo| Ok((db.sessions_for_todo(todo.id).map_err(err)?, todo)))
+            .collect::<Result<Vec<_>, String>>()?;
+        let inbox: Vec<Session> = db
+            .unlinked_sessions()
+            .map_err(err)?
+            .into_iter()
+            .filter(|s| s.state != SessionState::Ended)
+            .collect();
+        (todos, inbox)
+    };
+    // Repo lookup may run git, so the DB lock is released first.
+    let todos = todos
         .into_iter()
-        .map(|todo| Ok(TodoView { sessions: db.sessions_for_todo(todo.id).map_err(err)?, todo }))
-        .collect::<Result<_, String>>()?;
-    let inbox = db
-        .unlinked_sessions()
-        .map_err(err)?
+        .map(|(sessions, todo)| TodoView { repo: repo_of_todo(&state, &todo), sessions, todo })
+        .collect();
+    let inbox = inbox
         .into_iter()
-        .filter(|s| s.state != SessionState::Ended)
+        .map(|session| SessionView { repo: repo_of_cwd(&state, &session.cwd), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
     Ok(Board { todos, inbox, sync_status })
@@ -222,11 +273,6 @@ fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", shell_quote(&cwd)))
             .map_err(|e| format!("{herdr_err} / {e}"))
     })
-}
-
-fn git_origin(cwd: &str) -> Option<String> {
-    let out = Command::new("git").args(["-C", cwd, "remote", "get-url", "origin"]).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 #[tauri::command]
@@ -419,7 +465,11 @@ fn sync_loop(status: impl Fn(String)) {
 fn main() {
     let db = open_db().expect("open database");
     tauri::Builder::default()
-        .manage(AppState { db: Mutex::new(db), sync_status: Mutex::new("cloud: 同期待ち".into()) })
+        .manage(AppState {
+            db: Mutex::new(db),
+            sync_status: Mutex::new("cloud: 同期待ち".into()),
+            origin_cache: Mutex::new(HashMap::new()),
+        })
         .setup(|app| {
             // Menu bar app: no Dock icon, closing the window only hides it.
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);

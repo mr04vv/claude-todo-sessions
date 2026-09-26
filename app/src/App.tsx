@@ -44,6 +44,59 @@ const collision: CollisionDetection = ({ active, collisionRect, droppableRects, 
     .map((c) => ({ id: c.id }));
 };
 
+const OTHER_LANE = "その他";
+const COLLAPSED_KEY = "collapsedLanes";
+
+interface Lane {
+  key: string;
+  todos: Todo[];
+  inbox: Session[];
+  /// Latest activity in the lane, for ordering.
+  latest: number;
+}
+
+/// One lane per repository; todos and inbox sessions without one share "その他", shown last.
+function buildLanes(board: Board): Lane[] {
+  const lanes = new Map<string, Lane>();
+  const lane = (repo: string | null | undefined) => {
+    const key = repo ?? OTHER_LANE;
+    let l = lanes.get(key);
+    if (!l) lanes.set(key, (l = { key, todos: [], inbox: [], latest: 0 }));
+    return l;
+  };
+  for (const t of board.todos) {
+    const l = lane(t.repo);
+    l.todos.push(t);
+    l.latest = Math.max(l.latest, t.updated_at, ...t.sessions.map((s) => s.state_at));
+  }
+  for (const s of board.inbox) {
+    const l = lane(s.repo);
+    l.inbox.push(s);
+    l.latest = Math.max(l.latest, s.state_at);
+  }
+  return [...lanes.values()].sort((a, b) => {
+    if (a.key === OTHER_LANE) return 1;
+    if (b.key === OTHER_LANE) return -1;
+    return b.latest - a.latest;
+  });
+}
+
+function loadCollapsed(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsed(keys: Set<string>) {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...keys]));
+  } catch {
+    // Per-viewer convenience only; losing it is fine.
+  }
+}
+
 const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "Todo" },
   { status: "doing", label: "Doing" },
@@ -115,24 +168,68 @@ function TodoCard({ todo, selected, onSelect }: { todo: Todo; selected: boolean;
   );
 }
 
-function Column({ status, label, todos, selectedId, onSelect }: {
+function LaneColumn({ status, laneKey, todos, selectedId, onSelect }: {
   status: Status;
-  label: string;
+  laneKey: string;
   todos: Todo[];
   selectedId: number | null;
   onSelect: (id: number) => void;
 }) {
-  const { setNodeRef, isOver } = useDroppable({ id: `col:${status}` });
+  const { setNodeRef, isOver } = useDroppable({ id: `col:${status}:${laneKey}` });
   return (
-    <section ref={setNodeRef} className={`column${isOver ? " drop-target" : ""}`}>
-      <h2>
-        {label} <span className="count">{todos.length}</span>
-      </h2>
-      <div className="column-body">
-        {todos.map((t) => (
-          <TodoCard key={t.id} todo={t} selected={t.id === selectedId} onSelect={() => onSelect(t.id)} />
-        ))}
-      </div>
+    <div ref={setNodeRef} className={`cell${isOver ? " drop-target" : ""}`}>
+      {todos.map((t) => (
+        <TodoCard key={t.id} todo={t} selected={t.id === selectedId} onSelect={() => onSelect(t.id)} />
+      ))}
+    </div>
+  );
+}
+
+function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, onSelectTodo, onSelectSession }: {
+  lane: Lane;
+  collapsed: boolean;
+  onToggle: () => void;
+  selectedId: number | null;
+  selectedSessionId: string | null;
+  onSelectTodo: (id: number) => void;
+  onSelectSession: (id: string) => void;
+}) {
+  const [owner, name] = lane.key.includes("/") ? lane.key.split(/\/(.*)/s) : [null, lane.key];
+  const waiting = lane.todos.flatMap((t) => t.sessions).concat(lane.inbox).filter((s) => s.state === "needs_input").length;
+  return (
+    <section className={`lane${collapsed ? " collapsed" : ""}`}>
+      <button className="lane-head" onClick={onToggle} aria-expanded={!collapsed}>
+        <span className="chevron">{collapsed ? "▸" : "▾"}</span>
+        {owner && <span className="muted">{owner}/</span>}
+        <span className="lane-name">{name}</span>
+        <span className="count">{lane.todos.length}</span>
+        {lane.inbox.length > 0 && <span className="muted">受信箱 {lane.inbox.length}</span>}
+        {waiting > 0 && (
+          <span className="state state-needs_input">
+            <i />
+            {waiting}
+          </span>
+        )}
+      </button>
+      {!collapsed && (
+        <div className="lane-grid">
+          {COLUMNS.map((c) => (
+            <LaneColumn
+              key={c.status}
+              status={c.status}
+              laneKey={lane.key}
+              todos={lane.todos.filter((t) => t.status === c.status)}
+              selectedId={selectedId}
+              onSelect={onSelectTodo}
+            />
+          ))}
+          <div className="cell inbox-cell">
+            {lane.inbox.map((s) => (
+              <InboxItem key={s.session_id} session={s} selected={selectedSessionId === s.session_id} onSelect={() => onSelectSession(s.session_id)} />
+            ))}
+          </div>
+        </div>
+      )}
     </section>
   );
 }
@@ -418,6 +515,14 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [importing, setImporting] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  const toggleLane = (key: string) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      saveCollapsed(next);
+      return next;
+    });
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: DRAG_DISTANCE_PX } }));
 
   const refresh = useCallback(() => {
@@ -443,7 +548,8 @@ export default function App() {
     const [kind, id] = String(active.id).split(/:(.*)/s);
     const [target, targetId] = String(over.id).split(/:(.*)/s);
     if (kind === "todo" && target === "col") {
-      run(() => api.updateTodo(Number(id), { status: targetId as Status }));
+      const status = targetId.split(":")[0] as Status;
+      run(() => api.updateTodo(Number(id), { status }));
     } else if (kind === "session" && target === "card") {
       run(() => api.linkSession(id, Number(targetId)));
     }
@@ -495,32 +601,33 @@ export default function App() {
       )}
       <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
         <main className="board">
-          {COLUMNS.map((c) => (
-            <Column
-              key={c.status}
-              status={c.status}
-              label={c.label}
-              todos={board?.todos.filter((t) => t.status === c.status) ?? []}
-              selectedId={selectedId}
-              onSelect={(id) => setSelection({ kind: "todo", id })}
-            />
-          ))}
-          <section className="column inbox">
+          <div className="col-heads">
+            {COLUMNS.map((c) => (
+              <h2 key={c.status}>
+                {c.label} <span className="count">{board?.todos.filter((t) => t.status === c.status).length ?? 0}</span>
+              </h2>
+            ))}
             <h2>
               受信箱 <span className="count">{board?.inbox.length ?? 0}</span>
+              <span className="muted hint">未紐づけのセッション。カードにドラッグで紐づけ</span>
             </h2>
-            <p className="muted hint">todo に紐づいていないセッション。カードにドラッグすると紐づきます。</p>
-            <div className="column-body">
-              {board?.inbox.map((s) => (
-                <InboxItem
-                  key={s.session_id}
-                  session={s}
-                  selected={selectedSession?.session_id === s.session_id}
-                  onSelect={() => setSelection({ kind: "session", id: s.session_id })}
-                />
-              ))}
-            </div>
-          </section>
+          </div>
+          {board &&
+            buildLanes(board).map((lane) => (
+              <LaneView
+                key={lane.key}
+                lane={lane}
+                collapsed={collapsed.has(lane.key)}
+                onToggle={() => toggleLane(lane.key)}
+                selectedId={selectedId}
+                selectedSessionId={selectedSession?.session_id ?? null}
+                onSelectTodo={(id) => setSelection({ kind: "todo", id })}
+                onSelectSession={(id) => setSelection({ kind: "session", id })}
+              />
+            ))}
+          {board && board.todos.length === 0 && board.inbox.length === 0 && (
+            <p className="muted empty">todo がありません。上の欄から追加するか、issue を取り込んでください。</p>
+          )}
         </main>
         {/* The overlay follows the pointer across columns; the originals stay in place. */}
         <DragOverlay dropAnimation={null}>{overlay}</DragOverlay>

@@ -49,6 +49,19 @@ pub fn github_repo_url(url: &str) -> Option<String> {
     Some(format!("{GITHUB_HTTPS}{owner}/{repo}"))
 }
 
+/// `owner/repo` for grouping: from a GitHub URL (issue, PR, repo or git
+/// remote) or a path laid out like ghq (`…/github.com/<owner>/<repo>/…`).
+pub fn repo_key(url_or_path: &str) -> Option<String> {
+    if let Some(url) = github_repo_url(url_or_path) {
+        return url.strip_prefix(GITHUB_HTTPS).map(Into::into);
+    }
+    let rest = &url_or_path[url_or_path.find("github.com/")? + "github.com/".len()..];
+    let mut parts = rest.split('/').filter(|p| !p.is_empty());
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    Some(format!("{owner}/{repo}"))
+}
+
 /// `<ghq root>/github.com/<owner>/<repo>` when that checkout exists.
 pub fn ghq_cwd(root: &Path, repo_url: &str) -> Option<PathBuf> {
     let path = github_repo_url(repo_url)?;
@@ -101,6 +114,17 @@ mod tests {
         assert_eq!(ghq_cwd(dir.path(), "https://github.com/o/r"), Some(repo));
         assert_eq!(ghq_cwd(dir.path(), "https://github.com/o/missing"), None);
         assert_eq!(ghq_cwd(dir.path(), "https://example.com/o/r"), None);
+    }
+
+    #[test]
+    fn repo_key_from_urls_and_paths() {
+        assert_eq!(repo_key("https://github.com/o/r/issues/12").as_deref(), Some("o/r"));
+        assert_eq!(repo_key("https://github.com/o/r").as_deref(), Some("o/r"));
+        assert_eq!(repo_key("git@github.com:o/r.git").as_deref(), Some("o/r"));
+        assert_eq!(repo_key("/Users/t/src/github.com/o/r").as_deref(), Some("o/r"));
+        assert_eq!(repo_key("/Users/t/src/github.com/o/r/sub/dir").as_deref(), Some("o/r"));
+        assert_eq!(repo_key("/Users/t/other/project"), None);
+        assert_eq!(repo_key(""), None);
     }
 
     #[test]
