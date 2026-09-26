@@ -687,3 +687,87 @@ select:focus {
   flex-direction: column;
   min-width: 0;
 }
+
+/* ---------- view switch & backlog ---------- */
+
+.segmented {
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--surface-2);
+}
+
+.segmented button {
+  height: 24px;
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  border-radius: 5px;
+}
+
+.segmented button.on {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(16, 16, 20, 0.12);
+}
+
+.backlog h2 {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 0;
+  padding: 14px 4px 8px;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.list:empty {
+  display: none;
+}
+
+.list-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+
+.list-row:last-child {
+  border-bottom: 0;
+}
+
+.list-row:hover {
+  background: var(--surface-2);
+}
+
+.list-row.selected {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.list-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+
+.list-row select {
+  width: 220px;
+  flex-shrink: 0;
+}
+
+.backlog .empty {
+  padding: 16px 4px;
+  text-align: left;
+}

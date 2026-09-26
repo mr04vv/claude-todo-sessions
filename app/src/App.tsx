@@ -26,6 +26,8 @@ import {
 } from "./api";
 
 const REFRESH_MS = 3000;
+const VIEW_KEY = "view";
+type View = "board" | "backlog";
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
 
@@ -68,7 +70,7 @@ interface Lane {
   latest: number;
 }
 
-/// One lane per repository; todos and inbox sessions without one share the backlog.
+/// One lane per repository; todos and inbox sessions without one belong to the backlog page.
 function buildLanes(board: Board): Lane[] {
   const lanes = new Map<string, Lane>();
   const lane = (repos: string[] | undefined) => {
@@ -87,10 +89,26 @@ function buildLanes(board: Board): Lane[] {
     l.inbox.push(s);
     l.latest = Math.max(l.latest, s.state_at);
   }
-  // Backlog first (new todos land there), per-repo lanes by recent activity, multi-repo last.
-  if (!lanes.has(BACKLOG_LANE)) lanes.set(BACKLOG_LANE, { key: BACKLOG_LANE, todos: [], inbox: [], latest: 0 });
-  const rank = (key: string) => (key === BACKLOG_LANE ? 0 : key === MULTI_LANE ? 2 : 1);
+  // The backlog has its own page; per-repo lanes by recent activity, multi-repo last.
+  lanes.delete(BACKLOG_LANE);
+  const rank = (key: string) => (key === MULTI_LANE ? 1 : 0);
   return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || b.latest - a.latest);
+}
+
+function loadView(): View {
+  try {
+    return localStorage.getItem(VIEW_KEY) === "backlog" ? "backlog" : "board";
+  } catch {
+    return "board";
+  }
+}
+
+function saveView(view: View) {
+  try {
+    localStorage.setItem(VIEW_KEY, view);
+  } catch {
+    // Per-viewer convenience only.
+  }
 }
 
 function loadCollapsed(): Set<string> {
@@ -329,19 +347,25 @@ function SessionRow({ session, run, onUnlink }: {
   );
 }
 
-function RepoPicker({ todo, update }: { todo: Todo; update: (u: Parameters<typeof api.updateTodo>[1]) => void }) {
-  const [local, setLocal] = useState<LocalRepo[]>([]);
-  useEffect(() => {
-    api.localRepos().then(setLocal, () => setLocal([]));
-  }, []);
+/// Adds `key` to the todo's own repo list; the first pick also fills an empty working folder.
+function addRepo(todo: Todo, local: LocalRepo[], key: string): Parameters<typeof api.updateTodo>[1] | null {
+  const own = todo.repos_derived ? [] : todo.repos;
+  if (!key || own.includes(key)) return null;
+  const repos = [...own, key];
+  const path = local.find((r) => r.key === key)?.path;
+  return todo.cwd || !path ? { repos } : { repos, cwd: path };
+}
+
+function RepoPicker({ todo, local, update }: {
+  todo: Todo;
+  local: LocalRepo[];
+  update: (u: Parameters<typeof api.updateTodo>[1]) => void;
+}) {
   // Derived repos are not stored on the todo; picking one starts an explicit list.
   const own = todo.repos_derived ? [] : todo.repos;
   const add = (key: string) => {
-    if (!key || own.includes(key)) return;
-    const repos = [...own, key];
-    // The first repo picked also becomes the working folder unless one is set.
-    const path = local.find((r) => r.key === key)?.path;
-    update(todo.cwd || !path ? { repos } : { repos, cwd: path });
+    const u = addRepo(todo, local, key);
+    if (u) update(u);
   };
   const remove = (key: string) => update({ repos: own.filter((r) => r !== key) });
   const choices = local.filter((r) => !own.includes(r.key));
@@ -373,8 +397,9 @@ function RepoPicker({ todo, update }: { todo: Todo; update: (u: Parameters<typeo
   );
 }
 
-function Drawer({ todo, run, onClose }: {
+function Drawer({ todo, local, run, onClose }: {
   todo: Todo;
+  local: LocalRepo[];
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
 }) {
@@ -412,7 +437,7 @@ function Drawer({ todo, run, onClose }: {
           ))}
         </select>
       </label>
-      <RepoPicker todo={todo} update={update} />
+      <RepoPicker todo={todo} local={local} update={update} />
       <Field label="Issue / PR URL" value={todo.issue_url ?? ""} placeholder="https://github.com/…" onSave={(issue_url) => update({ issue_url })} />
       <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
       <Field label="メモ" value={todo.memo ?? ""} multiline onSave={(memo) => update({ memo })} />
@@ -599,6 +624,69 @@ function ImportModal({ run, onClose }: { run: (f: () => Promise<unknown>) => voi
   );
 }
 
+function BacklogPage({ board, local, selectedId, selectedSessionId, run, onSelectTodo, onSelectSession }: {
+  board: Board;
+  local: LocalRepo[];
+  selectedId: number | null;
+  selectedSessionId: string | null;
+  run: (f: () => Promise<unknown>) => void;
+  onSelectTodo: (id: number) => void;
+  onSelectSession: (id: string) => void;
+}) {
+  const todos = board.todos.filter((t) => t.repos.length === 0).sort((a, b) => b.updated_at - a.updated_at);
+  const inbox = board.inbox.filter((s) => (s.repos ?? []).length === 0);
+  return (
+    <div className="backlog">
+      <h2>
+        バックログ <span className="count">{todos.length}</span>
+        <span className="muted hint">リポジトリ未設定の todo。リポジトリを選ぶとボードに移ります</span>
+      </h2>
+      {todos.length === 0 && <p className="muted empty">バックログは空です。上の欄から todo を追加できます。</p>}
+      <ul className="list">
+        {todos.map((t) => (
+          <li key={t.id} className={`list-row${t.id === selectedId ? " selected" : ""}`} onClick={() => onSelectTodo(t.id)}>
+            <span className="mono muted">#{t.id}</span>
+            <span className="list-title">{t.title}</span>
+            {t.status !== "todo" && <span className="tag">{t.status}</span>}
+            <span className="muted">{ago(t.updated_at)}</span>
+            <select
+              value=""
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                const u = addRepo(t, local, e.target.value);
+                if (u) run(() => api.updateTodo(t.id, u));
+              }}
+            >
+              <option value="">リポジトリを選ぶ…</option>
+              {local.map((r) => (
+                <option key={r.key} value={r.key}>
+                  {r.key}
+                </option>
+              ))}
+            </select>
+          </li>
+        ))}
+      </ul>
+      <h2>
+        受信箱 <span className="count">{inbox.length}</span>
+        <span className="muted hint">リポジトリの分からないセッション</span>
+      </h2>
+      {inbox.length === 0 && <p className="muted empty">ありません。</p>}
+      <ul className="list">
+        {inbox.map((s) => (
+          <li key={s.session_id} className={`list-row${s.session_id === selectedSessionId ? " selected" : ""}`} onClick={() => onSelectSession(s.session_id)}>
+            <KindTag session={s} />
+            <span className="list-title">{sessionLabel(s)}</span>
+            <StateBadge state={s.state} />
+            <span className="muted">{ago(s.state_at)}</span>
+            <span className="muted mono ellipsis">{basename(s.cwd)}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
 
 export default function App() {
@@ -608,6 +696,15 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [newTitle, setNewTitle] = useState("");
   const [importing, setImporting] = useState(false);
+  const [view, setViewState] = useState<View>(loadView);
+  const setView = (v: View) => {
+    saveView(v);
+    setViewState(v);
+  };
+  const [local, setLocal] = useState<LocalRepo[]>([]);
+  useEffect(() => {
+    api.localRepos().then(setLocal, () => setLocal([]));
+  }, []);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const toggleLane = (key: string) =>
     setCollapsed((prev) => {
@@ -653,7 +750,11 @@ export default function App() {
     const title = newTitle.trim();
     if (!title) return;
     setNewTitle("");
-    run(async () => setSelection({ kind: "todo", id: (await api.createTodo({ title })).id }));
+    run(async () => {
+      const todo = await api.createTodo({ title });
+      setView("backlog");
+      setSelection({ kind: "todo", id: todo.id });
+    });
   };
 
   const selectedTodo = selection?.kind === "todo" ? board?.todos.find((t) => t.id === selection.id) ?? null : null;
@@ -676,6 +777,14 @@ export default function App() {
       <header className="topbar">
         <div className="topbar-inner">
           <h1>Todo Sessions</h1>
+          <div className="segmented" role="tablist">
+            <button role="tab" aria-selected={view === "board"} className={view === "board" ? "on" : ""} onClick={() => setView("board")}>
+              ボード
+            </button>
+            <button role="tab" aria-selected={view === "backlog"} className={view === "backlog" ? "on" : ""} onClick={() => setView("backlog")}>
+              バックログ <span className="count">{board?.todos.filter((t) => t.repos.length === 0).length ?? 0}</span>
+            </button>
+          </div>
           <form onSubmit={addTodo}>
             <input value={newTitle} placeholder="新しい todo…" onChange={(e) => setNewTitle(e.target.value)} />
             <button type="submit" disabled={!newTitle.trim()}>
@@ -697,6 +806,18 @@ export default function App() {
       <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
         <main className="board">
           <div className="board-inner">
+          {view === "backlog" && board && (
+            <BacklogPage
+              board={board}
+              local={local}
+              selectedId={selectedId}
+              selectedSessionId={selectedSession?.session_id ?? null}
+              run={run}
+              onSelectTodo={(id) => setSelection({ kind: "todo", id })}
+              onSelectSession={(id) => setSelection({ kind: "session", id })}
+            />
+          )}
+          {view === "board" && (
           <div className="col-heads">
             {COLUMNS.map((c) => (
               <h2 key={c.status}>
@@ -708,7 +829,8 @@ export default function App() {
               <span className="muted hint">未紐づけのセッション。カードにドラッグで紐づけ</span>
             </h2>
           </div>
-          {board &&
+          )}
+          {view === "board" && board &&
             buildLanes(board).map((lane) => (
               <LaneView
                 key={lane.key}
@@ -721,15 +843,15 @@ export default function App() {
                 onSelectSession={(id) => setSelection({ kind: "session", id })}
               />
             ))}
-          {board && board.todos.length === 0 && board.inbox.length === 0 && (
-            <p className="muted empty">todo がありません。上の欄から追加するか、issue を取り込んでください。</p>
+          {view === "board" && board && buildLanes(board).length === 0 && (
+            <p className="muted empty">リポジトリに紐づいた todo はまだありません。バックログでリポジトリを選ぶか、issue を取り込んでください。</p>
           )}
           </div>
         </main>
         {/* The overlay follows the pointer across columns; the originals stay in place. */}
         <DragOverlay dropAnimation={null}>{overlay}</DragOverlay>
       </DndContext>
-      {selectedTodo && <Drawer todo={selectedTodo} run={run} onClose={() => setSelection(null)} />}
+      {selectedTodo && <Drawer todo={selectedTodo} local={local} run={run} onClose={() => setSelection(null)} />}
       {selectedSession && board && (
         <SessionDrawer
           session={selectedSession}
