@@ -293,3 +293,16 @@ fn live_local_sessions_excludes_cloud_and_ended() {
     let ids: Vec<String> = db.live_local_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
     assert_eq!(ids, vec!["local-live"]);
 }
+
+#[test]
+fn todo_prompt_is_stored_and_cleared() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("Fix login")).unwrap();
+    assert_eq!(t.prompt, None);
+    assert_eq!(cts_core::launch::start_prompt(t.id, t.prompt_body()), format!("[todo:{}] Fix login", t.id));
+    let u = db.update_todo(t.id, TodoPatch { prompt: Some("まず計画を立てて".into()), ..Default::default() }).unwrap();
+    assert_eq!(u.prompt.as_deref(), Some("まず計画を立てて"));
+    assert_eq!(u.prompt_body(), "まず計画を立てて");
+    let u = db.update_todo(t.id, TodoPatch { prompt: Some("  ".into()), ..Default::default() }).unwrap();
+    assert_eq!(u.prompt, None);
+}

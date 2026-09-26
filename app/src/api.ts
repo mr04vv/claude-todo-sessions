@@ -27,6 +27,8 @@ export interface Todo {
   repos: string[];
   /** True when `repos` was derived rather than set on the todo. */
   repos_derived: boolean;
+  /** First prompt for sessions started from this todo; null means the title. */
+  prompt: string | null;
 }
 
 export interface Board {
@@ -50,6 +52,7 @@ export interface TodoUpdate {
   cwd?: string;
   issue_url?: string;
   repos?: string[];
+  prompt?: string;
 }
 
 export interface Issue {

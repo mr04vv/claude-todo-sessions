@@ -44,6 +44,8 @@ struct UpdateArgs {
     cwd: Option<String>,
     /// Repositories as owner/repo; an empty list clears them.
     repos: Option<Vec<String>>,
+    /// First prompt for sessions started from this todo (after the [todo:N] marker); blank resets to the title.
+    prompt: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -115,7 +117,7 @@ impl Server {
 
     #[tool(description = "Update a todo's title, status, memo or cwd. Omitted fields are unchanged.")]
     async fn update_todo(&self, Parameters(a): Parameters<UpdateArgs>) -> Result<String, String> {
-        let p = TodoPatch { title: a.title, status: parse_status(a.status)?, memo: a.memo, cwd: a.cwd, issue_url: None, repos: a.repos };
+        let p = TodoPatch { title: a.title, status: parse_status(a.status)?, memo: a.memo, cwd: a.cwd, issue_url: None, repos: a.repos, prompt: a.prompt };
         json(&db()?.update_todo(a.id, p).map_err(|e| e.to_string())?)
     }
 

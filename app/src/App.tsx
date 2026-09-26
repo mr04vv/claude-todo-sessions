@@ -320,11 +320,12 @@ function InboxItem({ session, selected, onSelect }: { session: Session; selected
   );
 }
 
-function Field({ label, value, placeholder, multiline, onSave }: {
+function Field({ label, value, placeholder, multiline, rows = 8, onSave }: {
   label: string;
   value: string;
   placeholder?: string;
   multiline?: boolean;
+  rows?: number;
   onSave: (v: string) => void;
 }) {
   const [draft, setDraft] = useState(value);
@@ -334,7 +335,7 @@ function Field({ label, value, placeholder, multiline, onSave }: {
     <label className="field">
       <span>{label}</span>
       {multiline ? (
-        <textarea rows={8} value={draft} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)} onBlur={commit} />
+        <textarea rows={rows} value={draft} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)} onBlur={commit} />
       ) : (
         <input value={draft} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)} onBlur={commit} />
       )}
@@ -467,6 +468,14 @@ function Drawer({ todo, local, run, onClose }: {
       <Field label="メモ" value={todo.memo ?? ""} multiline onSave={(memo) => update({ memo })} />
 
       <h3>新しいセッション</h3>
+      <Field
+        label={`最初のプロンプト（先頭に [todo:${todo.id}] が付きます。空ならタイトル）`}
+        value={todo.prompt ?? ""}
+        placeholder={todo.title}
+        multiline
+        rows={3}
+        onSave={(prompt) => update({ prompt })}
+      />
       <div className="actions">
         <button onClick={() => run(() => api.startDesktop(todo.id))}>Desktop</button>
         <button onClick={() => run(() => api.startCloud(todo.id))}>クラウド</button>

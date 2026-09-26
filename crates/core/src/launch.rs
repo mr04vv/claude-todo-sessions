@@ -33,8 +33,8 @@ pub fn desktop_new_url(cwd: &str, prompt: &str) -> String {
     format!("claude://code/new?folder={}&q={}", encode(cwd), encode(prompt))
 }
 
-pub fn start_prompt(todo_id: i64, title: &str) -> String {
-    format!("[todo:{todo_id}] {title}")
+pub fn start_prompt(todo_id: i64, body: &str) -> String {
+    format!("[todo:{todo_id}] {body}")
 }
 
 const GITHUB_HTTPS: &str = "https://github.com/";

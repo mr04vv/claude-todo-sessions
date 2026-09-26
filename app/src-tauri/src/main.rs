@@ -164,6 +164,7 @@ struct TodoUpdate {
     cwd: Option<String>,
     issue_url: Option<String>,
     repos: Option<Vec<String>>,
+    prompt: Option<String>,
 }
 
 /// Sessions archived in Claude Desktop stay out of the inbox and notifications.
@@ -231,6 +232,7 @@ fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<To
         cwd: update.cwd,
         issue_url: update.issue_url,
         repos: update.repos,
+        prompt: update.prompt,
     };
     state.db.lock().map_err(err)?.update_todo(id, patch).map_err(err)
 }
@@ -272,7 +274,7 @@ fn require_cwd(todo: &Todo) -> Result<String, String> {
 #[tauri::command]
 fn start_desktop(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
-    let prompt = launch::start_prompt(todo.id, &todo.title);
+    let prompt = launch::start_prompt(todo.id, todo.prompt_body());
     open_url(&launch::desktop_new_url(&require_cwd(&todo)?, &prompt))
 }
 
@@ -320,7 +322,7 @@ fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     let cwd = require_cwd(&todo)?;
     let command = format!(
         "claude --session-id {session_id} {}",
-        shell_quote(&launch::start_prompt(todo.id, &todo.title))
+        shell_quote(&launch::start_prompt(todo.id, todo.prompt_body()))
     );
     start_in_herdr(&cwd, &todo.title, &command).or_else(|herdr_err| {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", shell_quote(&cwd)))
@@ -336,7 +338,7 @@ fn start_cloud(state: State<AppState>, todo_id: i64) -> Result<(), String> {
         return Err("GitHub のリポジトリが分かりません。リポジトリ欄か issue URL か、GitHub を origin に持つ cwd を設定してください".into());
     }
     let db = state.db.lock().map_err(err)?;
-    let id = cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title)?;
+    let id = cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, todo.prompt_body())?;
     drop(db);
     open_url(&launch::jump_url(&id, None))
 }

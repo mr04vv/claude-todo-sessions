@@ -65,6 +65,15 @@ pub struct Todo {
     pub updated_at: i64,
     /// `owner/repo` list the todo spans; the first one is the main repo.
     pub repos: Vec<String>,
+    /// First prompt of sessions started from this todo; None means the title.
+    pub prompt: Option<String>,
+}
+
+impl Todo {
+    /// Text that follows the `[todo:<id>]` marker when a session starts.
+    pub fn prompt_body(&self) -> &str {
+        self.prompt.as_deref().unwrap_or(&self.title)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -85,6 +94,8 @@ pub struct TodoPatch {
     pub cwd: Option<String>,
     pub issue_url: Option<String>,
     pub repos: Option<Vec<String>>,
+    /// Blank clears it, so the title is used again.
+    pub prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -114,7 +125,8 @@ CREATE TABLE IF NOT EXISTS todos (
     cwd TEXT,
     memo TEXT,
     updated_at INTEGER NOT NULL,
-    repos TEXT
+    repos TEXT,
+    prompt TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -130,7 +142,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 );
 ";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos";
 
 impl Status {
@@ -186,6 +198,7 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         memo: r.get(5)?,
         updated_at: r.get(6)?,
         repos: split_repos(r.get(7)?),
+        prompt: r.get(8)?,
     })
 }
 
@@ -218,7 +231,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos"), ("todos", "prompt")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -318,6 +331,7 @@ impl Db {
                 cwd = CASE WHEN ?5 IS NULL THEN cwd ELSE NULLIF(?5, '') END,
                 issue_url = CASE WHEN ?7 IS NULL THEN issue_url ELSE NULLIF(?7, '') END,
                 repos = CASE WHEN ?8 IS NULL THEN repos ELSE NULLIF(?8, '') END,
+                prompt = CASE WHEN ?9 IS NULL THEN prompt ELSE NULLIF(?9, '') END,
                 updated_at = ?6
              WHERE id = ?1",
             params![
@@ -330,6 +344,7 @@ impl Db {
                 p.issue_url,
                 // Some(vec![]) clears; None keeps.
                 p.repos.as_deref().map(|r| join_repos(r).unwrap_or_default()),
+                p.prompt.as_deref().map(str::trim),
             ],
         )?;
         if n == 0 {

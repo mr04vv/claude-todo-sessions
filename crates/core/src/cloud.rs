@@ -310,7 +310,7 @@ impl Client {
 /// links it right away. Returns the `cse_…` id.
 // ponytail: reuses the environment of the latest cloud session; add an
 // environment picker if more than one environment is in use.
-pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str) -> Result<String, String> {
+pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prompt_body: &str) -> Result<String, String> {
     let main = repos.first().ok_or("no repository to start the cloud session in")?;
     let repo_url = format!("https://github.com/{main}");
     let mut client = Client::new()?;
@@ -323,7 +323,7 @@ pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str) -> R
         .and_then(|s| s["environment_id"].as_str())
         .ok_or("no cloud session to take an environment from; start one on claude.ai/code first")?
         .to_string();
-    let prompt = crate::launch::start_prompt(todo_id, title);
+    let prompt = crate::launch::start_prompt(todo_id, prompt_body);
     let uuid = uuid::Uuid::new_v4().to_string();
     let branch = format!("{BRANCH_PREFIX}todo-{todo_id}-{}", &uuid[..BRANCH_SUFFIX_LEN]);
     let body = create_body(&env_id, repos, &branch, &prompt, title, &uuid);
