@@ -351,6 +351,15 @@ impl Db {
         self.query_sessions("todo_id IS NOT NULL AND state = 'needs_input'", None)
     }
 
+    /// Cloud sessions not yet ended; cloud sync re-checks any of these the
+    /// list API stopped returning.
+    pub fn live_cloud_sessions(&self) -> Result<Vec<Session>> {
+        self.query_sessions(
+            "session_id LIKE 'cse\\_%' ESCAPE '\\' AND state != 'ended'",
+            None,
+        )
+    }
+
     /// issue_url of every todo that has one, for skipping already imported issues.
     pub fn issue_urls(&self) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare("SELECT issue_url FROM todos WHERE issue_url IS NOT NULL")?;

@@ -11,8 +11,10 @@ const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const KEYCHAIN_SERVICE: &str = "Claude Code-credentials";
 const OAUTH_KEY: &str = "claudeAiOauth";
-// ponytail: first page only; paginate with `cursor` if more than 100 live sessions matter.
 const LIST_LIMIT: u32 = 100;
+/// Pages of the session list to walk per sync; the ordering is undocumented,
+/// so every page is read.
+const MAX_LIST_PAGES: usize = 10;
 /// Events come newest first and `cursor` is an exclusive upper bound on
 /// sequence_num, so a small cursor returns the head of the session.
 const EVENTS_HEAD_CURSOR: u32 = 20;
@@ -230,13 +232,40 @@ impl Client {
     }
 
     fn get(&mut self, path: &str) -> Result<Value, String> {
-        match api_get(&access_token(&self.creds)?, path) {
-            Err(ureq::Error::StatusCode(401)) => {
-                self.creds = refresh(&self.creds)?;
-                api_get(&access_token(&self.creds)?, path).map_err(|e| format!("GET {path}: {e}"))
-            }
-            r => r.map_err(|e| format!("GET {path}: {e}")),
+        self.get_opt(path)?.ok_or_else(|| format!("GET {path}: not found"))
+    }
+
+    /// Like `get`, but a 404 is `None` rather than an error.
+    fn get_opt(&mut self, path: &str) -> Result<Option<Value>, String> {
+        let mut result = api_get(&access_token(&self.creds)?, path);
+        if let Err(ureq::Error::StatusCode(401)) = result {
+            self.creds = refresh(&self.creds)?;
+            result = api_get(&access_token(&self.creds)?, path);
         }
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(ureq::Error::StatusCode(404)) => Ok(None),
+            Err(e) => Err(format!("GET {path}: {e}")),
+        }
+    }
+
+    /// Every session the list API returns, across pages.
+    fn list_sessions(&mut self) -> Result<Vec<Value>, String> {
+        let mut all = Vec::new();
+        let mut cursor: Option<String> = None;
+        for _ in 0..MAX_LIST_PAGES {
+            let path = match &cursor {
+                Some(c) => format!("/v1/code/sessions?limit={LIST_LIMIT}&cursor={c}"),
+                None => format!("/v1/code/sessions?limit={LIST_LIMIT}"),
+            };
+            let page = self.get(&path)?;
+            all.extend(page["data"].as_array().into_iter().flatten().cloned());
+            cursor = page["next_cursor"].as_str().map(Into::into);
+            if cursor.is_none() {
+                break;
+            }
+        }
+        Ok(all)
     }
 
     fn post(&mut self, path: &str, org: &str, body: &Value) -> Result<Value, String> {
@@ -315,14 +344,7 @@ fn sync_one(db: &Db, client: &mut Client, s: &Value) -> Result<Outcome, String> 
 /// carries a `[todo:<id>]` marker. One session failing does not stop the rest.
 fn sync_all(db: &Db) -> Result<(usize, usize, usize, Vec<String>), String> {
     let mut client = Client::new()?;
-    let list = client.get(&format!("/v1/code/sessions?limit={LIST_LIMIT}"))?;
-    let sessions: Vec<Value> = list["data"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|s| is_cloud(s))
-        .cloned()
-        .collect();
+    let sessions: Vec<Value> = client.list_sessions()?.into_iter().filter(|s| is_cloud(s)).collect();
     let (mut recorded, mut linked, mut errors) = (0, 0, Vec::new());
     for s in &sessions {
         match sync_one(db, &mut client, s) {
@@ -331,6 +353,27 @@ fn sync_all(db: &Db) -> Result<(usize, usize, usize, Vec<String>), String> {
             Ok(Outcome::Linked) => {
                 recorded += 1;
                 linked += 1;
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    // A recorded session the list no longer returns was deleted (or fell out
+    // of the pages read): fetch it alone, and treat "not found" as ended.
+    let listed: std::collections::HashSet<&str> = sessions.iter().filter_map(|s| s["id"].as_str()).collect();
+    for known in db.live_cloud_sessions().map_err(|e| e.to_string())? {
+        if listed.contains(known.session_id.as_str()) {
+            continue;
+        }
+        match client.get_opt(&format!("/v1/code/sessions/{}", known.session_id)) {
+            Ok(Some(s)) => {
+                if let Err(e) = db.record_session(&known.session_id, &known.cwd, map_state(&s)) {
+                    errors.push(e.to_string());
+                }
+            }
+            Ok(None) => {
+                if let Err(e) = db.record_session(&known.session_id, &known.cwd, SessionState::Ended) {
+                    errors.push(e.to_string());
+                }
             }
             Err(e) => errors.push(e),
         }

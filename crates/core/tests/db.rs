@@ -236,3 +236,13 @@ fn title_skips_system_reminder_blocks() {
     db.on_prompt("s2", "/w", "real prompt").unwrap();
     assert_eq!(db.get_session("s2").unwrap().unwrap().title.as_deref(), Some("real prompt"));
 }
+
+#[test]
+fn live_cloud_sessions_excludes_local_and_ended() {
+    let (_d, db) = open();
+    db.record_session("cse_live", "https://github.com/o/r", SessionState::Idle).unwrap();
+    db.record_session("cse_gone", "https://github.com/o/r", SessionState::Ended).unwrap();
+    db.record_session("local-uuid", "/w", SessionState::Idle).unwrap();
+    let ids: Vec<String> = db.live_cloud_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
+    assert_eq!(ids, vec!["cse_live"]);
+}
