@@ -200,3 +200,25 @@ fn patch_sets_and_clears_issue_url_and_cwd() {
     let u = db.update_todo(t.id, clear).unwrap();
     assert_eq!((u.issue_url, u.cwd), (None, None));
 }
+
+#[test]
+fn linked_needs_input_lists_only_linked_waiting_sessions() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("a")).unwrap();
+    db.record_session("linked-wait", "/w", SessionState::NeedsInput).unwrap();
+    db.link_session("linked-wait", t.id).unwrap();
+    db.record_session("linked-run", "/w", SessionState::Running).unwrap();
+    db.link_session("linked-run", t.id).unwrap();
+    db.record_session("inbox-wait", "/w", SessionState::NeedsInput).unwrap();
+    let ids: Vec<String> = db.linked_needs_input().unwrap().into_iter().map(|s| s.session_id).collect();
+    assert_eq!(ids, vec!["linked-wait"]);
+}
+
+#[test]
+fn issue_urls_already_imported() {
+    let (_d, db) = open();
+    db.create_todo(NewTodo { title: "a".into(), issue_url: Some("https://github.com/o/r/issues/1".into()), ..Default::default() }).unwrap();
+    db.create_todo(new_todo("b")).unwrap();
+    let urls = db.issue_urls().unwrap();
+    assert_eq!(urls, vec!["https://github.com/o/r/issues/1".to_string()]);
+}

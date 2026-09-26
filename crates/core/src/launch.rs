@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use serde_json::Value;
 
 const CLOUD_PREFIX: &str = "cse_";
@@ -47,6 +49,14 @@ pub fn github_repo_url(url: &str) -> Option<String> {
     Some(format!("{GITHUB_HTTPS}{owner}/{repo}"))
 }
 
+/// `<ghq root>/github.com/<owner>/<repo>` when that checkout exists.
+pub fn ghq_cwd(root: &Path, repo_url: &str) -> Option<PathBuf> {
+    let path = github_repo_url(repo_url)?;
+    let owner_repo = path.strip_prefix(GITHUB_HTTPS)?;
+    let dir = root.join("github.com").join(owner_repo);
+    dir.is_dir().then_some(dir)
+}
+
 pub fn herdr_pane_id(created: &Value) -> Option<String> {
     created["result"]["root_pane"]["pane_id"].as_str().map(Into::into)
 }
@@ -81,6 +91,16 @@ mod tests {
         assert_eq!(github_repo_url("git@github.com:o/r.git").as_deref(), Some("https://github.com/o/r"));
         assert_eq!(github_repo_url("https://github.com/o/r.git").as_deref(), Some("https://github.com/o/r"));
         assert_eq!(github_repo_url("https://example.com/x"), None);
+    }
+
+    #[test]
+    fn ghq_cwd_when_checkout_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("github.com").join("o").join("r");
+        std::fs::create_dir_all(&repo).unwrap();
+        assert_eq!(ghq_cwd(dir.path(), "https://github.com/o/r"), Some(repo));
+        assert_eq!(ghq_cwd(dir.path(), "https://github.com/o/missing"), None);
+        assert_eq!(ghq_cwd(dir.path(), "https://example.com/o/r"), None);
     }
 
     #[test]

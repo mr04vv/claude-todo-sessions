@@ -330,6 +330,18 @@ impl Db {
         self.query_sessions("todo_id IS NULL", None)
     }
 
+    /// Sessions waiting for the user that belong to a todo; these get notified.
+    pub fn linked_needs_input(&self) -> Result<Vec<Session>> {
+        self.query_sessions("todo_id IS NOT NULL AND state = 'needs_input'", None)
+    }
+
+    /// issue_url of every todo that has one, for skipping already imported issues.
+    pub fn issue_urls(&self) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT issue_url FROM todos WHERE issue_url IS NOT NULL")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn link_session(&self, id: &str, todo_id: i64) -> Result<()> {
         if self.get_session(id)?.is_none() {
             return Err(Error::SessionNotFound(id.into()));
