@@ -56,6 +56,9 @@ pnpm tauri build    # target/release/bundle/macos/Todo Sessions.app を作成
 - カードを列のあいだで動かすと status が変わり、受信箱のセッションをカードに落とすと紐づきます
 - カードをクリックすると詳細パネルが開きます。セッションを開いたり、新しく始めたりできます（Desktop / クラウド / ターミナル（herdr））
 - アプリは30秒ごとに cloud sync を実行します
+- ウインドウを閉じてもメニューバーに常駐します。メニューバーのアイコンから、入力待ちのセッションを開いたり、アプリを終了したりできます
+- todo に紐づいたセッションが入力待ちになると通知します
+- 「issue を取り込む」で、自分に割り当てられた GitHub issue（`gh search issues --assignee @me`）を todo にします。作業フォルダは ghq の配置（`<ghq root>/github.com/<owner>/<repo>`）にあれば自動で入ります
 
 ## 使い方
 

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -7,13 +8,23 @@ use std::time::Duration;
 
 use cts_core::{launch, Db, NewTodo, Session, SessionState, Status, Todo, TodoPatch};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri_plugin_notification::NotificationExt;
 
 const DB_ENV: &str = "CTS_DB";
 const DATA_DIR: &str = "Library/Application Support/claude-todo-sessions";
 const DB_FILE: &str = "db.sqlite";
 const DESKTOP_SESSIONS_DIR: &str = "Library/Application Support/Claude/claude-code-sessions";
 const CLOUD_SYNC_INTERVAL: Duration = Duration::from_secs(30);
+/// How often the tray menu and notifications look at the DB.
+const WATCH_INTERVAL: Duration = Duration::from_secs(3);
+const TRAY_ID: &str = "main";
+const MENU_OPEN: &str = "open";
+const MENU_QUIT: &str = "quit";
+const MENU_SESSION_PREFIX: &str = "session:";
+const GH_ISSUE_LIMIT: &str = "100";
 
 struct AppState {
     db: Mutex<Db>,
@@ -231,6 +242,144 @@ fn start_cloud(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     open_url(&launch::jump_url(&id, None))
 }
 
+#[derive(Deserialize)]
+struct GhRepo {
+    #[serde(rename = "nameWithOwner")]
+    name_with_owner: String,
+}
+
+#[derive(Deserialize)]
+struct GhIssue {
+    number: i64,
+    title: String,
+    url: String,
+    repository: GhRepo,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+}
+
+#[derive(Serialize)]
+struct IssueView {
+    number: i64,
+    title: String,
+    url: String,
+    repo: String,
+    updated_at: String,
+    /// Checkout found under the ghq root, if any.
+    cwd: Option<String>,
+}
+
+fn ghq_root() -> Option<PathBuf> {
+    let out = Command::new("ghq").arg("root").output().ok()?;
+    out.status.success().then(|| PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()))
+}
+
+/// Open issues assigned to the user that are not todos yet.
+#[tauri::command]
+fn gh_issues(state: State<AppState>) -> Result<Vec<IssueView>, String> {
+    let out = Command::new("gh")
+        .args(["search", "issues", "--assignee", "@me", "--state", "open", "--limit", GH_ISSUE_LIMIT,
+               "--json", "number,title,url,repository,updatedAt"])
+        .output()
+        .map_err(|e| format!("gh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("gh search issues: {}", String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    let issues: Vec<GhIssue> = serde_json::from_slice(&out.stdout).map_err(|e| format!("gh output: {e}"))?;
+    let known: HashSet<String> = state.db.lock().map_err(err)?.issue_urls().map_err(err)?.into_iter().collect();
+    let root = ghq_root();
+    Ok(issues
+        .into_iter()
+        .filter(|i| !known.contains(&i.url))
+        .map(|i| IssueView {
+            cwd: root.as_deref().and_then(|r| launch::ghq_cwd(r, &i.url)).map(|p| p.to_string_lossy().into()),
+            number: i.number,
+            title: i.title,
+            url: i.url,
+            repo: i.repository.name_with_owner,
+            updated_at: i.updated_at,
+        })
+        .collect())
+}
+
+#[derive(Deserialize)]
+struct IssueImport {
+    title: String,
+    url: String,
+    cwd: Option<String>,
+}
+
+#[tauri::command]
+fn import_issues(state: State<AppState>, issues: Vec<IssueImport>) -> Result<usize, String> {
+    let db = state.db.lock().map_err(err)?;
+    for i in &issues {
+        db.create_todo(NewTodo { title: i.title.clone(), issue_url: Some(i.url.clone()), cwd: i.cwd.clone(), memo: None })
+            .map_err(err)?;
+    }
+    Ok(issues.len())
+}
+
+fn show_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+fn tray_menu(app: &AppHandle, waiting: &[Session]) -> tauri::Result<Menu<tauri::Wry>> {
+    let open = MenuItem::with_id(app, MENU_OPEN, "Todo Sessions を開く", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, MENU_QUIT, "終了", true, None::<&str>)?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = vec![Box::new(open), Box::new(sep)];
+    if waiting.is_empty() {
+        items.push(Box::new(MenuItem::with_id(app, "none", "入力待ちのセッションはありません", false, None::<&str>)?));
+    }
+    for s in waiting {
+        let label = format!("入力待ち: {}", s.title.as_deref().unwrap_or(&s.session_id));
+        let id = format!("{MENU_SESSION_PREFIX}{}", s.session_id);
+        items.push(Box::new(MenuItem::with_id(app, id, label, true, None::<&str>)?));
+    }
+    items.push(Box::new(PredefinedMenuItem::separator(app)?));
+    items.push(Box::new(quit));
+    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|i| i.as_ref()).collect();
+    Menu::with_items(app, &refs)
+}
+
+/// Keeps the tray menu current and notifies once per session that starts
+/// waiting for input.
+fn watch_loop(app: AppHandle) {
+    let db = match open_db() {
+        Ok(db) => db,
+        Err(e) => return eprintln!("watch loop stopped: {e}"),
+    };
+    let mut known: HashSet<String> = HashSet::new();
+    let mut first = true;
+    loop {
+        if let Ok(waiting) = db.linked_needs_input() {
+            let now: HashSet<String> = waiting.iter().map(|s| s.session_id.clone()).collect();
+            // Sessions already waiting at startup were notified by an earlier run, or never will be.
+            if !first {
+                for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
+                    let _ = app
+                        .notification()
+                        .builder()
+                        .title("入力待ち")
+                        .body(s.title.as_deref().unwrap_or(&s.session_id))
+                        .show();
+                }
+            }
+            if first || now != known {
+                if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), tray_menu(&app, &waiting)) {
+                    let _ = tray.set_menu(Some(menu));
+                }
+            }
+            known = now;
+            first = false;
+        }
+        std::thread::sleep(WATCH_INTERVAL);
+    }
+}
+
 fn sync_loop(status: impl Fn(String)) {
     let db = match open_db() {
         Ok(db) => db,
@@ -250,9 +399,29 @@ fn sync_loop(status: impl Fn(String)) {
 fn main() {
     let db = open_db().expect("open database");
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .manage(AppState { db: Mutex::new(db), sync_status: Mutex::new("cloud: 同期待ち".into()) })
         .setup(|app| {
-            use tauri::Manager;
+            // Menu bar app: no Dock icon, closing the window only hides it.
+            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            TrayIconBuilder::with_id(TRAY_ID)
+                .icon(app.default_window_icon().cloned().ok_or("no app icon")?)
+                .icon_as_template(true)
+                .menu(&tray_menu(app.handle(), &[])?)
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, event| {
+                    let id = event.id().as_ref();
+                    if id == MENU_OPEN {
+                        show_window(app);
+                    } else if id == MENU_QUIT {
+                        app.exit(0);
+                    } else if let Some(session_id) = id.strip_prefix(MENU_SESSION_PREFIX) {
+                        if let Err(e) = open_session(session_id.to_string()) {
+                            eprintln!("{e}");
+                        }
+                    }
+                })
+                .build(app)?;
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 sync_loop(|msg| {
@@ -261,7 +430,15 @@ fn main() {
                     }
                 })
             });
+            let handle = app.handle().clone();
+            std::thread::spawn(move || watch_loop(handle));
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
         })
         .invoke_handler(tauri::generate_handler![
             board,
@@ -273,7 +450,9 @@ fn main() {
             open_session,
             start_desktop,
             start_terminal,
-            start_cloud
+            start_cloud,
+            gh_issues,
+            import_issues
         ])
         .run(tauri::generate_context!())
         .expect("run tauri app");

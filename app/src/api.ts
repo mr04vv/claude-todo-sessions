@@ -44,7 +44,24 @@ export interface TodoUpdate {
   issue_url?: string;
 }
 
+export interface Issue {
+  number: number;
+  title: string;
+  url: string;
+  repo: string;
+  updated_at: string;
+  cwd: string | null;
+}
+
+export interface IssueImport {
+  title: string;
+  url: string;
+  cwd?: string;
+}
+
 export const api = {
+  ghIssues: () => invoke<Issue[]>("gh_issues"),
+  importIssues: (issues: IssueImport[]) => invoke<number>("import_issues", { issues }),
   board: () => invoke<Board>("board"),
   createTodo: (input: TodoInput) => invoke<Todo>("create_todo", { input }),
   updateTodo: (id: number, update: TodoUpdate) => invoke<Todo>("update_todo", { id, update }),
@@ -58,3 +75,22 @@ export const api = {
 };
 
 export const isCloud = (s: Session) => s.session_id.startsWith("cse_");
+
+/** `owner/repo#123` from a GitHub issue or PR URL, or null. */
+export function issueRef(url: string | null): string | null {
+  const m = url?.match(/^https:\/\/github\.com\/([^/]+\/[^/]+)\/(?:issues|pull)\/(\d+)/);
+  return m ? `${m[1]}#${m[2]}` : null;
+}
+
+const MINUTE = 60;
+const HOUR = 60 * MINUTE;
+const DAY = 24 * HOUR;
+
+/** Relative time like "3分前" for a unix timestamp in seconds. */
+export function ago(unixSeconds: number): string {
+  const s = Math.max(0, Math.floor(Date.now() / 1000) - unixSeconds);
+  if (s < MINUTE) return "たった今";
+  if (s < HOUR) return `${Math.floor(s / MINUTE)}分前`;
+  if (s < DAY) return `${Math.floor(s / HOUR)}時間前`;
+  return `${Math.floor(s / DAY)}日前`;
+}
