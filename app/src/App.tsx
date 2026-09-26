@@ -164,10 +164,17 @@ function KindTag({ session }: { session: Session }) {
   return <span className="tag">{isCloud(session) ? "cloud" : "local"}</span>;
 }
 
-function TodoCard({ todo, selected, onSelect }: { todo: Todo; selected: boolean; onSelect: () => void }) {
+function TodoCard({ todo, selected, onSelect, onOpen }: {
+  todo: Todo;
+  selected: boolean;
+  onSelect: () => void;
+  onOpen: (sessionId: string) => void;
+}) {
   const drag = useDraggable({ id: `todo:${todo.id}` });
   const drop = useDroppable({ id: `card:${todo.id}` });
   const live = todo.sessions.filter((s) => s.state !== "ended");
+  // One obvious session to jump to: the only live one, or the only one at all.
+  const direct = live.length === 1 ? live[0] : todo.sessions.length === 1 ? todo.sessions[0] : null;
   const states = new Set(live.map((s) => s.state));
   const ref = issueRef(todo.issue_url);
   const tags = todo.repos.length > 0 ? todo.repos.map(repoName) : todo.cwd ? [basename(todo.cwd)] : [];
@@ -196,30 +203,44 @@ function TodoCard({ todo, selected, onSelect }: { todo: Todo; selected: boolean;
             {t}
           </span>
         ))}
-        {live.length > 0 && <span className="muted">{live.length} sessions</span>}
+        {live.length > 1 && <span className="muted">{live.length} sessions</span>}
+        {direct && (
+          <button
+            className="card-open"
+            title={`${sessionLabel(direct)} を開く`}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpen(direct.session_id);
+            }}
+          >
+            開く ↗
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function LaneColumn({ status, laneKey, todos, selectedId, onSelect }: {
+function LaneColumn({ status, laneKey, todos, selectedId, onSelect, onOpen }: {
   status: Status;
   laneKey: string;
   todos: Todo[];
   selectedId: number | null;
   onSelect: (id: number) => void;
+  onOpen: (sessionId: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `col:${status}:${laneKey}` });
   return (
     <div ref={setNodeRef} className={`cell${isOver ? " drop-target" : ""}`}>
       {todos.map((t) => (
-        <TodoCard key={t.id} todo={t} selected={t.id === selectedId} onSelect={() => onSelect(t.id)} />
+        <TodoCard key={t.id} todo={t} selected={t.id === selectedId} onSelect={() => onSelect(t.id)} onOpen={onOpen} />
       ))}
     </div>
   );
 }
 
-function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, onSelectTodo, onSelectSession }: {
+function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, onSelectTodo, onSelectSession, onOpen }: {
   lane: Lane;
   collapsed: boolean;
   onToggle: () => void;
@@ -227,6 +248,7 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
   selectedSessionId: string | null;
   onSelectTodo: (id: number) => void;
   onSelectSession: (id: string) => void;
+  onOpen: (sessionId: string) => void;
 }) {
   const [owner, name] = lane.key.includes("/") ? lane.key.split(/\/(.*)/s) : [null, lane.key];
   const waiting = lane.todos.flatMap((t) => t.sessions).concat(lane.inbox).filter((s) => s.state === "needs_input").length;
@@ -255,6 +277,7 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
               todos={lane.todos.filter((t) => t.status === c.status)}
               selectedId={selectedId}
               onSelect={onSelectTodo}
+              onOpen={onOpen}
             />
           ))}
           <div className="cell inbox-cell">
@@ -841,6 +864,7 @@ export default function App() {
                 selectedSessionId={selectedSession?.session_id ?? null}
                 onSelectTodo={(id) => setSelection({ kind: "todo", id })}
                 onSelectSession={(id) => setSelection({ kind: "session", id })}
+                onOpen={(sessionId) => run(() => api.openSession(sessionId))}
               />
             ))}
           {view === "board" && board && buildLanes(board).length === 0 && (

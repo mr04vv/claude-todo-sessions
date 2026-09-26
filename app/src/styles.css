@@ -372,6 +372,13 @@ select:focus {
   width: 230px;
 }
 
+.card-open {
+  margin-left: auto;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
 .card-head {
   display: flex;
   justify-content: space-between;
