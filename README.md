@@ -51,6 +51,9 @@ claude --plugin-dir ./plugin
 - セッションの中で「この作業を todo #3 に紐づけて」「todo を一覧して」のように頼むと、Claude が MCP ツールを使って操作します
 - todo に紐づけた状態で新しいセッションを始めたいときは、最初のプロンプトに `[todo:<id>]` を含めます
   - Desktop から始める場合は `open "claude://code/new?folder=<cwd>&q=%5Btodo%3A<id>%5D"` を使います。プロンプトが入力欄に入った状態で開きます
+- `cts cloud sync` を実行すると、クラウドのセッションの状態を取り込み、最初のプロンプトに `[todo:<id>]` があるセッションを紐づけます
+  - 非公開 API（`/v1/code/sessions`）を使うため、仕様が予告なく変わる可能性があります
+  - Keychain の "Claude Code-credentials" を読みます。トークンの期限が切れていれば更新して書き戻します
 - 既存のセッションを Desktop で開くには `open "claude://resume?session=<session_id>"` を使います
 
 ## データ

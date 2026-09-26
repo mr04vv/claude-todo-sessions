@@ -106,6 +106,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     state TEXT NOT NULL CHECK (state IN ('running', 'needs_input', 'idle', 'ended')),
     state_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS marker_checked (
+    session_id TEXT PRIMARY KEY
+);
 ";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at";
@@ -251,7 +254,8 @@ impl Db {
     pub fn record_session(&self, id: &str, cwd: &str, state: SessionState) -> Result<()> {
         self.conn.execute(
             "INSERT INTO sessions (session_id, cwd, state, state_at) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(session_id) DO UPDATE SET cwd = ?2, state = ?3, state_at = ?4",
+             ON CONFLICT(session_id) DO UPDATE SET cwd = ?2, state = ?3,
+                 state_at = CASE WHEN state = ?3 THEN state_at ELSE ?4 END",
             params![id, cwd, state.as_str(), now()],
         )?;
         Ok(())
@@ -310,10 +314,24 @@ impl Db {
         }
     }
 
-    /// Marks the session running and links it when the prompt carries a
+    /// Whether a cloud session's first prompt was already searched for a marker.
+    pub fn marker_checked(&self, id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM marker_checked WHERE session_id = ?1", [id], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+
+    pub fn mark_marker_checked(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("INSERT OR IGNORE INTO marker_checked (session_id) VALUES (?1)", [id])?;
+        Ok(())
+    }
+
+    /// Links an unlinked session to the todo named by the prompt's
     /// `[todo:<id>]` marker. Returns the todo id it linked to, if any.
-    pub fn on_prompt(&self, id: &str, cwd: &str, prompt: &str) -> Result<Option<i64>> {
-        self.record_session(id, cwd, SessionState::Running)?;
+    pub fn link_by_marker(&self, id: &str, prompt: &str) -> Result<Option<i64>> {
         let Some(todo_id) = parse_todo_marker(prompt) else {
             return Ok(None);
         };
@@ -323,5 +341,12 @@ impl Db {
         }
         self.link_session(id, todo_id)?;
         Ok(Some(todo_id))
+    }
+
+    /// Marks the session running and links it when the prompt carries a
+    /// `[todo:<id>]` marker. Returns the todo id it linked to, if any.
+    pub fn on_prompt(&self, id: &str, cwd: &str, prompt: &str) -> Result<Option<i64>> {
+        self.record_session(id, cwd, SessionState::Running)?;
+        self.link_by_marker(id, prompt)
     }
 }

@@ -138,3 +138,22 @@ fn prompt_marker_does_not_relink_or_fail_on_missing_todo() {
     assert_eq!(db.on_prompt("s2", "/w", "[todo:999]").unwrap(), None);
     assert_eq!(db.get_session("s2").unwrap().unwrap().state, SessionState::Running);
 }
+
+#[test]
+fn marker_check_is_remembered() {
+    let (_d, db) = open();
+    assert!(!db.marker_checked("cse_1").unwrap());
+    db.mark_marker_checked("cse_1").unwrap();
+    db.mark_marker_checked("cse_1").unwrap();
+    assert!(db.marker_checked("cse_1").unwrap());
+}
+
+#[test]
+fn link_by_marker_links_recorded_session_without_changing_state() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("a")).unwrap();
+    db.record_session("cse_1", "https://github.com/o/r", SessionState::Idle).unwrap();
+    assert_eq!(db.link_by_marker("cse_1", &format!("[todo:{}] x", t.id)).unwrap(), Some(t.id));
+    let s = db.get_session("cse_1").unwrap().unwrap();
+    assert_eq!((s.todo_id, s.state), (Some(t.id), SessionState::Idle));
+}
