@@ -440,10 +440,8 @@ fn launch_cloud(state: &AppState, todo_id: i64) -> Result<String, String> {
         // Planning creates child todos through the local MCP server, which cloud sessions cannot reach.
         return Err("複数リポジトリの todo は計画用です。Local で計画セッションを始め、リポジトリごとの子 todo を作ってください".into());
     }
+    // Without a GitHub repository the session runs with no checkout, which is fine for research.
     let repos = launch::github_repos(&repos_of_todo(state, &todo));
-    if repos.is_empty() {
-        return Err("Cloud には GitHub のリポジトリが必要です。リポジトリ欄で owner/repo を選ぶか、issue URL か GitHub を origin に持つ作業フォルダを設定してください".into());
-    }
     let db = state.db.lock().map_err(err)?;
     cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &todo.prompt_body())
 }

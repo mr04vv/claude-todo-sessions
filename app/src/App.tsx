@@ -1025,8 +1025,10 @@ function StartSessionDialog({ todo, run, onClose }: {
   onClose: () => void;
 }) {
   // An orchestrator plans locally (its session registers child todos over the local MCP server).
-  const hasGithub = todo.repos.some((r) => r.includes("/")) && !todo.is_orchestrator;
-  const [target, setTarget] = useState<StartTarget>(hasGithub ? "cloud" : "desktop");
+  const cloudOk = !todo.is_orchestrator;
+  const hasGithub = todo.repos.some((r) => r.includes("/"));
+  // A todo whose only repository is a local folder starts there; anything else defaults to the cloud.
+  const [target, setTarget] = useState<StartTarget>(cloudOk && (hasGithub || !todo.cwd) ? "cloud" : "desktop");
   const [kind, setKind] = useState<Kind>(todo.kind);
   const [prompt, setPrompt] = useState(todo.prompt ?? "");
   const [runner, setRunner] = useState<Runner>("auto");
@@ -1050,7 +1052,7 @@ function StartSessionDialog({ todo, run, onClose }: {
           <button className="ghost" onClick={onClose}>
             キャンセル
           </button>
-          <button className="primary" disabled={target === "cloud" && !hasGithub} onClick={start}>
+          <button className="primary" disabled={target === "cloud" && !cloudOk} onClick={start}>
             {target === "queue" ? "キューに入れる" : "開始"}
           </button>
         </>
@@ -1063,12 +1065,12 @@ function StartSessionDialog({ todo, run, onClose }: {
             <button
               key={t.key}
               className={`launcher${target === t.key ? " primary" : ""}`}
-              disabled={t.key === "cloud" && !hasGithub}
-              title={t.key === "cloud" && !hasGithub ? (todo.is_orchestrator ? "計画用の todo は Local で始めます" : "Cloud には GitHub のリポジトリが必要です") : undefined}
+              disabled={t.key === "cloud" && !cloudOk}
+              title={t.key === "cloud" && !cloudOk ? "計画用の todo は Local で始めます" : undefined}
               onClick={() => setTarget(t.key)}
             >
               <b>{t.title}</b>
-              <span>{t.sub}</span>
+              <span>{t.key === "cloud" && !hasGithub ? "リポジトリなしで開く" : t.sub}</span>
             </button>
           ))}
         </div>

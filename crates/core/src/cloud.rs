@@ -105,7 +105,8 @@ pub fn first_user_prompt(events: &Value) -> Option<String> {
 }
 
 /// `repos` are `owner/repo`; every one becomes a source and a push target
-/// on the same branch name.
+/// on the same branch name. No repos means a session with no checkout, for
+/// research that needs none.
 pub fn create_body(env_id: &str, repos: &[String], branch: &str, prompt: &str, title: &str, uuid: &str) -> Value {
     let sources: Vec<Value> = repos
         .iter()
@@ -341,8 +342,7 @@ impl Client {
 // ponytail: reuses the environment of the latest cloud session; add an
 // environment picker if more than one environment is in use.
 pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prompt_body: &str) -> Result<String, String> {
-    let main = repos.first().ok_or("no repository to start the cloud session in")?;
-    let repo_url = format!("https://github.com/{main}");
+    let repo_url = repos.first().map(|main| format!("https://github.com/{main}")).unwrap_or_default();
     let mut client = Client::new()?;
     let recent = client.get(&format!("/v1/code/sessions?limit={RECENT_SESSIONS_FOR_ENV}"))?;
     let env_id = recent["data"]
@@ -481,6 +481,14 @@ mod tests {
         let only_sources = json!({"config": {"sources": [{"type": "git_repository", "url": "https://github.com/o/a"}, {"type": "git_repository", "url": "https://github.com/o/b"}], "outcomes": []}});
         assert_eq!(repo_keys(&only_sources), vec!["o/a", "o/b"]);
         assert!(repo_keys(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn create_body_without_repos_has_no_checkout() {
+        let b = create_body("env_1", &[], "claude/todo-2-ab12", "[todo:2] look into it", "look", "u-1");
+        assert_eq!(b["session_context"]["sources"], json!([]));
+        assert_eq!(b["session_context"]["outcomes"], json!([]));
+        assert_eq!(b["events"][0]["data"]["message"]["content"], "[todo:2] look into it");
     }
 
     #[test]
