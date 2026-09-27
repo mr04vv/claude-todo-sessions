@@ -102,6 +102,7 @@ struct TodoView {
     repos_derived: bool,
     /// The exact first prompt a new session would get.
     prompt_preview: String,
+    is_orchestrator: bool,
 }
 
 #[derive(Serialize)]
@@ -170,6 +171,7 @@ struct TodoInput {
     repos: Vec<String>,
     #[serde(default)]
     kind: cts_core::Kind,
+    parent_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -216,6 +218,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             repos: repos_of_todo(&state, &todo),
             repos_derived: todo.repos.is_empty(),
             prompt_preview: launch::start_prompt(todo.id, &todo.prompt_body()),
+            is_orchestrator: todo.is_orchestrator(),
             sessions,
             todo,
         })
@@ -239,6 +242,7 @@ fn create_todo(state: State<AppState>, input: TodoInput) -> Result<Todo, String>
         memo: blank(input.memo),
         repos: input.repos,
         kind: input.kind,
+        parent_id: input.parent_id,
     })
     .map_err(err)
 }
@@ -300,6 +304,15 @@ fn focus_in_herdr(session_id: &str) -> bool {
 
 /// Opens a session in `target`: "herdr" focuses its pane, "desktop" opens
 /// Claude Desktop, and none tries herdr first for local sessions.
+/// Opens a new herdr workspace in the home folder running a plain `claude`,
+/// for a quick question outside any todo.
+#[tauri::command]
+fn quick_claude() -> Result<(), String> {
+    let cwd = home().to_string_lossy().to_string();
+    start_in_herdr(&cwd, "claude", "claude", true)
+        .or_else(|herdr_err| start_in_ghostty(&cwd, "claude").map_err(|e| format!("{herdr_err} / {e}")))
+}
+
 /// Asks the background syncs to run now: GitHub for one todo or all, and
 /// the cloud sessions when refreshing everything.
 #[tauri::command]
@@ -415,6 +428,10 @@ fn launch_terminal(state: &AppState, todo_id: i64, focus: bool) -> Result<(), St
 /// Creates a cloud session for the todo and returns its `cse_…` id.
 fn launch_cloud(state: &AppState, todo_id: i64) -> Result<String, String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
+    if todo.is_orchestrator() {
+        // Planning creates child todos through the local MCP server, which cloud sessions cannot reach.
+        return Err("複数リポジトリの todo は計画用です。Local で計画セッションを始め、リポジトリごとの子 todo を作ってください".into());
+    }
     let repos = launch::github_repos(&repos_of_todo(state, &todo));
     if repos.is_empty() {
         return Err("Cloud には GitHub のリポジトリが必要です。リポジトリ欄で owner/repo を選ぶか、issue URL か GitHub を origin に持つ作業フォルダを設定してください".into());
@@ -570,6 +587,7 @@ fn import_issues(state: State<AppState>, issues: Vec<IssueImport>) -> Result<usi
             memo: None,
             repos: Vec::new(),
             kind: Default::default(),
+            parent_id: None,
         })
         .map_err(err)?;
     }
@@ -1049,6 +1067,7 @@ fn main() {
             open_session,
             open_github,
             sync_now,
+            quick_claude,
             start_desktop,
             start_terminal,
             start_cloud,

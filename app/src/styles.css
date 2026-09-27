@@ -1656,3 +1656,102 @@ button.small {
     justify-content: center;
   }
 }
+
+/* ---------- plain todos vs session-backed ones ---------- */
+
+.card-title-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.check {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 50%;
+  border: 1.5px solid var(--border-strong);
+  background: transparent;
+}
+
+.check:hover {
+  border-color: var(--running);
+}
+
+.check.on {
+  background: var(--running);
+  border-color: var(--running);
+  color: #fff;
+}
+
+.check svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* A session-backed todo carries an accent edge; a plain one stays flat. */
+.card.has-session {
+  border-left: 3px solid var(--accent-a);
+  background: linear-gradient(90deg, var(--accent-soft), transparent 40%), var(--surface);
+}
+
+.list-row.has-session {
+  box-shadow: inset 3px 0 0 var(--accent-a);
+}
+
+.session-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--accent-a) 40%, transparent);
+}
+
+.session-tag svg {
+  width: 11px;
+  height: 11px;
+}
+
+.card.orchestrator {
+  border-style: solid;
+  border-width: 1px 1px 1px 3px;
+  border-left-color: #b78cff;
+}
+
+.orchestrator-tag {
+  color: #b78cff;
+  border-color: rgba(163, 113, 247, 0.4);
+}
+
+.parent-tag {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress {
+  position: relative;
+  margin-top: 8px;
+  height: 18px;
+  border-radius: 6px;
+  background: var(--cell);
+  overflow: hidden;
+  font-size: 11px;
+}
+
+.progress i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: color-mix(in srgb, var(--running) 35%, transparent);
+}
+
+.progress span {
+  position: relative;
+  padding: 0 8px;
+  line-height: 18px;
+  color: var(--text-2);
+}

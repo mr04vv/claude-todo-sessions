@@ -224,7 +224,7 @@ function directSession(todo: Todo): Session | null {
   return live.length === 1 ? live[0] : todo.sessions.length === 1 ? todo.sessions[0] : null;
 }
 
-type IconName = "board" | "list" | "backlog" | "inbox" | "queue" | "sync" | "plus" | "import" | "close" | "open" | "up" | "down";
+type IconName = "board" | "list" | "backlog" | "inbox" | "queue" | "sync" | "spark" | "check" | "plus" | "import" | "close" | "open" | "up" | "down";
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, string> = {
@@ -233,6 +233,8 @@ function Icon({ name }: { name: IconName }) {
     backlog: "M4 7h16M4 12h10M4 17h6",
     inbox: "M3 13l2-8h14l2 8v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 13h5l2 3h4l2-3h5",
     queue: "M5 6l4 3-4 3zM12 7h8M12 12h8M5 17h15",
+    spark: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z",
+    check: "M5 12l4 4 10-10",
     sync: "M20 11a8 8 0 0 0-14-5l-2 2M4 13a8 8 0 0 0 14 5l2-2M4 4v4h4M20 20v-4h-4",
     up: "M6 15l6-6 6 6",
     down: "M6 9l6 6 6-6",
@@ -409,11 +411,32 @@ function OpenButton({ session, run, primary }: { session: Session; run: (f: () =
   );
 }
 
-function TodoCard({ todo, selected, onSelect, run }: {
+/// A round checkbox that ticks a todo done (or back to todo), as in a plain todo app.
+function DoneCheck({ todo, setStatus }: { todo: Todo; setStatus: (todo: Todo, status: Status) => void }) {
+  const done = todo.status === "done";
+  return (
+    <button
+      className={`check${done ? " on" : ""}`}
+      aria-label={done ? "未完了に戻す" : "完了にする"}
+      onPointerDown={(e) => e.stopPropagation()}
+      onClick={(e) => {
+        e.stopPropagation();
+        setStatus(todo, done ? "todo" : "done");
+      }}
+    >
+      {done && <Icon name="check" />}
+    </button>
+  );
+}
+
+function TodoCard({ todo, selected, onSelect, run, setStatus, children, allTodos }: {
   todo: Todo;
   selected: boolean;
   onSelect: () => void;
   run: (f: () => Promise<unknown>) => void;
+  setStatus: (todo: Todo, status: Status) => void;
+  children: Todo[];
+  allTodos: Todo[];
 }) {
   const drag = useDraggable({ id: `todo:${todo.id}` });
   const drop = useDroppable({ id: `card:${todo.id}` });
@@ -421,6 +444,7 @@ function TodoCard({ todo, selected, onSelect, run }: {
   const states = new Set(live.map((s) => s.state));
   const direct = directSession(todo);
   const ref = issueRef(todo.issue_url);
+  const parentTitle = todo.parent_id ? allTodos.find((t) => t.id === todo.parent_id)?.title : undefined;
   const tags = todo.repos.length > 0 ? todo.repos.map(repoName) : todo.cwd ? [basename(todo.cwd)] : [];
   return (
     <div
@@ -430,15 +454,31 @@ function TodoCard({ todo, selected, onSelect, run }: {
       }}
       {...drag.listeners}
       {...drag.attributes}
-      className={`card${selected ? " selected" : ""}${drop.isOver ? " drop-target" : ""}${drag.isDragging ? " dragging" : ""}${states.has("needs_input") ? " waiting" : ""}`}
+      className={`card${todo.sessions.length > 0 ? " has-session" : ""}${todo.is_orchestrator ? " orchestrator" : ""}${selected ? " selected" : ""}${drop.isOver ? " drop-target" : ""}${drag.isDragging ? " dragging" : ""}${states.has("needs_input") ? " waiting" : ""}`}
       onClick={onSelect}
     >
       <div className="card-head">
         <span className="mono muted">{ref ?? `#${todo.id}`}</span>
         <span className="muted">{ago(todo.updated_at)}</span>
       </div>
-      <div className="card-title">{todo.title}</div>
+      <div className="card-title-row">
+        <DoneCheck todo={todo} setStatus={setStatus} />
+        <div className="card-title">{todo.title}</div>
+      </div>
+      {todo.is_orchestrator && (
+        <div className="progress" title="子 todo の進み具合">
+          <i style={{ width: `${children.length ? (100 * children.filter((c) => c.status === "done").length) / children.length : 0}%` }} />
+          <span>{children.length ? `子 ${children.filter((c) => c.status === "done").length}/${children.length} 完了` : "計画前（子 todo なし）"}</span>
+        </div>
+      )}
       <div className="card-meta">
+        {todo.sessions.length > 0 && (
+          <span className="tag session-tag" title="Claude のセッションが紐づいています">
+            <Icon name="spark" /> {todo.sessions.length}
+          </span>
+        )}
+        {todo.is_orchestrator && <span className="tag orchestrator-tag">計画</span>}
+        {parentTitle && <span className="tag parent-tag" title="親の計画 todo">↑ {parentTitle}</span>}
         {todo.kind === "research" && <span className="tag research">調査</span>}
         {todo.queue_runner && <span className={`tag queued${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "キュー"}</span>}
         <GhBadges todo={todo} />
@@ -457,19 +497,30 @@ function TodoCard({ todo, selected, onSelect, run }: {
   );
 }
 
-function LaneColumn({ status, laneKey, todos, selectedId, onSelect, run }: {
+function LaneColumn({ status, laneKey, todos, selectedId, onSelect, run, setStatus, allTodos }: {
   status: Status;
   laneKey: string;
   todos: Todo[];
   selectedId: number | null;
   onSelect: (id: number) => void;
   run: (f: () => Promise<unknown>) => void;
+  setStatus: (todo: Todo, status: Status) => void;
+  allTodos: Todo[];
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `col:${status}:${laneKey}` });
   return (
     <div ref={setNodeRef} className={`cell${isOver ? " drop-target" : ""}`}>
       {todos.map((t) => (
-        <TodoCard key={t.id} todo={t} selected={t.id === selectedId} onSelect={() => onSelect(t.id)} run={run} />
+        <TodoCard
+          key={t.id}
+          todo={t}
+          selected={t.id === selectedId}
+          onSelect={() => onSelect(t.id)}
+          run={run}
+          setStatus={setStatus}
+          children={allTodos.filter((c) => c.parent_id === t.id)}
+          allTodos={allTodos}
+        />
       ))}
     </div>
   );
@@ -526,7 +577,7 @@ function LaneHeader({ lane, collapsed, onToggle }: { lane: Lane; collapsed?: boo
   );
 }
 
-function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, onSelectTodo, onSelectSession, run }: {
+function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, onSelectTodo, onSelectSession, run, setStatus, allTodos }: {
   lane: Lane;
   collapsed: boolean;
   onToggle: () => void;
@@ -535,6 +586,8 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
   onSelectTodo: (id: number) => void;
   onSelectSession: (id: string) => void;
   run: (f: () => Promise<unknown>) => void;
+  setStatus: (todo: Todo, status: Status) => void;
+  allTodos: Todo[];
 }) {
   return (
     <section className={`lane glass${collapsed ? " collapsed" : ""}`}>
@@ -550,6 +603,8 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
               selectedId={selectedId}
               onSelect={onSelectTodo}
               run={run}
+              setStatus={setStatus}
+              allTodos={allTodos}
             />
           ))}
           <div className="cell inbox-cell">
@@ -678,8 +733,10 @@ function SessionRow({ session, run, onUnlink }: {
 
 /// Read-mostly view of a todo: what it is linked to and the ways into it.
 /// Editing and starting sessions happen in dialogs.
-function Drawer({ todo, run, setStatus, onClose, onEdit, onStart }: {
+function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, onStart }: {
   todo: Todo;
+  allTodos: Todo[];
+  onOpenTodo: (id: number) => void;
   run: (f: () => Promise<unknown>) => void;
   setStatus: (todo: Todo, status: Status) => void;
   onClose: () => void;
@@ -725,6 +782,27 @@ function Drawer({ todo, run, setStatus, onClose, onEdit, onStart }: {
             外す
           </button>
         </div>
+      )}
+
+      {todo.is_orchestrator && (
+        <>
+          <h3>子 todo（リポジトリごとの実装）</h3>
+          {allTodos.filter((c) => c.parent_id === todo.id).length === 0 && (
+            <p className="muted">まだありません。「セッションを開始」で計画セッションを Local で始めると、Claude がリポジトリごとの子 todo を登録します。全部 Done になるとこの todo も Done になります。</p>
+          )}
+          <ul className="list">
+            {allTodos
+              .filter((c) => c.parent_id === todo.id)
+              .map((c) => (
+                <li key={c.id} className="list-row" onClick={() => onOpenTodo(c.id)}>
+                  <DoneCheck todo={c} setStatus={setStatus} />
+                  <span className="list-title">{c.title}</span>
+                  {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
+                  <GhBadges todo={c} />
+                </li>
+              ))}
+          </ul>
+        </>
       )}
 
       <h3>セッション{live.length > 0 && <span className="count">{live.length}</span>}</h3>
@@ -873,7 +951,8 @@ function StartSessionDialog({ todo, run, onClose }: {
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
 }) {
-  const hasGithub = todo.repos.some((r) => r.includes("/"));
+  // An orchestrator plans locally (its session registers child todos over the local MCP server).
+  const hasGithub = todo.repos.some((r) => r.includes("/")) && !todo.is_orchestrator;
   const [target, setTarget] = useState<StartTarget>(hasGithub ? "cloud" : "desktop");
   const [kind, setKind] = useState<Kind>(todo.kind);
   const [prompt, setPrompt] = useState(todo.prompt ?? "");
@@ -912,7 +991,7 @@ function StartSessionDialog({ todo, run, onClose }: {
               key={t.key}
               className={`launcher${target === t.key ? " primary" : ""}`}
               disabled={t.key === "cloud" && !hasGithub}
-              title={t.key === "cloud" && !hasGithub ? "Cloud には GitHub のリポジトリが必要です" : undefined}
+              title={t.key === "cloud" && !hasGithub ? (todo.is_orchestrator ? "計画用の todo は Local で始めます" : "Cloud には GitHub のリポジトリが必要です") : undefined}
               onClick={() => setTarget(t.key)}
             >
               <b>{t.title}</b>
@@ -1225,7 +1304,8 @@ function ListPage({ lanes, selectedId, run, setStatus, onSelectTodo }: {
                 const direct = directSession(t);
                 const states = new Set(live.map((x) => x.state));
                 return (
-                  <li key={t.id} className={`list-row${t.id === selectedId ? " selected" : ""}${states.has("needs_input") ? " waiting" : ""}`} onClick={() => onSelectTodo(t.id)}>
+                  <li key={t.id} className={`list-row${t.sessions.length > 0 ? " has-session" : ""}${t.id === selectedId ? " selected" : ""}${states.has("needs_input") ? " waiting" : ""}`} onClick={() => onSelectTodo(t.id)}>
+                    <DoneCheck todo={t} setStatus={setStatus} />
                     <select
                       className={`status-select st-${t.status}`}
                       value={t.status}
@@ -1240,6 +1320,11 @@ function ListPage({ lanes, selectedId, run, setStatus, onSelectTodo }: {
                     </select>
                     <span className="mono muted ref">{issueRef(t.issue_url) ?? `#${t.id}`}</span>
                     <span className="list-title">{t.title}</span>
+                    {t.sessions.length > 0 && (
+                      <span className="tag session-tag" title="Claude のセッションが紐づいています">
+                        <Icon name="spark" /> {t.sessions.length}
+                      </span>
+                    )}
                     <GhBadges todo={t} />
                     {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
                       <StateBadge key={st} state={st} />
@@ -1563,6 +1648,9 @@ export default function App() {
           <button title="issue を取り込む" onClick={() => setDialog("import")}>
             <Icon name="import" /> <span className="label">issue を取り込む</span>
           </button>
+          <button title="herdr でホームフォルダの claude を開く（todo に紐づけない）" onClick={() => run(() => api.quickClaude())}>
+            <Icon name="spark" /> <span className="label">ちょっと Claude</span>
+          </button>
         </div>
         <nav className="nav">
           {VIEWS.map((v) => (
@@ -1682,6 +1770,8 @@ export default function App() {
                     onSelectTodo={openTodo}
                     onSelectSession={openSession}
                     run={run}
+                    setStatus={setStatus}
+                    allTodos={board?.todos ?? []}
                   />
                 ))}
                 {board && lanes.length === 0 && (
@@ -1702,6 +1792,8 @@ export default function App() {
       {selectedTodo && (
         <Drawer
           todo={selectedTodo}
+          allTodos={board?.todos ?? []}
+          onOpenTodo={openTodo}
           run={run}
           setStatus={setStatus}
           onClose={() => setSelection(null)}

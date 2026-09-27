@@ -34,6 +34,8 @@ struct CreateArgs {
     repos: Option<Vec<String>>,
     /// True for a research task (asks for completion/output conditions); default is implementation.
     research: Option<bool>,
+    /// The orchestrator todo this one implements a part of.
+    parent_id: Option<i64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -116,7 +118,7 @@ impl Server {
     #[tool(description = "Create a todo.")]
     async fn create_todo(&self, Parameters(a): Parameters<CreateArgs>) -> Result<String, String> {
         let kind = if a.research.unwrap_or(false) { cts_core::Kind::Research } else { cts_core::Kind::Implementation };
-        let t = NewTodo { kind, title: a.title, issue_url: a.issue_url, cwd: a.cwd, memo: a.memo, repos: a.repos.unwrap_or_default() };
+        let t = NewTodo { kind, parent_id: a.parent_id, title: a.title, issue_url: a.issue_url, cwd: a.cwd, memo: a.memo, repos: a.repos.unwrap_or_default() };
         json(&db()?.create_todo(t).map_err(|e| e.to_string())?)
     }
 

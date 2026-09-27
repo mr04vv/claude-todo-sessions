@@ -388,3 +388,27 @@ fn linked_sessions_lists_live_linked_ones() {
     let ids: Vec<String> = db.linked_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
     assert_eq!(ids, vec!["a"]);
 }
+
+#[test]
+fn children_finish_their_parent() {
+    let (_d, db) = open();
+    let parent = db.create_todo(NewTodo { title: "p".into(), repos: vec!["o/a".into(), "o/b".into()], ..Default::default() }).unwrap();
+    assert!(parent.is_orchestrator());
+    let a = db.create_todo(NewTodo { title: "a".into(), repos: vec!["o/a".into()], parent_id: Some(parent.id), ..Default::default() }).unwrap();
+    let b = db.create_todo(NewTodo { title: "b".into(), repos: vec!["o/b".into()], parent_id: Some(parent.id), ..Default::default() }).unwrap();
+    assert_eq!(a.parent_id, Some(parent.id));
+    assert_eq!(db.children(parent.id).unwrap().len(), 2);
+    db.update_todo(a.id, TodoPatch { status: Some(Status::Done), ..Default::default() }).unwrap();
+    assert_ne!(db.get_todo(parent.id).unwrap().unwrap().status, Status::Done);
+    db.update_todo(b.id, TodoPatch { status: Some(Status::Done), ..Default::default() }).unwrap();
+    assert_eq!(db.get_todo(parent.id).unwrap().unwrap().status, Status::Done);
+}
+
+#[test]
+fn orchestrator_prompt_plans_child_todos() {
+    let (_d, db) = open();
+    let p = db.create_todo(NewTodo { title: "横断改修".into(), repos: vec!["o/a".into(), "o/b".into()], ..Default::default() }).unwrap();
+    let body = p.prompt_body();
+    assert!(body.starts_with("/grilling 横断改修"), "{body}");
+    assert!(body.contains(&format!("parent_id={}", p.id)) && body.contains("o/a") && body.contains("o/b"), "{body}");
+}

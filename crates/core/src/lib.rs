@@ -110,15 +110,37 @@ pub struct Todo {
     /// Place in the run queue; lower starts first.
     pub queue_pos: Option<i64>,
     pub kind: Kind,
+    /// The orchestrator todo this one was split from.
+    pub parent_id: Option<i64>,
 }
 
 impl Todo {
     /// First prompt (without the `[todo:<id>]` marker): the todo's own, else
     /// the default for its kind. Implementation work starts by grilling the
     /// details; research first asks for completion and output conditions.
+    /// A todo spanning several GitHub repositories plans the work and splits
+    /// it into one child todo per repository instead of implementing it.
+    pub fn is_orchestrator(&self) -> bool {
+        self.repos.iter().filter(|r| r.contains('/')).count() > 1
+    }
+
     pub fn prompt_body(&self) -> String {
         if let Some(p) = &self.prompt {
             return p.clone();
+        }
+        if self.is_orchestrator() {
+            let repos: Vec<&str> = self.repos.iter().filter(|r| r.contains('/')).map(String::as_str).collect();
+            let mut body = format!("{GRILLING_COMMAND} {}", self.title);
+            if let Some(m) = self.memo.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                body.push_str("\n\n");
+                body.push_str(m);
+            }
+            body.push_str(&format!(
+                "\n\nこれは複数リポジトリ（{}）にまたがる計画用の todo です。ここでは実装せず、詳細を詰めたあと、リポジトリごとに実装 todo を todo-sessions の create_todo で登録してください（parent_id={}、repos はそのリポジトリ1つ、memo にそのリポジトリでの実装方針と完了条件）。",
+                repos.join(", "),
+                self.id
+            ));
+            return body;
         }
         let memo = self.memo.as_deref().map(str::trim).filter(|m| !m.is_empty());
         let head = match self.kind {
@@ -141,6 +163,7 @@ impl Todo {
 #[derive(Debug, Default)]
 pub struct NewTodo {
     pub kind: Kind,
+    pub parent_id: Option<i64>,
     pub title: String,
     pub issue_url: Option<String>,
     pub cwd: Option<String>,
@@ -201,7 +224,8 @@ CREATE TABLE IF NOT EXISTS todos (
     queue_runner TEXT,
     queue_pos INTEGER,
     queue_error TEXT,
-    kind TEXT
+    kind TEXT,
+    parent_id INTEGER REFERENCES todos(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -218,7 +242,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 );
 ";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, queue_pos, kind";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, queue_pos, kind, parent_id";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch";
 
 impl Status {
@@ -282,6 +306,7 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         queue_error: r.get(13)?,
         queue_pos: r.get(14)?,
         kind: Kind::parse(r.get(15)?),
+        parent_id: r.get(16)?,
     })
 }
 
@@ -315,7 +340,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -384,8 +409,8 @@ impl Db {
 
     pub fn create_todo(&self, t: NewTodo) -> Result<Todo> {
         self.conn.execute(
-            "INSERT INTO todos (title, issue_url, cwd, memo, updated_at, repos, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![t.title, t.issue_url, t.cwd, t.memo, now(), join_repos(&t.repos), t.kind.as_str()],
+            "INSERT INTO todos (title, issue_url, cwd, memo, updated_at, repos, kind, parent_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![t.title, t.issue_url, t.cwd, t.memo, now(), join_repos(&t.repos), t.kind.as_str(), t.parent_id],
         )?;
         let id = self.conn.last_insert_rowid();
         self.get_todo(id)?.ok_or(Error::TodoNotFound(id))
@@ -440,7 +465,11 @@ impl Db {
         if n == 0 {
             return Err(Error::TodoNotFound(id));
         }
-        self.get_todo(id)?.ok_or(Error::TodoNotFound(id))
+        let todo = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?;
+        if p.status == Some(Status::Done) {
+            self.finish_parent(&todo)?;
+        }
+        Ok(todo)
     }
 
     pub fn delete_todo(&self, id: i64) -> Result<()> {
@@ -553,6 +582,21 @@ impl Db {
         let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.issue_state;
         self.conn.execute("UPDATE todos SET issue_state = ?2 WHERE id = ?1", params![id, state])?;
         Ok(before)
+    }
+
+    pub fn children(&self, parent_id: i64) -> Result<Vec<Todo>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT {TODO_COLS} FROM todos WHERE parent_id = ?1 ORDER BY id"))?;
+        let rows = stmt.query_map([parent_id], todo_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Marks the parent done once every child is.
+    fn finish_parent(&self, child: &Todo) -> Result<()> {
+        let Some(parent) = child.parent_id else { return Ok(()) };
+        if self.children(parent)?.iter().all(|c| c.status == Status::Done) {
+            self.conn.execute("UPDATE todos SET status = 'done', updated_at = ?2 WHERE id = ?1", params![parent, now()])?;
+        }
+        Ok(())
     }
 
     /// Puts the todo at the end of the run queue (or changes its runner).

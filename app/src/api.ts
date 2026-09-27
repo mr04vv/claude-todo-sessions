@@ -37,6 +37,8 @@ export interface Todo {
   queue_pos: number | null;
   kind: Kind;
   prompt_preview: string;
+  parent_id: number | null;
+  is_orchestrator: boolean;
 }
 
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
@@ -108,6 +110,7 @@ export const api = {
   deleteTodo: (id: number) => invoke<void>("delete_todo", { id }),
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
+  quickClaude: () => invoke<void>("quick_claude"),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openGithub: (url: string) => invoke<void>("open_github", { url }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
