@@ -173,6 +173,8 @@ pub struct Session {
     pub state_at: i64,
     /// `owner/repo` list a cloud session works on; the first one is where it pushes.
     pub repos: Vec<String>,
+    /// Branch a cloud session works on, for finding its PR.
+    pub branch: Option<String>,
 }
 
 /// Hooks from parallel sessions write to the same file.
@@ -207,7 +209,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     state TEXT NOT NULL CHECK (state IN ('running', 'needs_input', 'idle', 'ended')),
     state_at INTEGER NOT NULL,
     title TEXT,
-    repos TEXT
+    repos TEXT,
+    branch TEXT
 );
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
@@ -215,7 +218,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 ";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, queue_pos, kind";
-const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos";
+const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch";
 
 impl Status {
     fn as_str(self) -> &'static str {
@@ -290,6 +293,7 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         state_at: r.get(4)?,
         title: r.get(5)?,
         repos: split_repos(r.get(6)?),
+        branch: r.get(7)?,
     })
 }
 
@@ -310,7 +314,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -485,6 +489,11 @@ impl Db {
         self.query_sessions("todo_id IS NULL", None)
     }
 
+    /// Live sessions that belong to a todo; their state changes get notified.
+    pub fn linked_sessions(&self) -> Result<Vec<Session>> {
+        self.query_sessions("todo_id IS NOT NULL AND state != 'ended'", None)
+    }
+
     /// Sessions waiting for the user that belong to a todo; these get notified.
     pub fn linked_needs_input(&self) -> Result<Vec<Session>> {
         self.query_sessions("todo_id IS NOT NULL AND state = 'needs_input'", None)
@@ -603,6 +612,12 @@ impl Db {
         let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.pr_state;
         self.conn.execute("UPDATE todos SET pr_state = ?2 WHERE id = ?1", params![id, state])?;
         Ok(before)
+    }
+
+    pub fn set_session_branch(&self, id: &str, branch: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE sessions SET branch = ?2 WHERE session_id = ?1", params![id, branch])?;
+        Ok(())
     }
 
     pub fn set_session_repos(&self, id: &str, repos: &[String]) -> Result<()> {

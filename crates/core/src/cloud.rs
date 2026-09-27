@@ -46,6 +46,18 @@ pub fn repo_url(session: &Value) -> Option<String> {
         .map(Into::into)
 }
 
+/// Branches a cloud session is on, as (repo or "", branch), leaving out
+/// default branches no PR comes from.
+pub fn current_branches(session: &Value) -> Vec<(String, String)> {
+    session["external_metadata"]["current_branches"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(repo, b)| Some((repo.clone(), b.as_str()?.to_string())))
+        .filter(|(_, b)| !crate::launch::is_default_branch(b))
+        .collect()
+}
+
 /// `owner/repo` list of a session: the push targets (outcomes), or every
 /// source when nothing is pushed, e.g. a read-only investigation.
 pub fn repo_keys(session: &Value) -> Vec<String> {
@@ -374,6 +386,9 @@ fn sync_one(db: &Db, client: &mut Client, s: &Value) -> Result<Outcome, String> 
     }
     db.record_session(id, &repo_url(s).unwrap_or_default(), state).map_err(|e| e.to_string())?;
     db.set_session_repos(id, &repo_keys(s)).map_err(|e| e.to_string())?;
+    if let Some((_, branch)) = current_branches(s).into_iter().next() {
+        db.set_session_branch(id, &branch).map_err(|e| e.to_string())?;
+    }
     if let Some(title) = s["title"].as_str().filter(|t| !t.is_empty()) {
         db.set_session_title(id, title).map_err(|e| e.to_string())?;
     }
@@ -446,6 +461,15 @@ pub fn sync(db: &Db) -> Result<SyncReport, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn current_branches_skip_default_branches() {
+        let s = json!({"external_metadata": {"current_branches": {"o/r": "claude/todo-1-ab", "": "fix-x", "o/s": "main"}}});
+        let mut got = current_branches(&s);
+        got.sort();
+        assert_eq!(got, vec![("".to_string(), "fix-x".to_string()), ("o/r".to_string(), "claude/todo-1-ab".to_string())]);
+        assert!(current_branches(&json!({})).is_empty());
+    }
 
     #[test]
     fn repo_keys_prefer_push_targets_over_sources() {

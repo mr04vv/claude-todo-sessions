@@ -646,6 +646,51 @@ fn mark_done(db: &Db, todo: &Todo) {
     }
 }
 
+/// Bytes read from the end of a transcript to find its latest gitBranch.
+const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Latest non-default branch a local session worked on, from its transcript.
+fn transcript_branch(session_id: &str) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let projects = home().join(".claude/projects");
+    let file = std::fs::read_dir(projects)
+        .ok()?
+        .flatten()
+        .map(|d| d.path().join(format!("{session_id}.jsonl")))
+        .find(|p| p.exists())?;
+    let mut f = std::fs::File::open(file).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(TRANSCRIPT_TAIL_BYTES))).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    launch::last_git_branch(&String::from_utf8_lossy(&buf))
+}
+
+/// A PR opened from the branch any of the todo's sessions works on, however
+/// the session was started.
+fn pr_from_session_branches(db: &Db, todo: &Todo) -> Option<String> {
+    let mut todo_repos = launch::github_repos(&todo.repos);
+    todo_repos.extend(todo.issue_url.as_deref().and_then(launch::repo_key));
+    for s in db.sessions_for_todo(todo.id).ok()? {
+        let branch = s.branch.clone().or_else(|| (!launch::is_cloud_session(&s.session_id)).then(|| transcript_branch(&s.session_id)).flatten());
+        let Some(branch) = branch else { continue };
+        let mut repos = launch::github_repos(&s.repos);
+        repos.extend(launch::repo_key(&s.cwd));
+        repos.extend(todo_repos.iter().cloned());
+        repos.dedup();
+        for repo in repos {
+            let found = gh(&["pr", "list", "-R", &repo, "--head", &branch, "--state", "all", "--limit", "1", "--json", "url"])
+                .ok()
+                .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
+                .and_then(|v| v[0]["url"].as_str().map(String::from));
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+    None
+}
+
 /// Links a PR opened from the todo's branch, then records the PR's review
 /// stage; a PR that becomes merged marks its todo done.
 fn sync_pr(db: &Db, todo: &Todo, branch_prs: &mut HashMap<String, serde_json::Value>) {
@@ -665,6 +710,12 @@ fn sync_pr(db: &Db, todo: &Todo, branch_prs: &mut HashMap<String, serde_json::Va
                 url = Some(found);
                 break;
             }
+        }
+    }
+    if url.is_none() {
+        url = pr_from_session_branches(db, todo);
+        if let Some(found) = &url {
+            let _ = db.update_todo(todo.id, TodoPatch { pr_url: Some(found.clone()), ..Default::default() });
         }
     }
     let Some(url) = url else { return };
@@ -734,11 +785,11 @@ fn tray_menu(app: &AppHandle, waiting: &[Session]) -> tauri::Result<Menu<tauri::
 /// Posts a notification for a session waiting for input and opens the session
 /// when the notification is clicked. The thread lives until the notification
 /// is clicked or removed from Notification Center.
-fn notify_waiting(session: Session) {
+fn notify_session(session: Session, headline: &'static str) {
     std::thread::spawn(move || {
         let label = session.title.clone().unwrap_or_else(|| session.session_id.clone());
         let response = Notification::new()
-            .title("入力待ち")
+            .title(headline)
             .message(&label)
             .wait_for_click(true)
             .send();
@@ -814,6 +865,7 @@ fn watch_loop(app: AppHandle) {
         Err(e) => return eprintln!("watch loop stopped: {e}"),
     };
     let mut known: HashSet<String> = HashSet::new();
+    let mut last_state: HashMap<String, SessionState> = HashMap::new();
     let mut first = true;
     let mut tick: u32 = 0;
     loop {
@@ -830,7 +882,16 @@ fn watch_loop(app: AppHandle) {
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
             if !first {
                 for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
-                    notify_waiting(s.clone());
+                    notify_session(s.clone(), "入力待ち");
+                }
+            }
+            // A linked session that stops running has finished its turn and waits for a reply.
+            if let Ok(linked) = db.linked_sessions() {
+                for s in linked.iter().filter(|s| !archived.contains(&s.session_id)) {
+                    let before = last_state.insert(s.session_id.clone(), s.state);
+                    if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
+                        notify_session(s.clone(), "作業が終わりました");
+                    }
                 }
             }
             if first || now != known {

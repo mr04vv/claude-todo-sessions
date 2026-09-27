@@ -117,6 +117,19 @@ pub fn pr_for_todo(prs: &Value, todo_id: i64) -> Option<String> {
         .map(Into::into)
 }
 
+pub fn is_default_branch(branch: &str) -> bool {
+    matches!(branch, "main" | "master" | "develop" | "HEAD" | "")
+}
+
+/// Last `gitBranch` recorded in a Claude Code transcript (jsonl), skipping
+/// default branches. Only the tail is read; transcripts grow large.
+pub fn last_git_branch(transcript_tail: &str) -> Option<String> {
+    const KEY: &str = "\"gitBranch\":\"";
+    let start = transcript_tail.rfind(KEY)? + KEY.len();
+    let branch = &transcript_tail[start..start + transcript_tail[start..].find('"')?];
+    (!is_default_branch(branch)).then(|| branch.to_string())
+}
+
 pub fn herdr_pane_id(created: &Value) -> Option<String> {
     created["result"]["root_pane"]["pane_id"].as_str().map(Into::into)
 }
@@ -210,6 +223,16 @@ mod pr_tests {
         assert_eq!(pr_state(&v("OPEN", false, "APPROVED", 0)), "approved");
         assert_eq!(pr_state(&v("OPEN", false, "REVIEW_REQUIRED", 1)), "review_requested");
         assert_eq!(pr_state(&v("OPEN", false, "", 0)), "open");
+    }
+
+    #[test]
+    fn last_git_branch_from_transcript() {
+        let t = r#"{"gitBranch":"main"}
+{"gitBranch":"feat/x"}
+"#;
+        assert_eq!(last_git_branch(t).as_deref(), Some("feat/x"));
+        assert_eq!(last_git_branch(r#"{"gitBranch":"main"}"#), None);
+        assert_eq!(last_git_branch("nothing"), None);
     }
 
     #[test]

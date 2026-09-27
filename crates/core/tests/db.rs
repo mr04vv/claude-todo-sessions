@@ -366,3 +366,25 @@ fn kind_picks_the_default_prompt() {
     let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
     assert_eq!(c.prompt_body(), "自由に");
 }
+
+#[test]
+fn session_branch_is_stored() {
+    let (_d, db) = open();
+    db.record_session("cse_1", "https://github.com/o/r", SessionState::Idle).unwrap();
+    db.set_session_branch("cse_1", "claude/todo-1-ab").unwrap();
+    assert_eq!(db.get_session("cse_1").unwrap().unwrap().branch.as_deref(), Some("claude/todo-1-ab"));
+}
+
+#[test]
+fn linked_sessions_lists_live_linked_ones() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("a")).unwrap();
+    for (id, st) in [("a", SessionState::Running), ("b", SessionState::Ended), ("c", SessionState::Idle)] {
+        db.record_session(id, "/w", st).unwrap();
+        if id != "c" {
+            db.link_session(id, t.id).unwrap();
+        }
+    }
+    let ids: Vec<String> = db.linked_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
+    assert_eq!(ids, vec!["a"]);
+}
