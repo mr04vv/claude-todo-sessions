@@ -35,7 +35,7 @@ const MENU_QUIT: &str = "quit";
 const MENU_SESSION_PREFIX: &str = "session:";
 const GH_ISSUE_LIMIT: &str = "100";
 /// How often linked issues are checked for open/closed.
-const ISSUE_SYNC_INTERVAL: Duration = Duration::from_secs(120);
+const ISSUE_SYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// Folders (under $HOME) whose direct children are checkouts, besides the ghq root.
 // ponytail: fixed list; make it a setting if more roots are needed.
 const EXTRA_REPO_ROOTS: &[&str] = &["Works/Atrae"];
@@ -52,6 +52,10 @@ struct AppState {
     origin_cache: Mutex<HashMap<String, Option<String>>>,
     /// Whether the queue runner starts queued todos.
     loop_enabled: AtomicBool,
+    /// Wakes the GitHub sync: Some(todo id) or None for everything.
+    github_wake: Mutex<std::sync::mpsc::Sender<Option<i64>>>,
+    /// Wakes the cloud session sync.
+    cloud_wake: Mutex<std::sync::mpsc::Sender<()>>,
 }
 
 fn home() -> PathBuf {
@@ -296,6 +300,20 @@ fn focus_in_herdr(session_id: &str) -> bool {
 
 /// Opens a session in `target`: "herdr" focuses its pane, "desktop" opens
 /// Claude Desktop, and none tries herdr first for local sessions.
+/// Asks the background syncs to run now: GitHub for one todo or all, and
+/// the cloud sessions when refreshing everything.
+#[tauri::command]
+fn sync_now(state: State<AppState>, todo_id: Option<i64>) {
+    if let Ok(tx) = state.github_wake.lock() {
+        let _ = tx.send(todo_id);
+    }
+    if todo_id.is_none() {
+        if let Ok(tx) = state.cloud_wake.lock() {
+            let _ = tx.send(());
+        }
+    }
+}
+
 /// Opens a GitHub issue or PR in the browser.
 #[tauri::command]
 fn open_github(url: String) -> Result<(), String> {
@@ -693,66 +711,99 @@ fn pr_from_session_branches(db: &Db, todo: &Todo) -> Option<String> {
 
 /// Links a PR opened from the todo's branch, then records the PR's review
 /// stage; a PR that becomes merged marks its todo done.
-fn sync_pr(db: &Db, todo: &Todo, branch_prs: &mut HashMap<String, serde_json::Value>) {
-    let mut url = todo.pr_url.clone();
-    if url.is_none() {
-        let mut repos = launch::github_repos(&todo.repos);
-        repos.extend(todo.issue_url.as_deref().and_then(launch::repo_key));
-        for repo in repos {
-            let prs = branch_prs.entry(repo.clone()).or_insert_with(|| {
-                gh(&["pr", "list", "-R", &repo, "--state", "all", "--limit", "100", "--json", "url,headRefName"])
-                    .ok()
-                    .and_then(|j| serde_json::from_str(&j).ok())
-                    .unwrap_or_default()
-            });
-            if let Some(found) = launch::pr_for_todo(prs, todo.id) {
-                let _ = db.update_todo(todo.id, TodoPatch { pr_url: Some(found.clone()), ..Default::default() });
-                url = Some(found);
-                break;
-            }
+/// Links a PR to a todo that has none: one opened from a `claude/todo-<id>-`
+/// branch, or from the branch any of its sessions works on.
+fn discover_pr(db: &Db, todo: &Todo, branch_prs: &mut HashMap<String, serde_json::Value>) {
+    if todo.pr_url.is_some() {
+        return;
+    }
+    let mut repos = launch::github_repos(&todo.repos);
+    repos.extend(todo.issue_url.as_deref().and_then(launch::repo_key));
+    let mut found = None;
+    for repo in repos {
+        let prs = branch_prs.entry(repo.clone()).or_insert_with(|| {
+            gh(&["pr", "list", "-R", &repo, "--state", "all", "--limit", "100", "--json", "url,headRefName"])
+                .ok()
+                .and_then(|j| serde_json::from_str(&j).ok())
+                .unwrap_or_default()
+        });
+        found = launch::pr_for_todo(prs, todo.id);
+        if found.is_some() {
+            break;
         }
     }
-    if url.is_none() {
-        url = pr_from_session_branches(db, todo);
-        if let Some(found) = &url {
-            let _ = db.update_todo(todo.id, TodoPatch { pr_url: Some(found.clone()), ..Default::default() });
-        }
-    }
-    let Some(url) = url else { return };
-    let Ok(json) = gh(&["pr", "view", &url, "--json", "state,isDraft,reviewDecision,reviewRequests"]) else { return };
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { return };
-    let now = launch::pr_state(&v);
-    match db.set_pr_state(todo.id, now) {
-        Ok(before) if now == "merged" && before.as_deref() != Some("merged") => mark_done(db, todo),
-        Err(e) => eprintln!("{e}"),
-        _ => {}
+    if let Some(url) = found.or_else(|| pr_from_session_branches(db, todo)) {
+        let _ = db.update_todo(todo.id, TodoPatch { pr_url: Some(url), ..Default::default() });
     }
 }
 
-/// Refreshes linked issues and PRs. An issue going from open to closed, or a
-/// PR getting merged, marks its todo done.
-fn issue_sync_loop() {
-    let db = match open_db() {
-        Ok(db) => db,
-        Err(e) => return eprintln!("issue sync stopped: {e}"),
-    };
-    loop {
-        let mut branch_prs = HashMap::new();
-        for todo in db.list_todos(None).unwrap_or_default() {
-            if todo.status != Status::Done || todo.pr_state.as_deref().is_some_and(|s| s != "merged" && s != "closed") {
-                sync_pr(&db, &todo, &mut branch_prs);
-            }
-            let Some(url) = todo.issue_url.as_deref().filter(|u| u.contains("/issues/")) else { continue };
-            let Ok(json) = gh(&["issue", "view", url, "--json", "state"]) else { continue };
-            let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
-            let Some(now) = v["state"].as_str().map(|s| s.to_lowercase()) else { continue };
-            match db.set_issue_state(todo.id, &now) {
-                Ok(Some(before)) if before == "open" && now == "closed" => mark_done(&db, &todo),
+/// Records the state of every linked issue and PR with batched GraphQL
+/// queries. A closed issue or a merged PR marks its todo done.
+fn refresh_states(db: &Db, todos: &[Todo]) {
+    let mut by_url: HashMap<String, (i64, bool)> = HashMap::new();
+    for t in todos {
+        if let Some(u) = t.issue_url.clone().filter(|u| u.contains("/issues/")) {
+            by_url.insert(u, (t.id, false));
+        }
+        if let Some(u) = t.pr_url.clone() {
+            by_url.insert(u, (t.id, true));
+        }
+    }
+    let urls: Vec<String> = by_url.keys().cloned().collect();
+    for chunk in urls.chunks(cts_core::github::BATCH_SIZE) {
+        let query = cts_core::github::status_query(chunk);
+        let Ok(json) = gh(&["api", "graphql", "-f", &format!("query={query}")]) else { continue };
+        let Ok(resp) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
+        for (url, now) in cts_core::github::parse_statuses(&resp, chunk) {
+            let Some(&(id, is_pr)) = by_url.get(&url) else { continue };
+            let Some(todo) = todos.iter().find(|t| t.id == id) else { continue };
+            let before = if is_pr { db.set_pr_state(id, &now) } else { db.set_issue_state(id, &now) };
+            let finished = if is_pr { now == "merged" } else { now == "closed" };
+            match before {
+                Ok(b) if finished && b.as_deref() != Some(now.as_str()) && b.is_some() => mark_done(db, todo),
+                Ok(None) if is_pr && finished => mark_done(db, todo),
                 Err(e) => eprintln!("{e}"),
                 _ => {}
             }
         }
-        std::thread::sleep(ISSUE_SYNC_INTERVAL);
+    }
+}
+
+/// One GitHub sync: all todos, or just `only`.
+fn sync_github(db: &Db, only: Option<i64>) {
+    let todos: Vec<Todo> = db
+        .list_todos(None)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| only.is_none_or(|id| t.id == id))
+        .collect();
+    let mut branch_prs = HashMap::new();
+    for t in todos.iter().filter(|t| t.status != Status::Done) {
+        discover_pr(db, t, &mut branch_prs);
+    }
+    let todos: Vec<Todo> = todos.iter().filter_map(|t| db.get_todo(t.id).ok().flatten()).collect();
+    refresh_states(db, &todos);
+}
+
+/// Syncs GitHub every ISSUE_SYNC_INTERVAL, and at once when woken: `Some(id)`
+/// for one todo (its drawer opened, its session finished a turn), `None` for
+/// all (window focused, the sync button).
+fn issue_sync_loop(wake: std::sync::mpsc::Receiver<Option<i64>>) {
+    let db = match open_db() {
+        Ok(db) => db,
+        Err(e) => return eprintln!("issue sync stopped: {e}"),
+    };
+    let mut next_full = std::time::Instant::now();
+    loop {
+        let wait = next_full.saturating_duration_since(std::time::Instant::now());
+        match wake.recv_timeout(wait) {
+            Ok(Some(id)) => sync_github(&db, Some(id)),
+            Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                sync_github(&db, None);
+                next_full = std::time::Instant::now() + ISSUE_SYNC_INTERVAL;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+        }
     }
 }
 
@@ -891,6 +942,10 @@ fn watch_loop(app: AppHandle) {
                     let before = last_state.insert(s.session_id.clone(), s.state);
                     if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
                         notify_session(s.clone(), "作業が終わりました");
+                        // A finished turn often just opened a PR: look now.
+                        if let (Some(todo_id), Ok(tx)) = (s.todo_id, app.state::<AppState>().github_wake.lock()) {
+                            let _ = tx.send(Some(todo_id));
+                        }
                     }
                 }
             }
@@ -906,7 +961,7 @@ fn watch_loop(app: AppHandle) {
     }
 }
 
-fn sync_loop(status: impl Fn(String)) {
+fn sync_loop(wake: std::sync::mpsc::Receiver<()>, status: impl Fn(String)) {
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => return status(format!("cloud sync 停止: {e}")),
@@ -918,18 +973,25 @@ fn sync_loop(status: impl Fn(String)) {
             Err(e) => format!("cloud sync 失敗: {e}"),
         };
         status(msg);
-        std::thread::sleep(CLOUD_SYNC_INTERVAL);
+        // Sleep until the interval passes or someone asks for a sync now.
+        if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = wake.recv_timeout(CLOUD_SYNC_INTERVAL) {
+            return;
+        }
     }
 }
 
 fn main() {
     let db = open_db().expect("open database");
+    let (github_tx, github_rx) = std::sync::mpsc::channel();
+    let (cloud_tx, cloud_rx) = std::sync::mpsc::channel();
     tauri::Builder::default()
         .manage(AppState {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
             origin_cache: Mutex::new(HashMap::new()),
             loop_enabled: AtomicBool::new(true),
+            github_wake: Mutex::new(github_tx),
+            cloud_wake: Mutex::new(cloud_tx),
         })
         .setup(|app| {
             // Menu bar app: no Dock icon, closing the window only hides it.
@@ -958,7 +1020,7 @@ fn main() {
                 .build(app)?;
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                sync_loop(|msg| {
+                sync_loop(cloud_rx, |msg| {
                     if let Ok(mut s) = handle.state::<AppState>().sync_status.lock() {
                         *s = msg;
                     }
@@ -966,7 +1028,7 @@ fn main() {
             });
             let handle = app.handle().clone();
             std::thread::spawn(move || watch_loop(handle));
-            std::thread::spawn(issue_sync_loop);
+            std::thread::spawn(move || issue_sync_loop(github_rx));
             let handle = app.handle().clone();
             std::thread::spawn(move || queue_loop(handle));
             Ok(())
@@ -986,6 +1048,7 @@ fn main() {
             unlink_session,
             open_session,
             open_github,
+            sync_now,
             start_desktop,
             start_terminal,
             start_cloud,

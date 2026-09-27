@@ -224,7 +224,7 @@ function directSession(todo: Todo): Session | null {
   return live.length === 1 ? live[0] : todo.sessions.length === 1 ? todo.sessions[0] : null;
 }
 
-type IconName = "board" | "list" | "backlog" | "inbox" | "queue" | "plus" | "import" | "close" | "open" | "up" | "down";
+type IconName = "board" | "list" | "backlog" | "inbox" | "queue" | "sync" | "plus" | "import" | "close" | "open" | "up" | "down";
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, string> = {
@@ -233,6 +233,7 @@ function Icon({ name }: { name: IconName }) {
     backlog: "M4 7h16M4 12h10M4 17h6",
     inbox: "M3 13l2-8h14l2 8v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 13h5l2 3h4l2-3h5",
     queue: "M5 6l4 3-4 3zM12 7h8M12 12h8M5 17h15",
+    sync: "M20 11a8 8 0 0 0-14-5l-2 2M4 13a8 8 0 0 0 14 5l2-2M4 4v4h4M20 20v-4h-4",
     up: "M6 15l6-6 6 6",
     down: "M6 9l6 6 6-6",
     plus: "M12 5v14M5 12h14",
@@ -1451,6 +1452,13 @@ export default function App() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  // Coming back to the window is when fresh GitHub and cloud state matters.
+  useEffect(() => {
+    const onFocus = () => api.syncNow().catch(() => {});
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   // ⌘N adds a todo from anywhere.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1527,7 +1535,18 @@ export default function App() {
     return s && <div className="card overlay">{sessionLabel(s)}</div>;
   })();
 
-  const openTodo = (id: number) => setSelection({ kind: "todo", id });
+  const openTodo = (id: number) => {
+    setSelection({ kind: "todo", id });
+    // The drawer shows issue and PR state; fetch this todo's now.
+    api.syncNow(id).catch(() => {});
+  };
+  const [syncing, setSyncing] = useState(false);
+  const syncAll = () => {
+    setSyncing(true);
+    run(() => api.syncNow());
+    // The syncs run in the background; the board refresh shows their results.
+    setTimeout(() => setSyncing(false), 3000);
+  };
   const openSession = (id: string) => setSelection({ kind: "session", id });
 
   return (
@@ -1581,6 +1600,10 @@ export default function App() {
             <i />
             <span className="label">入力待ち</span> <b>{waiting}</b>
           </div>
+          <button className="ghost sync-button" onClick={syncAll} disabled={syncing} title="GitHub とクラウドのセッションを今すぐ同期">
+            <Icon name="sync" />
+            <span className="label">{syncing ? "同期中…" : "今すぐ同期"}</span>
+          </button>
           <div className="muted sync label">{board?.sync_status}</div>
         </div>
       </aside>

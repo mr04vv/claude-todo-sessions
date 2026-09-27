@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod cloud;
 pub mod desktop;
+pub mod github;
 pub mod herdr;
 pub mod launch;
 

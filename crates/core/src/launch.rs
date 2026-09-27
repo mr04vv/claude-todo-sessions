@@ -99,7 +99,12 @@ pub fn pr_state(pr: &Value) -> &'static str {
     match pr["reviewDecision"].as_str() {
         Some("CHANGES_REQUESTED") => "changes_requested",
         Some("APPROVED") => "approved",
-        _ if pr["reviewRequests"].as_array().is_some_and(|r| !r.is_empty()) => "review_requested",
+        // `gh pr view` lists requests; GraphQL gives a totalCount.
+        _ if pr["reviewRequests"].as_array().is_some_and(|r| !r.is_empty())
+            || pr["reviewRequests"]["totalCount"].as_i64().unwrap_or(0) > 0 =>
+        {
+            "review_requested"
+        }
         Some("REVIEW_REQUIRED") => "review_requested",
         _ => "open",
     }

@@ -1643,3 +1643,16 @@ button.small {
 .launchers.four {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
+
+.sync-button {
+  width: 100%;
+  justify-content: flex-start;
+  height: 28px;
+  font-size: 12px;
+}
+
+@media (max-width: 1000px) {
+  .sync-button {
+    justify-content: center;
+  }
+}
