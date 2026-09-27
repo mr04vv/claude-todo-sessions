@@ -35,11 +35,14 @@ export interface Todo {
   queue_runner: Runner | null;
   queue_error: string | null;
   queue_pos: number | null;
+  kind: Kind;
+  prompt_preview: string;
 }
 
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
 export type Runner = "auto" | "cloud" | "local";
+export type Kind = "implementation" | "research";
 
 export interface Board {
   todos: Todo[];
@@ -54,6 +57,7 @@ export interface TodoInput {
   cwd?: string;
   memo?: string;
   repos?: string[];
+  kind?: Kind;
 }
 
 export interface TodoUpdate {
@@ -65,6 +69,7 @@ export interface TodoUpdate {
   repos?: string[];
   prompt?: string;
   pr_url?: string;
+  kind?: Kind;
 }
 
 export interface Issue {

@@ -32,6 +32,8 @@ struct CreateArgs {
     memo: Option<String>,
     /// Repositories as owner/repo; the first is the main one.
     repos: Option<Vec<String>>,
+    /// True for a research task (asks for completion/output conditions); default is implementation.
+    research: Option<bool>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -113,13 +115,14 @@ impl Server {
 
     #[tool(description = "Create a todo.")]
     async fn create_todo(&self, Parameters(a): Parameters<CreateArgs>) -> Result<String, String> {
-        let t = NewTodo { title: a.title, issue_url: a.issue_url, cwd: a.cwd, memo: a.memo, repos: a.repos.unwrap_or_default() };
+        let kind = if a.research.unwrap_or(false) { cts_core::Kind::Research } else { cts_core::Kind::Implementation };
+        let t = NewTodo { kind, title: a.title, issue_url: a.issue_url, cwd: a.cwd, memo: a.memo, repos: a.repos.unwrap_or_default() };
         json(&db()?.create_todo(t).map_err(|e| e.to_string())?)
     }
 
     #[tool(description = "Update a todo's title, status, memo or cwd. Omitted fields are unchanged.")]
     async fn update_todo(&self, Parameters(a): Parameters<UpdateArgs>) -> Result<String, String> {
-        let p = TodoPatch { title: a.title, status: parse_status(a.status)?, memo: a.memo, cwd: a.cwd, issue_url: None, repos: a.repos, prompt: a.prompt, pr_url: a.pr_url };
+        let p = TodoPatch { title: a.title, status: parse_status(a.status)?, memo: a.memo, cwd: a.cwd, issue_url: None, repos: a.repos, prompt: a.prompt, pr_url: a.pr_url, kind: None };
         json(&db()?.update_todo(a.id, p).map_err(|e| e.to_string())?)
     }
 

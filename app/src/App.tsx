@@ -19,6 +19,7 @@ import {
   issueRef,
   type Board,
   type Issue,
+  type Kind,
   type LocalRepo,
   type PrState,
   type Runner,
@@ -42,6 +43,11 @@ const VIEWS: { key: View; label: string }[] = [
   { key: "backlog", label: "バックログ" },
   { key: "inbox", label: "受信箱" },
   { key: "queue", label: "キュー" },
+];
+
+const KINDS: { key: Kind; label: string }[] = [
+  { key: "implementation", label: "実装" },
+  { key: "research", label: "調査" },
 ];
 
 const RUNNER_LABEL: Record<Runner, string> = {
@@ -408,6 +414,7 @@ function TodoCard({ todo, selected, onSelect, run }: {
       </div>
       <div className="card-title">{todo.title}</div>
       <div className="card-meta">
+        {todo.kind === "research" && <span className="tag research">調査</span>}
         {todo.queue_runner && <span className={`tag queued${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "キュー"}</span>}
         <GhBadges todo={todo} />
         {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
@@ -686,6 +693,16 @@ function Drawer({ todo, local, groups, run, setStatus, onClose }: {
           ))}
         </div>
       </div>
+      <div className="field">
+        <span>種類（最初のプロンプトが変わります）</span>
+        <div className="segmented">
+          {KINDS.map((k) => (
+            <button key={k.key} className={todo.kind === k.key ? "on" : ""} onClick={() => update({ kind: k.key })}>
+              {k.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <RepoPicker todo={todo} local={local} groups={groups} update={update} />
       <div className="field">
         <span>
@@ -715,13 +732,14 @@ function Drawer({ todo, local, groups, run, setStatus, onClose }: {
 
       <h3>新しいセッション</h3>
       <Field
-        label={`最初のプロンプト（先頭に [todo:${todo.id}] が付きます。空ならタイトル）`}
+        label={`最初のプロンプト（空なら種類に応じた既定文。[todo:${todo.id}] は自動で付きます）`}
         value={todo.prompt ?? ""}
-        placeholder={todo.title}
+        placeholder={todo.kind === "research" ? "調査: タイトル＋メモ＋完了条件・出力条件を確認する指示" : "/grilling タイトル＋メモ"}
         multiline
         rows={3}
         onSave={(prompt) => update({ prompt })}
       />
+      <pre className="prompt-preview">{todo.prompt_preview}</pre>
       <div className="launchers">
         <button className="launcher primary" onClick={() => run(() => api.startCloud(todo.id))}>
           <b>Cloud</b>
@@ -903,6 +921,7 @@ function AddTodoDialog({ local, groups, run, onClose, onOpenTodo }: {
   const [title, setTitle] = useState("");
   const [repo, setRepo] = useState("");
   const [issueUrl, setIssueUrl] = useState("");
+  const [kind, setKind] = useState<Kind>("implementation");
   const [added, setAdded] = useState<Todo[]>([]);
   const titleRef = useRef<HTMLInputElement>(null);
   useEffect(() => titleRef.current?.focus(), []);
@@ -911,7 +930,7 @@ function AddTodoDialog({ local, groups, run, onClose, onOpenTodo }: {
     if (!t) return;
     const path = local.find((r) => r.key === repo)?.path;
     run(async () => {
-      const todo = await api.createTodo({ title: t, repos: repo ? [repo] : [], cwd: path, issue_url: issueUrl.trim() || undefined });
+      const todo = await api.createTodo({ title: t, kind, repos: repo ? [repo] : [], cwd: path, issue_url: issueUrl.trim() || undefined });
       setAdded((prev) => [todo, ...prev]);
       setTitle("");
       setIssueUrl("");
@@ -938,6 +957,16 @@ function AddTodoDialog({ local, groups, run, onClose, onOpenTodo }: {
         <span>タイトル</span>
         <input ref={titleRef} value={title} placeholder="何をする？" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
       </label>
+      <div className="field">
+        <span>種類</span>
+        <div className="segmented">
+          {KINDS.map((k) => (
+            <button key={k.key} className={kind === k.key ? "on" : ""} onClick={() => setKind(k.key)}>
+              {k.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="two-col">
         <div className="field">
           <span>リポジトリ / グループ（任意。空ならバックログへ）</span>

@@ -299,7 +299,7 @@ fn todo_prompt_is_stored_and_cleared() {
     let (_d, db) = open();
     let t = db.create_todo(new_todo("Fix login")).unwrap();
     assert_eq!(t.prompt, None);
-    assert_eq!(cts_core::launch::start_prompt(t.id, t.prompt_body()), format!("[todo:{}] Fix login", t.id));
+    assert_eq!(cts_core::launch::start_prompt(t.id, &t.prompt_body()), format!("/grilling Fix login [todo:{}]", t.id));
     let u = db.update_todo(t.id, TodoPatch { prompt: Some("まず計画を立てて".into()), ..Default::default() }).unwrap();
     assert_eq!(u.prompt.as_deref(), Some("まず計画を立てて"));
     assert_eq!(u.prompt_body(), "まず計画を立てて");
@@ -349,4 +349,20 @@ fn queue_orders_and_records_runner_and_errors() {
     let t = db.get_todo(a.id).unwrap().unwrap();
     assert_eq!((t.queue_runner, t.queue_error), (None, None));
     assert_eq!(db.queued().unwrap().len(), 1);
+}
+
+#[test]
+fn kind_picks_the_default_prompt() {
+    let (_d, db) = open();
+    let t = db.create_todo(NewTodo { title: "Fix login".into(), memo: Some("see logs".into()), ..Default::default() }).unwrap();
+    assert_eq!(t.kind, cts_core::Kind::Implementation);
+    assert_eq!(t.prompt_body(), "/grilling Fix login\n\nsee logs");
+    let r = db.update_todo(t.id, TodoPatch { kind: Some(cts_core::Kind::Research), ..Default::default() }).unwrap();
+    assert_eq!(r.kind, cts_core::Kind::Research);
+    let body = r.prompt_body();
+    assert!(body.starts_with("調査: Fix login"), "{body}");
+    assert!(body.contains("完了条件") && body.contains("出力条件"), "{body}");
+    // A custom prompt wins over the kind's default.
+    let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
+    assert_eq!(c.prompt_body(), "自由に");
 }

@@ -96,6 +96,8 @@ struct TodoView {
     repos: Vec<String>,
     /// True when `repos` came from the issue URL or folder, not the todo's own list.
     repos_derived: bool,
+    /// The exact first prompt a new session would get.
+    prompt_preview: String,
 }
 
 #[derive(Serialize)]
@@ -162,6 +164,8 @@ struct TodoInput {
     memo: Option<String>,
     #[serde(default)]
     repos: Vec<String>,
+    #[serde(default)]
+    kind: cts_core::Kind,
 }
 
 #[derive(Deserialize)]
@@ -174,6 +178,7 @@ struct TodoUpdate {
     repos: Option<Vec<String>>,
     prompt: Option<String>,
     pr_url: Option<String>,
+    kind: Option<cts_core::Kind>,
 }
 
 /// Sessions archived in Claude Desktop stay out of the inbox and notifications.
@@ -206,6 +211,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|(sessions, todo)| TodoView {
             repos: repos_of_todo(&state, &todo),
             repos_derived: todo.repos.is_empty(),
+            prompt_preview: launch::start_prompt(todo.id, &todo.prompt_body()),
             sessions,
             todo,
         })
@@ -228,6 +234,7 @@ fn create_todo(state: State<AppState>, input: TodoInput) -> Result<Todo, String>
         cwd: blank(input.cwd),
         memo: blank(input.memo),
         repos: input.repos,
+        kind: input.kind,
     })
     .map_err(err)
 }
@@ -243,6 +250,7 @@ fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<To
         repos: update.repos,
         prompt: update.prompt,
         pr_url: update.pr_url,
+        kind: update.kind,
     };
     state.db.lock().map_err(err)?.update_todo(id, patch).map_err(err)
 }
@@ -307,7 +315,7 @@ fn terminal_cwd(todo: &Todo) -> String {
 #[tauri::command]
 fn start_desktop(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
-    let prompt = launch::start_prompt(todo.id, todo.prompt_body());
+    let prompt = launch::start_prompt(todo.id, &todo.prompt_body());
     // Without a folder Desktop opens a scratch workspace, fine for research todos.
     open_url(&launch::desktop_new_url(todo.cwd.as_deref(), &prompt))
 }
@@ -358,7 +366,7 @@ fn launch_terminal(state: &AppState, todo_id: i64, focus: bool) -> Result<(), St
     let cwd = terminal_cwd(&todo);
     let command = format!(
         "claude --session-id {session_id} {}",
-        shell_quote(&launch::start_prompt(todo.id, todo.prompt_body()))
+        shell_quote(&launch::start_prompt(todo.id, &todo.prompt_body()))
     );
     start_in_herdr(&cwd, &todo.title, &command, focus).or_else(|herdr_err| {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", shell_quote(&cwd)))
@@ -374,7 +382,7 @@ fn launch_cloud(state: &AppState, todo_id: i64) -> Result<String, String> {
         return Err("Cloud には GitHub のリポジトリが必要です。リポジトリ欄で owner/repo を選ぶか、issue URL か GitHub を origin に持つ作業フォルダを設定してください".into());
     }
     let db = state.db.lock().map_err(err)?;
-    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, todo.prompt_body())
+    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &todo.prompt_body())
 }
 
 #[tauri::command]
@@ -523,6 +531,7 @@ fn import_issues(state: State<AppState>, issues: Vec<IssueImport>) -> Result<usi
             cwd: i.cwd.clone(),
             memo: None,
             repos: Vec::new(),
+            kind: Default::default(),
         })
         .map_err(err)?;
     }

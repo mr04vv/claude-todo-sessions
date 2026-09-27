@@ -42,8 +42,14 @@ pub fn github_repos(repos: &[String]) -> Vec<String> {
     repos.iter().filter(|r| r.contains('/')).cloned().collect()
 }
 
+/// First prompt of a session started from a todo. A slash command must lead
+/// the prompt to run, so then the marker goes last.
 pub fn start_prompt(todo_id: i64, body: &str) -> String {
-    format!("[todo:{todo_id}] {body}")
+    if body.starts_with('/') {
+        format!("{body} [todo:{todo_id}]")
+    } else {
+        format!("[todo:{todo_id}] {body}")
+    }
 }
 
 const GITHUB_HTTPS: &str = "https://github.com/";
@@ -138,6 +144,8 @@ mod tests {
         // No folder: Desktop starts the session in a scratch workspace.
         assert_eq!(desktop_new_url(None, "[todo:1] x"), "claude://code/new?q=%5Btodo%3A1%5D%20x");
         assert_eq!(start_prompt(3, "Fix it"), "[todo:3] Fix it");
+        // A slash command must lead the prompt, so the marker goes last.
+        assert_eq!(start_prompt(3, "/grilling Fix it"), "/grilling Fix it [todo:3]");
     }
 
     #[test]

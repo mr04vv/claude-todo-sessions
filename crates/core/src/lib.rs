@@ -46,6 +46,34 @@ pub enum Status {
     Done,
 }
 
+/// What kind of work a todo is; it picks the default first prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    #[default]
+    Implementation,
+    Research,
+}
+
+/// Skill that drills into the details before implementing.
+const GRILLING_COMMAND: &str = "/grilling";
+const RESEARCH_INSTRUCTIONS: &str = "調査を始める前に、完了条件（何が分かれば終わりか）と出力条件（成果物の形式・保存先・粒度）を私に質問して確認してから進めてください。";
+
+impl Kind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Kind::Implementation => "implementation",
+            Kind::Research => "research",
+        }
+    }
+    fn parse(s: Option<String>) -> Kind {
+        match s.as_deref() {
+            Some("research") => Kind::Research,
+            _ => Kind::Implementation,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionState {
@@ -80,17 +108,38 @@ pub struct Todo {
     pub queue_error: Option<String>,
     /// Place in the run queue; lower starts first.
     pub queue_pos: Option<i64>,
+    pub kind: Kind,
 }
 
 impl Todo {
-    /// Text that follows the `[todo:<id>]` marker when a session starts.
-    pub fn prompt_body(&self) -> &str {
-        self.prompt.as_deref().unwrap_or(&self.title)
+    /// First prompt (without the `[todo:<id>]` marker): the todo's own, else
+    /// the default for its kind. Implementation work starts by grilling the
+    /// details; research first asks for completion and output conditions.
+    pub fn prompt_body(&self) -> String {
+        if let Some(p) = &self.prompt {
+            return p.clone();
+        }
+        let memo = self.memo.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        let head = match self.kind {
+            Kind::Implementation => format!("{GRILLING_COMMAND} {}", self.title),
+            Kind::Research => format!("調査: {}", self.title),
+        };
+        let mut body = head;
+        if let Some(m) = memo {
+            body.push_str("\n\n");
+            body.push_str(m);
+        }
+        if self.kind == Kind::Research {
+            body.push_str("\n\n");
+            body.push_str(RESEARCH_INSTRUCTIONS);
+        }
+        body
     }
 }
 
 #[derive(Debug, Default)]
 pub struct NewTodo {
+    pub kind: Kind,
     pub title: String,
     pub issue_url: Option<String>,
     pub cwd: Option<String>,
@@ -111,6 +160,7 @@ pub struct TodoPatch {
     pub prompt: Option<String>,
     /// Blank clears it.
     pub pr_url: Option<String>,
+    pub kind: Option<Kind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -147,7 +197,8 @@ CREATE TABLE IF NOT EXISTS todos (
     pr_state TEXT,
     queue_runner TEXT,
     queue_pos INTEGER,
-    queue_error TEXT
+    queue_error TEXT,
+    kind TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -163,7 +214,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 );
 ";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, queue_pos";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, queue_pos, kind";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos";
 
 impl Status {
@@ -226,6 +277,7 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         queue_runner: r.get(12)?,
         queue_error: r.get(13)?,
         queue_pos: r.get(14)?,
+        kind: Kind::parse(r.get(15)?),
     })
 }
 
@@ -258,7 +310,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -327,8 +379,8 @@ impl Db {
 
     pub fn create_todo(&self, t: NewTodo) -> Result<Todo> {
         self.conn.execute(
-            "INSERT INTO todos (title, issue_url, cwd, memo, updated_at, repos) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![t.title, t.issue_url, t.cwd, t.memo, now(), join_repos(&t.repos)],
+            "INSERT INTO todos (title, issue_url, cwd, memo, updated_at, repos, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![t.title, t.issue_url, t.cwd, t.memo, now(), join_repos(&t.repos), t.kind.as_str()],
         )?;
         let id = self.conn.last_insert_rowid();
         self.get_todo(id)?.ok_or(Error::TodoNotFound(id))
@@ -362,6 +414,7 @@ impl Db {
                 prompt = CASE WHEN ?9 IS NULL THEN prompt ELSE NULLIF(?9, '') END,
                 pr_state = CASE WHEN ?10 IS NULL OR NULLIF(?10, '') IS pr_url THEN pr_state ELSE NULL END,
                 pr_url = CASE WHEN ?10 IS NULL THEN pr_url ELSE NULLIF(?10, '') END,
+                kind = COALESCE(?11, kind),
                 updated_at = ?6
              WHERE id = ?1",
             params![
@@ -376,6 +429,7 @@ impl Db {
                 p.repos.as_deref().map(|r| join_repos(r).unwrap_or_default()),
                 p.prompt.as_deref().map(str::trim),
                 p.pr_url.as_deref().map(str::trim),
+                p.kind.map(Kind::as_str),
             ],
         )?;
         if n == 0 {
