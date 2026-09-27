@@ -26,7 +26,7 @@ fn records(root: &Path) -> Vec<serde_json::Value> {
 pub fn find_local_id(root: &Path, cli_session_id: &str) -> Option<String> {
     records(root)
         .into_iter()
-        .find(|v| v["cliSessionId"] == cli_session_id)
+        .find(|v| v["cliSessionId"] == cli_session_id && v["isArchived"] != true)
         .and_then(|v| v["sessionId"].as_str().map(Into::into))
 }
 
@@ -67,5 +67,8 @@ mod tests {
         assert_eq!(find_local_id(dir.path(), "cli-2").as_deref(), Some("local_b"));
         assert_eq!(find_local_id(dir.path(), "nope"), None);
         assert_eq!(find_local_id(&dir.path().join("missing"), "cli-1"), None);
+        // An archived record does not open by continue; resume unarchives it instead.
+        std::fs::write(org.join("local_c.json"), r#"{"sessionId":"local_c","cliSessionId":"cli-3","isArchived":true}"#).unwrap();
+        assert_eq!(find_local_id(dir.path(), "cli-3"), None);
     }
 }

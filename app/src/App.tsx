@@ -675,152 +675,130 @@ function SessionRow({ session, run, onUnlink }: {
   );
 }
 
-function Drawer({ todo, local, groups, run, setStatus, onClose }: {
+/// Read-mostly view of a todo: what it is linked to and the ways into it.
+/// Editing and starting sessions happen in dialogs.
+function Drawer({ todo, run, setStatus, onClose, onEdit, onStart }: {
   todo: Todo;
-  local: LocalRepo[];
-  groups: string[];
   run: (f: () => Promise<unknown>) => void;
   setStatus: (todo: Todo, status: Status) => void;
   onClose: () => void;
+  onEdit: () => void;
+  onStart: () => void;
 }) {
-  const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
-  const ref = issueRef(todo.issue_url);
   // window.confirm never returns true inside the Tauri webview, so confirm in place.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   useEffect(() => setConfirmingDelete(false), [todo.id]);
+  const gh = (url: string) => () => run(() => api.openGithub(url));
+  const live = todo.sessions.filter((s) => s.state !== "ended");
   return (
     <aside className="drawer glass">
       <header>
         <span className="mono muted">
-          #{todo.id}
-          {ref && (
-            <>
-              {" · "}
-              <a
-                href={todo.issue_url!}
-                onClick={(e) => {
-                  e.preventDefault();
-                  run(() => api.openGithub(todo.issue_url!));
-                }}
-              >
-                {ref}
-              </a>
-            </>
-          )}
+          #{todo.id} · {KINDS.find((k) => k.key === todo.kind)?.label}
         </span>
-        <button className="ghost icon" onClick={onClose} aria-label="閉じる">
-          <Icon name="close" />
-        </button>
-      </header>
-      <Field label="タイトル" value={todo.title} onSave={(title) => update({ title })} />
-      <div className="field">
-        <span>Status</span>
-        <div className="segmented">
-          {COLUMNS.map((c) => (
-            <button key={c.status} className={todo.status === c.status ? "on" : ""} onClick={() => setStatus(todo, c.status)}>
-              {c.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="field">
-        <span>種類（最初のプロンプトが変わります）</span>
-        <div className="segmented">
-          {KINDS.map((k) => (
-            <button key={k.key} className={todo.kind === k.key ? "on" : ""} onClick={() => update({ kind: k.key })}>
-              {k.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <RepoPicker todo={todo} local={local} groups={groups} update={update} />
-      <div className="field">
-        <span>
-          Issue{todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>{todo.issue_state}</span>}
-        </span>
-        <div className="actions">
-          <InlineInput value={todo.issue_url ?? ""} placeholder="https://github.com/…/issues/…" onSave={(issue_url) => update({ issue_url })} />
-          {!todo.issue_url && (
-            <button onClick={() => run(() => api.createIssue(todo.id))} title="タイトルとメモから issue を作って紐づけます">
-              issue を作る
-            </button>
-          )}
-          {todo.issue_url && (
-            <button onClick={() => run(() => api.openGithub(todo.issue_url!))}>
-              開く <Icon name="open" />
-            </button>
-          )}
-          {todo.issue_url && todo.issue_state === "open" && (
-            <button className="ghost" onClick={() => run(() => api.closeIssue(todo.id))}>
-              close
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="field">
-        <span>
-          Pull request{todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
-        </span>
-        <div className="actions">
-          <InlineInput value={todo.pr_url ?? ""} placeholder="https://github.com/…/pull/…（claude/todo-N- のブランチなら自動で紐づきます）" onSave={(pr_url) => update({ pr_url })} />
-          {todo.pr_url && (
-            <button onClick={() => run(() => api.openGithub(todo.pr_url!))}>
-              開く <Icon name="open" />
-            </button>
-          )}
-        </div>
-      </div>
-      <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
-
-      <h3>新しいセッション</h3>
-      <Field
-        label={`最初のプロンプト（空なら種類に応じた既定文。[todo:${todo.id}] は自動で付きます）`}
-        value={todo.prompt ?? ""}
-        placeholder={todo.kind === "research" ? "調査: タイトル＋メモ＋完了条件・出力条件を確認する指示" : "/grilling タイトル＋メモ"}
-        multiline
-        rows={3}
-        onSave={(prompt) => update({ prompt })}
-      />
-      <pre className="prompt-preview">{todo.prompt_preview}</pre>
-      <div className="launchers">
-        <button className="launcher primary" onClick={() => run(() => api.startCloud(todo.id))}>
-          <b>Cloud</b>
-          <span>Desktop</span>
-        </button>
-        <button className="launcher" onClick={() => run(() => api.startDesktop(todo.id))}>
-          <b>Local</b>
-          <span>Desktop</span>
-        </button>
-        <button className="launcher" onClick={() => run(() => api.startTerminal(todo.id))}>
-          <b>Local</b>
-          <span>ターミナル</span>
-        </button>
-      </div>
-
-      <div className="actions queue-actions">
-        {todo.queue_runner ? (
-          <>
-            <span className="muted">キューで待機中（{RUNNER_LABEL[todo.queue_runner]}）</span>
-            <button className="ghost" onClick={() => run(() => api.dequeue(todo.id))}>
-              キューから外す
-            </button>
-          </>
-        ) : (
-          <button onClick={() => run(() => api.enqueue(todo.id, "auto"))} title="ループが自動でセッションを始めます">
-            <Icon name="queue" /> キューに入れる
+        <span className="header-actions">
+          <button className="ghost" onClick={onEdit}>
+            編集
           </button>
-        )}
+          <button className="ghost icon" onClick={onClose} aria-label="閉じる">
+            <Icon name="close" />
+          </button>
+        </span>
+      </header>
+      <h2 className="drawer-title">{todo.title}</h2>
+      <div className="segmented status-seg">
+        {COLUMNS.map((c) => (
+          <button key={c.status} className={todo.status === c.status ? "on" : ""} onClick={() => setStatus(todo, c.status)}>
+            {c.label}
+          </button>
+        ))}
       </div>
 
-      <h3>セッション</h3>
-      {todo.sessions.length === 0 && <p className="muted">まだありません。受信箱からカードにドラッグすると紐づきます。</p>}
+      <button className="primary start-button" onClick={onStart}>
+        <Icon name="plus" /> セッションを開始
+      </button>
+      {todo.queue_runner && (
+        <div className="notice small">
+          <span>キューで待機中（{RUNNER_LABEL[todo.queue_runner]}）{todo.queue_error && ` — ${todo.queue_error}`}</span>
+          <button className="ghost" onClick={() => run(() => api.dequeue(todo.id))}>
+            外す
+          </button>
+        </div>
+      )}
+
+      <h3>セッション{live.length > 0 && <span className="count">{live.length}</span>}</h3>
+      {todo.sessions.length === 0 && <p className="muted">まだありません。「セッションを開始」か、受信箱からカードにドラッグして紐づけます。</p>}
       <ul className="sessions">
         {todo.sessions.map((s) => (
           <SessionRow key={s.session_id} session={s} run={run} onUnlink={() => run(() => api.unlinkSession(s.session_id))} />
         ))}
       </ul>
 
-      <Field label="メモ" value={todo.memo ?? ""} multiline onSave={(memo) => update({ memo })} />
+      <h3>GitHub</h3>
+      <ul className="links">
+        <li>
+          <span className="link-label">Issue</span>
+          {todo.issue_url ? (
+            <>
+              <button className="link" onClick={gh(todo.issue_url)} title={todo.issue_url}>
+                {issueRef(todo.issue_url) ?? todo.issue_url} <Icon name="open" />
+              </button>
+              {todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>{todo.issue_state}</span>}
+              {todo.issue_state === "open" && (
+                <button className="ghost small" onClick={() => run(() => api.closeIssue(todo.id))}>
+                  close
+                </button>
+              )}
+            </>
+          ) : (
+            <button className="small" onClick={() => run(() => api.createIssue(todo.id))} title="タイトルとメモから issue を作って紐づけます">
+              issue を作る
+            </button>
+          )}
+        </li>
+        <li>
+          <span className="link-label">PR</span>
+          {todo.pr_url ? (
+            <>
+              <button className="link" onClick={gh(todo.pr_url)} title={todo.pr_url}>
+                {issueRef(todo.pr_url) ?? todo.pr_url} <Icon name="open" />
+              </button>
+              {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+            </>
+          ) : (
+            <span className="muted">未連携（編集で URL を入れるか、claude/todo-{todo.id}- のブランチで自動連携）</span>
+          )}
+        </li>
+      </ul>
+
+      <h3>詳細</h3>
+      <dl className="props">
+        <dt>repo</dt>
+        <dd>
+          {todo.repos.length > 0 ? (
+            <span className="chips">
+              {todo.repos.map((r) => (
+                <span key={r} className={`chip${todo.repos_derived ? " derived" : ""}`}>
+                  <RepoDot repo={r} />
+                  {r}
+                </span>
+              ))}
+            </span>
+          ) : (
+            <span className="muted">バックログ</span>
+          )}
+        </dd>
+        <dt>フォルダ</dt>
+        <dd className="mono">{todo.cwd ?? <span className="muted">未設定</span>}</dd>
+        <dt>更新</dt>
+        <dd>{ago(todo.updated_at)}</dd>
+      </dl>
+      {todo.memo && (
+        <>
+          <h3>メモ</h3>
+          <div className="memo">{todo.memo}</div>
+        </>
+      )}
 
       {confirmingDelete ? (
         <div className="actions delete-confirm">
@@ -846,6 +824,133 @@ function Drawer({ todo, local, groups, run, setStatus, onClose }: {
         </button>
       )}
     </aside>
+  );
+}
+
+function EditTodoDialog({ todo, local, groups, run, onClose }: {
+  todo: Todo;
+  local: LocalRepo[];
+  groups: string[];
+  run: (f: () => Promise<unknown>) => void;
+  onClose: () => void;
+}) {
+  const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
+  return (
+    <Modal title={`#${todo.id} を編集`} onClose={onClose} footer={<><span className="muted">欄を離れると保存されます</span><button className="primary" onClick={onClose}>完了</button></>}>
+      <Field label="タイトル" value={todo.title} onSave={(title) => update({ title })} />
+      <div className="field">
+        <span>種類（最初のプロンプトの既定文が変わります）</span>
+        <div className="segmented">
+          {KINDS.map((k) => (
+            <button key={k.key} className={todo.kind === k.key ? "on" : ""} onClick={() => update({ kind: k.key })}>
+              {k.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <RepoPicker todo={todo} local={local} groups={groups} update={update} />
+      <div className="two-col">
+        <Field label="Issue URL" value={todo.issue_url ?? ""} placeholder="https://github.com/…/issues/…" onSave={(issue_url) => update({ issue_url })} />
+        <Field label="PR URL" value={todo.pr_url ?? ""} placeholder="https://github.com/…/pull/…" onSave={(pr_url) => update({ pr_url })} />
+      </div>
+      <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
+      <Field label="メモ" value={todo.memo ?? ""} multiline onSave={(memo) => update({ memo })} />
+    </Modal>
+  );
+}
+
+type StartTarget = "cloud" | "desktop" | "terminal" | "queue";
+const START_TARGETS: { key: StartTarget; title: string; sub: string }[] = [
+  { key: "cloud", title: "Cloud", sub: "Desktop で開く" },
+  { key: "desktop", title: "Local", sub: "Desktop" },
+  { key: "terminal", title: "Local", sub: "ターミナル（herdr）" },
+  { key: "queue", title: "キュー", sub: "ループで自動起動" },
+];
+
+function StartSessionDialog({ todo, run, onClose }: {
+  todo: Todo;
+  run: (f: () => Promise<unknown>) => void;
+  onClose: () => void;
+}) {
+  const hasGithub = todo.repos.some((r) => r.includes("/"));
+  const [target, setTarget] = useState<StartTarget>(hasGithub ? "cloud" : "desktop");
+  const [kind, setKind] = useState<Kind>(todo.kind);
+  const [prompt, setPrompt] = useState(todo.prompt ?? "");
+  const [runner, setRunner] = useState<Runner>("auto");
+  const start = () =>
+    run(async () => {
+      // Kind and prompt live on the todo, so the next start (and the loop) reuse them.
+      if (kind !== todo.kind || prompt !== (todo.prompt ?? "")) await api.updateTodo(todo.id, { kind, prompt });
+      if (target === "cloud") await api.startCloud(todo.id);
+      else if (target === "desktop") await api.startDesktop(todo.id);
+      else if (target === "terminal") await api.startTerminal(todo.id);
+      else await api.enqueue(todo.id, runner);
+      onClose();
+    });
+  return (
+    <Modal
+      title={`セッションを開始 — ${todo.title}`}
+      onClose={onClose}
+      wide
+      footer={
+        <>
+          <button className="ghost" onClick={onClose}>
+            キャンセル
+          </button>
+          <button className="primary" disabled={target === "cloud" && !hasGithub} onClick={start}>
+            {target === "queue" ? "キューに入れる" : "開始"}
+          </button>
+        </>
+      }
+    >
+      <div className="field">
+        <span>どこで始める</span>
+        <div className="launchers four">
+          {START_TARGETS.map((t) => (
+            <button
+              key={t.key}
+              className={`launcher${target === t.key ? " primary" : ""}`}
+              disabled={t.key === "cloud" && !hasGithub}
+              title={t.key === "cloud" && !hasGithub ? "Cloud には GitHub のリポジトリが必要です" : undefined}
+              onClick={() => setTarget(t.key)}
+            >
+              <b>{t.title}</b>
+              <span>{t.sub}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+      {target === "queue" && (
+        <label className="field">
+          <span>キューからの起動方法</span>
+          <select value={runner} onChange={(e) => setRunner(e.target.value as Runner)}>
+            {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
+              <option key={r} value={r}>
+                {RUNNER_LABEL[r]}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      <div className="field">
+        <span>種類</span>
+        <div className="segmented">
+          {KINDS.map((k) => (
+            <button key={k.key} className={kind === k.key ? "on" : ""} onClick={() => setKind(k.key)}>
+              {k.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <label className="field">
+        <span>最初のプロンプト（空なら種類に応じた既定文。[todo:{todo.id}] は自動で付きます）</span>
+        <textarea rows={5} value={prompt} placeholder={kind === "research" ? "調査: タイトル＋メモ＋完了条件・出力条件を確認する指示" : "/grilling タイトル＋メモ"} onChange={(e) => setPrompt(e.target.value)} />
+      </label>
+      {!prompt && kind === todo.kind && <pre className="prompt-preview">{todo.prompt_preview}</pre>}
+      <p className="muted hint">
+        作業フォルダ: <span className="mono">{todo.cwd ?? "未設定（Desktop は一時フォルダ、ターミナルはホーム）"}</span>
+      </p>
+    </Modal>
   );
 }
 
@@ -1310,7 +1415,7 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"add" | "import" | null>(null);
+  const [dialog, setDialog] = useState<"add" | "import" | "edit" | "start" | null>(null);
   const [view, setViewState] = useState<View>(loadView);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
@@ -1571,7 +1676,18 @@ export default function App() {
         </DndContext>
       </main>
 
-      {selectedTodo && <Drawer todo={selectedTodo} local={local} groups={groups} run={run} setStatus={setStatus} onClose={() => setSelection(null)} />}
+      {selectedTodo && (
+        <Drawer
+          todo={selectedTodo}
+          run={run}
+          setStatus={setStatus}
+          onClose={() => setSelection(null)}
+          onEdit={() => setDialog("edit")}
+          onStart={() => setDialog("start")}
+        />
+      )}
+      {dialog === "edit" && selectedTodo && <EditTodoDialog todo={selectedTodo} local={local} groups={groups} run={run} onClose={() => setDialog(null)} />}
+      {dialog === "start" && selectedTodo && <StartSessionDialog todo={selectedTodo} run={run} onClose={() => setDialog(null)} />}
       {selectedSession && board && (
         <SessionDrawer session={selectedSession} todos={board.todos} run={run} onClose={() => setSelection(null)} onCreated={openTodo} />
       )}
