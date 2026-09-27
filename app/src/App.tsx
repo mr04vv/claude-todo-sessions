@@ -1933,11 +1933,9 @@ export default function App() {
                 className={`repo${repoFilter === lane.key ? " on" : ""}`}
                 title={lane.key}
                 onClick={() => {
-                  const picking = repoFilter !== lane.key;
-                  setRepoFilter(picking ? lane.key : null);
-                  // A repository is looked at on the board, in its own lane; the list keeps its view.
+                  setRepoFilter(repoFilter === lane.key ? null : lane.key);
+                  // A repository is looked at on the board; the list keeps its own view.
                   if (view !== "board" && view !== "list") setView("board");
-                  if (picking) setGroupBy("repo");
                 }}
               >
                 <RepoDot repo={lane.key} />
