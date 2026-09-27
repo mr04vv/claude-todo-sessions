@@ -35,6 +35,15 @@ const DRAG_DISTANCE_PX = 6;
 const VIEW_KEY = "view";
 const COLLAPSED_KEY = "collapsedLanes";
 const HIDE_DONE_KEY = "hideDone";
+const GROUP_KEY = "groupBy";
+
+/// Board and list lanes: one per repository, or one per parent todo for the
+/// todos that have one (the rest stay in their repository lanes).
+type GroupBy = "repo" | "parent";
+const GROUPINGS: { key: GroupBy; label: string }[] = [
+  { key: "repo", label: "リポジトリ" },
+  { key: "parent", label: "親タスク" },
+];
 
 type View = "board" | "list" | "backlog" | "inbox" | "queue";
 const VIEWS: { key: View; label: string }[] = [
@@ -104,11 +113,14 @@ interface Lane {
   key: string;
   todos: Todo[];
   inbox: Session[];
+  /// Set when the lane holds one parent's subtasks; the parent is its header.
+  parent?: Todo;
 }
 
 /// One lane per group or repository, groups first, the multi-repo lane last;
-/// the backlog has its own page.
-function buildLanes(board: Board): Lane[] {
+/// the backlog has its own page. Grouped by parent, todos with a parent get a
+/// lane per parent ahead of the rest; `allTodos` finds parents the filters hid.
+function buildLanes(board: Board, groupBy: GroupBy = "repo", allTodos: Todo[] = board.todos): Lane[] {
   const lanes = new Map<string, Lane>();
   const lane = (repos: string[] | undefined) => {
     const key = laneKey(repos);
@@ -116,12 +128,31 @@ function buildLanes(board: Board): Lane[] {
     if (!l) lanes.set(key, (l = { key, todos: [], inbox: [] }));
     return l;
   };
-  for (const t of board.todos) lane(t.repos).todos.push(t);
+  const hasChildren = new Set(board.todos.map((t) => t.parent_id));
+  for (const t of board.todos) {
+    const parent = groupBy === "parent" ? allTodos.find((p) => p.id === t.parent_id) : undefined;
+    if (parent) {
+      const key = `parent:${parent.id}`;
+      let l = lanes.get(key);
+      if (!l) lanes.set(key, (l = { key, todos: [], inbox: [], parent }));
+      l.todos.push(t);
+    } else if (groupBy === "repo" || !hasChildren.has(t.id)) {
+      lane(t.repos).todos.push(t);
+    }
+  }
   for (const s of board.inbox) lane(s.repos).inbox.push(s);
   lanes.delete(BACKLOG_LANE);
-  // Free groups ("調査") first, then repositories, the multi-repo lane last.
-  const rank = (key: string) => (key === MULTI_LANE ? 2 : key.includes("/") ? 1 : 0);
-  return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key, "en", { sensitivity: "base" }));
+  // Parent lanes first, then free groups ("調査"), then repositories, the multi-repo lane last.
+  const rank = (l: Lane) => (l.parent ? -1 : l.key === MULTI_LANE ? 2 : l.key.includes("/") ? 1 : 0);
+  return [...lanes.values()].sort((a, b) => rank(a) - rank(b) || (a.parent?.id ?? 0) - (b.parent?.id ?? 0) || a.key.localeCompare(b.key, "en", { sensitivity: "base" }));
+}
+
+function loadGroupBy(): GroupBy {
+  try {
+    return localStorage.getItem(GROUP_KEY) === "parent" ? "parent" : "repo";
+  } catch {
+    return "repo";
+  }
 }
 
 function loadView(): View {
@@ -550,16 +581,38 @@ function InboxItem({ session, selected, onSelect }: { session: Session; selected
   );
 }
 
-function LaneHeader({ lane, collapsed, onToggle }: { lane: Lane; collapsed?: boolean; onToggle?: () => void }) {
-  const [owner, name] = lane.key.includes("/") ? lane.key.split(/\/(.*)/s) : [null, lane.key];
+function LaneHeader({ lane, collapsed, onToggle, onOpenTodo }: { lane: Lane; collapsed?: boolean; onToggle?: () => void; onOpenTodo?: (id: number) => void }) {
+  const [owner, name] = lane.parent ? [null, lane.parent.title] : lane.key.includes("/") ? lane.key.split(/\/(.*)/s) : [null, lane.key];
   const waiting = lane.todos.flatMap((t) => t.sessions).concat(lane.inbox).filter((s) => s.state === "needs_input").length;
+  const done = lane.todos.filter((t) => t.status === "done").length;
   const body = (
     <>
       {onToggle && <span className="chevron">{collapsed ? "▸" : "▾"}</span>}
-      <RepoDot repo={lane.key} />
+      {lane.parent ? <span className="mono muted">#{lane.parent.id}</span> : <RepoDot repo={lane.key} />}
       {owner && <span className="muted">{owner}/</span>}
       <span className="lane-name">{name}</span>
-      {lane.todos.length > 0 && <span className="count">{lane.todos.length}</span>}
+      {lane.parent ? (
+        <>
+          <span className="muted">
+            {done}/{lane.todos.length} 完了
+          </span>
+          {onOpenTodo && (
+            <span
+              role="button"
+              className="tag lane-open"
+              title="親 todo を開く"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenTodo(lane.parent!.id);
+              }}
+            >
+              親を開く
+            </span>
+          )}
+        </>
+      ) : (
+        lane.todos.length > 0 && <span className="count">{lane.todos.length}</span>
+      )}
       {lane.inbox.length > 0 && <span className="muted">受信箱 {lane.inbox.length}</span>}
       {waiting > 0 && (
         <span className="pill waiting">
@@ -592,7 +645,7 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
 }) {
   return (
     <section className={`lane glass${collapsed ? " collapsed" : ""}`}>
-      <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} />
+      <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} onOpenTodo={onSelectTodo} />
       {!collapsed && (
         <div className="lane-grid">
           {COLUMNS.map((c) => (
@@ -734,7 +787,7 @@ function SessionRow({ session, run, onUnlink }: {
 
 /// Read-mostly view of a todo: what it is linked to and the ways into it.
 /// Editing and starting sessions happen in dialogs.
-function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, onStart }: {
+function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, onStart, onAddChild }: {
   todo: Todo;
   allTodos: Todo[];
   onOpenTodo: (id: number) => void;
@@ -743,7 +796,10 @@ function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, o
   onClose: () => void;
   onEdit: () => void;
   onStart: () => void;
+  onAddChild: () => void;
 }) {
+  const children = allTodos.filter((c) => c.parent_id === todo.id);
+  const parent = todo.parent_id ? allTodos.find((t) => t.id === todo.parent_id) : undefined;
   // window.confirm never returns true inside the Tauri webview, so confirm in place.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   useEffect(() => setConfirmingDelete(false), [todo.id]);
@@ -785,23 +841,39 @@ function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, o
         </div>
       )}
 
-      {todo.is_orchestrator && (
+      {parent && (
+        <p className="muted">
+          親:{" "}
+          <a href="#" onClick={(e) => (e.preventDefault(), onOpenTodo(parent.id))}>
+            #{parent.id} {parent.title}
+          </a>
+        </p>
+      )}
+      {!parent && (
         <>
-          <h3>子 todo（リポジトリごとの実装）</h3>
-          {allTodos.filter((c) => c.parent_id === todo.id).length === 0 && (
-            <p className="muted">まだありません。「セッションを開始」で計画セッションを Local で始めると、Claude がリポジトリごとの子 todo を登録します。全部 Done になるとこの todo も Done になります。</p>
+          <h3>
+            サブタスク{children.length > 0 && <span className="count">{children.length}</span>}
+            <button className="ghost small" onClick={onAddChild}>
+              ＋ 追加
+            </button>
+          </h3>
+          {children.length === 0 && (
+            <p className="muted">
+              {todo.is_orchestrator
+                ? "まだありません。「セッションを開始」で計画セッションを Local で始めると、Claude がリポジトリごとの子 todo を登録します。"
+                : "まだありません。"}
+              全部 Done になるとこの todo も Done になります。
+            </p>
           )}
           <ul className="list">
-            {allTodos
-              .filter((c) => c.parent_id === todo.id)
-              .map((c) => (
-                <li key={c.id} className="list-row" onClick={() => onOpenTodo(c.id)}>
-                  <DoneCheck todo={c} setStatus={setStatus} />
-                  <span className="list-title">{c.title}</span>
-                  {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
-                  <GhBadges todo={c} />
-                </li>
-              ))}
+            {children.map((c) => (
+              <li key={c.id} className="list-row" onClick={() => onOpenTodo(c.id)}>
+                <DoneCheck todo={c} setStatus={setStatus} />
+                <span className="list-title">{c.title}</span>
+                {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
+                <GhBadges todo={c} />
+              </li>
+            ))}
           </ul>
         </>
       )}
@@ -1139,15 +1211,17 @@ function Modal({ title, onClose, children, footer, wide }: {
 }
 
 /// Adds todos one after another: the dialog stays open and lists what it added.
-function AddTodoDialog({ local, groups, run, onClose, onOpenTodo }: {
+function AddTodoDialog({ local, groups, parent, run, onClose, onOpenTodo }: {
   local: LocalRepo[];
   groups: string[];
+  /// When set, every todo added here becomes this todo's subtask.
+  parent?: Todo;
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
   onOpenTodo: (id: number) => void;
 }) {
   const [title, setTitle] = useState("");
-  const [repo, setRepo] = useState("");
+  const [repo, setRepo] = useState(parent?.repos.length === 1 ? parent.repos[0] : "");
   const [issueUrl, setIssueUrl] = useState("");
   const [kind, setKind] = useState<Kind>("implementation");
   const [added, setAdded] = useState<Todo[]>([]);
@@ -1158,7 +1232,7 @@ function AddTodoDialog({ local, groups, run, onClose, onOpenTodo }: {
     if (!t) return;
     const path = local.find((r) => r.key === repo)?.path;
     run(async () => {
-      const todo = await api.createTodo({ title: t, kind, repos: repo ? [repo] : [], cwd: path, issue_url: issueUrl.trim() || undefined });
+      const todo = await api.createTodo({ title: t, kind, repos: repo ? [repo] : [], cwd: path, issue_url: issueUrl.trim() || undefined, parent_id: parent?.id });
       setAdded((prev) => [todo, ...prev]);
       setTitle("");
       setIssueUrl("");
@@ -1167,7 +1241,7 @@ function AddTodoDialog({ local, groups, run, onClose, onOpenTodo }: {
   };
   return (
     <Modal
-      title="todo を追加"
+      title={parent ? `サブタスクを追加 — #${parent.id} ${parent.title}` : "todo を追加"}
       onClose={onClose}
       footer={
         <>
@@ -1298,7 +1372,7 @@ function ListPage({ lanes, selectedId, run, setStatus, onSelectTodo }: {
         const todos = [...lane.todos].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
         return (
           <section key={lane.key} className="glass panel">
-            <LaneHeader lane={lane} />
+            <LaneHeader lane={lane} onOpenTodo={onSelectTodo} />
             <ul className="list">
               {todos.map((t) => {
                 const live = t.sessions.filter((x) => x.state !== "ended");
@@ -1548,11 +1622,12 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"add" | "import" | "edit" | "start" | "quick" | null>(null);
+  const [dialog, setDialog] = useState<"add" | "addChild" | "import" | "edit" | "start" | "quick" | null>(null);
   const [view, setViewState] = useState<View>(loadView);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
   const [hideDone, setHideDoneState] = useState<boolean>(loadHideDone);
+  const [groupBy, setGroupByState] = useState<GroupBy>(loadGroupBy);
   const [local, setLocal] = useState<LocalRepo[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: DRAG_DISTANCE_PX } }));
@@ -1560,6 +1635,10 @@ export default function App() {
   const setView = (v: View) => {
     remember(VIEW_KEY, v);
     setViewState(v);
+  };
+  const setGroupBy = (v: GroupBy) => {
+    remember(GROUP_KEY, v);
+    setGroupByState(v);
   };
   const setHideDone = (v: boolean) => {
     remember(HIDE_DONE_KEY, v ? "1" : "0");
@@ -1644,7 +1723,7 @@ export default function App() {
     ),
     inbox: board.inbox.filter((s) => (repoFilter === null || laneKey(s.repos) === repoFilter) && matchesState([s])),
   };
-  const lanes = visible ? buildLanes(visible) : [];
+  const lanes = visible && board ? buildLanes(visible, groupBy, board.todos) : [];
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set((board?.todos ?? []).flatMap((t) => t.repos).filter((r) => !r.includes("/")))].sort();
   const waiting = board ? board.todos.flatMap((t) => t.sessions).filter((s) => s.state === "needs_input").length : 0;
@@ -1759,6 +1838,15 @@ export default function App() {
               </button>
             ))}
           </div>
+          {(view === "board" || view === "list") && (
+            <div className="segmented" title="レーンのまとめ方">
+              {GROUPINGS.map((g) => (
+                <button key={g.key} className={groupBy === g.key ? "on" : ""} onClick={() => setGroupBy(g.key)}>
+                  {g.label}
+                </button>
+              ))}
+            </div>
+          )}
           <label className="toggle">
             <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} />
             Done を隠す{doneHidden > 0 && <span className="count">{doneHidden}</span>}
@@ -1846,6 +1934,7 @@ export default function App() {
           onClose={() => setSelection(null)}
           onEdit={() => setDialog("edit")}
           onStart={() => setDialog("start")}
+          onAddChild={() => setDialog("addChild")}
         />
       )}
       {dialog === "edit" && selectedTodo && <EditTodoDialog todo={selectedTodo} local={local} groups={groups} run={run} onClose={() => setDialog(null)} />}
@@ -1853,10 +1942,11 @@ export default function App() {
       {selectedSession && board && (
         <SessionDrawer session={selectedSession} todos={board.todos} run={run} onClose={() => setSelection(null)} onCreated={openTodo} />
       )}
-      {dialog === "add" && (
+      {(dialog === "add" || (dialog === "addChild" && selectedTodo)) && (
         <AddTodoDialog
           local={local}
           groups={groups}
+          parent={dialog === "addChild" ? selectedTodo ?? undefined : undefined}
           run={run}
           onClose={() => setDialog(null)}
           onOpenTodo={(id) => {

@@ -1759,3 +1759,23 @@ button.small {
 .status-select.st-review {
   color: var(--link);
 }
+
+.lane-open {
+  cursor: pointer;
+}
+
+.lane-open:hover {
+  color: var(--text);
+}
+
+.drawer h3:has(.small) {
+  display: flex;
+  align-items: center;
+}
+
+.drawer h3 .small {
+  margin-left: auto;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 12px;
+}

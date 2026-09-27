@@ -60,6 +60,7 @@ export interface TodoInput {
   memo?: string;
   repos?: string[];
   kind?: Kind;
+  parent_id?: number;
 }
 
 export interface TodoUpdate {

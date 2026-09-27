@@ -34,7 +34,7 @@ struct CreateArgs {
     repos: Option<Vec<String>>,
     /// True for a research task (asks for completion/output conditions); default is implementation.
     research: Option<bool>,
-    /// The orchestrator todo this one implements a part of.
+    /// The parent todo this one is a subtask of (an orchestrator, or any todo).
     parent_id: Option<i64>,
 }
 
