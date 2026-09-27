@@ -1446,3 +1446,58 @@ button.lane-head:hover {
 .notice > span {
   flex: 1;
 }
+
+/* ---------- queue ---------- */
+
+.tag.queued {
+  color: var(--link);
+  border-color: color-mix(in srgb, var(--accent-a) 40%, transparent);
+}
+
+.tag.queued.failed {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+}
+
+.queue-actions {
+  margin-top: 8px;
+}
+
+.loop-head {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.loop-head .hint {
+  padding: 0;
+  margin-top: 4px;
+}
+
+.toggle.big {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.order-buttons {
+  display: inline-flex;
+  flex-direction: column;
+}
+
+.order-buttons button {
+  width: 22px;
+  height: 16px;
+}
+
+.runner-select {
+  width: 170px !important;
+}
+
+.queue-error {
+  display: block;
+  font-size: 11px;
+  font-weight: 500;
+}

@@ -21,6 +21,7 @@ import {
   type Issue,
   type LocalRepo,
   type PrState,
+  type Runner,
   type Session,
   type SessionState,
   type Status,
@@ -34,13 +35,20 @@ const VIEW_KEY = "view";
 const COLLAPSED_KEY = "collapsedLanes";
 const HIDE_DONE_KEY = "hideDone";
 
-type View = "board" | "list" | "backlog" | "inbox";
+type View = "board" | "list" | "backlog" | "inbox" | "queue";
 const VIEWS: { key: View; label: string }[] = [
   { key: "board", label: "ボード" },
   { key: "list", label: "リスト" },
   { key: "backlog", label: "バックログ" },
   { key: "inbox", label: "受信箱" },
+  { key: "queue", label: "キュー" },
 ];
+
+const RUNNER_LABEL: Record<Runner, string> = {
+  auto: "自動（Cloud 優先）",
+  cloud: "Cloud",
+  local: "Local（herdr）",
+};
 
 type StateFilter = "all" | "needs_input" | "running";
 const STATE_FILTERS: { key: StateFilter; label: string }[] = [
@@ -196,7 +204,7 @@ function directSession(todo: Todo): Session | null {
   return live.length === 1 ? live[0] : todo.sessions.length === 1 ? todo.sessions[0] : null;
 }
 
-type IconName = "board" | "list" | "backlog" | "inbox" | "plus" | "import" | "close" | "open";
+type IconName = "board" | "list" | "backlog" | "inbox" | "queue" | "plus" | "import" | "close" | "open" | "up" | "down";
 
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, string> = {
@@ -204,6 +212,9 @@ function Icon({ name }: { name: IconName }) {
     list: "M4 6h16M4 12h16M4 18h10",
     backlog: "M4 7h16M4 12h10M4 17h6",
     inbox: "M3 13l2-8h14l2 8v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 13h5l2 3h4l2-3h5",
+    queue: "M5 6l4 3-4 3zM12 7h8M12 12h8M5 17h15",
+    up: "M6 15l6-6 6 6",
+    down: "M6 9l6 6 6-6",
     plus: "M12 5v14M5 12h14",
     import: "M12 4v11M7 10l5 5 5-5M4 19h16",
     close: "M6 6l12 12M18 6L6 18",
@@ -397,6 +408,7 @@ function TodoCard({ todo, selected, onSelect, run }: {
       </div>
       <div className="card-title">{todo.title}</div>
       <div className="card-meta">
+        {todo.queue_runner && <span className={`tag queued${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "キュー"}</span>}
         <GhBadges todo={todo} />
         {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
           <StateBadge key={st} state={st} />
@@ -723,6 +735,21 @@ function Drawer({ todo, local, groups, run, setStatus, onClose }: {
           <b>Local</b>
           <span>ターミナル</span>
         </button>
+      </div>
+
+      <div className="actions queue-actions">
+        {todo.queue_runner ? (
+          <>
+            <span className="muted">キューで待機中（{RUNNER_LABEL[todo.queue_runner]}）</span>
+            <button className="ghost" onClick={() => run(() => api.dequeue(todo.id))}>
+              キューから外す
+            </button>
+          </>
+        ) : (
+          <button onClick={() => run(() => api.enqueue(todo.id, "auto"))} title="ループが自動でセッションを始めます">
+            <Icon name="queue" /> キューに入れる
+          </button>
+        )}
       </div>
 
       <h3>セッション</h3>
@@ -1133,6 +1160,78 @@ function InboxPage({ board, selectedSessionId, run, onSelectSession }: {
   );
 }
 
+function QueuePage({ board, selectedId, run, onSelectTodo }: {
+  board: Board;
+  selectedId: number | null;
+  run: (f: () => Promise<unknown>) => void;
+  onSelectTodo: (id: number) => void;
+}) {
+  const rows = board.todos.filter((t) => t.queue_runner).sort((a, b) => (a.queue_pos ?? 0) - (b.queue_pos ?? 0) || a.id - b.id);
+  return (
+    <div className="stack">
+      <div className="panel glass loop-head">
+        <div>
+          <b>ループ</b>
+          <p className="muted hint">キューに入れた todo を、上から順にすべて同時にセッションとして始めます。始まった todo はキューから外れ、ボードで状態を追えます。入力待ちになったら通知します。</p>
+        </div>
+        <label className="toggle big">
+          <input type="checkbox" checked={board.loop_enabled} onChange={(e) => run(() => api.setLoopEnabled(e.target.checked))} />
+          {board.loop_enabled ? "実行中" : "停止中"}
+        </label>
+      </div>
+      {rows.length === 0 && <p className="muted empty">キューは空です。todo のパネルの「キューに入れる」から追加できます。</p>}
+      {rows.length > 0 && (
+        <section className="glass panel">
+          <ul className="list">
+            {rows.map((t, i) => (
+              <li key={t.id} className={`list-row${t.id === selectedId ? " selected" : ""}`} onClick={() => onSelectTodo(t.id)}>
+                <span className="mono muted">{i + 1}</span>
+                <span className="order-buttons" onClick={(e) => e.stopPropagation()}>
+                  <button className="ghost icon" disabled={i === 0} aria-label="上へ" onClick={() => run(() => api.moveInQueue(t.id, -1))}>
+                    <Icon name="up" />
+                  </button>
+                  <button className="ghost icon" disabled={i === rows.length - 1} aria-label="下へ" onClick={() => run(() => api.moveInQueue(t.id, 1))}>
+                    <Icon name="down" />
+                  </button>
+                </span>
+                <span className="list-title">
+                  {t.title}
+                  {t.queue_error && <span className="error-text queue-error">{t.queue_error}</span>}
+                </span>
+                {t.repos.map((r) => (
+                  <span key={r} className="tag">
+                    {repoName(r)}
+                  </span>
+                ))}
+                <select
+                  className="runner-select"
+                  value={t.queue_runner ?? "auto"}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={(e) => run(() => api.enqueue(t.id, e.target.value as Runner))}
+                >
+                  {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
+                    <option key={r} value={r}>
+                      {RUNNER_LABEL[r]}
+                    </option>
+                  ))}
+                </select>
+                {t.queue_error && (
+                  <button onClick={(e) => { e.stopPropagation(); run(() => api.enqueue(t.id, t.queue_runner ?? "auto")); }}>
+                    再試行
+                  </button>
+                )}
+                <button className="ghost" onClick={(e) => { e.stopPropagation(); run(() => api.dequeue(t.id)); }}>
+                  外す
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
 
 export default function App() {
@@ -1234,6 +1333,7 @@ export default function App() {
   const groups = [...new Set((board?.todos ?? []).flatMap((t) => t.repos).filter((r) => !r.includes("/")))].sort();
   const waiting = board ? board.todos.flatMap((t) => t.sessions).filter((s) => s.state === "needs_input").length : 0;
   const backlogCount = board?.todos.filter((t) => t.repos.length === 0).length ?? 0;
+  const queuedCount = board?.todos.filter((t) => t.queue_runner).length ?? 0;
   const doneHidden = hideDone ? (board?.todos.filter((t) => t.status === "done").length ?? 0) : 0;
 
   const selectedTodo = selection?.kind === "todo" ? board?.todos.find((t) => t.id === selection.id) ?? null : null;
@@ -1276,6 +1376,7 @@ export default function App() {
               <span className="label">{v.label}</span>
               {v.key === "backlog" && backlogCount > 0 && <span className="count">{backlogCount}</span>}
               {v.key === "inbox" && (board?.inbox.length ?? 0) > 0 && <span className="count">{board?.inbox.length}</span>}
+              {v.key === "queue" && queuedCount > 0 && <span className="count">{queuedCount}</span>}
             </button>
           ))}
         </nav>
@@ -1391,6 +1492,7 @@ export default function App() {
             )}
             {view === "list" && <ListPage lanes={lanes} selectedId={selectedId} run={run} setStatus={setStatus} onSelectTodo={openTodo} />}
             {view === "backlog" && visible && <BacklogPage board={visible} local={local} groups={groups} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
+            {view === "queue" && board && <QueuePage board={board} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
             {view === "inbox" && visible && <InboxPage board={visible} selectedSessionId={selectedSession?.session_id ?? null} run={run} onSelectSession={openSession} />}
           </div>
           {/* The overlay follows the pointer across columns; the originals stay in place. */}

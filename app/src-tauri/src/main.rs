@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -49,6 +50,8 @@ struct AppState {
     sync_status: Mutex<String>,
     /// `owner/repo` per working directory, from `git remote get-url origin`.
     origin_cache: Mutex<HashMap<String, Option<String>>>,
+    /// Whether the queue runner starts queued todos.
+    loop_enabled: AtomicBool,
 }
 
 fn home() -> PathBuf {
@@ -107,6 +110,7 @@ struct Board {
     todos: Vec<TodoView>,
     inbox: Vec<SessionView>,
     sync_status: String,
+    loop_enabled: bool,
 }
 
 fn git_origin(cwd: &str) -> Option<String> {
@@ -211,7 +215,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, inbox, sync_status })
+    Ok(Board { todos, inbox, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
 }
 
 #[tauri::command]
@@ -320,8 +324,9 @@ fn herdr(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into())
 }
 
-fn start_in_herdr(cwd: &str, label: &str, command: &str) -> Result<(), String> {
-    let created = herdr(&["workspace", "create", "--cwd", cwd, "--label", label, "--focus"])?;
+fn start_in_herdr(cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
+    let focus_flag = if focus { "--focus" } else { "--no-focus" };
+    let created = herdr(&["workspace", "create", "--cwd", cwd, "--label", label, focus_flag])?;
     let v: serde_json::Value = serde_json::from_str(&created).map_err(|e| format!("herdr output: {e}"))?;
     let pane = launch::herdr_pane_id(&v).ok_or("herdr output has no pane id")?;
     herdr(&["pane", "run", &pane, command]).map(|_| ())
@@ -336,8 +341,9 @@ fn start_in_ghostty(cwd: &str, command: &str) -> Result<(), String> {
     status.success().then_some(()).ok_or_else(|| format!("Ghostty failed: {status}"))
 }
 
-#[tauri::command]
-fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
+/// Starts `claude --session-id` for the todo in herdr (Ghostty if herdr is
+/// down), linked before it starts. `focus` brings the new workspace forward.
+fn launch_terminal(state: &AppState, todo_id: i64, focus: bool) -> Result<(), String> {
     let (todo, session_id) = {
         let db = state.db.lock().map_err(err)?;
         let todo = todo_or_err(&db, todo_id)?;
@@ -354,23 +360,90 @@ fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
         "claude --session-id {session_id} {}",
         shell_quote(&launch::start_prompt(todo.id, todo.prompt_body()))
     );
-    start_in_herdr(&cwd, &todo.title, &command).or_else(|herdr_err| {
+    start_in_herdr(&cwd, &todo.title, &command, focus).or_else(|herdr_err| {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", shell_quote(&cwd)))
             .map_err(|e| format!("{herdr_err} / {e}"))
     })
 }
 
-#[tauri::command]
-fn start_cloud(state: State<AppState>, todo_id: i64) -> Result<(), String> {
+/// Creates a cloud session for the todo and returns its `cse_…` id.
+fn launch_cloud(state: &AppState, todo_id: i64) -> Result<String, String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
-    let repos = launch::github_repos(&repos_of_todo(&state, &todo));
+    let repos = launch::github_repos(&repos_of_todo(state, &todo));
     if repos.is_empty() {
         return Err("Cloud には GitHub のリポジトリが必要です。リポジトリ欄で owner/repo を選ぶか、issue URL か GitHub を origin に持つ作業フォルダを設定してください".into());
     }
     let db = state.db.lock().map_err(err)?;
-    let id = cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, todo.prompt_body())?;
-    drop(db);
+    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, todo.prompt_body())
+}
+
+#[tauri::command]
+fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
+    launch_terminal(&state, todo_id, true)
+}
+
+#[tauri::command]
+fn start_cloud(state: State<AppState>, todo_id: i64) -> Result<(), String> {
+    let id = launch_cloud(&state, todo_id)?;
     open_url(&launch::jump_url(&id, None))
+}
+
+const RUNNER_CLOUD: &str = "cloud";
+const RUNNER_LOCAL: &str = "local";
+const RUNNER_AUTO: &str = "auto";
+/// How often the queue runner looks for todos to start.
+const QUEUE_INTERVAL: Duration = Duration::from_secs(10);
+
+#[tauri::command]
+fn enqueue(state: State<AppState>, todo_id: i64, runner: String) -> Result<(), String> {
+    if ![RUNNER_CLOUD, RUNNER_LOCAL, RUNNER_AUTO].contains(&runner.as_str()) {
+        return Err(format!("unknown runner {runner}"));
+    }
+    state.db.lock().map_err(err)?.enqueue(todo_id, &runner).map_err(err)
+}
+
+#[tauri::command]
+fn dequeue(state: State<AppState>, todo_id: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.dequeue(todo_id).map_err(err)
+}
+
+#[tauri::command]
+fn move_in_queue(state: State<AppState>, todo_id: i64, delta: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.move_in_queue(todo_id, delta).map_err(err)
+}
+
+#[tauri::command]
+fn set_loop_enabled(state: State<AppState>, enabled: bool) {
+    state.loop_enabled.store(enabled, Ordering::Relaxed);
+}
+
+/// Starts every queued todo, all at once (no concurrency limit), in queue
+/// order. A todo that fails to start keeps its error and waits for a retry.
+// ponytail: unlimited parallel starts; add a max-running setting if machines or quotas choke.
+fn queue_loop(app: AppHandle) {
+    loop {
+        std::thread::sleep(QUEUE_INTERVAL);
+        let state = app.state::<AppState>();
+        if !state.loop_enabled.load(Ordering::Relaxed) {
+            continue;
+        }
+        let queued = match state.db.lock().map(|db| db.queued()) {
+            Ok(Ok(q)) => q,
+            _ => continue,
+        };
+        for todo in queued.into_iter().filter(|t| t.queue_error.is_none()) {
+            let runner = todo.queue_runner.as_deref().unwrap_or(RUNNER_AUTO);
+            let cloud = runner == RUNNER_CLOUD
+                || (runner == RUNNER_AUTO && !launch::github_repos(&repos_of_todo(&state, &todo)).is_empty());
+            let started = if cloud { launch_cloud(&state, todo.id).map(|_| ()) } else { launch_terminal(&state, todo.id, false) };
+            if let Ok(db) = state.db.lock() {
+                let _ = match started {
+                    Ok(()) => db.dequeue(todo.id),
+                    Err(e) => db.set_queue_error(todo.id, Some(&e)),
+                };
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -749,6 +822,7 @@ fn main() {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
             origin_cache: Mutex::new(HashMap::new()),
+            loop_enabled: AtomicBool::new(true),
         })
         .setup(|app| {
             // Menu bar app: no Dock icon, closing the window only hides it.
@@ -786,6 +860,8 @@ fn main() {
             let handle = app.handle().clone();
             std::thread::spawn(move || watch_loop(handle));
             std::thread::spawn(issue_sync_loop);
+            let handle = app.handle().clone();
+            std::thread::spawn(move || queue_loop(handle));
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -809,7 +885,11 @@ fn main() {
             import_issues,
             local_repos,
             create_issue,
-            close_issue
+            close_issue,
+            enqueue,
+            dequeue,
+            move_in_queue,
+            set_loop_enabled
         ])
         .run(tauri::generate_context!())
         .expect("run tauri app");

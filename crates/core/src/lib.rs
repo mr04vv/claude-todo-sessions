@@ -74,6 +74,12 @@ pub struct Todo {
     pub pr_url: Option<String>,
     /// draft / open / review_requested / changes_requested / approved / merged / closed
     pub pr_state: Option<String>,
+    /// Waiting in the run queue to be started as "cloud" or "local"; None = not queued.
+    pub queue_runner: Option<String>,
+    /// Why the last automatic start failed, shown in the queue.
+    pub queue_error: Option<String>,
+    /// Place in the run queue; lower starts first.
+    pub queue_pos: Option<i64>,
 }
 
 impl Todo {
@@ -138,7 +144,10 @@ CREATE TABLE IF NOT EXISTS todos (
     prompt TEXT,
     issue_state TEXT,
     pr_url TEXT,
-    pr_state TEXT
+    pr_state TEXT,
+    queue_runner TEXT,
+    queue_pos INTEGER,
+    queue_error TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -154,7 +163,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 );
 ";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, queue_pos";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos";
 
 impl Status {
@@ -214,6 +223,9 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         issue_state: r.get(9)?,
         pr_url: r.get(10)?,
         pr_state: r.get(11)?,
+        queue_runner: r.get(12)?,
+        queue_error: r.get(13)?,
+        queue_pos: r.get(14)?,
     })
 }
 
@@ -246,7 +258,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -477,6 +489,59 @@ impl Db {
         let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.issue_state;
         self.conn.execute("UPDATE todos SET issue_state = ?2 WHERE id = ?1", params![id, state])?;
         Ok(before)
+    }
+
+    /// Puts the todo at the end of the run queue (or changes its runner).
+    pub fn enqueue(&self, id: i64, runner: &str) -> Result<()> {
+        let n = self.conn.execute(
+            "UPDATE todos SET queue_runner = ?2, queue_error = NULL,
+                queue_pos = COALESCE(queue_pos, (SELECT COALESCE(MAX(queue_pos), 0) + 1 FROM todos))
+             WHERE id = ?1",
+            params![id, runner],
+        )?;
+        if n == 0 {
+            return Err(Error::TodoNotFound(id));
+        }
+        Ok(())
+    }
+
+    pub fn dequeue(&self, id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE todos SET queue_runner = NULL, queue_pos = NULL, queue_error = NULL WHERE id = ?1",
+            [id],
+        )?;
+        Ok(())
+    }
+
+    pub fn queued(&self) -> Result<Vec<Todo>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {TODO_COLS} FROM todos WHERE queue_runner IS NOT NULL ORDER BY queue_pos, id"
+        ))?;
+        let rows = stmt.query_map([], todo_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Swaps the todo with its neighbour in the queue (`delta` -1 = earlier).
+    pub fn move_in_queue(&self, id: i64, delta: i64) -> Result<()> {
+        let q = self.queued()?;
+        let Some(i) = q.iter().position(|t| t.id == id) else { return Ok(()) };
+        let j = i as i64 + delta;
+        if j < 0 || j >= q.len() as i64 {
+            return Ok(());
+        }
+        let other = q[j as usize].id;
+        self.conn.execute(
+            "UPDATE todos SET queue_pos = CASE id WHEN ?1 THEN (SELECT queue_pos FROM todos WHERE id = ?2)
+                                                  ELSE (SELECT queue_pos FROM todos WHERE id = ?1) END
+             WHERE id IN (?1, ?2)",
+            params![id, other],
+        )?;
+        Ok(())
+    }
+
+    pub fn set_queue_error(&self, id: i64, error: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE todos SET queue_error = ?2 WHERE id = ?1", params![id, error])?;
+        Ok(())
     }
 
     /// Records the pull request's state and returns the one seen before.

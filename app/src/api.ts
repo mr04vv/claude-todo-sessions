@@ -32,14 +32,20 @@ export interface Todo {
   issue_state: "open" | "closed" | null;
   pr_url: string | null;
   pr_state: PrState | null;
+  queue_runner: Runner | null;
+  queue_error: string | null;
+  queue_pos: number | null;
 }
 
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
+
+export type Runner = "auto" | "cloud" | "local";
 
 export interface Board {
   todos: Todo[];
   inbox: Session[];
   sync_status: string;
+  loop_enabled: boolean;
 }
 
 export interface TodoInput {
@@ -85,6 +91,10 @@ export const api = {
   localRepos: () => invoke<LocalRepo[]>("local_repos"),
   createIssue: (todoId: number) => invoke<Todo>("create_issue", { todoId }),
   closeIssue: (todoId: number) => invoke<void>("close_issue", { todoId }),
+  enqueue: (todoId: number, runner: Runner) => invoke<void>("enqueue", { todoId, runner }),
+  dequeue: (todoId: number) => invoke<void>("dequeue", { todoId }),
+  moveInQueue: (todoId: number, delta: number) => invoke<void>("move_in_queue", { todoId, delta }),
+  setLoopEnabled: (enabled: boolean) => invoke<void>("set_loop_enabled", { enabled }),
   ghIssues: () => invoke<Issue[]>("gh_issues"),
   importIssues: (issues: IssueImport[]) => invoke<number>("import_issues", { issues }),
   board: () => invoke<Board>("board"),

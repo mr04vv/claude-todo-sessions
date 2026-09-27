@@ -331,3 +331,22 @@ fn todo_keeps_one_pr_and_its_state() {
     let u = db.update_todo(t.id, TodoPatch { pr_url: Some(String::new()), ..Default::default() }).unwrap();
     assert_eq!((u.pr_url, u.pr_state), (None, None));
 }
+
+#[test]
+fn queue_orders_and_records_runner_and_errors() {
+    let (_d, db) = open();
+    let a = db.create_todo(new_todo("a")).unwrap();
+    let b = db.create_todo(new_todo("b")).unwrap();
+    db.enqueue(b.id, "local").unwrap();
+    db.enqueue(a.id, "cloud").unwrap();
+    let q: Vec<(i64, String)> = db.queued().unwrap().into_iter().map(|t| (t.id, t.queue_runner.unwrap())).collect();
+    assert_eq!(q, vec![(b.id, "local".into()), (a.id, "cloud".into())]);
+    db.move_in_queue(a.id, -1).unwrap();
+    assert_eq!(db.queued().unwrap()[0].id, a.id);
+    db.set_queue_error(a.id, Some("no repo")).unwrap();
+    assert_eq!(db.get_todo(a.id).unwrap().unwrap().queue_error.as_deref(), Some("no repo"));
+    db.dequeue(a.id).unwrap();
+    let t = db.get_todo(a.id).unwrap().unwrap();
+    assert_eq!((t.queue_runner, t.queue_error), (None, None));
+    assert_eq!(db.queued().unwrap().len(), 1);
+}
