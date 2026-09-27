@@ -669,7 +669,7 @@ select {
 .col-heads,
 .lane-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -1314,7 +1314,7 @@ button.lane-head:hover {
 /* The board keeps four readable columns and scrolls sideways instead of squeezing. */
 .col-heads,
 .lane-grid {
-  min-width: 780px;
+  min-width: 960px;
 }
 
 .toolbar {
@@ -1754,4 +1754,8 @@ button.small {
   padding: 0 8px;
   line-height: 18px;
   color: var(--text-2);
+}
+
+.status-select.st-review {
+  color: var(--link);
 }

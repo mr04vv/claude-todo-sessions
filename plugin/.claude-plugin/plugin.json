@@ -1,5 +1,5 @@
 {
   "name": "todo-sessions",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "description": "Link todos and GitHub issues to Claude Code sessions"
 }

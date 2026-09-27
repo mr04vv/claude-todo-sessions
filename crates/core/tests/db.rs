@@ -443,3 +443,26 @@ fn migrated_integer_columns_read_back_as_integers() {
     db.enqueue(c.id, "auto").unwrap();
     assert_eq!(db.get_todo(c.id).unwrap().unwrap().queue_pos, Some(1));
 }
+
+#[test]
+fn review_status_works_on_databases_made_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'done')),
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL);
+         INSERT INTO todos (title, status, updated_at) VALUES ('keep me', 'doing', 5);
+         CREATE TABLE sessions (session_id TEXT PRIMARY KEY, todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
+         cwd TEXT NOT NULL, state TEXT NOT NULL, state_at INTEGER NOT NULL);
+         INSERT INTO sessions VALUES ('s1', 1, '/w', 'idle', 0);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let t = db.update_todo(1, TodoPatch { status: Some(Status::Review), ..Default::default() }).unwrap();
+    assert_eq!((t.title.as_str(), t.status), ("keep me", Status::Review));
+    assert_eq!(db.get_session("s1").unwrap().unwrap().todo_id, Some(1));
+    assert_eq!(db.list_todos(Some(Status::Review)).unwrap().len(), 1);
+}

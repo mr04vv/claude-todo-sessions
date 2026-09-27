@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-export type Status = "todo" | "doing" | "done";
+export type Status = "todo" | "doing" | "review" | "done";
 export type SessionState = "running" | "needs_input" | "idle" | "ended";
 
 export interface Session {

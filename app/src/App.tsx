@@ -161,6 +161,7 @@ function remember(key: string, value: string) {
 const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "Todo" },
   { status: "doing", label: "Doing" },
+  { status: "review", label: "Review" },
   { status: "done", label: "Done" },
 ];
 
@@ -208,7 +209,7 @@ function GhBadges({ todo }: { todo: Todo }) {
 const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle"];
 
 /// Status order for the list: what is in progress first, done last.
-const STATUS_RANK: Record<Status, number> = { doing: 0, todo: 1, done: 2 };
+const STATUS_RANK: Record<Status, number> = { review: 0, doing: 1, todo: 2, done: 3 };
 
 function sessionLabel(s: Session) {
   return s.title ?? s.session_id.slice(0, 12);

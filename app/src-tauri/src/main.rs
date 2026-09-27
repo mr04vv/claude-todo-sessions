@@ -794,6 +794,17 @@ fn refresh_states(db: &Db, todos: &[Todo]) {
                     false
                 }
             };
+            // A PR under review moves its todo to Review; one sent back for changes returns it to Doing.
+            if is_pr && todo.status != Status::Done && matches!(before, Ok(ref b) if b.as_deref() != Some(now.as_str())) {
+                let next = match now.as_str() {
+                    "review_requested" | "approved" => Some(Status::Review),
+                    "changes_requested" => Some(Status::Doing),
+                    _ => None,
+                };
+                if let Some(next) = next.filter(|n| *n != todo.status) {
+                    let _ = db.update_todo(todo.id, TodoPatch { status: Some(next), ..Default::default() });
+                }
+            }
             if just_finished {
                 mark_done(db, todo);
                 // Backstop for a PR that did not say "Closes …": close its todo's issue too.

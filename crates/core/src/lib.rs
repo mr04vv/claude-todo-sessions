@@ -44,6 +44,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Status {
     Todo,
     Doing,
+    /// A PR is up and waiting on review.
+    Review,
     Done,
 }
 
@@ -219,11 +221,12 @@ const MARKER_PREFIX: &str = "[todo:";
 /// Session titles are derived from the first prompt and cut to this length.
 pub const TITLE_MAX_CHARS: usize = 80;
 
-const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS todos (
+/// The todos table; `{name}` lets the review migration build a copy.
+const TODOS_TABLE: &str = "
+CREATE TABLE IF NOT EXISTS {name} (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'done')),
+    status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'review', 'done')),
     issue_url TEXT,
     cwd TEXT,
     memo TEXT,
@@ -239,6 +242,9 @@ CREATE TABLE IF NOT EXISTS todos (
     kind TEXT,
     parent_id INTEGER REFERENCES todos(id) ON DELETE SET NULL
 );
+";
+
+const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
@@ -262,12 +268,14 @@ impl Status {
         match self {
             Status::Todo => "todo",
             Status::Doing => "doing",
+            Status::Review => "review",
             Status::Done => "done",
         }
     }
     fn parse(s: &str) -> Status {
         match s {
             "doing" => Status::Doing,
+            "review" => Status::Review,
             "done" => Status::Done,
             _ => Status::Todo,
         }
@@ -365,8 +373,28 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
+    // The status CHECK predates 'review'; SQLite cannot alter a CHECK, so the
+    // table is rebuilt (which also gives migrated integer columns their type).
+    let todos_sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE name = 'todos'", [], |r| r.get(0))?;
+    if !todos_sql.contains("'review'") {
+        let cols = TODO_TABLE_COLS;
+        conn.execute_batch(&format!(
+            "PRAGMA foreign_keys = OFF;
+             BEGIN;
+             {create}
+             INSERT INTO todos_new ({cols}) SELECT {cols} FROM todos;
+             DROP TABLE todos;
+             ALTER TABLE todos_new RENAME TO todos;
+             COMMIT;
+             PRAGMA foreign_keys = ON;",
+            create = TODOS_TABLE.replace("{name}", "todos_new"),
+        ))?;
+    }
     Ok(())
 }
+
+/// Every column of the todos table, for copying rows between versions.
+const TODO_TABLE_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_pos, queue_error, kind, parent_id";
 
 const REMINDER_OPEN: &str = "<system-reminder>";
 const REMINDER_CLOSE: &str = "</system-reminder>";
@@ -417,6 +445,7 @@ impl Db {
         conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        conn.execute_batch(&TODOS_TABLE.replace("{name}", "todos"))?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         Ok(Db { conn })
