@@ -118,33 +118,33 @@ interface Lane {
 }
 
 /// One lane per group or repository, groups first, the multi-repo lane last;
-/// the backlog has its own page. Grouped by parent, todos with a parent get a
-/// lane per parent ahead of the rest; `allTodos` finds parents the filters hid.
+/// the backlog has its own page. Grouped by parent there is one lane per
+/// parent todo and nothing else; `allTodos` finds parents the filters hid.
 function buildLanes(board: Board, groupBy: GroupBy = "repo", allTodos: Todo[] = board.todos): Lane[] {
   const lanes = new Map<string, Lane>();
+  if (groupBy === "parent") {
+    for (const t of board.todos) {
+      const parent = allTodos.find((p) => p.id === t.parent_id);
+      if (!parent) continue;
+      const key = `parent:${parent.id}`;
+      let l = lanes.get(key);
+      if (!l) lanes.set(key, (l = { key, todos: [], inbox: [], parent }));
+      l.todos.push(t);
+    }
+    return [...lanes.values()].sort((a, b) => a.parent!.id - b.parent!.id);
+  }
   const lane = (repos: string[] | undefined) => {
     const key = laneKey(repos);
     let l = lanes.get(key);
     if (!l) lanes.set(key, (l = { key, todos: [], inbox: [] }));
     return l;
   };
-  const hasChildren = new Set(board.todos.map((t) => t.parent_id));
-  for (const t of board.todos) {
-    const parent = groupBy === "parent" ? allTodos.find((p) => p.id === t.parent_id) : undefined;
-    if (parent) {
-      const key = `parent:${parent.id}`;
-      let l = lanes.get(key);
-      if (!l) lanes.set(key, (l = { key, todos: [], inbox: [], parent }));
-      l.todos.push(t);
-    } else if (groupBy === "repo" || !hasChildren.has(t.id)) {
-      lane(t.repos).todos.push(t);
-    }
-  }
+  for (const t of board.todos) lane(t.repos).todos.push(t);
   for (const s of board.inbox) lane(s.repos).inbox.push(s);
   lanes.delete(BACKLOG_LANE);
-  // Parent lanes first, then free groups ("調査"), then repositories, the multi-repo lane last.
-  const rank = (l: Lane) => (l.parent ? -1 : l.key === MULTI_LANE ? 2 : l.key.includes("/") ? 1 : 0);
-  return [...lanes.values()].sort((a, b) => rank(a) - rank(b) || (a.parent?.id ?? 0) - (b.parent?.id ?? 0) || a.key.localeCompare(b.key, "en", { sensitivity: "base" }));
+  // Free groups ("調査") first, then repositories, the multi-repo lane last.
+  const rank = (key: string) => (key === MULTI_LANE ? 2 : key.includes("/") ? 1 : 0);
+  return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key, "en", { sensitivity: "base" }));
 }
 
 function loadGroupBy(): GroupBy {
@@ -1367,7 +1367,7 @@ function ListPage({ lanes, selectedId, run, setStatus, onSelectTodo }: {
   setStatus: (todo: Todo, status: Status) => void;
   onSelectTodo: (id: number) => void;
 }) {
-  if (lanes.length === 0) return <p className="muted empty">リポジトリに紐づいた todo はまだありません。</p>;
+  if (lanes.length === 0) return <p className="muted empty">表示できる todo はありません。</p>;
   return (
     <div className="stack">
       {lanes.map((lane) => {
@@ -1889,11 +1889,11 @@ export default function App() {
                 <div className="col-heads">
                   {COLUMNS.map((c) => (
                     <h2 key={c.status}>
-                      {c.label} <span className="count">{visible?.todos.filter((t) => t.status === c.status).length ?? 0}</span>
+                      {c.label} <span className="count">{lanes.flatMap((l) => l.todos).filter((t) => t.status === c.status).length}</span>
                     </h2>
                   ))}
                   <h2>
-                    受信箱 <span className="count">{visible?.inbox.length ?? 0}</span>
+                    受信箱 <span className="count">{lanes.reduce((n, l) => n + l.inbox.length, 0)}</span>
                   </h2>
                 </div>
                 {lanes.map((lane) => (
@@ -1912,7 +1912,11 @@ export default function App() {
                   />
                 ))}
                 {board && lanes.length === 0 && (
-                  <p className="muted empty">表示できる todo がありません。フィルタを外すか、バックログでリポジトリを選ぶか、issue を取り込んでください。</p>
+                  <p className="muted empty">
+                    {groupBy === "parent"
+                      ? "サブタスクを持つ todo がありません。サイドパネルの「サブタスク ＋ 追加」で作れます。"
+                      : "表示できる todo がありません。フィルタを外すか、バックログでリポジトリを選ぶか、issue を取り込んでください。"}
+                  </p>
                 )}
               </>
             )}
