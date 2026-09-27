@@ -436,7 +436,7 @@ function OpenButton({ session, run, primary }: { session: Session; run: (f: () =
       <button className={`open${primary ? " primary" : ""}`} title="Claude Desktop で開く" onClick={open("desktop")}>
         Desktop
       </button>
-      <button className={`open${primary ? " primary" : ""}`} title="herdr の pane に移動" onClick={open("herdr")}>
+      <button className={`open${primary ? " primary" : ""}`} title="herdr の pane に移動（閉じたセッションは claude --resume で再開）" onClick={open("herdr")}>
         herdr
       </button>
     </span>

@@ -345,21 +345,36 @@ fn open_github(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_session(session_id: String, target: Option<String>) -> Result<(), String> {
-    let cloud = launch::is_cloud_session(&session_id);
-    match target.as_deref() {
-        Some("herdr") => {
-            if cloud || !focus_in_herdr(&session_id) {
-                return Err("このセッションは herdr で動いていません".into());
-            }
-            return Ok(());
+fn open_session(state: State<AppState>, session_id: String, target: Option<String>) -> Result<(), String> {
+    if target.as_deref() == Some("herdr") {
+        if launch::is_cloud_session(&session_id) {
+            return Err("Cloud のセッションは herdr では開けません".into());
         }
-        Some("desktop") => {}
-        _ if !cloud && focus_in_herdr(&session_id) => return Ok(()),
-        _ => {}
+        return if focus_in_herdr(&session_id) { Ok(()) } else { resume_in_herdr(&state, &session_id) };
     }
-    let local = cts_core::desktop::find_local_id(&home().join(DESKTOP_SESSIONS_DIR), &session_id);
-    open_url(&launch::jump_url(&session_id, local.as_deref()))
+    jump_to_session(&session_id, target.as_deref() == Some("desktop"))
+}
+
+/// Shows a session where it runs: its herdr pane, else Desktop (which
+/// resumes a finished or archived one). `desktop` skips the herdr lookup.
+fn jump_to_session(session_id: &str, desktop: bool) -> Result<(), String> {
+    if !desktop && !launch::is_cloud_session(session_id) && focus_in_herdr(session_id) {
+        return Ok(());
+    }
+    let local = cts_core::desktop::find_local_id(&home().join(DESKTOP_SESSIONS_DIR), session_id);
+    open_url(&launch::jump_url(session_id, local.as_deref()))
+}
+
+/// Reopens a session that no longer runs anywhere: `claude --resume` in a new
+/// herdr workspace at the folder it ran in, which is where its transcript lives.
+fn resume_in_herdr(state: &AppState, session_id: &str) -> Result<(), String> {
+    let session = state.db.lock().map_err(err)?.get_session(session_id).map_err(err)?.ok_or("session not found")?;
+    if !std::path::Path::new(&session.cwd).is_dir() {
+        return Err(format!("作業フォルダ {} がもうないので再開できません", session.cwd));
+    }
+    let label = session.title.clone().unwrap_or_else(|| session_id.chars().take(8).collect());
+    start_in_herdr(&session.cwd, &label, &format!("claude --resume {session_id}"), true)?;
+    cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
 }
 
 fn todo_or_err(db: &Db, id: i64) -> Result<Todo, String> {
@@ -896,7 +911,7 @@ fn notify_session(session: Session, headline: &'static str) {
             .send();
         match response {
             Ok(NotificationResponse::Click) => {
-                if let Err(e) = open_session(session.session_id, None) {
+                if let Err(e) = jump_to_session(&session.session_id, false) {
                     eprintln!("{e}");
                 }
             }
@@ -1062,7 +1077,7 @@ fn main() {
                     } else if id == MENU_QUIT {
                         app.exit(0);
                     } else if let Some(session_id) = id.strip_prefix(MENU_SESSION_PREFIX) {
-                        if let Err(e) = open_session(session_id.to_string(), None) {
+                        if let Err(e) = jump_to_session(session_id, false) {
                             eprintln!("{e}");
                         }
                     }
