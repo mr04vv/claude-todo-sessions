@@ -908,6 +908,15 @@ button.lane-head:hover {
   height: 28px;
 }
 
+.row-choice {
+  width: 240px;
+  flex-shrink: 0;
+}
+
+.row-choice select {
+  width: 100%;
+}
+
 .list-row .status-select {
   width: 92px;
   font-size: 12px;

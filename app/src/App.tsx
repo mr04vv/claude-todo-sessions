@@ -211,6 +211,86 @@ function RepoDot({ repo }: { repo: string }) {
   return <span className="repo-dot" style={{ background: `hsl(${repoHue(repo)} 80% 65%)` }} />;
 }
 
+const NEW_GROUP = "__new_group__";
+
+/// Picks a local repository or a free group name ("調査"); a group needs no
+/// checkout and gets its own lane like a repository.
+function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPick }: {
+  local: LocalRepo[];
+  groups: string[];
+  exclude?: string[];
+  value?: string;
+  placeholder: string;
+  onPick: (key: string) => void;
+}) {
+  const [naming, setNaming] = useState(false);
+  const [name, setName] = useState("");
+  const commit = () => {
+    const g = name.trim().replace(/\//g, "-");
+    if (!g) return;
+    onPick(g);
+    setName("");
+    setNaming(false);
+  };
+  if (naming) {
+    return (
+      <div className="actions">
+        <input
+          autoFocus
+          value={name}
+          placeholder="グループ名（例: 調査）"
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commit();
+            }
+            if (e.key === "Escape") setNaming(false);
+          }}
+        />
+        <button className="primary" disabled={!name.trim()} onClick={commit}>
+          作る
+        </button>
+        <button className="ghost" onClick={() => setNaming(false)}>
+          やめる
+        </button>
+      </div>
+    );
+  }
+  return (
+    <select
+      value={value}
+      onClick={(e) => e.stopPropagation()}
+      onChange={(e) => (e.target.value === NEW_GROUP ? setNaming(true) : onPick(e.target.value))}
+    >
+      <option value="">{placeholder}</option>
+      {local.filter((r) => !exclude.includes(r.key)).length > 0 && (
+        <optgroup label="リポジトリ">
+          {local
+            .filter((r) => !exclude.includes(r.key))
+            .map((r) => (
+              <option key={r.key} value={r.key}>
+                {r.key}
+              </option>
+            ))}
+        </optgroup>
+      )}
+      {groups.filter((g) => !exclude.includes(g)).length > 0 && (
+        <optgroup label="グループ">
+          {groups
+            .filter((g) => !exclude.includes(g))
+            .map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+        </optgroup>
+      )}
+      <option value={NEW_GROUP}>＋ 新しいグループ…</option>
+    </select>
+  );
+}
+
 function OpenButton({ session, run, primary }: { session: Session; run: (f: () => Promise<unknown>) => void; primary?: boolean }) {
   return (
     <button
@@ -410,17 +490,17 @@ function addRepo(todo: Todo, local: LocalRepo[], key: string): Parameters<typeof
   return todo.cwd || !path ? { repos } : { repos, cwd: path };
 }
 
-function RepoPicker({ todo, local, update }: {
+function RepoPicker({ todo, local, groups, update }: {
   todo: Todo;
   local: LocalRepo[];
+  groups: string[];
   update: (u: Parameters<typeof api.updateTodo>[1]) => void;
 }) {
   const own = todo.repos_derived ? [] : todo.repos;
   const remove = (key: string) => update({ repos: own.filter((r) => r !== key) });
-  const choices = local.filter((r) => !own.includes(r.key));
   return (
     <div className="field">
-      <span>リポジトリ{todo.repos_derived && todo.repos.length > 0 && "（issue URL / 作業フォルダから判定）"}</span>
+      <span>リポジトリ / グループ{todo.repos_derived && todo.repos.length > 0 && "（issue URL / 作業フォルダから判定）"}</span>
       <div className="chips">
         {todo.repos.map((r) => (
           <span key={r} className={`chip${todo.repos_derived ? " derived" : ""}`} title={r}>
@@ -435,20 +515,16 @@ function RepoPicker({ todo, local, update }: {
         ))}
         {todo.repos.length === 0 && <span className="muted">未設定（バックログ）</span>}
       </div>
-      <select
-        value=""
-        onChange={(e) => {
-          const u = addRepo(todo, local, e.target.value);
+      <RepoChoice
+        local={local}
+        groups={groups}
+        exclude={own}
+        placeholder="リポジトリかグループを追加…"
+        onPick={(key) => {
+          const u = addRepo(todo, local, key);
           if (u) update(u);
         }}
-      >
-        <option value="">リポジトリを追加…</option>
-        {choices.map((r) => (
-          <option key={r.key} value={r.key}>
-            {r.key}
-          </option>
-        ))}
-      </select>
+      />
     </div>
   );
 }
@@ -481,9 +557,10 @@ function SessionRow({ session, run, onUnlink }: {
   );
 }
 
-function Drawer({ todo, local, run, onClose }: {
+function Drawer({ todo, local, groups, run, onClose }: {
   todo: Todo;
   local: LocalRepo[];
+  groups: string[];
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
 }) {
@@ -521,7 +598,7 @@ function Drawer({ todo, local, run, onClose }: {
           ))}
         </div>
       </div>
-      <RepoPicker todo={todo} local={local} update={update} />
+      <RepoPicker todo={todo} local={local} groups={groups} update={update} />
       <Field label="Issue / PR URL" value={todo.issue_url ?? ""} placeholder="https://github.com/…" onSave={(issue_url) => update({ issue_url })} />
       <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
 
@@ -690,8 +767,9 @@ function Modal({ title, onClose, children, footer, wide }: {
 }
 
 /// Adds todos one after another: the dialog stays open and lists what it added.
-function AddTodoDialog({ local, run, onClose, onOpenTodo }: {
+function AddTodoDialog({ local, groups, run, onClose, onOpenTodo }: {
   local: LocalRepo[];
+  groups: string[];
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
   onOpenTodo: (id: number) => void;
@@ -735,17 +813,10 @@ function AddTodoDialog({ local, run, onClose, onOpenTodo }: {
         <input ref={titleRef} value={title} placeholder="何をする？" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
       </label>
       <div className="two-col">
-        <label className="field">
-          <span>リポジトリ（任意。空ならバックログへ）</span>
-          <select value={repo} onChange={(e) => setRepo(e.target.value)}>
-            <option value="">バックログ</option>
-            {local.map((r) => (
-              <option key={r.key} value={r.key}>
-                {r.key}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="field">
+          <span>リポジトリ / グループ（任意。空ならバックログへ）</span>
+          <RepoChoice local={local} groups={repo && !repo.includes("/") && !groups.includes(repo) ? [repo, ...groups] : groups} value={repo} placeholder="バックログ" onPick={setRepo} />
+        </div>
         <label className="field">
           <span>Issue / PR URL（任意）</span>
           <input value={issueUrl} placeholder="https://github.com/…" onChange={(e) => setIssueUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
@@ -882,9 +953,10 @@ function ListPage({ lanes, selectedId, run, onSelectTodo }: {
   );
 }
 
-function BacklogPage({ board, local, selectedId, run, onSelectTodo }: {
+function BacklogPage({ board, local, groups, selectedId, run, onSelectTodo }: {
   board: Board;
   local: LocalRepo[];
+  groups: string[];
   selectedId: number | null;
   run: (f: () => Promise<unknown>) => void;
   onSelectTodo: (id: number) => void;
@@ -892,7 +964,7 @@ function BacklogPage({ board, local, selectedId, run, onSelectTodo }: {
   const todos = board.todos.filter((t) => t.repos.length === 0).sort((a, b) => b.updated_at - a.updated_at);
   return (
     <div className="stack">
-      <p className="muted hint">リポジトリ未設定の todo。リポジトリを選ぶとボードに移ります。</p>
+      <p className="muted hint">リポジトリもグループも未設定の todo。どちらかを選ぶとボードに移ります。調査など、リポジトリに紐づかないものは「＋ 新しいグループ…」で分けられます。</p>
       {todos.length === 0 && <p className="muted empty">バックログは空です。サイドバーの「追加」から todo を作れます。</p>}
       {todos.length > 0 && (
         <section className="glass panel">
@@ -903,21 +975,17 @@ function BacklogPage({ board, local, selectedId, run, onSelectTodo }: {
                 <span className="list-title">{t.title}</span>
                 {t.status !== "todo" && <span className="tag">{t.status}</span>}
                 <span className="muted when">{ago(t.updated_at)}</span>
-                <select
-                  value=""
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => {
-                    const u = addRepo(t, local, e.target.value);
-                    if (u) run(() => api.updateTodo(t.id, u));
-                  }}
-                >
-                  <option value="">リポジトリを選ぶ…</option>
-                  {local.map((r) => (
-                    <option key={r.key} value={r.key}>
-                      {r.key}
-                    </option>
-                  ))}
-                </select>
+                <div className="row-choice" onClick={(e) => e.stopPropagation()}>
+                  <RepoChoice
+                    local={local}
+                    groups={groups}
+                    placeholder="リポジトリかグループを選ぶ…"
+                    onPick={(key) => {
+                      const u = addRepo(t, local, key);
+                      if (u) run(() => api.updateTodo(t.id, u));
+                    }}
+                  />
+                </div>
               </li>
             ))}
           </ul>
@@ -1053,6 +1121,8 @@ export default function App() {
     inbox: board.inbox.filter((s) => (repoFilter === null || laneKey(s.repos) === repoFilter) && matchesState([s])),
   };
   const lanes = visible ? buildLanes(visible) : [];
+  // Free group names in use, offered beside repositories when picking.
+  const groups = [...new Set((board?.todos ?? []).flatMap((t) => t.repos).filter((r) => !r.includes("/")))].sort();
   const waiting = board ? board.todos.flatMap((t) => t.sessions).filter((s) => s.state === "needs_input").length : 0;
   const backlogCount = board?.todos.filter((t) => t.repos.length === 0).length ?? 0;
   const doneHidden = hideDone ? (board?.todos.filter((t) => t.status === "done").length ?? 0) : 0;
@@ -1191,7 +1261,7 @@ export default function App() {
               </>
             )}
             {view === "list" && <ListPage lanes={lanes} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
-            {view === "backlog" && visible && <BacklogPage board={visible} local={local} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
+            {view === "backlog" && visible && <BacklogPage board={visible} local={local} groups={groups} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
             {view === "inbox" && visible && <InboxPage board={visible} selectedSessionId={selectedSession?.session_id ?? null} run={run} onSelectSession={openSession} />}
           </div>
           {/* The overlay follows the pointer across columns; the originals stay in place. */}
@@ -1199,13 +1269,14 @@ export default function App() {
         </DndContext>
       </main>
 
-      {selectedTodo && <Drawer todo={selectedTodo} local={local} run={run} onClose={() => setSelection(null)} />}
+      {selectedTodo && <Drawer todo={selectedTodo} local={local} groups={groups} run={run} onClose={() => setSelection(null)} />}
       {selectedSession && board && (
         <SessionDrawer session={selectedSession} todos={board.todos} run={run} onClose={() => setSelection(null)} onCreated={openTodo} />
       )}
       {dialog === "add" && (
         <AddTodoDialog
           local={local}
+          groups={groups}
           run={run}
           onClose={() => setDialog(null)}
           onOpenTodo={(id) => {

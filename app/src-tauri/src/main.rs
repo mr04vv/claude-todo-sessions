@@ -267,15 +267,17 @@ fn todo_or_err(db: &Db, id: i64) -> Result<Todo, String> {
     db.get_todo(id).map_err(err)?.ok_or_else(|| format!("todo {id} not found"))
 }
 
-fn require_cwd(todo: &Todo) -> Result<String, String> {
-    todo.cwd.clone().ok_or_else(|| "作業フォルダ（cwd）を設定してください".into())
+/// A terminal session needs some folder; a todo without one starts at home.
+fn terminal_cwd(todo: &Todo) -> String {
+    todo.cwd.clone().unwrap_or_else(|| home().to_string_lossy().into())
 }
 
 #[tauri::command]
 fn start_desktop(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
     let prompt = launch::start_prompt(todo.id, todo.prompt_body());
-    open_url(&launch::desktop_new_url(&require_cwd(&todo)?, &prompt))
+    // Without a folder Desktop opens a scratch workspace, fine for research todos.
+    open_url(&launch::desktop_new_url(todo.cwd.as_deref(), &prompt))
 }
 
 fn shell_quote(s: &str) -> String {
@@ -311,7 +313,7 @@ fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     let (todo, session_id) = {
         let db = state.db.lock().map_err(err)?;
         let todo = todo_or_err(&db, todo_id)?;
-        let cwd = require_cwd(&todo)?;
+        let cwd = terminal_cwd(&todo);
         // Registered up front so the session is linked before it starts.
         let session_id = uuid::Uuid::new_v4().to_string();
         db.record_session(&session_id, &cwd, SessionState::Idle).map_err(err)?;
@@ -319,7 +321,7 @@ fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
         db.link_session(&session_id, todo.id).map_err(err)?;
         (todo, session_id)
     };
-    let cwd = require_cwd(&todo)?;
+    let cwd = terminal_cwd(&todo);
     let command = format!(
         "claude --session-id {session_id} {}",
         shell_quote(&launch::start_prompt(todo.id, todo.prompt_body()))
@@ -333,9 +335,9 @@ fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
 #[tauri::command]
 fn start_cloud(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
-    let repos = repos_of_todo(&state, &todo);
+    let repos = launch::github_repos(&repos_of_todo(&state, &todo));
     if repos.is_empty() {
-        return Err("GitHub のリポジトリが分かりません。リポジトリ欄か issue URL か、GitHub を origin に持つ cwd を設定してください".into());
+        return Err("Cloud には GitHub のリポジトリが必要です。リポジトリ欄で owner/repo を選ぶか、issue URL か GitHub を origin に持つ作業フォルダを設定してください".into());
     }
     let db = state.db.lock().map_err(err)?;
     let id = cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, todo.prompt_body())?;

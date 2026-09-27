@@ -29,8 +29,17 @@ fn encode(s: &str) -> String {
         .collect()
 }
 
-pub fn desktop_new_url(cwd: &str, prompt: &str) -> String {
-    format!("claude://code/new?folder={}&q={}", encode(cwd), encode(prompt))
+pub fn desktop_new_url(cwd: Option<&str>, prompt: &str) -> String {
+    match cwd {
+        Some(cwd) => format!("claude://code/new?folder={}&q={}", encode(cwd), encode(prompt)),
+        None => format!("claude://code/new?q={}", encode(prompt)),
+    }
+}
+
+/// A todo's repo list may hold free group names ("調査"); only `owner/repo`
+/// entries are GitHub repositories a cloud session can work on.
+pub fn github_repos(repos: &[String]) -> Vec<String> {
+    repos.iter().filter(|r| r.contains('/')).cloned().collect()
 }
 
 pub fn start_prompt(todo_id: i64, body: &str) -> String {
@@ -91,10 +100,18 @@ mod tests {
     #[test]
     fn desktop_new_url_encodes_query() {
         assert_eq!(
-            desktop_new_url("/a b/c", "[todo:1] 直す"),
+            desktop_new_url(Some("/a b/c"), "[todo:1] 直す"),
             "claude://code/new?folder=%2Fa%20b%2Fc&q=%5Btodo%3A1%5D%20%E7%9B%B4%E3%81%99"
         );
+        // No folder: Desktop starts the session in a scratch workspace.
+        assert_eq!(desktop_new_url(None, "[todo:1] x"), "claude://code/new?q=%5Btodo%3A1%5D%20x");
         assert_eq!(start_prompt(3, "Fix it"), "[todo:3] Fix it");
+    }
+
+    #[test]
+    fn github_repos_are_the_entries_with_a_slash() {
+        let repos = vec!["調査".to_string(), "o/r".to_string(), "個人".to_string()];
+        assert_eq!(github_repos(&repos), vec!["o/r"]);
     }
 
     #[test]
