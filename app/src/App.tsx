@@ -677,46 +677,56 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
   );
 }
 
-/// Enter while a Japanese IME is still composing only confirms the conversion.
-const isEnter = (e: React.KeyboardEvent) => e.key === "Enter" && !e.nativeEvent.isComposing;
+/// keyCode of a key the IME handles.
+const IME_KEY_CODE = 229;
 
-function InlineInput({ value, placeholder, className, onSave }: { value: string; placeholder?: string; className?: string; onSave: (v: string) => void }) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
+/// Enter that submits, not the one that confirms a Japanese IME conversion.
+/// WebKit ends the composition before that keydown, so isComposing is already
+/// false there; only keyCode 229 gives it away.
+const isEnter = (e: React.KeyboardEvent) => e.key === "Enter" && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== IME_KEY_CODE;
+
+// The in-place fields below are uncontrolled: the board refreshes every few
+// seconds, and nothing should touch an input's text while an IME composes in
+// it. A new stored value remounts the field through its key.
+
+/// A field that saves when left or on Enter. `required` puts the stored
+/// value back instead of saving an empty one.
+function InlineInput({ value, placeholder, className, required, onSave }: { value: string; placeholder?: string; className?: string; required?: boolean; onSave: (v: string) => void }) {
   return (
     <input
+      key={value}
       className={className}
-      value={draft}
+      defaultValue={value}
       placeholder={placeholder}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => draft !== value && onSave(draft)}
-      onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
+      onBlur={(e) => {
+        const v = e.currentTarget.value;
+        if (required && !v.trim()) e.currentTarget.value = value;
+        else if (v !== value) onSave(v);
+      }}
+      onKeyDown={(e) => isEnter(e) && e.currentTarget.blur()}
     />
   );
 }
 
 /// An input that submits on Enter and clears, for adding one thing after another.
 function SubmitInput({ placeholder, autoFocus, onSubmit, onClose }: { placeholder: string; autoFocus?: boolean; onSubmit: (v: string) => void; onClose?: () => void }) {
-  const [draft, setDraft] = useState("");
-  const submit = () => {
-    const v = draft.trim();
+  const submit = (el: HTMLInputElement) => {
+    const v = el.value.trim();
     if (v) onSubmit(v);
-    setDraft("");
+    el.value = "";
   };
   return (
     <input
       autoFocus={autoFocus}
-      value={draft}
       placeholder={placeholder}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={() => {
-        submit();
+      onBlur={(e) => {
+        submit(e.currentTarget);
         onClose?.();
       }}
       onKeyDown={(e) => {
-        if (isEnter(e)) submit();
+        if (isEnter(e)) submit(e.currentTarget);
         if (e.key === "Escape") {
-          setDraft("");
+          e.currentTarget.value = "";
           onClose?.();
         }
       }}
@@ -769,17 +779,14 @@ function Linkify({ text, run }: { text: string; run: (f: () => Promise<unknown>)
 /// Memo text with clickable links; click to edit in place, leave to save.
 function MemoEditor({ value, run, onSave }: { value: string; run: (f: () => Promise<unknown>) => void; onSave: (v: string) => void }) {
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
   if (editing) {
     return (
       <textarea
         autoFocus
         rows={6}
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => {
-          if (draft !== value) onSave(draft);
+        defaultValue={value}
+        onBlur={(e) => {
+          if (e.currentTarget.value !== value) onSave(e.currentTarget.value);
           setEditing(false);
         }}
       />
@@ -934,7 +941,7 @@ function Drawer({ todo, allTodos, local, groups, onOpenTodo, run, setStatus, onC
           </button>
         </span>
       </header>
-      <InlineInput className="drawer-title" value={todo.title} placeholder="タイトル" onSave={(title) => title.trim() && update({ title: title.trim() })} />
+      <InlineInput className="drawer-title" value={todo.title} placeholder="タイトル" required onSave={(title) => update({ title: title.trim() })} />
       <div className="segmented status-seg">
         {COLUMNS.map((c) => (
           <button key={c.status} className={todo.status === c.status ? "on" : ""} onClick={() => setStatus(todo, c.status)}>
@@ -1925,7 +1932,11 @@ export default function App() {
                 key={lane.key}
                 className={`repo${repoFilter === lane.key ? " on" : ""}`}
                 title={lane.key}
-                onClick={() => setRepoFilter(repoFilter === lane.key ? null : lane.key)}
+                onClick={() => {
+                  setRepoFilter(repoFilter === lane.key ? null : lane.key);
+                  // A repository is looked at on the board; the list keeps its own view.
+                  if (view !== "board" && view !== "list") setView("board");
+                }}
               >
                 <RepoDot repo={lane.key} />
                 <span className="ellipsis label">{lane.key.includes("/") ? repoName(lane.key) : lane.key}</span>

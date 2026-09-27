@@ -95,6 +95,7 @@ body {
 
 input,
 textarea {
+  -webkit-user-select: text;
   user-select: text;
 }
 
