@@ -771,7 +771,24 @@ fn discover_sessions(db: &Db) -> Result<(), String> {
             db.set_session_title(&s.session_id, name).map_err(err)?;
         }
     }
-    let listed: HashSet<&str> = live.iter().map(|s| s.session_id.as_str()).collect();
+    // herdr watches the terminal itself, so its state is current and wins for
+    // the sessions it hosts, hooks or not.
+    let mut in_herdr: HashSet<String> = HashSet::new();
+    if let Ok(table) = cli("herdr").args(["session", "list"]).output() {
+        for name in cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)) {
+            let Ok(out) = cli("herdr").args(["--session", &name, "agent", "list"]).output() else { continue };
+            let Ok(agents) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
+            for (id, cwd, state) in cts_core::herdr::agent_states(&agents) {
+                let known = db.get_session(&id).map_err(err)?;
+                if known.as_ref().is_none_or(|k| k.state != state) {
+                    let cwd = known.map(|k| k.cwd).filter(|c| !c.is_empty()).unwrap_or(cwd);
+                    db.record_session(&id, &cwd, state).map_err(err)?;
+                }
+                in_herdr.insert(id);
+            }
+        }
+    }
+    let listed: HashSet<&str> = live.iter().map(|s| s.session_id.as_str()).chain(in_herdr.iter().map(String::as_str)).collect();
     for k in db.live_local_sessions().map_err(err)? {
         if !listed.contains(k.session_id.as_str()) && now - k.state_at > DISCOVER_GRACE_SECS {
             db.record_session(&k.session_id, &k.cwd, SessionState::Ended).map_err(err)?;

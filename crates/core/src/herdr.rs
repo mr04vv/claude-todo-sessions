@@ -27,10 +27,49 @@ pub fn find_pane(agents: &Value, session_id: &str) -> Option<String> {
         .map(Into::into)
 }
 
+/// Live state of every Claude agent herdr hosts, from `herdr agent list`:
+/// (session id, cwd, state). herdr watches the terminal, so this is current
+/// even for sessions without our hooks. Unknown statuses are skipped.
+pub fn agent_states(agents: &Value) -> Vec<(String, String, crate::SessionState)> {
+    use crate::SessionState::*;
+    agents["result"]["agents"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|a| a["agent"] == "claude")
+        .filter_map(|a| {
+            let id = a["agent_session"]["value"].as_str()?;
+            let state = match a["agent_status"].as_str()? {
+                "working" => Running,
+                "idle" | "done" => Idle,
+                "blocked" | "waiting" => NeedsInput,
+                _ => return None,
+            };
+            Some((id.to_string(), a["cwd"].as_str().unwrap_or_default().to_string(), state))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn maps_herdr_agent_statuses() {
+        use crate::SessionState::*;
+        let agents = json!({"result": {"agents": [
+            {"agent": "claude", "agent_session": {"value": "a"}, "agent_status": "working", "cwd": "/w/a"},
+            {"agent": "claude", "agent_session": {"value": "b"}, "agent_status": "idle", "cwd": "/w/b"},
+            {"agent": "claude", "agent_session": {"value": "c"}, "agent_status": "blocked", "cwd": "/w/c"},
+            {"agent": "claude", "agent_session": {"value": "d"}, "agent_status": "waiting", "cwd": "/w/d"},
+            {"agent": "claude", "agent_session": {"value": "e"}, "agent_status": "unknown", "cwd": "/w/e"},
+            {"agent": "codex", "agent_session": {"value": "f"}, "agent_status": "working", "cwd": "/w/f"},
+            {"agent": "claude", "agent_status": "working"}
+        ]}});
+        let got: Vec<(String, crate::SessionState)> = agent_states(&agents).into_iter().map(|(id, _, st)| (id, st)).collect();
+        assert_eq!(got, vec![("a".into(), Running), ("b".into(), Idle), ("c".into(), NeedsInput), ("d".into(), NeedsInput)]);
+    }
 
     #[test]
     fn running_sessions_from_table() {
