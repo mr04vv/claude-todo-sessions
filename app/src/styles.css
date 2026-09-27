@@ -556,7 +556,8 @@ select {
 /* Content sits in a centred column, like a Notion page, instead of spanning the window. */
 .toolbar,
 .content,
-.main > .error {
+.main > .error,
+.main > .notice {
   width: 100%;
   max-width: var(--content-w);
   margin-left: auto;
@@ -1382,4 +1383,66 @@ button.lane-head:hover {
   .drawer {
     width: min(var(--drawer-w), calc(100vw - 28px));
   }
+}
+
+/* ---------- GitHub badges ---------- */
+
+.gh {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 17px;
+  padding: 0 7px;
+  border-radius: 6px;
+  margin-left: 6px;
+  letter-spacing: 0.02em;
+}
+
+.card-meta .gh,
+.list-row .gh {
+  margin-left: 0;
+}
+
+.gh-issue-open,
+.gh-pr-open,
+.gh-pr-approved {
+  background: color-mix(in srgb, var(--running) 18%, transparent);
+  color: var(--running-text);
+}
+
+.gh-issue-closed,
+.gh-pr-merged {
+  background: rgba(163, 113, 247, 0.2);
+  color: #b78cff;
+}
+
+.gh-pr-draft,
+.gh-pr-closed {
+  background: var(--surface);
+  color: var(--text-2);
+}
+
+.gh-pr-review_requested {
+  background: color-mix(in srgb, var(--accent-a) 22%, transparent);
+  color: var(--link);
+}
+
+.gh-pr-changes_requested {
+  background: color-mix(in srgb, var(--needs-input) 20%, transparent);
+  color: var(--needs-input-text);
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 6px 6px 12px;
+  border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--accent-a) 40%, transparent);
+  background: var(--accent-soft);
+}
+
+.notice > span {
+  flex: 1;
 }

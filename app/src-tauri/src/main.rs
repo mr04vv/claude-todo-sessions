@@ -33,6 +33,8 @@ const MENU_OPEN: &str = "open";
 const MENU_QUIT: &str = "quit";
 const MENU_SESSION_PREFIX: &str = "session:";
 const GH_ISSUE_LIMIT: &str = "100";
+/// How often linked issues are checked for open/closed.
+const ISSUE_SYNC_INTERVAL: Duration = Duration::from_secs(120);
 /// Folders (under $HOME) whose direct children are checkouts, besides the ghq root.
 // ponytail: fixed list; make it a setting if more roots are needed.
 const EXTRA_REPO_ROOTS: &[&str] = &["Works/Atrae"];
@@ -167,6 +169,7 @@ struct TodoUpdate {
     issue_url: Option<String>,
     repos: Option<Vec<String>>,
     prompt: Option<String>,
+    pr_url: Option<String>,
 }
 
 /// Sessions archived in Claude Desktop stay out of the inbox and notifications.
@@ -235,6 +238,7 @@ fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<To
         issue_url: update.issue_url,
         repos: update.repos,
         prompt: update.prompt,
+        pr_url: update.pr_url,
     };
     state.db.lock().map_err(err)?.update_todo(id, patch).map_err(err)
 }
@@ -495,6 +499,110 @@ fn local_repos(state: State<AppState>) -> Result<Vec<LocalRepo>, String> {
     Ok(repos)
 }
 
+fn gh(args: &[&str]) -> Result<String, String> {
+    let out = cli("gh").args(args).output().map_err(|e| format!("gh: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("gh {}: {}", args.iter().take(2).cloned().collect::<Vec<_>>().join(" "), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Opens a GitHub issue for the todo in its first repository and links it.
+#[tauri::command]
+fn create_issue(state: State<AppState>, todo_id: i64) -> Result<Todo, String> {
+    let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
+    let repo = launch::github_repos(&repos_of_todo(&state, &todo))
+        .into_iter()
+        .next()
+        .ok_or("issue を作るリポジトリがありません。リポジトリ欄で owner/repo を選んでください")?;
+    let body = todo.memo.clone().unwrap_or_default();
+    let out = gh(&["issue", "create", "-R", &repo, "--title", &todo.title, "--body", &body])?;
+    let url = out.lines().last().unwrap_or_default().to_string();
+    if !url.starts_with("https://") {
+        return Err(format!("gh issue create の出力から URL が取れません: {out}"));
+    }
+    let db = state.db.lock().map_err(err)?;
+    db.update_todo(todo_id, TodoPatch { issue_url: Some(url), ..Default::default() }).map_err(err)?;
+    db.set_issue_state(todo_id, "open").map_err(err)?;
+    todo_or_err(&db, todo_id)
+}
+
+#[tauri::command]
+fn close_issue(state: State<AppState>, todo_id: i64) -> Result<(), String> {
+    let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
+    let url = todo.issue_url.ok_or("issue が紐づいていません")?;
+    gh(&["issue", "close", &url])?;
+    state.db.lock().map_err(err)?.set_issue_state(todo_id, "closed").map_err(err)?;
+    Ok(())
+}
+
+fn mark_done(db: &Db, todo: &Todo) {
+    if todo.status != Status::Done {
+        if let Err(e) = db.update_todo(todo.id, TodoPatch { status: Some(Status::Done), ..Default::default() }) {
+            eprintln!("{e}");
+        }
+    }
+}
+
+/// Links a PR opened from the todo's branch, then records the PR's review
+/// stage; a PR that becomes merged marks its todo done.
+fn sync_pr(db: &Db, todo: &Todo, branch_prs: &mut HashMap<String, serde_json::Value>) {
+    let mut url = todo.pr_url.clone();
+    if url.is_none() {
+        let mut repos = launch::github_repos(&todo.repos);
+        repos.extend(todo.issue_url.as_deref().and_then(launch::repo_key));
+        for repo in repos {
+            let prs = branch_prs.entry(repo.clone()).or_insert_with(|| {
+                gh(&["pr", "list", "-R", &repo, "--state", "all", "--limit", "100", "--json", "url,headRefName"])
+                    .ok()
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default()
+            });
+            if let Some(found) = launch::pr_for_todo(prs, todo.id) {
+                let _ = db.update_todo(todo.id, TodoPatch { pr_url: Some(found.clone()), ..Default::default() });
+                url = Some(found);
+                break;
+            }
+        }
+    }
+    let Some(url) = url else { return };
+    let Ok(json) = gh(&["pr", "view", &url, "--json", "state,isDraft,reviewDecision,reviewRequests"]) else { return };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { return };
+    let now = launch::pr_state(&v);
+    match db.set_pr_state(todo.id, now) {
+        Ok(before) if now == "merged" && before.as_deref() != Some("merged") => mark_done(db, todo),
+        Err(e) => eprintln!("{e}"),
+        _ => {}
+    }
+}
+
+/// Refreshes linked issues and PRs. An issue going from open to closed, or a
+/// PR getting merged, marks its todo done.
+fn issue_sync_loop() {
+    let db = match open_db() {
+        Ok(db) => db,
+        Err(e) => return eprintln!("issue sync stopped: {e}"),
+    };
+    loop {
+        let mut branch_prs = HashMap::new();
+        for todo in db.list_todos(None).unwrap_or_default() {
+            if todo.status != Status::Done || todo.pr_state.as_deref().is_some_and(|s| s != "merged" && s != "closed") {
+                sync_pr(&db, &todo, &mut branch_prs);
+            }
+            let Some(url) = todo.issue_url.as_deref().filter(|u| u.contains("/issues/")) else { continue };
+            let Ok(json) = gh(&["issue", "view", url, "--json", "state"]) else { continue };
+            let Ok(v) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
+            let Some(now) = v["state"].as_str().map(|s| s.to_lowercase()) else { continue };
+            match db.set_issue_state(todo.id, &now) {
+                Ok(Some(before)) if before == "open" && now == "closed" => mark_done(&db, &todo),
+                Err(e) => eprintln!("{e}"),
+                _ => {}
+            }
+        }
+        std::thread::sleep(ISSUE_SYNC_INTERVAL);
+    }
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -677,6 +785,7 @@ fn main() {
             });
             let handle = app.handle().clone();
             std::thread::spawn(move || watch_loop(handle));
+            std::thread::spawn(issue_sync_loop);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -698,7 +807,9 @@ fn main() {
             start_cloud,
             gh_issues,
             import_issues,
-            local_repos
+            local_repos,
+            create_issue,
+            close_issue
         ])
         .run(tauri::generate_context!())
         .expect("run tauri app");

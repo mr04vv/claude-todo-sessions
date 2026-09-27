@@ -68,6 +68,12 @@ pub struct Todo {
     pub repos: Vec<String>,
     /// First prompt of sessions started from this todo; None means the title.
     pub prompt: Option<String>,
+    /// Last seen GitHub state of `issue_url` ("open" / "closed").
+    pub issue_state: Option<String>,
+    /// The one pull request this todo ships as.
+    pub pr_url: Option<String>,
+    /// draft / open / review_requested / changes_requested / approved / merged / closed
+    pub pr_state: Option<String>,
 }
 
 impl Todo {
@@ -97,6 +103,8 @@ pub struct TodoPatch {
     pub repos: Option<Vec<String>>,
     /// Blank clears it, so the title is used again.
     pub prompt: Option<String>,
+    /// Blank clears it.
+    pub pr_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -127,7 +135,10 @@ CREATE TABLE IF NOT EXISTS todos (
     memo TEXT,
     updated_at INTEGER NOT NULL,
     repos TEXT,
-    prompt TEXT
+    prompt TEXT,
+    issue_state TEXT,
+    pr_url TEXT,
+    pr_state TEXT
 );
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -143,7 +154,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 );
 ";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos";
 
 impl Status {
@@ -200,6 +211,9 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         updated_at: r.get(6)?,
         repos: split_repos(r.get(7)?),
         prompt: r.get(8)?,
+        issue_state: r.get(9)?,
+        pr_url: r.get(10)?,
+        pr_state: r.get(11)?,
     })
 }
 
@@ -232,7 +246,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos"), ("todos", "prompt")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -330,9 +344,12 @@ impl Db {
                 status = COALESCE(?3, status),
                 memo = COALESCE(?4, memo),
                 cwd = CASE WHEN ?5 IS NULL THEN cwd ELSE NULLIF(?5, '') END,
+                issue_state = CASE WHEN ?7 IS NULL OR NULLIF(?7, '') IS issue_url THEN issue_state ELSE NULL END,
                 issue_url = CASE WHEN ?7 IS NULL THEN issue_url ELSE NULLIF(?7, '') END,
                 repos = CASE WHEN ?8 IS NULL THEN repos ELSE NULLIF(?8, '') END,
                 prompt = CASE WHEN ?9 IS NULL THEN prompt ELSE NULLIF(?9, '') END,
+                pr_state = CASE WHEN ?10 IS NULL OR NULLIF(?10, '') IS pr_url THEN pr_state ELSE NULL END,
+                pr_url = CASE WHEN ?10 IS NULL THEN pr_url ELSE NULLIF(?10, '') END,
                 updated_at = ?6
              WHERE id = ?1",
             params![
@@ -346,6 +363,7 @@ impl Db {
                 // Some(vec![]) clears; None keeps.
                 p.repos.as_deref().map(|r| join_repos(r).unwrap_or_default()),
                 p.prompt.as_deref().map(str::trim),
+                p.pr_url.as_deref().map(str::trim),
             ],
         )?;
         if n == 0 {
@@ -454,6 +472,20 @@ impl Db {
     }
 
     /// Whether a cloud session's first prompt was already searched for a marker.
+    /// Records the issue's GitHub state and returns the one seen before.
+    pub fn set_issue_state(&self, id: i64, state: &str) -> Result<Option<String>> {
+        let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.issue_state;
+        self.conn.execute("UPDATE todos SET issue_state = ?2 WHERE id = ?1", params![id, state])?;
+        Ok(before)
+    }
+
+    /// Records the pull request's state and returns the one seen before.
+    pub fn set_pr_state(&self, id: i64, state: &str) -> Result<Option<String>> {
+        let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.pr_state;
+        self.conn.execute("UPDATE todos SET pr_state = ?2 WHERE id = ?1", params![id, state])?;
+        Ok(before)
+    }
+
     pub fn set_session_repos(&self, id: &str, repos: &[String]) -> Result<()> {
         self.conn
             .execute("UPDATE sessions SET repos = ?2 WHERE session_id = ?1", params![id, join_repos(repos)])?;

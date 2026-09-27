@@ -79,6 +79,38 @@ pub fn ghq_cwd(root: &Path, repo_url: &str) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// Review stage of a pull request from
+/// `gh pr view --json state,isDraft,reviewDecision,reviewRequests`.
+pub fn pr_state(pr: &Value) -> &'static str {
+    match pr["state"].as_str() {
+        Some("MERGED") => return "merged",
+        Some("CLOSED") => return "closed",
+        _ => {}
+    }
+    if pr["isDraft"] == true {
+        return "draft";
+    }
+    match pr["reviewDecision"].as_str() {
+        Some("CHANGES_REQUESTED") => "changes_requested",
+        Some("APPROVED") => "approved",
+        _ if pr["reviewRequests"].as_array().is_some_and(|r| !r.is_empty()) => "review_requested",
+        Some("REVIEW_REQUIRED") => "review_requested",
+        _ => "open",
+    }
+}
+
+/// The pull request whose branch was made for this todo (`claude/todo-<id>-…`,
+/// as cloud sessions started from the app name it), from
+/// `gh pr list --json url,headRefName`.
+pub fn pr_for_todo(prs: &Value, todo_id: i64) -> Option<String> {
+    let prefix = format!("claude/todo-{todo_id}-");
+    prs.as_array()?
+        .iter()
+        .find(|p| p["headRefName"].as_str().is_some_and(|h| h.starts_with(&prefix)))?["url"]
+        .as_str()
+        .map(Into::into)
+}
+
 pub fn herdr_pane_id(created: &Value) -> Option<String> {
     created["result"]["root_pane"]["pane_id"].as_str().map(Into::into)
 }
@@ -149,5 +181,36 @@ mod tests {
         let v = json!({"result": {"root_pane": {"pane_id": "w4:p1"}}});
         assert_eq!(herdr_pane_id(&v).as_deref(), Some("w4:p1"));
         assert_eq!(herdr_pane_id(&json!({})), None);
+    }
+}
+
+#[cfg(test)]
+mod pr_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn pr_state_from_gh_view() {
+        let v = |state: &str, draft: bool, decision: &str, requests: usize| {
+            json!({"state": state, "isDraft": draft, "reviewDecision": decision,
+                   "reviewRequests": vec![json!({"login": "x"}); requests]})
+        };
+        assert_eq!(pr_state(&v("MERGED", false, "APPROVED", 0)), "merged");
+        assert_eq!(pr_state(&v("CLOSED", false, "", 0)), "closed");
+        assert_eq!(pr_state(&v("OPEN", true, "", 1)), "draft");
+        assert_eq!(pr_state(&v("OPEN", false, "CHANGES_REQUESTED", 1)), "changes_requested");
+        assert_eq!(pr_state(&v("OPEN", false, "APPROVED", 0)), "approved");
+        assert_eq!(pr_state(&v("OPEN", false, "REVIEW_REQUIRED", 1)), "review_requested");
+        assert_eq!(pr_state(&v("OPEN", false, "", 0)), "open");
+    }
+
+    #[test]
+    fn pr_for_todo_branch() {
+        let prs = json!([
+            {"url": "https://github.com/o/r/pull/1", "headRefName": "claude/todo-12-ab12cd"},
+            {"url": "https://github.com/o/r/pull/2", "headRefName": "claude/todo-1-ff00aa"},
+        ]);
+        assert_eq!(pr_for_todo(&prs, 1).as_deref(), Some("https://github.com/o/r/pull/2"));
+        assert_eq!(pr_for_todo(&prs, 3), None);
     }
 }

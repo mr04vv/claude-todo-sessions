@@ -306,3 +306,28 @@ fn todo_prompt_is_stored_and_cleared() {
     let u = db.update_todo(t.id, TodoPatch { prompt: Some("  ".into()), ..Default::default() }).unwrap();
     assert_eq!(u.prompt, None);
 }
+
+#[test]
+fn issue_state_change_reports_previous_value() {
+    let (_d, db) = open();
+    let t = db.create_todo(NewTodo { title: "a".into(), issue_url: Some("https://github.com/o/r/issues/1".into()), ..Default::default() }).unwrap();
+    assert_eq!(t.issue_state, None);
+    assert_eq!(db.set_issue_state(t.id, "open").unwrap(), None);
+    assert_eq!(db.set_issue_state(t.id, "closed").unwrap().as_deref(), Some("open"));
+    assert_eq!(db.get_todo(t.id).unwrap().unwrap().issue_state.as_deref(), Some("closed"));
+    // Changing the URL forgets the old state.
+    let u = db.update_todo(t.id, TodoPatch { issue_url: Some("https://github.com/o/r/issues/2".into()), ..Default::default() }).unwrap();
+    assert_eq!(u.issue_state, None);
+}
+
+#[test]
+fn todo_keeps_one_pr_and_its_state() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("a")).unwrap();
+    let u = db.update_todo(t.id, TodoPatch { pr_url: Some("https://github.com/o/r/pull/5".into()), ..Default::default() }).unwrap();
+    assert_eq!(u.pr_url.as_deref(), Some("https://github.com/o/r/pull/5"));
+    assert_eq!(db.set_pr_state(t.id, "review_requested").unwrap(), None);
+    assert_eq!(db.set_pr_state(t.id, "merged").unwrap().as_deref(), Some("review_requested"));
+    let u = db.update_todo(t.id, TodoPatch { pr_url: Some(String::new()), ..Default::default() }).unwrap();
+    assert_eq!((u.pr_url, u.pr_state), (None, None));
+}

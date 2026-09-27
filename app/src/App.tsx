@@ -20,6 +20,7 @@ import {
   type Board,
   type Issue,
   type LocalRepo,
+  type PrState,
   type Session,
   type SessionState,
   type Status,
@@ -155,6 +156,25 @@ const STATE_LABEL: Record<SessionState, string> = {
   idle: "待機中",
   ended: "終了",
 };
+
+const PR_LABEL: Record<PrState, string> = {
+  draft: "Draft",
+  open: "PR open",
+  review_requested: "レビュー待ち",
+  changes_requested: "修正依頼",
+  approved: "Approve 済み",
+  merged: "マージ済み",
+  closed: "PR closed",
+};
+
+function GhBadges({ todo }: { todo: Todo }) {
+  return (
+    <>
+      {todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>issue {todo.issue_state}</span>}
+      {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+    </>
+  );
+}
 
 /// Order badges on a card: the state that needs the user comes first.
 const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle"];
@@ -377,6 +397,7 @@ function TodoCard({ todo, selected, onSelect, run }: {
       </div>
       <div className="card-title">{todo.title}</div>
       <div className="card-meta">
+        <GhBadges todo={todo} />
         {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
           <StateBadge key={st} state={st} />
         ))}
@@ -498,6 +519,20 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
   );
 }
 
+function InlineInput({ value, placeholder, onSave }: { value: string; placeholder?: string; onSave: (v: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  return (
+    <input
+      value={draft}
+      placeholder={placeholder}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => draft !== value && onSave(draft)}
+      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+    />
+  );
+}
+
 function Field({ label, value, placeholder, multiline, rows = 6, onSave }: {
   label: string;
   value: string;
@@ -597,11 +632,12 @@ function SessionRow({ session, run, onUnlink }: {
   );
 }
 
-function Drawer({ todo, local, groups, run, onClose }: {
+function Drawer({ todo, local, groups, run, setStatus, onClose }: {
   todo: Todo;
   local: LocalRepo[];
   groups: string[];
   run: (f: () => Promise<unknown>) => void;
+  setStatus: (todo: Todo, status: Status) => void;
   onClose: () => void;
 }) {
   const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
@@ -632,14 +668,37 @@ function Drawer({ todo, local, groups, run, onClose }: {
         <span>Status</span>
         <div className="segmented">
           {COLUMNS.map((c) => (
-            <button key={c.status} className={todo.status === c.status ? "on" : ""} onClick={() => update({ status: c.status })}>
+            <button key={c.status} className={todo.status === c.status ? "on" : ""} onClick={() => setStatus(todo, c.status)}>
               {c.label}
             </button>
           ))}
         </div>
       </div>
       <RepoPicker todo={todo} local={local} groups={groups} update={update} />
-      <Field label="Issue / PR URL" value={todo.issue_url ?? ""} placeholder="https://github.com/…" onSave={(issue_url) => update({ issue_url })} />
+      <div className="field">
+        <span>
+          Issue{todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>{todo.issue_state}</span>}
+        </span>
+        <div className="actions">
+          <InlineInput value={todo.issue_url ?? ""} placeholder="https://github.com/…/issues/…" onSave={(issue_url) => update({ issue_url })} />
+          {!todo.issue_url && (
+            <button onClick={() => run(() => api.createIssue(todo.id))} title="タイトルとメモから issue を作って紐づけます">
+              issue を作る
+            </button>
+          )}
+          {todo.issue_url && todo.issue_state === "open" && (
+            <button className="ghost" onClick={() => run(() => api.closeIssue(todo.id))}>
+              close
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="field">
+        <span>
+          Pull request{todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+        </span>
+        <InlineInput value={todo.pr_url ?? ""} placeholder="https://github.com/…/pull/…（claude/todo-N- のブランチなら自動で紐づきます）" onSave={(pr_url) => update({ pr_url })} />
+      </div>
       <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
 
       <h3>新しいセッション</h3>
@@ -941,10 +1000,11 @@ function ImportDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => vo
   );
 }
 
-function ListPage({ lanes, selectedId, run, onSelectTodo }: {
+function ListPage({ lanes, selectedId, run, setStatus, onSelectTodo }: {
   lanes: Lane[];
   selectedId: number | null;
   run: (f: () => Promise<unknown>) => void;
+  setStatus: (todo: Todo, status: Status) => void;
   onSelectTodo: (id: number) => void;
 }) {
   if (lanes.length === 0) return <p className="muted empty">リポジトリに紐づいた todo はまだありません。</p>;
@@ -966,7 +1026,7 @@ function ListPage({ lanes, selectedId, run, onSelectTodo }: {
                       className={`status-select st-${t.status}`}
                       value={t.status}
                       onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => run(() => api.updateTodo(t.id, { status: e.target.value as Status }))}
+                      onChange={(e) => setStatus(t, e.target.value as Status)}
                     >
                       {COLUMNS.map((c) => (
                         <option key={c.status} value={c.status}>
@@ -976,6 +1036,7 @@ function ListPage({ lanes, selectedId, run, onSelectTodo }: {
                     </select>
                     <span className="mono muted ref">{issueRef(t.issue_url) ?? `#${t.id}`}</span>
                     <span className="list-title">{t.title}</span>
+                    <GhBadges todo={t} />
                     {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
                       <StateBadge key={st} state={st} />
                     ))}
@@ -1132,6 +1193,13 @@ export default function App() {
     f().then(refresh, (e) => setError(String(e)));
   };
 
+  // Moving a todo with an open issue to Done offers to close the issue too.
+  const [closePrompt, setClosePrompt] = useState<Todo | null>(null);
+  const setStatus = (todo: Todo, status: Status) => {
+    run(() => api.updateTodo(todo.id, { status }));
+    if (status === "done" && todo.issue_url && todo.issue_state !== "closed") setClosePrompt(todo);
+  };
+
   const onDragStart = ({ active }: DragStartEvent) => setDragging(String(active.id));
 
   const onDragEnd = ({ active, over }: DragEndEvent) => {
@@ -1141,7 +1209,8 @@ export default function App() {
     const [target, targetId] = String(over.id).split(/:(.*)/s);
     if (kind === "todo" && target === "col") {
       const status = targetId.split(":")[0] as Status;
-      run(() => api.updateTodo(Number(id), { status }));
+      const todo = board?.todos.find((t) => t.id === Number(id));
+      if (todo) setStatus(todo, status);
     } else if (kind === "session" && target === "card") {
       run(() => api.linkSession(id, Number(targetId)));
     }
@@ -1260,6 +1329,26 @@ export default function App() {
             Done を隠す{doneHidden > 0 && <span className="count">{doneHidden}</span>}
           </label>
         </header>
+        {closePrompt && (
+          <div className="notice" role="status">
+            <span>
+              #{closePrompt.id} を Done にしました。{issueRef(closePrompt.issue_url) ?? "issue"} も close しますか？
+            </span>
+            <button
+              className="primary"
+              onClick={() => {
+                const id = closePrompt.id;
+                setClosePrompt(null);
+                run(() => api.closeIssue(id));
+              }}
+            >
+              close する
+            </button>
+            <button className="ghost" onClick={() => setClosePrompt(null)}>
+              そのまま
+            </button>
+          </div>
+        )}
         {error && (
           <div className="error" role="alert">
             {error}
@@ -1300,7 +1389,7 @@ export default function App() {
                 )}
               </>
             )}
-            {view === "list" && <ListPage lanes={lanes} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
+            {view === "list" && <ListPage lanes={lanes} selectedId={selectedId} run={run} setStatus={setStatus} onSelectTodo={openTodo} />}
             {view === "backlog" && visible && <BacklogPage board={visible} local={local} groups={groups} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
             {view === "inbox" && visible && <InboxPage board={visible} selectedSessionId={selectedSession?.session_id ?? null} run={run} onSelectSession={openSession} />}
           </div>
@@ -1309,7 +1398,7 @@ export default function App() {
         </DndContext>
       </main>
 
-      {selectedTodo && <Drawer todo={selectedTodo} local={local} groups={groups} run={run} onClose={() => setSelection(null)} />}
+      {selectedTodo && <Drawer todo={selectedTodo} local={local} groups={groups} run={run} setStatus={setStatus} onClose={() => setSelection(null)} />}
       {selectedSession && board && (
         <SessionDrawer session={selectedSession} todos={board.todos} run={run} onClose={() => setSelection(null)} onCreated={openTodo} />
       )}

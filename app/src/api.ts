@@ -29,7 +29,12 @@ export interface Todo {
   repos_derived: boolean;
   /** First prompt for sessions started from this todo; null means the title. */
   prompt: string | null;
+  issue_state: "open" | "closed" | null;
+  pr_url: string | null;
+  pr_state: PrState | null;
 }
+
+export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
 export interface Board {
   todos: Todo[];
@@ -53,6 +58,7 @@ export interface TodoUpdate {
   issue_url?: string;
   repos?: string[];
   prompt?: string;
+  pr_url?: string;
 }
 
 export interface Issue {
@@ -77,6 +83,8 @@ export interface LocalRepo {
 
 export const api = {
   localRepos: () => invoke<LocalRepo[]>("local_repos"),
+  createIssue: (todoId: number) => invoke<Todo>("create_issue", { todoId }),
+  closeIssue: (todoId: number) => invoke<void>("close_issue", { todoId }),
   ghIssues: () => invoke<Issue[]>("gh_issues"),
   importIssues: (issues: IssueImport[]) => invoke<number>("import_issues", { issues }),
   board: () => invoke<Board>("board"),
