@@ -103,6 +103,7 @@ struct TodoView {
     /// The exact first prompt a new session would get.
     prompt_preview: String,
     is_orchestrator: bool,
+    links: Vec<cts_core::Link>,
 }
 
 #[derive(Serialize)]
@@ -200,7 +201,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             .list_todos(None)
             .map_err(err)?
             .into_iter()
-            .map(|todo| Ok((db.sessions_for_todo(todo.id).map_err(err)?, todo)))
+            .map(|todo| Ok((db.sessions_for_todo(todo.id).map_err(err)?, db.links_for(todo.id).map_err(err)?, todo)))
             .collect::<Result<Vec<_>, String>>()?;
         let archived = desktop_archived();
         let inbox: Vec<Session> = db
@@ -214,12 +215,13 @@ fn board(state: State<AppState>) -> Result<Board, String> {
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
         .into_iter()
-        .map(|(sessions, todo)| TodoView {
+        .map(|(sessions, links, todo)| TodoView {
             repos: repos_of_todo(&state, &todo),
             repos_derived: todo.repos.is_empty(),
             prompt_preview: launch::start_prompt(todo.id, &todo.prompt_body()),
             is_orchestrator: todo.is_orchestrator(),
             sessions,
+            links,
             todo,
         })
         .collect();
@@ -342,6 +344,44 @@ fn open_github(url: String) -> Result<(), String> {
         return Err(format!("GitHub の URL ではありません: {url}"));
     }
     open_url(&url)
+}
+
+fn is_web_url(url: &str) -> bool {
+    url.starts_with("https://") || url.starts_with("http://")
+}
+
+#[tauri::command]
+fn open_link(url: String) -> Result<(), String> {
+    if !is_web_url(&url) {
+        return Err(format!("開けない URL です: {url}"));
+    }
+    open_url(&url)
+}
+
+/// Attaches a URL to a todo. The page's title and image are fetched in the
+/// background, so the link shows up at once and fills in on the next refresh.
+#[tauri::command]
+fn add_link(app: AppHandle, todo_id: i64, url: String) -> Result<cts_core::Link, String> {
+    let url = url.trim().to_string();
+    if !is_web_url(&url) {
+        return Err("http(s) の URL を入れてください".into());
+    }
+    let link = app.state::<AppState>().db.lock().map_err(err)?.add_link(todo_id, &url).map_err(err)?;
+    let id = link.id;
+    std::thread::spawn(move || {
+        let Ok(meta) = cts_core::ogp::fetch(&url) else { return };
+        if let Ok(db) = app.state::<AppState>().db.lock() {
+            if let Err(e) = db.set_link_meta(id, meta.title.as_deref(), meta.image.as_deref()) {
+                eprintln!("{e}");
+            }
+        }
+    });
+    Ok(link)
+}
+
+#[tauri::command]
+fn remove_link(state: State<AppState>, id: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.remove_link(id).map_err(err)
 }
 
 #[tauri::command]
@@ -1109,6 +1149,9 @@ fn main() {
             create_todo,
             update_todo,
             delete_todo,
+            add_link,
+            remove_link,
+            open_link,
             link_session,
             unlink_session,
             open_session,

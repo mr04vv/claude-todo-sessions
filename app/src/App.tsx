@@ -382,7 +382,7 @@ function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPi
               } else if (e.key === "ArrowUp") {
                 e.preventDefault();
                 setActive((a) => Math.max(a - 1, 0));
-              } else if (e.key === "Enter") {
+              } else if (isEnter(e)) {
                 e.preventDefault();
                 if (choices[active]) pick(choices[active]);
               } else if (e.key === "Escape") {
@@ -529,7 +529,7 @@ function TodoCard({ todo, selected, onSelect, run, setStatus, children, allTodos
   );
 }
 
-function LaneColumn({ status, laneKey, todos, selectedId, onSelect, run, setStatus, allTodos }: {
+function LaneColumn({ status, laneKey, todos, selectedId, onSelect, run, setStatus, allTodos, onAdd }: {
   status: Status;
   laneKey: string;
   todos: Todo[];
@@ -538,6 +538,7 @@ function LaneColumn({ status, laneKey, todos, selectedId, onSelect, run, setStat
   run: (f: () => Promise<unknown>) => void;
   setStatus: (todo: Todo, status: Status) => void;
   allTodos: Todo[];
+  onAdd?: (title: string) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: `col:${status}:${laneKey}` });
   return (
@@ -554,6 +555,7 @@ function LaneColumn({ status, laneKey, todos, selectedId, onSelect, run, setStat
           allTodos={allTodos}
         />
       ))}
+      {onAdd && <AddInline label="新規" onAdd={onAdd} />}
     </div>
   );
 }
@@ -631,7 +633,7 @@ function LaneHeader({ lane, collapsed, onToggle, onOpenTodo }: { lane: Lane; col
   );
 }
 
-function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, onSelectTodo, onSelectSession, run, setStatus, allTodos }: {
+function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, onSelectTodo, onSelectSession, run, setStatus, allTodos, onAdd }: {
   lane: Lane;
   collapsed: boolean;
   onToggle: () => void;
@@ -642,6 +644,8 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
   run: (f: () => Promise<unknown>) => void;
   setStatus: (todo: Todo, status: Status) => void;
   allTodos: Todo[];
+  /// Adds a todo to this lane with the given status; absent when the lane cannot take new todos.
+  onAdd?: (status: Status, title: string) => void;
 }) {
   return (
     <section className={`lane glass${collapsed ? " collapsed" : ""}`}>
@@ -659,6 +663,7 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
               run={run}
               setStatus={setStatus}
               allTodos={allTodos}
+              onAdd={onAdd && ((title) => onAdd(c.status, title))}
             />
           ))}
           <div className="cell inbox-cell">
@@ -672,18 +677,127 @@ function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, on
   );
 }
 
-function InlineInput({ value, placeholder, onSave }: { value: string; placeholder?: string; onSave: (v: string) => void }) {
+/// Enter while a Japanese IME is still composing only confirms the conversion.
+const isEnter = (e: React.KeyboardEvent) => e.key === "Enter" && !e.nativeEvent.isComposing;
+
+function InlineInput({ value, placeholder, className, onSave }: { value: string; placeholder?: string; className?: string; onSave: (v: string) => void }) {
   const [draft, setDraft] = useState(value);
   useEffect(() => setDraft(value), [value]);
   return (
     <input
+      className={className}
       value={draft}
       placeholder={placeholder}
       onChange={(e) => setDraft(e.target.value)}
       onBlur={() => draft !== value && onSave(draft)}
-      onKeyDown={(e) => e.key === "Enter" && (e.target as HTMLInputElement).blur()}
+      onKeyDown={(e) => isEnter(e) && (e.target as HTMLInputElement).blur()}
     />
   );
+}
+
+/// An input that submits on Enter and clears, for adding one thing after another.
+function SubmitInput({ placeholder, autoFocus, onSubmit, onClose }: { placeholder: string; autoFocus?: boolean; onSubmit: (v: string) => void; onClose?: () => void }) {
+  const [draft, setDraft] = useState("");
+  const submit = () => {
+    const v = draft.trim();
+    if (v) onSubmit(v);
+    setDraft("");
+  };
+  return (
+    <input
+      autoFocus={autoFocus}
+      value={draft}
+      placeholder={placeholder}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => {
+        submit();
+        onClose?.();
+      }}
+      onKeyDown={(e) => {
+        if (isEnter(e)) submit();
+        if (e.key === "Escape") {
+          setDraft("");
+          onClose?.();
+        }
+      }}
+    />
+  );
+}
+
+/// Notion-style "+ 新規" at the foot of a column or list: becomes an input
+/// that adds on Enter and stays open for the next one.
+function AddInline({ label, onAdd }: { label: string; onAdd: (title: string) => void }) {
+  const [open, setOpen] = useState(false);
+  if (!open) {
+    return (
+      <button className="ghost add-inline" onClick={() => setOpen(true)}>
+        <Icon name="plus" /> {label}
+      </button>
+    );
+  }
+  return <SubmitInput autoFocus placeholder="タイトルを入力して Enter" onSubmit={onAdd} onClose={() => setOpen(false)} />;
+}
+
+const URL_RE = /https?:\/\/[^\s<>"'）)]+/g;
+
+/// Text with its URLs as links that open in the browser.
+function Linkify({ text, run }: { text: string; run: (f: () => Promise<unknown>) => void }) {
+  const parts: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of text.matchAll(URL_RE)) {
+    const url = m[0];
+    parts.push(text.slice(last, m.index));
+    parts.push(
+      <a
+        key={m.index}
+        href={url}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          run(() => api.openLink(url));
+        }}
+      >
+        {url}
+      </a>,
+    );
+    last = m.index + url.length;
+  }
+  parts.push(text.slice(last));
+  return <>{parts}</>;
+}
+
+/// Memo text with clickable links; click to edit in place, leave to save.
+function MemoEditor({ value, run, onSave }: { value: string; run: (f: () => Promise<unknown>) => void; onSave: (v: string) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+  if (editing) {
+    return (
+      <textarea
+        autoFocus
+        rows={6}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => {
+          if (draft !== value) onSave(draft);
+          setEditing(false);
+        }}
+      />
+    );
+  }
+  return (
+    <div className={`memo editable${value ? "" : " muted"}`} onClick={() => setEditing(true)} title="クリックで編集">
+      {value ? <Linkify text={value} run={run} /> : "メモを書く…"}
+    </div>
+  );
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
 }
 
 function Field({ label, value, placeholder, multiline, rows = 6, onSave }: {
@@ -787,17 +901,20 @@ function SessionRow({ session, run, onUnlink }: {
 
 /// Read-mostly view of a todo: what it is linked to and the ways into it.
 /// Editing and starting sessions happen in dialogs.
-function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, onStart, onAddChild }: {
+function Drawer({ todo, allTodos, local, groups, onOpenTodo, run, setStatus, onClose, onStart, onAddChild }: {
   todo: Todo;
   allTodos: Todo[];
+  local: LocalRepo[];
+  groups: string[];
   onOpenTodo: (id: number) => void;
   run: (f: () => Promise<unknown>) => void;
   setStatus: (todo: Todo, status: Status) => void;
   onClose: () => void;
-  onEdit: () => void;
   onStart: () => void;
   onAddChild: () => void;
 }) {
+  // Every field saves as soon as it is left.
+  const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
   const children = allTodos.filter((c) => c.parent_id === todo.id);
   const parent = todo.parent_id ? allTodos.find((t) => t.id === todo.parent_id) : undefined;
   // window.confirm never returns true inside the Tauri webview, so confirm in place.
@@ -812,15 +929,12 @@ function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, o
           #{todo.id} · {KINDS.find((k) => k.key === todo.kind)?.label}
         </span>
         <span className="header-actions">
-          <button className="ghost" onClick={onEdit}>
-            編集
-          </button>
           <button className="ghost icon" onClick={onClose} aria-label="閉じる">
             <Icon name="close" />
           </button>
         </span>
       </header>
-      <h2 className="drawer-title">{todo.title}</h2>
+      <InlineInput className="drawer-title" value={todo.title} placeholder="タイトル" onSave={(title) => title.trim() && update({ title: title.trim() })} />
       <div className="segmented status-seg">
         {COLUMNS.map((c) => (
           <button key={c.status} className={todo.status === c.status ? "on" : ""} onClick={() => setStatus(todo, c.status)}>
@@ -901,11 +1015,17 @@ function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, o
                   close
                 </button>
               )}
+              <button className="ghost icon" onClick={() => update({ issue_url: "" })} aria-label="issue を外す" title="外す">
+                <Icon name="close" />
+              </button>
             </>
           ) : (
-            <button className="small" onClick={() => run(() => api.createIssue(todo.id))} title="タイトルとメモから issue を作って紐づけます">
-              issue を作る
-            </button>
+            <>
+              <InlineInput value="" placeholder="URL を貼る" onSave={(issue_url) => update({ issue_url })} />
+              <button className="small" onClick={() => run(() => api.createIssue(todo.id))} title="タイトルとメモから issue を作って紐づけます">
+                作る
+              </button>
+            </>
           )}
         </li>
         <li>
@@ -916,41 +1036,69 @@ function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, o
                 {issueRef(todo.pr_url) ?? todo.pr_url} <Icon name="open" />
               </button>
               {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+              <button className="ghost icon" onClick={() => update({ pr_url: "" })} aria-label="PR を外す" title="外す">
+                <Icon name="close" />
+              </button>
             </>
           ) : (
-            <span className="muted">未連携（編集で URL を入れるか、claude/todo-{todo.id}- のブランチで自動連携）</span>
+            <InlineInput value="" placeholder={`URL を貼る（claude/todo-${todo.id}- のブランチなら自動）`} onSave={(pr_url) => update({ pr_url })} />
           )}
         </li>
       </ul>
 
       <h3>詳細</h3>
+      <RepoPicker todo={todo} local={local} groups={groups} update={update} />
       <dl className="props">
-        <dt>repo</dt>
+        <dt>種類</dt>
         <dd>
-          {todo.repos.length > 0 ? (
-            <span className="chips">
-              {todo.repos.map((r) => (
-                <span key={r} className={`chip${todo.repos_derived ? " derived" : ""}`}>
-                  <RepoDot repo={r} />
-                  {r}
-                </span>
-              ))}
-            </span>
-          ) : (
-            <span className="muted">バックログ</span>
-          )}
+          <div className="segmented">
+            {KINDS.map((k) => (
+              <button key={k.key} className={todo.kind === k.key ? "on" : ""} onClick={() => update({ kind: k.key })}>
+                {k.label}
+              </button>
+            ))}
+          </div>
         </dd>
         <dt>フォルダ</dt>
-        <dd className="mono">{todo.cwd ?? <span className="muted">未設定</span>}</dd>
+        <dd>
+          <InlineInput className="mono" value={todo.cwd ?? ""} placeholder="未設定" onSave={(cwd) => update({ cwd })} />
+        </dd>
         <dt>更新</dt>
         <dd>{ago(todo.updated_at)}</dd>
       </dl>
-      {todo.memo && (
-        <>
-          <h3>メモ</h3>
-          <div className="memo">{todo.memo}</div>
-        </>
-      )}
+
+      <h3>メモ</h3>
+      <MemoEditor value={todo.memo ?? ""} run={run} onSave={(memo) => update({ memo })} />
+
+      <h3>リンク{todo.links.length > 0 && <span className="count">{todo.links.length}</span>}</h3>
+      <ul className="attachments">
+        {todo.links.map((l) => (
+          <li key={l.id} className="attachment" title={l.url} onClick={() => run(() => api.openLink(l.url))}>
+            {l.image ? (
+              <img src={l.image} alt="" />
+            ) : (
+              <span className="thumb">
+                <Icon name="open" />
+              </span>
+            )}
+            <span className="attachment-text">
+              <span className="attachment-title">{l.title ?? hostOf(l.url)}</span>
+              <span className="muted ellipsis">{l.url}</span>
+            </span>
+            <button
+              className="ghost icon"
+              aria-label="外す"
+              onClick={(e) => {
+                e.stopPropagation();
+                run(() => api.removeLink(l.id));
+              }}
+            >
+              <Icon name="close" />
+            </button>
+          </li>
+        ))}
+      </ul>
+      <SubmitInput placeholder="URL を貼って Enter で追加" onSubmit={(url) => run(() => api.addLink(todo.id, url))} />
 
       {confirmingDelete ? (
         <div className="actions delete-confirm">
@@ -976,38 +1124,6 @@ function Drawer({ todo, allTodos, onOpenTodo, run, setStatus, onClose, onEdit, o
         </button>
       )}
     </aside>
-  );
-}
-
-function EditTodoDialog({ todo, local, groups, run, onClose }: {
-  todo: Todo;
-  local: LocalRepo[];
-  groups: string[];
-  run: (f: () => Promise<unknown>) => void;
-  onClose: () => void;
-}) {
-  const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
-  return (
-    <Modal title={`#${todo.id} を編集`} onClose={onClose} footer={<><span className="muted">欄を離れると保存されます</span><button className="primary" onClick={onClose}>完了</button></>}>
-      <Field label="タイトル" value={todo.title} onSave={(title) => update({ title })} />
-      <div className="field">
-        <span>種類（最初のプロンプトの既定文が変わります）</span>
-        <div className="segmented">
-          {KINDS.map((k) => (
-            <button key={k.key} className={todo.kind === k.key ? "on" : ""} onClick={() => update({ kind: k.key })}>
-              {k.label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <RepoPicker todo={todo} local={local} groups={groups} update={update} />
-      <div className="two-col">
-        <Field label="Issue URL" value={todo.issue_url ?? ""} placeholder="https://github.com/…/issues/…" onSave={(issue_url) => update({ issue_url })} />
-        <Field label="PR URL" value={todo.pr_url ?? ""} placeholder="https://github.com/…/pull/…" onSave={(pr_url) => update({ pr_url })} />
-      </div>
-      <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
-      <Field label="メモ" value={todo.memo ?? ""} multiline onSave={(memo) => update({ memo })} />
-    </Modal>
   );
 }
 
@@ -1161,7 +1277,7 @@ function SessionDrawer({ session, todos, run, onClose, onCreated }: {
       </div>
       <h3>このセッションから todo を作る</h3>
       <div className="actions">
-        <input value={newTitle} placeholder="todo のタイトル" onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && createAndLink()} />
+        <input value={newTitle} placeholder="todo のタイトル" onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && createAndLink()} />
         <button className="primary" disabled={!newTitle.trim()} onClick={createAndLink}>
           作って紐づける
         </button>
@@ -1259,7 +1375,7 @@ function AddTodoDialog({ local, groups, parent, run, onClose, onOpenTodo }: {
     >
       <label className="field">
         <span>タイトル</span>
-        <input ref={titleRef} value={title} placeholder="何をする？" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+        <input ref={titleRef} value={title} placeholder="何をする？" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && submit()} />
       </label>
       <div className="field">
         <span>種類</span>
@@ -1278,7 +1394,7 @@ function AddTodoDialog({ local, groups, parent, run, onClose, onOpenTodo }: {
         </div>
         <label className="field">
           <span>Issue / PR URL（任意）</span>
-          <input value={issueUrl} placeholder="https://github.com/…" onChange={(e) => setIssueUrl(e.target.value)} onKeyDown={(e) => e.key === "Enter" && submit()} />
+          <input value={issueUrl} placeholder="https://github.com/…" onChange={(e) => setIssueUrl(e.target.value)} onKeyDown={(e) => isEnter(e) && submit()} />
         </label>
       </div>
       {added.length > 0 && (
@@ -1420,21 +1536,24 @@ function ListPage({ lanes, selectedId, run, setStatus, onSelectTodo }: {
   );
 }
 
-function BacklogPage({ board, local, groups, selectedId, run, onSelectTodo }: {
+function BacklogPage({ board, local, groups, selectedId, run, onSelectTodo, onAdd }: {
   board: Board;
   local: LocalRepo[];
   groups: string[];
   selectedId: number | null;
   run: (f: () => Promise<unknown>) => void;
   onSelectTodo: (id: number) => void;
+  onAdd: (title: string) => void;
 }) {
   const todos = board.todos.filter((t) => t.repos.length === 0).sort((a, b) => b.updated_at - a.updated_at);
   return (
     <div className="stack">
       <p className="muted hint">リポジトリもグループも未設定の todo。どちらかを選ぶとボードに移ります。調査など、リポジトリに紐づかないものは「＋ 新しいグループ…」で分けられます。</p>
-      {todos.length === 0 && <p className="muted empty">バックログは空です。サイドバーの「追加」から todo を作れます。</p>}
-      {todos.length > 0 && (
-        <section className="glass panel">
+      <section className="glass panel">
+        <div className="panel-add">
+          <AddInline label="新しい todo" onAdd={onAdd} />
+        </div>
+        {todos.length > 0 && (
           <ul className="list">
             {todos.map((t) => (
               <li key={t.id} className={`list-row${t.id === selectedId ? " selected" : ""}`} onClick={() => onSelectTodo(t.id)}>
@@ -1456,8 +1575,8 @@ function BacklogPage({ board, local, groups, selectedId, run, onSelectTodo }: {
               </li>
             ))}
           </ul>
-        </section>
-      )}
+        )}
+      </section>
     </div>
   );
 }
@@ -1606,7 +1725,7 @@ function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) 
           placeholder="例: この エラーの意味を教えて …"
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && e.metaKey) {
+            if (isEnter(e) && e.metaKey) {
               e.preventDefault();
               start();
             }
@@ -1624,7 +1743,7 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"add" | "addChild" | "import" | "edit" | "start" | "quick" | null>(null);
+  const [dialog, setDialog] = useState<"add" | "addChild" | "import" | "start" | "quick" | null>(null);
   const [view, setViewState] = useState<View>(loadView);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
@@ -1695,6 +1814,15 @@ export default function App() {
     run(() => api.updateTodo(todo.id, { status }));
     if (status === "done" && todo.issue_url && todo.issue_state !== "closed") setClosePrompt(todo);
   };
+
+  // "+ 新規" in a column: a todo in that lane with that status, a subtask when the lane is a parent's.
+  const addTodoIn = (lane: Lane, status: Status, title: string) =>
+    run(async () => {
+      const repos = lane.parent ? (lane.parent.repos.length === 1 ? lane.parent.repos : []) : [lane.key];
+      const cwd = repos.length === 1 ? local.find((r) => r.key === repos[0])?.path : undefined;
+      const todo = await api.createTodo({ title, repos, cwd, parent_id: lane.parent?.id });
+      if (status !== "todo") await api.updateTodo(todo.id, { status });
+    });
 
   const onDragStart = ({ active }: DragStartEvent) => setDragging(String(active.id));
 
@@ -1770,9 +1898,6 @@ export default function App() {
           <span>Todo Sessions</span>
         </div>
         <div className="sidebar-actions">
-          <button className="primary" title="追加（⌘N）" onClick={() => setDialog("add")}>
-            <Icon name="plus" /> <span className="label">追加</span> <kbd>⌘N</kbd>
-          </button>
           <button title="issue を取り込む" onClick={() => setDialog("import")}>
             <Icon name="import" /> <span className="label">issue を取り込む</span>
           </button>
@@ -1909,6 +2034,7 @@ export default function App() {
                     run={run}
                     setStatus={setStatus}
                     allTodos={board?.todos ?? []}
+                    onAdd={lane.key === MULTI_LANE ? undefined : (status, title) => addTodoIn(lane, status, title)}
                   />
                 ))}
                 {board && lanes.length === 0 && (
@@ -1921,7 +2047,9 @@ export default function App() {
               </>
             )}
             {view === "list" && <ListPage lanes={lanes} selectedId={selectedId} run={run} setStatus={setStatus} onSelectTodo={openTodo} />}
-            {view === "backlog" && visible && <BacklogPage board={visible} local={local} groups={groups} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
+            {view === "backlog" && visible && (
+              <BacklogPage board={visible} local={local} groups={groups} selectedId={selectedId} run={run} onSelectTodo={openTodo} onAdd={(title) => run(() => api.createTodo({ title }))} />
+            )}
             {view === "queue" && board && <QueuePage board={board} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
             {view === "inbox" && visible && <InboxPage board={visible} selectedSessionId={selectedSession?.session_id ?? null} run={run} onSelectSession={openSession} />}
           </div>
@@ -1934,16 +2062,16 @@ export default function App() {
         <Drawer
           todo={selectedTodo}
           allTodos={board?.todos ?? []}
+          local={local}
+          groups={groups}
           onOpenTodo={openTodo}
           run={run}
           setStatus={setStatus}
           onClose={() => setSelection(null)}
-          onEdit={() => setDialog("edit")}
           onStart={() => setDialog("start")}
           onAddChild={() => setDialog("addChild")}
         />
       )}
-      {dialog === "edit" && selectedTodo && <EditTodoDialog todo={selectedTodo} local={local} groups={groups} run={run} onClose={() => setDialog(null)} />}
       {dialog === "start" && selectedTodo && <StartSessionDialog todo={selectedTodo} run={run} onClose={() => setDialog(null)} />}
       {selectedSession && board && (
         <SessionDrawer session={selectedSession} todos={board.todos} run={run} onClose={() => setSelection(null)} onCreated={openTodo} />

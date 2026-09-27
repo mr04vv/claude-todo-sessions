@@ -445,6 +445,24 @@ fn migrated_integer_columns_read_back_as_integers() {
 }
 
 #[test]
+fn links_attach_to_a_todo_and_go_with_it() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("a")).unwrap();
+    let l = db.add_link(t.id, "https://example.com/x").unwrap();
+    assert_eq!((l.todo_id, l.url.as_str(), l.title.as_deref()), (t.id, "https://example.com/x", None));
+    db.set_link_meta(l.id, Some("Example"), Some("https://example.com/og.png")).unwrap();
+    let links = db.links_for(t.id).unwrap();
+    assert_eq!(links.len(), 1);
+    assert_eq!((links[0].title.as_deref(), links[0].image.as_deref()), (Some("Example"), Some("https://example.com/og.png")));
+    assert!(matches!(db.add_link(999, "https://example.com"), Err(Error::TodoNotFound(999))));
+    db.remove_link(l.id).unwrap();
+    assert!(db.links_for(t.id).unwrap().is_empty());
+    db.add_link(t.id, "https://example.com/y").unwrap();
+    db.delete_todo(t.id).unwrap();
+    assert!(db.links_for(t.id).unwrap().is_empty());
+}
+
+#[test]
 fn sessions_keep_the_time_they_started() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.sqlite");

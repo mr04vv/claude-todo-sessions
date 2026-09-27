@@ -4,6 +4,7 @@ pub mod desktop;
 pub mod github;
 pub mod herdr;
 pub mod launch;
+pub mod ogp;
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -218,6 +219,18 @@ pub struct Session {
     pub started_at: i64,
 }
 
+/// A URL attached to a todo, with the page's Open Graph title and image
+/// once they have been fetched.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Link {
+    pub id: i64,
+    pub todo_id: i64,
+    pub url: String,
+    pub title: Option<String>,
+    pub image: Option<String>,
+    pub created_at: i64,
+}
+
 /// Hooks from parallel sessions write to the same file.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MARKER_PREFIX: &str = "[todo:";
@@ -262,7 +275,17 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS links (
+    id INTEGER PRIMARY KEY,
+    todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    title TEXT,
+    image TEXT,
+    created_at INTEGER NOT NULL
+);
 ";
+
+const LINK_COLS: &str = "id, todo_id, url, title, image, created_at";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER)";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at)";
@@ -528,6 +551,34 @@ impl Db {
             0 => Err(Error::TodoNotFound(id)),
             _ => Ok(()),
         }
+    }
+
+    pub fn add_link(&self, todo_id: i64, url: &str) -> Result<Link> {
+        if self.get_todo(todo_id)?.is_none() {
+            return Err(Error::TodoNotFound(todo_id));
+        }
+        let created_at = now();
+        self.conn.execute("INSERT INTO links (todo_id, url, created_at) VALUES (?1, ?2, ?3)", params![todo_id, url, created_at])?;
+        Ok(Link { id: self.conn.last_insert_rowid(), todo_id, url: url.into(), title: None, image: None, created_at })
+    }
+
+    /// Records what the linked page says about itself.
+    pub fn set_link_meta(&self, id: i64, title: Option<&str>, image: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE links SET title = ?2, image = ?3 WHERE id = ?1", params![id, title, image])?;
+        Ok(())
+    }
+
+    pub fn remove_link(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM links WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn links_for(&self, todo_id: i64) -> Result<Vec<Link>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT {LINK_COLS} FROM links WHERE todo_id = ?1 ORDER BY id"))?;
+        let rows = stmt.query_map([todo_id], |r| {
+            Ok(Link { id: r.get(0)?, todo_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     pub fn record_session(&self, id: &str, cwd: &str, state: SessionState) -> Result<()> {

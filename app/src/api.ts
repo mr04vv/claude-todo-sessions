@@ -39,6 +39,17 @@ export interface Todo {
   prompt_preview: string;
   parent_id: number | null;
   is_orchestrator: boolean;
+  links: Link[];
+}
+
+/** A URL attached to a todo; title and image arrive once the page has been read. */
+export interface Link {
+  id: number;
+  todo_id: number;
+  url: string;
+  title: string | null;
+  image: string | null;
+  created_at: number;
 }
 
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
@@ -114,6 +125,9 @@ export const api = {
   quickClaude: (prompt: string) => invoke<void>("quick_claude", { prompt }),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openGithub: (url: string) => invoke<void>("open_github", { url }),
+  openLink: (url: string) => invoke<void>("open_link", { url }),
+  addLink: (todoId: number, url: string) => invoke<Link>("add_link", { todoId, url }),
+  removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
   startTerminal: (todoId: number) => invoke<void>("start_terminal", { todoId }),
