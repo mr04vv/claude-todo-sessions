@@ -10,12 +10,30 @@
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
-    "windows": [{ "title": "Todo Sessions", "width": 1320, "height": 820 }],
-    "security": { "csp": null }
+    "windows": [
+      {
+        "title": "Todo Sessions",
+        "width": 1320,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 600
+      }
+    ],
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.png"]
+    "targets": [
+      "app"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.png"
+    ]
   }
 }

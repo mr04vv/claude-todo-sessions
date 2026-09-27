@@ -1228,3 +1228,158 @@ button.lane-head:hover {
   flex-direction: column;
   min-width: 0;
 }
+
+/* ---------- searchable picker ---------- */
+
+.combo {
+  position: relative;
+  width: 100%;
+}
+
+.combo-button {
+  width: 100%;
+  height: 32px;
+  justify-content: flex-start;
+  gap: 8px;
+  background: var(--input);
+  font-weight: 500;
+}
+
+.combo-button.placeholder {
+  color: var(--text-2);
+}
+
+.combo-caret {
+  margin-left: auto;
+  color: var(--text-2);
+  font-size: 11px;
+}
+
+.combo-panel {
+  position: fixed;
+  z-index: 30;
+  padding: 6px;
+  border-radius: 12px;
+  background: var(--glass-strong);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.combo-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.combo-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.combo-item.active {
+  background: var(--surface-hover);
+}
+
+.combo-item.new {
+  color: var(--link);
+}
+
+.combo-kind {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+.combo-empty {
+  padding: 8px;
+  font-size: 12px;
+}
+
+.row-choice .combo-button {
+  height: 28px;
+}
+
+/* ---------- narrow windows ---------- */
+
+/* The board keeps four readable columns and scrolls sideways instead of squeezing. */
+.col-heads,
+.lane-grid {
+  min-width: 780px;
+}
+
+.toolbar {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+@media (max-width: 1200px) {
+  :root {
+    --sidebar-w: 208px;
+  }
+}
+
+/* Icon rail: labels go, tooltips remain. */
+@media (max-width: 1000px) {
+  :root {
+    --sidebar-w: 60px;
+  }
+
+  .sidebar {
+    padding: 14px 8px;
+    gap: 12px;
+  }
+
+  .sidebar .label,
+  .sidebar kbd,
+  .sidebar .count,
+  .sidebar .section-title,
+  .sidebar .pill.waiting,
+  .brand > span:last-child {
+    display: none;
+  }
+
+  .brand {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .sidebar-actions button,
+  .nav button,
+  .sidebar .repo {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .waiting-box {
+    justify-content: center;
+    padding: 9px 0;
+  }
+
+  .toolbar h1 {
+    font-size: 15px;
+  }
+
+  .toolbar .segmented {
+    margin-left: 0;
+  }
+}
+
+/* The drawer covers the content instead of shrinking it. */
+@media (max-width: 1100px) {
+  .with-drawer .main {
+    padding-right: 0;
+  }
+
+  .drawer {
+    width: min(var(--drawer-w), calc(100vw - 28px));
+  }
+}

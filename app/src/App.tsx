@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   DndContext,
   DragOverlay,
@@ -90,8 +91,8 @@ interface Lane {
   inbox: Session[];
 }
 
-/// One lane per repository, alphabetical, the multi-repo lane last; the
-/// backlog has its own page.
+/// One lane per group or repository, groups first, the multi-repo lane last;
+/// the backlog has its own page.
 function buildLanes(board: Board): Lane[] {
   const lanes = new Map<string, Lane>();
   const lane = (repos: string[] | undefined) => {
@@ -103,7 +104,8 @@ function buildLanes(board: Board): Lane[] {
   for (const t of board.todos) lane(t.repos).todos.push(t);
   for (const s of board.inbox) lane(s.repos).inbox.push(s);
   lanes.delete(BACKLOG_LANE);
-  const rank = (key: string) => (key === MULTI_LANE ? 1 : 0);
+  // Free groups ("調査") first, then repositories, the multi-repo lane last.
+  const rank = (key: string) => (key === MULTI_LANE ? 2 : key.includes("/") ? 1 : 0);
   return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key, "en", { sensitivity: "base" }));
 }
 
@@ -211,10 +213,15 @@ function RepoDot({ repo }: { repo: string }) {
   return <span className="repo-dot" style={{ background: `hsl(${repoHue(repo)} 80% 65%)` }} />;
 }
 
-const NEW_GROUP = "__new_group__";
+interface Choice {
+  key: string;
+  kind: "group" | "repo" | "new";
+  label: string;
+}
 
-/// Picks a local repository or a free group name ("調査"); a group needs no
-/// checkout and gets its own lane like a repository.
+/// Searchable picker for a repository or a free group name ("調査"): type to
+/// filter, Enter picks the highlighted entry, and an unknown name becomes a
+/// new group. Groups are listed before repositories.
 function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPick }: {
   local: LocalRepo[];
   groups: string[];
@@ -223,71 +230,104 @@ function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPi
   placeholder: string;
   onPick: (key: string) => void;
 }) {
-  const [naming, setNaming] = useState(false);
-  const [name, setName] = useState("");
-  const commit = () => {
-    const g = name.trim().replace(/\//g, "-");
-    if (!g) return;
-    onPick(g);
-    setName("");
-    setNaming(false);
-  };
-  if (naming) {
-    return (
-      <div className="actions">
-        <input
-          autoFocus
-          value={name}
-          placeholder="グループ名（例: 調査）"
-          onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              commit();
-            }
-            if (e.key === "Escape") setNaming(false);
-          }}
-        />
-        <button className="primary" disabled={!name.trim()} onClick={commit}>
-          作る
-        </button>
-        <button className="ghost" onClick={() => setNaming(false)}>
-          やめる
-        </button>
-      </div>
-    );
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const root = useRef<HTMLDivElement>(null);
+  const panel = useRef<HTMLDivElement>(null);
+  // The panel is portaled to the body so scrolling parents (drawer, dialog) cannot clip it.
+  const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!open || !root.current) return;
+    const r = root.current.getBoundingClientRect();
+    setRect({ top: r.bottom + 4, left: r.left, width: r.width });
+  }, [open]);
+  const q = query.trim().toLowerCase();
+  const matches = (key: string) => !exclude.includes(key) && key.toLowerCase().includes(q);
+  const choices: Choice[] = [
+    ...groups.filter(matches).map((g) => ({ key: g, kind: "group" as const, label: g })),
+    ...local.filter((r) => matches(r.key)).map((r) => ({ key: r.key, kind: "repo" as const, label: r.key })),
+  ];
+  const typed = query.trim().replace(/\//g, "-");
+  if (typed && !groups.includes(typed) && !local.some((r) => r.key === typed)) {
+    choices.push({ key: typed, kind: "new", label: `「${typed}」を新しいグループとして作る` });
   }
+  useEffect(() => setActive(0), [query, open]);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!root.current?.contains(t) && !panel.current?.contains(t)) setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+  const pick = (c: Choice) => {
+    onPick(c.key);
+    setQuery("");
+    setOpen(false);
+  };
   return (
-    <select
-      value={value}
-      onClick={(e) => e.stopPropagation()}
-      onChange={(e) => (e.target.value === NEW_GROUP ? setNaming(true) : onPick(e.target.value))}
-    >
-      <option value="">{placeholder}</option>
-      {local.filter((r) => !exclude.includes(r.key)).length > 0 && (
-        <optgroup label="リポジトリ">
-          {local
-            .filter((r) => !exclude.includes(r.key))
-            .map((r) => (
-              <option key={r.key} value={r.key}>
-                {r.key}
-              </option>
+    <div ref={root} className="combo" onClick={(e) => e.stopPropagation()}>
+      <button type="button" className={`combo-button${value ? "" : " placeholder"}`} onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}>
+        {value ? (
+          <>
+            <RepoDot repo={value} />
+            <span className="ellipsis">{value}</span>
+          </>
+        ) : (
+          <span className="ellipsis">{placeholder}</span>
+        )}
+        <span className="combo-caret">▾</span>
+      </button>
+      {open &&
+        rect &&
+        createPortal(
+        <div ref={panel} className="combo-panel glass" style={{ top: rect.top, left: rect.left, width: rect.width }} onClick={(e) => e.stopPropagation()}>
+          <input
+            autoFocus
+            value={query}
+            placeholder="検索、または新しいグループ名"
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setActive((a) => Math.min(a + 1, choices.length - 1));
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setActive((a) => Math.max(a - 1, 0));
+              } else if (e.key === "Enter") {
+                e.preventDefault();
+                if (choices[active]) pick(choices[active]);
+              } else if (e.key === "Escape") {
+                setOpen(false);
+              }
+            }}
+          />
+          <ul role="listbox" className="combo-list">
+            {choices.length === 0 && <li className="muted combo-empty">候補がありません</li>}
+            {choices.map((c, i) => (
+              <li
+                key={`${c.kind}:${c.key}`}
+                role="option"
+                aria-selected={i === active}
+                className={`combo-item${i === active ? " active" : ""}${c.kind === "new" ? " new" : ""}`}
+                onMouseEnter={() => setActive(i)}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick(c);
+                }}
+              >
+                {c.kind === "new" ? <Icon name="plus" /> : <RepoDot repo={c.key} />}
+                <span className="ellipsis">{c.label}</span>
+                {c.kind !== "new" && <span className="muted combo-kind">{c.kind === "group" ? "グループ" : "リポジトリ"}</span>}
+              </li>
             ))}
-        </optgroup>
-      )}
-      {groups.filter((g) => !exclude.includes(g)).length > 0 && (
-        <optgroup label="グループ">
-          {groups
-            .filter((g) => !exclude.includes(g))
-            .map((g) => (
-              <option key={g} value={g}>
-                {g}
-              </option>
-            ))}
-        </optgroup>
-      )}
-      <option value={NEW_GROUP}>＋ 新しいグループ…</option>
-    </select>
+          </ul>
+        </div>,
+        document.body,
+        )}
+    </div>
   );
 }
 
@@ -1153,18 +1193,18 @@ export default function App() {
           <span>Todo Sessions</span>
         </div>
         <div className="sidebar-actions">
-          <button className="primary" onClick={() => setDialog("add")}>
-            <Icon name="plus" /> 追加 <kbd>⌘N</kbd>
+          <button className="primary" title="追加（⌘N）" onClick={() => setDialog("add")}>
+            <Icon name="plus" /> <span className="label">追加</span> <kbd>⌘N</kbd>
           </button>
-          <button onClick={() => setDialog("import")}>
-            <Icon name="import" /> issue を取り込む
+          <button title="issue を取り込む" onClick={() => setDialog("import")}>
+            <Icon name="import" /> <span className="label">issue を取り込む</span>
           </button>
         </div>
         <nav className="nav">
           {VIEWS.map((v) => (
-            <button key={v.key} className={view === v.key ? "on" : ""} onClick={() => setView(v.key)}>
+            <button key={v.key} className={view === v.key ? "on" : ""} title={v.label} onClick={() => setView(v.key)}>
               <Icon name={v.key} />
-              {v.label}
+              <span className="label">{v.label}</span>
               {v.key === "backlog" && backlogCount > 0 && <span className="count">{backlogCount}</span>}
               {v.key === "inbox" && (board?.inbox.length ?? 0) > 0 && <span className="count">{board?.inbox.length}</span>}
             </button>
@@ -1182,7 +1222,7 @@ export default function App() {
                 onClick={() => setRepoFilter(repoFilter === lane.key ? null : lane.key)}
               >
                 <RepoDot repo={lane.key} />
-                <span className="ellipsis">{lane.key.includes("/") ? repoName(lane.key) : lane.key}</span>
+                <span className="ellipsis label">{lane.key.includes("/") ? repoName(lane.key) : lane.key}</span>
                 {w > 0 && <span className="pill waiting">{w}</span>}
                 <span className="count">{lane.todos.length}</span>
               </button>
@@ -1191,11 +1231,11 @@ export default function App() {
           {allLanes.length === 0 && <p className="muted hint">まだありません</p>}
         </div>
         <div className="sidebar-foot">
-          <div className={`waiting-box${waiting > 0 ? " on" : ""}`}>
+          <div className={`waiting-box${waiting > 0 ? " on" : ""}`} title={`入力待ち ${waiting}`}>
             <i />
-            入力待ち <b>{waiting}</b>
+            <span className="label">入力待ち</span> <b>{waiting}</b>
           </div>
-          <div className="muted sync">{board?.sync_status}</div>
+          <div className="muted sync label">{board?.sync_status}</div>
         </div>
       </aside>
 

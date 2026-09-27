@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod cloud;
 pub mod desktop;
+pub mod herdr;
 pub mod launch;
 
 use std::path::Path;

@@ -38,6 +38,8 @@ const GH_ISSUE_LIMIT: &str = "100";
 const EXTRA_REPO_ROOTS: &[&str] = &["Works/Atrae"];
 /// Must match `identifier` in tauri.conf.json; notifications are posted as this app.
 const APP_ID: &str = "dev.mr04vv.todo-sessions";
+/// Terminal app hosting herdr, brought forward when a session is focused there.
+const TERMINAL_APP: &str = "Ghostty";
 
 struct AppState {
     db: Mutex<Db>,
@@ -257,8 +259,30 @@ fn open_url(url: &str) -> Result<(), String> {
     status.success().then_some(()).ok_or_else(|| format!("open {url} failed: {status}"))
 }
 
+/// Focuses the herdr pane running this session, if any, and brings the
+/// terminal forward. Returns false when herdr does not host it.
+fn focus_in_herdr(session_id: &str) -> bool {
+    let Ok(table) = cli("herdr").args(["session", "list"]).output() else { return false };
+    for name in cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)) {
+        let Ok(out) = cli("herdr").args(["--session", &name, "agent", "list"]).output() else { continue };
+        let Ok(agents) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
+        if let Some(pane) = cts_core::herdr::find_pane(&agents, session_id) {
+            let focused = cli("herdr").args(["--session", &name, "agent", "focus", &pane]).status().map(|s| s.success()).unwrap_or(false);
+            if focused {
+                // ponytail: assumes herdr runs in Ghostty; make the terminal app a setting if it varies.
+                let _ = cli("open").args(["-a", TERMINAL_APP]).status();
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[tauri::command]
 fn open_session(session_id: String) -> Result<(), String> {
+    if !launch::is_cloud_session(&session_id) && focus_in_herdr(&session_id) {
+        return Ok(());
+    }
     let local = cts_core::desktop::find_local_id(&home().join(DESKTOP_SESSIONS_DIR), &session_id);
     open_url(&launch::jump_url(&session_id, local.as_deref()))
 }
