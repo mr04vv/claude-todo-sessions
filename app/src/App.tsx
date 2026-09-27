@@ -1494,6 +1494,52 @@ function QueuePage({ board, selectedId, run, onSelectTodo }: {
   );
 }
 
+/// A throwaway claude in a new herdr workspace at home, with an optional first prompt.
+function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
+  const [prompt, setPrompt] = useState("");
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => ref.current?.focus(), []);
+  const start = () =>
+    run(async () => {
+      await api.quickClaude(prompt);
+      onClose();
+    });
+  return (
+    <Modal
+      title="ちょっと Claude"
+      onClose={onClose}
+      footer={
+        <>
+          <span className="muted">⌘Enter で起動。todo には紐づけません</span>
+          <button className="ghost" onClick={onClose}>
+            キャンセル
+          </button>
+          <button className="primary" onClick={start}>
+            herdr で起動
+          </button>
+        </>
+      }
+    >
+      <label className="field">
+        <span>最初のプロンプト（空なら何も送らずに起動）</span>
+        <textarea
+          ref={ref}
+          rows={5}
+          value={prompt}
+          placeholder="例: この エラーの意味を教えて …"
+          onChange={(e) => setPrompt(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && e.metaKey) {
+              e.preventDefault();
+              start();
+            }
+          }}
+        />
+      </label>
+    </Modal>
+  );
+}
+
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
 
 export default function App() {
@@ -1501,7 +1547,7 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null);
   const [dragging, setDragging] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"add" | "import" | "edit" | "start" | null>(null);
+  const [dialog, setDialog] = useState<"add" | "import" | "edit" | "start" | "quick" | null>(null);
   const [view, setViewState] = useState<View>(loadView);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [stateFilter, setStateFilter] = useState<StateFilter>("all");
@@ -1648,7 +1694,7 @@ export default function App() {
           <button title="issue を取り込む" onClick={() => setDialog("import")}>
             <Icon name="import" /> <span className="label">issue を取り込む</span>
           </button>
-          <button title="herdr でホームフォルダの claude を開く（todo に紐づけない）" onClick={() => run(() => api.quickClaude())}>
+          <button title="herdr でホームフォルダの claude を開く（todo に紐づけない）" onClick={() => setDialog("quick")}>
             <Icon name="spark" /> <span className="label">ちょっと Claude</span>
           </button>
         </div>
@@ -1819,6 +1865,7 @@ export default function App() {
         />
       )}
       {dialog === "import" && <ImportDialog run={run} onClose={() => setDialog(null)} />}
+      {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
     </div>
   );
 }

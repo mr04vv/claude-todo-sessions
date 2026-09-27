@@ -307,10 +307,18 @@ fn focus_in_herdr(session_id: &str) -> bool {
 /// Opens a new herdr workspace in the home folder running a plain `claude`,
 /// for a quick question outside any todo.
 #[tauri::command]
-fn quick_claude() -> Result<(), String> {
+fn quick_claude(prompt: Option<String>) -> Result<(), String> {
     let cwd = home().to_string_lossy().to_string();
-    start_in_herdr(&cwd, "claude", "claude", true)
-        .or_else(|herdr_err| start_in_ghostty(&cwd, "claude").map_err(|e| format!("{herdr_err} / {e}")))
+    let command = match prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => format!("claude {}", shell_quote(p)),
+        None => "claude".into(),
+    };
+    let label = prompt.as_deref().map(|p| p.chars().take(24).collect::<String>()).filter(|l| !l.trim().is_empty()).unwrap_or_else(|| "claude".into());
+    match start_in_herdr(&cwd, &label, &command, true) {
+        // The new workspace is focused inside herdr; bring its terminal forward too.
+        Ok(()) => cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err),
+        Err(herdr_err) => start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")),
+    }
 }
 
 /// Asks the background syncs to run now: GitHub for one todo or all, and
