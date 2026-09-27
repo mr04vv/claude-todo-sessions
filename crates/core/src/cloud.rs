@@ -155,15 +155,33 @@ fn keychain_account() -> Result<String, String> {
     std::env::var("USER").map_err(|_| "USER is not set".into())
 }
 
+/// The credentials item was created by the `security` CLI (that is how
+/// Claude Code stores it), so that CLI is on its access list and reads it
+/// without a prompt. Our own binaries are not, and an ad-hoc signed build
+/// changes identity every time, so going through Security.framework asked
+/// for permission after each rebuild.
+fn security(args: &[&str]) -> Result<Vec<u8>, String> {
+    let out = std::process::Command::new("/usr/bin/security")
+        .args(args)
+        .output()
+        .map_err(|e| format!("security: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("security {}: {}", args.first().unwrap_or(&""), String::from_utf8_lossy(&out.stderr).trim()));
+    }
+    Ok(out.stdout)
+}
+
 fn load_creds() -> Result<Value, String> {
-    let raw = security_framework::passwords::get_generic_password(KEYCHAIN_SERVICE, &keychain_account()?)
+    let raw = security(&["find-generic-password", "-a", &keychain_account()?, "-s", KEYCHAIN_SERVICE, "-w"])
         .map_err(|e| format!("read keychain {KEYCHAIN_SERVICE}: {e}"))?;
-    serde_json::from_slice(&raw).map_err(|e| format!("parse credentials: {e}"))
+    serde_json::from_slice(String::from_utf8_lossy(&raw).trim().as_bytes()).map_err(|e| format!("parse credentials: {e}"))
 }
 
 fn save_creds(creds: &Value) -> Result<(), String> {
-    let raw = serde_json::to_vec(creds).map_err(|e| e.to_string())?;
-    security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, &keychain_account()?, &raw)
+    let raw = serde_json::to_string(creds).map_err(|e| e.to_string())?;
+    // -U updates the existing item in place, keeping its access list.
+    security(&["add-generic-password", "-a", &keychain_account()?, "-s", KEYCHAIN_SERVICE, "-w", &raw, "-U"])
+        .map(|_| ())
         .map_err(|e| format!("write keychain {KEYCHAIN_SERVICE}: {e}"))
 }
 
