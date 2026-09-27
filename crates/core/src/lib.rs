@@ -254,7 +254,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 );
 ";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, queue_pos, kind, parent_id";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER)";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch";
 
 impl Status {
@@ -359,7 +359,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             |r| r.get::<_, i64>(0).map(|n| n > 0),
         )?;
         if !exists {
-            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"), [])?;
+            // Integer columns keep integer affinity; older builds added them as TEXT,
+            // which TODO_COLS casts back when reading.
+            let ty = if matches!(column, "queue_pos" | "parent_id") { "INTEGER" } else { "TEXT" };
+            conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
     Ok(())
@@ -615,7 +618,7 @@ impl Db {
     pub fn enqueue(&self, id: i64, runner: &str) -> Result<()> {
         let n = self.conn.execute(
             "UPDATE todos SET queue_runner = ?2, queue_error = NULL,
-                queue_pos = COALESCE(queue_pos, (SELECT COALESCE(MAX(queue_pos), 0) + 1 FROM todos))
+                queue_pos = COALESCE(queue_pos, (SELECT COALESCE(MAX(CAST(queue_pos AS INTEGER)), 0) + 1 FROM todos))
              WHERE id = ?1",
             params![id, runner],
         )?;
@@ -635,7 +638,7 @@ impl Db {
 
     pub fn queued(&self) -> Result<Vec<Todo>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT {TODO_COLS} FROM todos WHERE queue_runner IS NOT NULL ORDER BY queue_pos, id"
+            "SELECT {TODO_COLS} FROM todos WHERE queue_runner IS NOT NULL ORDER BY CAST(queue_pos AS INTEGER), id"
         ))?;
         let rows = stmt.query_map([], todo_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

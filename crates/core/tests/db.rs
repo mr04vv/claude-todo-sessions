@@ -424,3 +424,22 @@ fn implementation_prompt_asks_the_pr_to_close_the_issue() {
     let r = db.update_todo(t.id, TodoPatch { kind: Some(cts_core::Kind::Research), prompt: Some(String::new()), ..Default::default() }).unwrap();
     assert!(!r.prompt_body().contains("Closes"), "{}", r.prompt_body());
 }
+
+#[test]
+fn migrated_integer_columns_read_back_as_integers() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo',
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let p = db.create_todo(new_todo("p")).unwrap();
+    let c = db.create_todo(NewTodo { title: "c".into(), parent_id: Some(p.id), ..Default::default() }).unwrap();
+    assert_eq!(c.parent_id, Some(p.id));
+    db.enqueue(c.id, "auto").unwrap();
+    assert_eq!(db.get_todo(c.id).unwrap().unwrap().queue_pos, Some(1));
+}
