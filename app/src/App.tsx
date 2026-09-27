@@ -368,19 +368,29 @@ function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPi
   );
 }
 
+/// Cloud sessions open in Desktop; local ones offer Desktop or their herdr pane.
 function OpenButton({ session, run, primary }: { session: Session; run: (f: () => Promise<unknown>) => void; primary?: boolean }) {
+  const open = (target?: "desktop" | "herdr") => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    run(() => api.openSession(session.session_id, target));
+  };
+  const stop = (e: React.PointerEvent) => e.stopPropagation();
+  if (isCloud(session)) {
+    return (
+      <button className={`open${primary ? " primary" : ""}`} title={`${sessionLabel(session)} を開く`} onPointerDown={stop} onClick={open("desktop")}>
+        開く <Icon name="open" />
+      </button>
+    );
+  }
   return (
-    <button
-      className={`open${primary ? " primary" : ""}`}
-      title={`${sessionLabel(session)} を開く`}
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        e.stopPropagation();
-        run(() => api.openSession(session.session_id));
-      }}
-    >
-      開く <Icon name="open" />
-    </button>
+    <span className="open-pair" onPointerDown={stop}>
+      <button className={`open${primary ? " primary" : ""}`} title="Claude Desktop で開く" onClick={open("desktop")}>
+        Desktop
+      </button>
+      <button className={`open${primary ? " primary" : ""}`} title="herdr の pane に移動" onClick={open("herdr")}>
+        herdr
+      </button>
+    </span>
   );
 }
 

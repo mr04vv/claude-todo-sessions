@@ -294,10 +294,21 @@ fn focus_in_herdr(session_id: &str) -> bool {
     false
 }
 
+/// Opens a session in `target`: "herdr" focuses its pane, "desktop" opens
+/// Claude Desktop, and none tries herdr first for local sessions.
 #[tauri::command]
-fn open_session(session_id: String) -> Result<(), String> {
-    if !launch::is_cloud_session(&session_id) && focus_in_herdr(&session_id) {
-        return Ok(());
+fn open_session(session_id: String, target: Option<String>) -> Result<(), String> {
+    let cloud = launch::is_cloud_session(&session_id);
+    match target.as_deref() {
+        Some("herdr") => {
+            if cloud || !focus_in_herdr(&session_id) {
+                return Err("このセッションは herdr で動いていません".into());
+            }
+            return Ok(());
+        }
+        Some("desktop") => {}
+        _ if !cloud && focus_in_herdr(&session_id) => return Ok(()),
+        _ => {}
     }
     let local = cts_core::desktop::find_local_id(&home().join(DESKTOP_SESSIONS_DIR), &session_id);
     open_url(&launch::jump_url(&session_id, local.as_deref()))
@@ -724,7 +735,7 @@ fn notify_waiting(session: Session) {
             .send();
         match response {
             Ok(NotificationResponse::Click) => {
-                if let Err(e) = open_session(session.session_id) {
+                if let Err(e) = open_session(session.session_id, None) {
                     eprintln!("{e}");
                 }
             }
@@ -852,7 +863,7 @@ fn main() {
                     } else if id == MENU_QUIT {
                         app.exit(0);
                     } else if let Some(session_id) = id.strip_prefix(MENU_SESSION_PREFIX) {
-                        if let Err(e) = open_session(session_id.to_string()) {
+                        if let Err(e) = open_session(session_id.to_string(), None) {
                             eprintln!("{e}");
                         }
                     }

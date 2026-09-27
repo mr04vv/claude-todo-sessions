@@ -1520,3 +1520,27 @@ button.lane-head:hover {
   color: #b78cff;
   border-color: rgba(163, 113, 247, 0.4);
 }
+
+.open-pair {
+  display: inline-flex;
+  margin-left: auto;
+}
+
+.open-pair .open {
+  margin-left: 0;
+  border-radius: 0;
+}
+
+.open-pair .open:first-child {
+  border-radius: 7px 0 0 7px;
+}
+
+.open-pair .open:last-child {
+  border-radius: 0 7px 7px 0;
+  border-left-width: 0;
+}
+
+.list-row .open-pair,
+.row-actions .open-pair {
+  margin-left: 0;
+}
