@@ -124,7 +124,19 @@ impl Todo {
         self.repos.iter().filter(|r| r.contains('/')).count() > 1
     }
 
+    /// First prompt, plus — for implementation work on an issue — a request
+    /// that the PR closes the issue, so GitHub closes it on merge.
     pub fn prompt_body(&self) -> String {
+        let mut body = self.base_prompt();
+        if let (Kind::Implementation, Some(url), false) = (self.kind, self.issue_url.as_deref(), self.is_orchestrator()) {
+            if url.contains("/issues/") {
+                body.push_str(&format!("\n\nPR を作るときは、本文に `Closes {url}` を入れてください。"));
+            }
+        }
+        body
+    }
+
+    fn base_prompt(&self) -> String {
         if let Some(p) = &self.prompt {
             return p.clone();
         }

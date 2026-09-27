@@ -450,7 +450,9 @@ fn launch_cloud(state: &AppState, todo_id: i64) -> Result<String, String> {
 
 #[tauri::command]
 fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
-    launch_terminal(&state, todo_id, true)
+    launch_terminal(&state, todo_id, true)?;
+    // herdr has switched to the new workspace; show it.
+    cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
 }
 
 #[tauri::command]
@@ -785,11 +787,23 @@ fn refresh_states(db: &Db, todos: &[Todo]) {
             let Some(todo) = todos.iter().find(|t| t.id == id) else { continue };
             let before = if is_pr { db.set_pr_state(id, &now) } else { db.set_issue_state(id, &now) };
             let finished = if is_pr { now == "merged" } else { now == "closed" };
-            match before {
-                Ok(b) if finished && b.as_deref() != Some(now.as_str()) && b.is_some() => mark_done(db, todo),
-                Ok(None) if is_pr && finished => mark_done(db, todo),
-                Err(e) => eprintln!("{e}"),
-                _ => {}
+            let just_finished = match &before {
+                Ok(b) => finished && b.as_deref() != Some(now.as_str()) && (b.is_some() || is_pr),
+                Err(e) => {
+                    eprintln!("{e}");
+                    false
+                }
+            };
+            if just_finished {
+                mark_done(db, todo);
+                // Backstop for a PR that did not say "Closes …": close its todo's issue too.
+                if is_pr {
+                    if let Some(issue) = todo.issue_url.as_deref().filter(|u| u.contains("/issues/")) {
+                        if todo.issue_state.as_deref() != Some("closed") && gh(&["issue", "close", issue, "--comment", &format!("{url} のマージで完了しました。")]).is_ok() {
+                            let _ = db.set_issue_state(todo.id, "closed");
+                        }
+                    }
+                }
             }
         }
     }

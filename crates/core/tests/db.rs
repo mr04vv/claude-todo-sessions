@@ -412,3 +412,15 @@ fn orchestrator_prompt_plans_child_todos() {
     assert!(body.starts_with("/grilling 横断改修"), "{body}");
     assert!(body.contains(&format!("parent_id={}", p.id)) && body.contains("o/a") && body.contains("o/b"), "{body}");
 }
+
+#[test]
+fn implementation_prompt_asks_the_pr_to_close_the_issue() {
+    let (_d, db) = open();
+    let url = "https://github.com/o/r/issues/7";
+    let t = db.create_todo(NewTodo { title: "fix".into(), issue_url: Some(url.into()), ..Default::default() }).unwrap();
+    assert!(t.prompt_body().contains(&format!("Closes {url}")), "{}", t.prompt_body());
+    let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
+    assert!(c.prompt_body().starts_with("自由に") && c.prompt_body().contains(&format!("Closes {url}")));
+    let r = db.update_todo(t.id, TodoPatch { kind: Some(cts_core::Kind::Research), prompt: Some(String::new()), ..Default::default() }).unwrap();
+    assert!(!r.prompt_body().contains("Closes"), "{}", r.prompt_body());
+}
