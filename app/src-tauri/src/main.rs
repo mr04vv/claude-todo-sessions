@@ -296,6 +296,15 @@ fn focus_in_herdr(session_id: &str) -> bool {
 
 /// Opens a session in `target`: "herdr" focuses its pane, "desktop" opens
 /// Claude Desktop, and none tries herdr first for local sessions.
+/// Opens a GitHub issue or PR in the browser.
+#[tauri::command]
+fn open_github(url: String) -> Result<(), String> {
+    if !url.starts_with("https://github.com/") {
+        return Err(format!("GitHub の URL ではありません: {url}"));
+    }
+    open_url(&url)
+}
+
 #[tauri::command]
 fn open_session(session_id: String, target: Option<String>) -> Result<(), String> {
     let cloud = launch::is_cloud_session(&session_id);
@@ -915,6 +924,7 @@ fn main() {
             link_session,
             unlink_session,
             open_session,
+            open_github,
             start_desktop,
             start_terminal,
             start_cloud,

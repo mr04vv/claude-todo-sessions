@@ -181,11 +181,25 @@ const PR_LABEL: Record<PrState, string> = {
   closed: "PR closed",
 };
 
+/// Issue and PR badges; clicking one opens it on GitHub.
 function GhBadges({ todo }: { todo: Todo }) {
+  const go = (url: string) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    api.openGithub(url).catch(() => {});
+  };
+  const stop = (e: React.PointerEvent) => e.stopPropagation();
   return (
     <>
-      {todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>issue {todo.issue_state}</span>}
-      {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+      {todo.issue_url && (
+        <button className={`gh gh-issue-${todo.issue_state ?? "open"}`} title={todo.issue_url} onPointerDown={stop} onClick={go(todo.issue_url)}>
+          issue {todo.issue_state ?? ""} <Icon name="open" />
+        </button>
+      )}
+      {todo.pr_url && (
+        <button className={`gh gh-pr-${todo.pr_state ?? "open"}`} title={todo.pr_url} onPointerDown={stop} onClick={go(todo.pr_url)}>
+          {todo.pr_state ? PR_LABEL[todo.pr_state] : "PR"} <Icon name="open" />
+        </button>
+      )}
     </>
   );
 }
@@ -682,7 +696,13 @@ function Drawer({ todo, local, groups, run, setStatus, onClose }: {
           {ref && (
             <>
               {" · "}
-              <a href={todo.issue_url!} target="_blank" rel="noreferrer">
+              <a
+                href={todo.issue_url!}
+                onClick={(e) => {
+                  e.preventDefault();
+                  run(() => api.openGithub(todo.issue_url!));
+                }}
+              >
                 {ref}
               </a>
             </>
@@ -725,6 +745,11 @@ function Drawer({ todo, local, groups, run, setStatus, onClose }: {
               issue を作る
             </button>
           )}
+          {todo.issue_url && (
+            <button onClick={() => run(() => api.openGithub(todo.issue_url!))}>
+              開く <Icon name="open" />
+            </button>
+          )}
           {todo.issue_url && todo.issue_state === "open" && (
             <button className="ghost" onClick={() => run(() => api.closeIssue(todo.id))}>
               close
@@ -736,7 +761,14 @@ function Drawer({ todo, local, groups, run, setStatus, onClose }: {
         <span>
           Pull request{todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
         </span>
-        <InlineInput value={todo.pr_url ?? ""} placeholder="https://github.com/…/pull/…（claude/todo-N- のブランチなら自動で紐づきます）" onSave={(pr_url) => update({ pr_url })} />
+        <div className="actions">
+          <InlineInput value={todo.pr_url ?? ""} placeholder="https://github.com/…/pull/…（claude/todo-N- のブランチなら自動で紐づきます）" onSave={(pr_url) => update({ pr_url })} />
+          {todo.pr_url && (
+            <button onClick={() => run(() => api.openGithub(todo.pr_url!))}>
+              開く <Icon name="open" />
+            </button>
+          )}
+        </div>
       </div>
       <Field label="作業フォルダ" value={todo.cwd ?? ""} placeholder="/Users/…/repo" onSave={(cwd) => update({ cwd })} />
 

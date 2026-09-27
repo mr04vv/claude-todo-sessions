@@ -108,6 +108,7 @@ export const api = {
   deleteTodo: (id: number) => invoke<void>("delete_todo", { id }),
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
+  openGithub: (url: string) => invoke<void>("open_github", { url }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
   startTerminal: (todoId: number) => invoke<void>("start_terminal", { todoId }),

@@ -1544,3 +1544,19 @@ button.lane-head:hover {
 .row-actions .open-pair {
   margin-left: 0;
 }
+
+button.gh {
+  height: 18px;
+  gap: 3px;
+  border: 0;
+  cursor: pointer;
+}
+
+button.gh svg {
+  width: 10px;
+  height: 10px;
+}
+
+button.gh:hover {
+  filter: brightness(1.2);
+}
