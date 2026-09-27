@@ -711,7 +711,8 @@ fn transcript_branch(session_id: &str) -> Option<String> {
 }
 
 /// A PR opened from the branch any of the todo's sessions works on, however
-/// the session was started.
+/// the session was started. Only PRs opened after the session started count:
+/// a session run on someone's existing branch must not adopt their PR.
 fn pr_from_session_branches(db: &Db, todo: &Todo) -> Option<String> {
     let mut todo_repos = launch::github_repos(&todo.repos);
     todo_repos.extend(todo.issue_url.as_deref().and_then(launch::repo_key));
@@ -723,10 +724,10 @@ fn pr_from_session_branches(db: &Db, todo: &Todo) -> Option<String> {
         repos.extend(todo_repos.iter().cloned());
         repos.dedup();
         for repo in repos {
-            let found = gh(&["pr", "list", "-R", &repo, "--head", &branch, "--state", "all", "--limit", "1", "--json", "url"])
+            let found = gh(&["pr", "list", "-R", &repo, "--head", &branch, "--state", "all", "--limit", "5", "--json", "url,createdAt"])
                 .ok()
                 .and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok())
-                .and_then(|v| v[0]["url"].as_str().map(String::from));
+                .and_then(|v| launch::pr_created_after(&v, s.started_at));
             if found.is_some() {
                 return found;
             }

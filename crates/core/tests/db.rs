@@ -445,6 +445,30 @@ fn migrated_integer_columns_read_back_as_integers() {
 }
 
 #[test]
+fn sessions_keep_the_time_they_started() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, todo_id INTEGER,
+         cwd TEXT NOT NULL, state TEXT NOT NULL, state_at INTEGER NOT NULL);
+         INSERT INTO sessions VALUES ('s1', NULL, '/w', 'idle', 5);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    // Sessions from before start times were kept fall back to their last state change.
+    assert_eq!(db.get_session("s1").unwrap().unwrap().started_at, 5);
+    db.record_session("s1", "/w", SessionState::Running).unwrap();
+    let s1 = db.get_session("s1").unwrap().unwrap();
+    assert_eq!(s1.started_at, 5);
+    assert!(s1.state_at > 5);
+    db.record_session("s2", "/w", SessionState::Idle).unwrap();
+    let s2 = db.get_session("s2").unwrap().unwrap();
+    assert_eq!(s2.started_at, s2.state_at);
+}
+
+#[test]
 fn review_status_works_on_databases_made_before_it() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.sqlite");

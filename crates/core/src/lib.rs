@@ -213,6 +213,9 @@ pub struct Session {
     pub repos: Vec<String>,
     /// Branch a cloud session works on, for finding its PR.
     pub branch: Option<String>,
+    /// When the session was first recorded; a PR from its branch made
+    /// before then is not its work.
+    pub started_at: i64,
 }
 
 /// Hooks from parallel sessions write to the same file.
@@ -253,7 +256,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     state_at INTEGER NOT NULL,
     title TEXT,
     repos TEXT,
-    branch TEXT
+    branch TEXT,
+    started_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
@@ -261,7 +265,7 @@ CREATE TABLE IF NOT EXISTS marker_checked (
 ";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER)";
-const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch";
+const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at)";
 
 impl Status {
     fn as_str(self) -> &'static str {
@@ -340,6 +344,7 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         title: r.get(5)?,
         repos: split_repos(r.get(6)?),
         branch: r.get(7)?,
+        started_at: r.get(8)?,
     })
 }
 
@@ -360,7 +365,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -369,10 +374,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if !exists {
             // Integer columns keep integer affinity; older builds added them as TEXT,
             // which TODO_COLS casts back when reading.
-            let ty = if matches!(column, "queue_pos" | "parent_id") { "INTEGER" } else { "TEXT" };
+            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at") { "INTEGER" } else { "TEXT" };
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
+    // Sessions recorded before start times were kept: their last state change is the best guess.
+    conn.execute("UPDATE sessions SET started_at = state_at WHERE started_at IS NULL", [])?;
     // The status CHECK predates 'review'; SQLite cannot alter a CHECK, so the
     // table is rebuilt (which also gives migrated integer columns their type).
     let todos_sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE name = 'todos'", [], |r| r.get(0))?;
@@ -525,7 +532,7 @@ impl Db {
 
     pub fn record_session(&self, id: &str, cwd: &str, state: SessionState) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (session_id, cwd, state, state_at) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO sessions (session_id, cwd, state, state_at, started_at) VALUES (?1, ?2, ?3, ?4, ?4)
              ON CONFLICT(session_id) DO UPDATE SET cwd = ?2, state = ?3,
                  state_at = CASE WHEN state = ?3 THEN state_at ELSE ?4 END",
             params![id, cwd, state.as_str(), now()],

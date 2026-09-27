@@ -122,6 +122,33 @@ pub fn pr_for_todo(prs: &Value, todo_id: i64) -> Option<String> {
         .map(Into::into)
 }
 
+/// URL of the first PR (as `gh pr list --json url,createdAt` lists them,
+/// newest first) opened at or after `not_before`. An older PR on the same
+/// branch predates the session and is someone else's work.
+pub fn pr_created_after(prs: &Value, not_before: i64) -> Option<String> {
+    prs.as_array()?
+        .iter()
+        .find(|p| p["createdAt"].as_str().and_then(iso_to_epoch).is_some_and(|t| t >= not_before))?["url"]
+        .as_str()
+        .map(Into::into)
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ` (as GitHub gives times) to Unix seconds.
+fn iso_to_epoch(s: &str) -> Option<i64> {
+    let s = s.strip_suffix('Z')?;
+    let (date, time) = s.split_once('T')?;
+    let [y, m, d]: [i64; 3] = date.split('-').map(|x| x.parse().ok()).collect::<Option<Vec<_>>>()?.try_into().ok()?;
+    let [hh, mm, ss]: [i64; 3] = time.split(':').map(|x| x.parse().ok()).collect::<Option<Vec<_>>>()?.try_into().ok()?;
+    // Days since 1970-01-01 from a civil date (Howard Hinnant's algorithm).
+    let (y, m) = if m <= 2 { (y - 1, m + 9) } else { (y, m - 3) };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * m + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86400 + hh * 3600 + mm * 60 + ss)
+}
+
 pub fn is_default_branch(branch: &str) -> bool {
     matches!(branch, "main" | "master" | "develop" | "HEAD" | "")
 }
@@ -143,6 +170,26 @@ pub fn herdr_pane_id(created: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn iso_times_become_unix_seconds() {
+        assert_eq!(iso_to_epoch("1970-01-02T00:00:00Z"), Some(86400));
+        assert_eq!(iso_to_epoch("2024-02-29T23:59:59Z"), Some(1709251199));
+        assert_eq!(iso_to_epoch("2026-08-04T14:09:51Z"), Some(1785852591));
+        assert_eq!(iso_to_epoch("2026-08-04"), None);
+    }
+
+    #[test]
+    fn only_prs_opened_after_the_session_count() {
+        let prs = json!([
+            {"url": "https://github.com/o/r/pull/9", "createdAt": "2026-09-27T10:00:00Z"},
+            {"url": "https://github.com/o/r/pull/1", "createdAt": "2026-08-04T14:09:51Z"},
+        ]);
+        assert_eq!(pr_created_after(&prs, 1785852591 + 1).as_deref(), Some("https://github.com/o/r/pull/9"));
+        assert_eq!(pr_created_after(&prs, 1785852591).as_deref(), Some("https://github.com/o/r/pull/9"));
+        assert_eq!(pr_created_after(&json!([prs[1].clone()]), 1785852591 + 1), None);
+        assert_eq!(pr_created_after(&json!([{"url": "https://github.com/o/r/pull/2"}]), 0), None);
+    }
 
     #[test]
     fn jump_urls_by_session_kind() {
