@@ -57,9 +57,22 @@ export type PrState = "draft" | "open" | "review_requested" | "changes_requested
 export type Runner = "auto" | "cloud" | "local";
 export type Kind = "implementation" | "research";
 
+/** A notification the app posted, kept for the in-app list. */
+export interface Notice {
+  id: number;
+  session_id: string;
+  todo_id: number | null;
+  kind: "finished" | "needs_input";
+  title: string;
+  created_at: number;
+  read: boolean;
+}
+
 export interface Board {
   todos: Todo[];
   inbox: Session[];
+  /** Newest first. */
+  notifications: Notice[];
   sync_status: string;
   loop_enabled: boolean;
 }
@@ -106,6 +119,72 @@ export interface LocalRepo {
   path: string;
 }
 
+/** A plan usage limit, as `/usage` in Claude Code shows it. */
+export interface Limit {
+  label: string;
+  percent: number;
+  resets_at: string | null;
+  severity: string;
+}
+
+export interface ToolCall {
+  name: string;
+  summary: string;
+}
+
+/** What a session is doing, from its transcript or cloud events. */
+export interface SessionDetail {
+  model: string | null;
+  context_tokens: number | null;
+  last_text: string | null;
+  /** Newest first. */
+  tools: ToolCall[];
+}
+
+export interface Skill {
+  name: string;
+  description: string;
+}
+
+export interface Pr {
+  number: number;
+  title: string;
+  url: string;
+  repo: string;
+  author: string;
+  updated_at: string;
+  is_draft: boolean;
+}
+
+export interface PrLists {
+  review: Pr[];
+  mine: Pr[];
+}
+
+/** Model and effort for a new session; unset keeps the default. */
+export interface StartOptions {
+  model?: string;
+  effort?: string;
+}
+
+export const MODELS: { id: string; label: string }[] = [
+  { id: "", label: "既定のモデル" },
+  { id: "claude-opus-5-5", label: "Opus 5.5" },
+  { id: "claude-fable-5-1", label: "Fable 5.1" },
+  { id: "claude-sonnet-5", label: "Sonnet 5" },
+  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+];
+
+export const EFFORTS: string[] = ["", "low", "medium", "high", "xhigh", "max"];
+
+/** Where the browser pane sits, in CSS pixels of the window. */
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export const api = {
   localRepos: () => invoke<LocalRepo[]>("local_repos"),
   createIssue: (todoId: number) => invoke<Todo>("create_issue", { todoId }),
@@ -130,11 +209,31 @@ export const api = {
   removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
-  startTerminal: (todoId: number) => invoke<void>("start_terminal", { todoId }),
-  startCloud: (todoId: number) => invoke<void>("start_cloud", { todoId }),
+  startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
+  /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
+  startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),
+  /** Marks one notification read, or all with no id. */
+  readNotifications: (id?: number) => invoke<void>("read_notifications", { id: id ?? null }),
+  setParent: (todoId: number, parentId: number | null) => invoke<Todo>("set_parent", { todoId, parentId }),
+  sessionDetail: (sessionId: string) => invoke<SessionDetail>("session_detail", { sessionId }),
+  usage: () => invoke<Limit[]>("usage"),
+  skills: (cwd: string | null) => invoke<Skill[]>("skills", { cwd }),
+  ghPrs: () => invoke<PrLists>("gh_prs"),
+  browserOpen: (url: string, r: Rect) => invoke<void>("browser_open", { url, ...r }),
+  browserBounds: (r: Rect) => invoke<void>("browser_bounds", { ...r }),
+  browserHide: () => invoke<void>("browser_hide"),
+  browserGo: (action: "back" | "forward" | "reload") => invoke<void>("browser_go", { action }),
 };
 
+/** Event the browser pane sends with the URL it navigated to. */
+export const BROWSER_URL_EVENT = "browser-url";
+
 export const isCloud = (s: Session) => s.session_id.startsWith("cse_");
+
+const CLOUD_WEB = "https://claude.ai/code/";
+
+/** claude.ai page of a cloud session; the web names `cse_…` as `session_…`. */
+export const cloudWebUrl = (sessionId: string) => CLOUD_WEB + sessionId.replace(/^cse_/, "session_");
 
 /** `owner/repo#123` from a GitHub issue or PR URL, or null. */
 export function issueRef(url: string | null): string | null {

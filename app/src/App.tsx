@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { listen } from "@tauri-apps/api/event";
 import {
   DndContext,
   DragOverlay,
@@ -15,48 +16,59 @@ import {
 import {
   ago,
   api,
+  BROWSER_URL_EVENT,
+  cloudWebUrl,
+  EFFORTS,
   isCloud,
   issueRef,
+  MODELS,
   type Board,
   type Issue,
-  type Kind,
+  type Limit,
   type LocalRepo,
+  type Notice,
+  type Pr,
+  type PrLists,
   type PrState,
   type Runner,
   type Session,
+  type SessionDetail,
   type SessionState,
+  type Skill,
+  type StartOptions,
   type Status,
   type Todo,
 } from "./api";
 
 const REFRESH_MS = 3000;
+/// The usage API answers 429 when asked often (status lines poll it too), so
+/// it is asked rarely once there are numbers, which then stay on errors.
+const USAGE_REFRESH_MS = 5 * 60_000;
+/// Until the first numbers arrive, asked again this soon.
+const USAGE_RETRY_MS = 60_000;
+const PR_REFRESH_MS = 5 * 60_000;
+const DETAIL_REFRESH_MS = 10_000;
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
+/// Done cards kept per lane while "Done は直近のみ" is on.
+const DONE_RECENT = 3;
+/// Skill chips shown before the rest go into the "その他" menu.
+const SKILL_CHIPS = 5;
 const VIEW_KEY = "view";
+const LAYOUT_KEY = "layout";
 const COLLAPSED_KEY = "collapsedLanes";
-const HIDE_DONE_KEY = "hideDone";
+const DONE_RECENT_KEY = "doneRecent";
 const GROUP_KEY = "groupBy";
+const START_KEY = "startChoice";
+const REVIEW_RUNNER_KEY = "reviewRunner";
 
-/// Board and list lanes: one per repository, or one per parent todo for the
-/// todos that have one (the rest stay in their repository lanes).
+type View = "todos" | "sessions" | "prs" | "notices";
+type Layout = "board" | "list";
 type GroupBy = "repo" | "parent";
+
 const GROUPINGS: { key: GroupBy; label: string }[] = [
   { key: "repo", label: "リポジトリ" },
   { key: "parent", label: "親タスク" },
-];
-
-type View = "board" | "list" | "backlog" | "inbox" | "queue";
-const VIEWS: { key: View; label: string }[] = [
-  { key: "board", label: "ボード" },
-  { key: "list", label: "リスト" },
-  { key: "backlog", label: "バックログ" },
-  { key: "inbox", label: "受信箱" },
-  { key: "queue", label: "キュー" },
-];
-
-const KINDS: { key: Kind; label: string }[] = [
-  { key: "implementation", label: "実装" },
-  { key: "research", label: "調査" },
 ];
 
 const RUNNER_LABEL: Record<Runner, string> = {
@@ -65,129 +77,22 @@ const RUNNER_LABEL: Record<Runner, string> = {
   local: "Local（herdr）",
 };
 
-type StateFilter = "all" | "needs_input" | "running";
-const STATE_FILTERS: { key: StateFilter; label: string }[] = [
-  { key: "all", label: "すべて" },
-  { key: "needs_input", label: "入力待ち" },
-  { key: "running", label: "実行中" },
+/// Where a new session starts. "web" is a cloud session shown on claude.ai
+/// in the app's browser pane; "cloud" opens it in Claude Desktop instead.
+type Target = "web" | "cloud" | "desktop" | "terminal" | "queue";
+const TARGETS: { key: Target; label: string }[] = [
+  { key: "web", label: "Cloud・Web" },
+  { key: "cloud", label: "Cloud・Desktop" },
+  { key: "desktop", label: "Local・Desktop" },
+  { key: "terminal", label: "herdr" },
+  { key: "queue", label: "キュー" },
 ];
+const isCloudTarget = (t: Target) => t === "web" || t === "cloud";
 
-/// Cards sit inside columns, so a point is inside both. Sessions only drop
-/// onto cards and todos only onto columns. The point is the centre of the
-/// dragged item rather than the pointer, whose coordinates did not match the
-/// droppables inside the Tauri webview.
-const collision: CollisionDetection = ({ active, collisionRect, droppableRects, droppableContainers }) => {
-  const want = String(active.id).startsWith("session:") ? "card:" : "col:";
-  const x = collisionRect.left + collisionRect.width / 2;
-  const y = collisionRect.top + collisionRect.height / 2;
-  return droppableContainers
-    .filter((c) => {
-      const r = droppableRects.get(c.id);
-      return String(c.id).startsWith(want) && r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-    })
-    .map((c) => ({ id: c.id }));
-};
-
-/// Todos start here, unattached to any repository, and move once a repo is picked.
-const BACKLOG_LANE = "バックログ";
-const MULTI_LANE = "複数リポジトリ";
-
-/// Lane a todo or session belongs to: its one repo, the shared multi-repo
-/// lane when it spans several, or the backlog when none is known.
-function laneKey(repos: string[] | undefined): string {
-  if (!repos || repos.length === 0) return BACKLOG_LANE;
-  return repos.length === 1 ? repos[0] : MULTI_LANE;
-}
-
-/// "Atrae/wevox-rest-bff" → "wevox-rest-bff" for compact tags.
-const repoName = (repo: string) => repo.split("/").pop() ?? repo;
-
-/// A stable hue per repository for its dot in the sidebar and lane headers.
-function repoHue(key: string): number {
-  let h = 0;
-  for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) % 360;
-  return h;
-}
-
-interface Lane {
-  key: string;
-  todos: Todo[];
-  inbox: Session[];
-  /// Set when the lane holds one parent's subtasks; the parent is its header.
-  parent?: Todo;
-}
-
-/// One lane per group or repository, groups first, the multi-repo lane last;
-/// the backlog has its own page. Grouped by parent there is one lane per
-/// parent todo and nothing else; `allTodos` finds parents the filters hid.
-function buildLanes(board: Board, groupBy: GroupBy = "repo", allTodos: Todo[] = board.todos): Lane[] {
-  const lanes = new Map<string, Lane>();
-  if (groupBy === "parent") {
-    for (const t of board.todos) {
-      const parent = allTodos.find((p) => p.id === t.parent_id);
-      if (!parent) continue;
-      const key = `parent:${parent.id}`;
-      let l = lanes.get(key);
-      if (!l) lanes.set(key, (l = { key, todos: [], inbox: [], parent }));
-      l.todos.push(t);
-    }
-    return [...lanes.values()].sort((a, b) => a.parent!.id - b.parent!.id);
-  }
-  const lane = (repos: string[] | undefined) => {
-    const key = laneKey(repos);
-    let l = lanes.get(key);
-    if (!l) lanes.set(key, (l = { key, todos: [], inbox: [] }));
-    return l;
-  };
-  for (const t of board.todos) lane(t.repos).todos.push(t);
-  for (const s of board.inbox) lane(s.repos).inbox.push(s);
-  lanes.delete(BACKLOG_LANE);
-  // Free groups ("調査") first, then repositories, the multi-repo lane last.
-  const rank = (key: string) => (key === MULTI_LANE ? 2 : key.includes("/") ? 1 : 0);
-  return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key, "en", { sensitivity: "base" }));
-}
-
-function loadGroupBy(): GroupBy {
-  try {
-    return localStorage.getItem(GROUP_KEY) === "parent" ? "parent" : "repo";
-  } catch {
-    return "repo";
-  }
-}
-
-function loadView(): View {
-  try {
-    const v = localStorage.getItem(VIEW_KEY);
-    return VIEWS.some((x) => x.key === v) ? (v as View) : "board";
-  } catch {
-    return "board";
-  }
-}
-
-function loadCollapsed(): Set<string> {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]"));
-  } catch {
-    return new Set();
-  }
-}
-
-function loadHideDone(): boolean {
-  try {
-    return localStorage.getItem(HIDE_DONE_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-/// Per-viewer conveniences; losing them is fine.
-function remember(key: string, value: string) {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    // ignore
-  }
-}
+/// Shows a cloud session's claude.ai page in the browser pane, in its todo's
+/// panel (or the session's when it has no todo).
+type OpenWeb = (sessionId: string, todoId: number | null) => void;
+const OpenWebContext = createContext<OpenWeb | null>(null);
 
 const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "Todo" },
@@ -203,6 +108,12 @@ const STATE_LABEL: Record<SessionState, string> = {
   ended: "終了",
 };
 
+/// The state that needs the user comes first.
+const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle", "ended"];
+
+/// Status order for the list: what is in progress first, done last.
+const STATUS_RANK: Record<Status, number> = { review: 0, doing: 1, todo: 2, done: 3 };
+
 const PR_LABEL: Record<PrState, string> = {
   draft: "Draft",
   open: "PR open",
@@ -213,71 +124,213 @@ const PR_LABEL: Record<PrState, string> = {
   closed: "PR closed",
 };
 
-/// Issue and PR badges; clicking one opens it on GitHub.
-function GhBadges({ todo }: { todo: Todo }) {
-  const go = (url: string) => (e: React.MouseEvent) => {
-    e.stopPropagation();
-    api.openGithub(url).catch(() => {});
-  };
-  const stop = (e: React.PointerEvent) => e.stopPropagation();
-  return (
-    <>
-      {todo.issue_url && (
-        <button className={`gh gh-issue-${todo.issue_state ?? "open"}`} title={todo.issue_url} onPointerDown={stop} onClick={go(todo.issue_url)}>
-          issue {todo.issue_state ?? ""} <Icon name="open" />
-        </button>
-      )}
-      {todo.pr_url && (
-        <button className={`gh gh-pr-${todo.pr_state ?? "open"}`} title={todo.pr_url} onPointerDown={stop} onClick={go(todo.pr_url)}>
-          {todo.pr_state ? PR_LABEL[todo.pr_state] : "PR"} <Icon name="open" />
-        </button>
-      )}
-    </>
-  );
-}
+/// Todos without a repository share this lane; picking one moves them out.
+const NO_REPO_LANE = "リポジトリなし";
+/// Grouped by parent, top-level todos without subtasks share this lane.
+const ORPHAN_LANE = "親なし";
 
-/// Order badges on a card: the state that needs the user comes first.
-const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle"];
+const GITHUB = "https://github.com/";
 
-/// Status order for the list: what is in progress first, done last.
-const STATUS_RANK: Record<Status, number> = { review: 0, doing: 1, todo: 2, done: 3 };
+/// Only todos move by drag, and only onto columns. The point is the centre
+/// of the dragged item rather than the pointer, whose coordinates did not
+/// match the droppables inside the Tauri webview.
+const collision: CollisionDetection = ({ collisionRect, droppableRects, droppableContainers }) => {
+  const x = collisionRect.left + collisionRect.width / 2;
+  const y = collisionRect.top + collisionRect.height / 2;
+  return droppableContainers
+    .filter((c) => {
+      const r = droppableRects.get(c.id);
+      return r && x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    })
+    .map((c) => ({ id: c.id }));
+};
 
-function sessionLabel(s: Session) {
-  return s.title ?? s.session_id.slice(0, 12);
+/// The lane a todo or session belongs to: its first repository, where its
+/// sessions push, or the no-repository lane.
+const laneKey = (repos: string[] | undefined) => repos?.[0] ?? NO_REPO_LANE;
+
+/// "Atrae/wevox-rest-bff" → "wevox-rest-bff" for compact tags.
+const repoName = (repo: string) => repo.split("/").pop() ?? repo;
+
+const isGithubRepo = (key: string) => key.includes("/");
+
+/// A stable hue per repository for its dot.
+function repoHue(key: string): number {
+  let h = 0;
+  for (const ch of key) h = (h * 31 + ch.charCodeAt(0)) % 360;
+  return h;
 }
 
 function basename(path: string) {
   return path.replace(/\/+$/, "").split("/").pop() ?? path;
 }
 
-/// One obvious session to jump to: the only live one, or the only one at all.
-function directSession(todo: Todo): Session | null {
-  const live = todo.sessions.filter((s) => s.state !== "ended");
-  return live.length === 1 ? live[0] : todo.sessions.length === 1 ? todo.sessions[0] : null;
+/// `~/…` for a path under the home folder, for display.
+function tildify(path: string) {
+  return path.replace(/^\/Users\/[^/]+/, "~");
 }
 
-type IconName = "board" | "list" | "backlog" | "inbox" | "queue" | "sync" | "spark" | "check" | "plus" | "import" | "close" | "open" | "up" | "down";
+function sessionLabel(s: Session) {
+  return s.title ?? s.session_id.slice(0, 12);
+}
 
-function Icon({ name }: { name: IconName }) {
-  const paths: Record<IconName, string> = {
-    board: "M4 4h6v16H4zM14 4h6v9h-6z",
-    list: "M4 6h16M4 12h16M4 18h10",
-    backlog: "M4 7h16M4 12h10M4 17h6",
-    inbox: "M3 13l2-8h14l2 8v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1zM3 13h5l2 3h4l2-3h5",
-    queue: "M5 6l4 3-4 3zM12 7h8M12 12h8M5 17h15",
-    spark: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z",
-    check: "M5 12l4 4 10-10",
-    sync: "M20 11a8 8 0 0 0-14-5l-2 2M4 13a8 8 0 0 0 14 5l2-2M4 4v4h4M20 20v-4h-4",
-    up: "M6 15l6-6 6 6",
-    down: "M6 9l6 6 6-6",
-    plus: "M12 5v14M5 12h14",
-    import: "M12 4v11M7 10l5 5 5-5M4 19h16",
-    close: "M6 6l12 12M18 6L6 18",
-    open: "M7 17L17 7M9 7h8v8",
+const liveSessions = (t: Todo) => t.sessions.filter((s) => s.state !== "ended");
+
+/// The session state that most needs the user, among the live ones.
+function urgentState(sessions: Session[]): SessionState | null {
+  return STATE_ORDER.find((st) => st !== "ended" && sessions.some((s) => s.state === st)) ?? null;
+}
+
+/// One obvious session to jump to: the most urgent live one, or the only one.
+function directSession(todo: Todo): Session | null {
+  const live = liveSessions(todo);
+  const urgent = urgentState(live);
+  if (urgent) return live.find((s) => s.state === urgent) ?? null;
+  return todo.sessions.length === 1 ? todo.sessions[0] : null;
+}
+
+/// Where a todo's GitHub button goes: its PR, else its issue, else its repository.
+function githubTarget(todo: Todo): string | null {
+  const repo = todo.repos.find(isGithubRepo);
+  return todo.pr_url ?? todo.issue_url ?? (repo ? GITHUB + repo : null);
+}
+
+/// "wevox-mono-web#11766" for an issue or PR URL, else "#<todo id>".
+function todoRef(todo: Todo): string {
+  const ref = issueRef(todo.issue_url) ?? issueRef(todo.pr_url);
+  return ref ? repoName(ref) : `#${todo.id}`;
+}
+
+const isoAgo = (iso: string) => ago(Math.floor(Date.parse(iso) / 1000));
+
+function tokensLabel(n: number) {
+  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
+}
+
+function load<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return allowed.includes(v as T) ? (v as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadJson<T>(key: string, fallback: T): T {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : (JSON.parse(v) as T);
+  } catch {
+    return fallback;
+  }
+}
+
+/// Per-viewer conveniences; losing them is fine.
+function remember(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // ignore
+  }
+}
+
+/// keyCode of a key the IME handles.
+const IME_KEY_CODE = 229;
+
+/// Enter that submits, not the one that confirms a Japanese IME conversion.
+/// WebKit ends the composition before that keydown, so isComposing is already
+/// false there; only keyCode 229 gives it away.
+const isEnter = (e: React.KeyboardEvent) => e.key === "Enter" && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== IME_KEY_CODE;
+
+interface Lane {
+  key: string;
+  todos: Todo[];
+  /// Set when the lane holds one parent's subtasks; the parent is its header.
+  parent?: Todo;
+  /// Set for a repository or group lane.
+  repo?: string;
+}
+
+/// Grouped by repository: one lane per first repository, groups ("調査")
+/// first, the no-repository lane last. Grouped by parent: one lane per
+/// parent with its subtasks, then the top-level todos without subtasks;
+/// `allTodos` finds parents the filters hid.
+function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
+  const lanes = new Map<string, Lane>();
+  const add = (key: string, t: Todo, extra: Partial<Lane>) => {
+    let l = lanes.get(key);
+    if (!l) lanes.set(key, (l = { key, todos: [], ...extra }));
+    l.todos.push(t);
   };
+  if (groupBy === "parent") {
+    const hasChildren = new Set(allTodos.map((t) => t.parent_id));
+    for (const t of todos) {
+      const parent = allTodos.find((p) => p.id === t.parent_id);
+      if (parent) add(`parent:${parent.id}`, t, { parent });
+      else if (!hasChildren.has(t.id)) add(ORPHAN_LANE, t, {});
+    }
+    const rank = (l: Lane) => (l.parent ? l.parent.id : Number.MAX_SAFE_INTEGER);
+    return [...lanes.values()].sort((a, b) => rank(a) - rank(b));
+  }
+  for (const t of todos) {
+    const key = laneKey(t.repos);
+    add(key, t, { repo: key });
+  }
+  const rank = (key: string) => (key === NO_REPO_LANE ? 2 : isGithubRepo(key) ? 1 : 0);
+  return [...lanes.values()].sort((a, b) => rank(a.key) - rank(b.key) || a.key.localeCompare(b.key, "en", { sensitivity: "base" }));
+}
+
+type IconName =
+  | "board" | "list" | "spark" | "pr" | "search" | "sync" | "check" | "plus" | "import" | "close" | "open"
+  | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "bell";
+
+const ICON_PATHS: Record<IconName, string> = {
+  board: "M4 4h6v16H4zM14 4h6v9h-6z",
+  list: "M4 6h16M4 12h16M4 18h10",
+  spark: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z",
+  pr: "M6 4v16M18 11v9M18 11c0-3-2-5-5-5H9M12 3L9 6l3 3",
+  search: "M11 4a7 7 0 1 0 0 14a7 7 0 1 0 0-14zM20 20l-4-4",
+  check: "M5 12l4 4 10-10",
+  sync: "M20 11a8 8 0 0 0-14-5l-2 2M4 13a8 8 0 0 0 14 5l2-2M4 4v4h4M20 20v-4h-4",
+  up: "M6 15l6-6 6 6",
+  down: "M6 9l6 6 6-6",
+  chevron: "M6 9l6 6 6-6",
+  chevronRight: "M9 6l6 6-6 6",
+  plus: "M12 5v14M5 12h14",
+  import: "M12 4v11M7 10l5 5 5-5M4 19h16",
+  close: "M6 6l12 12M18 6L6 18",
+  open: "M7 17L17 7M9 7h8v8",
+  more: "M5 12h.01M12 12h.01M19 12h.01",
+  back: "M15 6l-6 6 6 6",
+  forward: "M9 6l6 6-6 6",
+  reload: "M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6",
+  bell: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 21h4",
+};
+
+function Icon({ name, size = 15 }: { name: IconName; size?: number }) {
   return (
-    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d={paths[name]} />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={name === "more" ? 3 : 2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d={ICON_PATHS[name]} />
+    </svg>
+  );
+}
+
+/// Linear-style status mark: empty, half, three quarters, checked.
+function StatusIcon({ status }: { status: Status }) {
+  if (status === "done") {
+    return (
+      <svg className="status-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" fill="var(--st-done)" />
+        <path d="M8 12.5l2.8 2.8L16.5 9.5" fill="none" stroke="var(--bg)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  const color = `var(--st-${status})`;
+  const fill = { todo: null, doing: "M12 7a5 5 0 0 1 0 10z", review: "M12 7a5 5 0 1 1-5 5h5z" }[status];
+  return (
+    <svg className="status-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8" fill="none" stroke={color} strokeWidth="2.2" />
+      {fill && <path d={fill} fill={color} />}
     </svg>
   );
 }
@@ -291,12 +344,96 @@ function StateBadge({ state }: { state: SessionState }) {
   );
 }
 
-function KindTag({ session }: { session: Session }) {
-  return <span className="tag">{isCloud(session) ? "cloud" : "local"}</span>;
+function RepoDot({ repo }: { repo: string }) {
+  const bg = repo === NO_REPO_LANE ? "var(--text-3)" : `hsl(${repoHue(repo)} 70% 64%)`;
+  return <span className="repo-dot" style={{ background: bg }} />;
 }
 
-function RepoDot({ repo }: { repo: string }) {
-  return <span className="repo-dot" style={{ background: `hsl(${repoHue(repo)} 80% 65%)` }} />;
+/// Clicks inside cards and rows must not also select them or start a drag.
+const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+
+/// Opens `url` on GitHub in the default browser.
+function openGithub(url: string, report: (e: unknown) => void) {
+  api.openGithub(url).catch(report);
+}
+
+/// Issue or PR chip; the PR wins when there is one. Opens it on GitHub.
+function GhChip({ todo, report }: { todo: Todo; report: (e: unknown) => void }) {
+  const [url, label, cls] = todo.pr_url
+    ? [todo.pr_url, todo.pr_state ? PR_LABEL[todo.pr_state] : "PR", `gh-pr-${todo.pr_state ?? "open"}`]
+    : todo.issue_url
+      ? [todo.issue_url, `issue ${todo.issue_state ?? ""}`.trim(), `gh-issue-${todo.issue_state ?? "open"}`]
+      : [null, "", ""];
+  if (!url) return null;
+  return (
+    <button
+      className={`gh ${cls}`}
+      title={url}
+      onPointerDown={stop}
+      onClick={(e) => {
+        e.stopPropagation();
+        openGithub(url, report);
+      }}
+    >
+      {label} <Icon name="open" size={10} />
+    </button>
+  );
+}
+
+/// "親 #3", "サブ 1/4 完了" or "+1 リポジトリ": how the todo relates to others.
+function relationLabel(todo: Todo, allTodos: Todo[]): string | null {
+  if (todo.parent_id) return `親 #${todo.parent_id}`;
+  const children = allTodos.filter((c) => c.parent_id === todo.id);
+  if (children.length > 0) return `サブ ${children.filter((c) => c.status === "done").length}/${children.length} 完了`;
+  if (todo.repos.length > 1) return `+${todo.repos.length - 1} リポジトリ`;
+  return null;
+}
+
+/// "開く" jumps to the session where it runs (its herdr pane, else Desktop);
+/// the caret picks Desktop or herdr explicitly.
+function OpenMenu({ session, report, primary, label = "開く" }: { session: Session; report: (e: unknown) => void; primary?: boolean; label?: string }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => !root.current?.contains(e.target as Node) && setOpen(false);
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]);
+  const openWeb = useContext(OpenWebContext);
+  const cloud = isCloud(session);
+  const go = (target?: "desktop" | "herdr" | "web") => {
+    setOpen(false);
+    if (target === "web" && openWeb) openWeb(session.session_id, session.todo_id);
+    else api.openSession(session.session_id, target === "web" ? "desktop" : target).catch(report);
+  };
+  return (
+    <span ref={root} className={`open-menu${primary ? " primary" : ""}`} onPointerDown={stop} onClick={stop}>
+      <button className="open-main" title={`${sessionLabel(session)} を開く`} onClick={() => go(cloud ? "web" : undefined)}>
+        {label}
+      </button>
+      <button className="open-caret" aria-label="開く場所を選ぶ" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Icon name="chevron" size={10} />
+      </button>
+      {open && (
+        <span className="menu" role="menu">
+          {cloud && openWeb && (
+            <button role="menuitem" onClick={() => go("web")}>
+              Web で開く（アプリ内）
+            </button>
+          )}
+          <button role="menuitem" onClick={() => go("desktop")}>
+            Claude Desktop で開く
+          </button>
+          {!cloud && (
+            <button role="menuitem" onClick={() => go("herdr")}>
+              herdr で開く（閉じていれば再開）
+            </button>
+          )}
+        </span>
+      )}
+    </span>
+  );
 }
 
 interface Choice {
@@ -321,12 +458,12 @@ function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPi
   const [active, setActive] = useState(0);
   const root = useRef<HTMLDivElement>(null);
   const panel = useRef<HTMLDivElement>(null);
-  // The panel is portaled to the body so scrolling parents (drawer, dialog) cannot clip it.
+  // The panel is portaled to the body so scrolling parents (panel, dialog) cannot clip it.
   const [rect, setRect] = useState<{ top: number; left: number; width: number } | null>(null);
   useLayoutEffect(() => {
     if (!open || !root.current) return;
     const r = root.current.getBoundingClientRect();
-    setRect({ top: r.bottom + 4, left: r.left, width: r.width });
+    setRect({ top: r.bottom + 4, left: r.left, width: Math.max(r.width, 260) });
   }, [open]);
   const q = query.trim().toLowerCase();
   const matches = (key: string) => !exclude.includes(key) && key.toLowerCase().includes(q);
@@ -354,7 +491,7 @@ function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPi
     setOpen(false);
   };
   return (
-    <div ref={root} className="combo" onClick={(e) => e.stopPropagation()}>
+    <div ref={root} className="combo" onClick={stop}>
       <button type="button" className={`combo-button${value ? "" : " placeholder"}`} onClick={() => setOpen((o) => !o)} aria-haspopup="listbox" aria-expanded={open}>
         {value ? (
           <>
@@ -364,326 +501,301 @@ function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPi
         ) : (
           <span className="ellipsis">{placeholder}</span>
         )}
-        <span className="combo-caret">▾</span>
       </button>
       {open &&
         rect &&
         createPortal(
-        <div ref={panel} className="combo-panel glass" style={{ top: rect.top, left: rect.left, width: rect.width }} onClick={(e) => e.stopPropagation()}>
-          <input
-            autoFocus
-            value={query}
-            placeholder="検索、または新しいグループ名"
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowDown") {
-                e.preventDefault();
-                setActive((a) => Math.min(a + 1, choices.length - 1));
-              } else if (e.key === "ArrowUp") {
-                e.preventDefault();
-                setActive((a) => Math.max(a - 1, 0));
-              } else if (isEnter(e)) {
-                e.preventDefault();
-                if (choices[active]) pick(choices[active]);
-              } else if (e.key === "Escape") {
-                setOpen(false);
-              }
-            }}
-          />
-          <ul role="listbox" className="combo-list">
-            {choices.length === 0 && <li className="muted combo-empty">候補がありません</li>}
-            {choices.map((c, i) => (
-              <li
-                key={`${c.kind}:${c.key}`}
-                role="option"
-                aria-selected={i === active}
-                className={`combo-item${i === active ? " active" : ""}${c.kind === "new" ? " new" : ""}`}
-                onMouseEnter={() => setActive(i)}
-                onMouseDown={(e) => {
+          <div ref={panel} className="combo-panel popover" style={{ top: rect.top, left: rect.left, width: rect.width }} onClick={stop}>
+            <input
+              autoFocus
+              value={query}
+              placeholder="検索、または新しいグループ名"
+              onChange={(e) => setQuery(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
                   e.preventDefault();
-                  pick(c);
-                }}
-              >
-                {c.kind === "new" ? <Icon name="plus" /> : <RepoDot repo={c.key} />}
-                <span className="ellipsis">{c.label}</span>
-                {c.kind !== "new" && <span className="muted combo-kind">{c.kind === "group" ? "グループ" : "リポジトリ"}</span>}
-              </li>
-            ))}
-          </ul>
-        </div>,
-        document.body,
+                  setActive((a) => Math.min(a + 1, choices.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setActive((a) => Math.max(a - 1, 0));
+                } else if (isEnter(e)) {
+                  e.preventDefault();
+                  if (choices[active]) pick(choices[active]);
+                } else if (e.key === "Escape") {
+                  setOpen(false);
+                }
+              }}
+            />
+            <ul role="listbox" className="combo-list">
+              {choices.length === 0 && <li className="muted combo-empty">候補がありません</li>}
+              {choices.map((c, i) => (
+                <li
+                  key={`${c.kind}:${c.key}`}
+                  role="option"
+                  aria-selected={i === active}
+                  className={`combo-item${i === active ? " active" : ""}`}
+                  onMouseEnter={() => setActive(i)}
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(c);
+                  }}
+                >
+                  {c.kind === "new" ? <Icon name="plus" size={12} /> : <RepoDot repo={c.key} />}
+                  <span className="ellipsis">{c.label}</span>
+                  {c.kind !== "new" && <span className="muted combo-kind">{c.kind === "group" ? "グループ" : "リポジトリ"}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>,
+          document.body,
         )}
     </div>
   );
 }
 
-/// Cloud sessions open in Desktop; local ones offer Desktop or their herdr pane.
-function OpenButton({ session, run, primary }: { session: Session; run: (f: () => Promise<unknown>) => void; primary?: boolean }) {
-  const open = (target?: "desktop" | "herdr") => (e: React.MouseEvent) => {
-    e.stopPropagation();
-    run(() => api.openSession(session.session_id, target));
-  };
-  const stop = (e: React.PointerEvent) => e.stopPropagation();
-  if (isCloud(session)) {
-    return (
-      <button className={`open${primary ? " primary" : ""}`} title={`${sessionLabel(session)} を開く`} onPointerDown={stop} onClick={open("desktop")}>
-        開く <Icon name="open" />
-      </button>
-    );
-  }
-  return (
-    <span className="open-pair" onPointerDown={stop}>
-      <button className={`open${primary ? " primary" : ""}`} title="Claude Desktop で開く" onClick={open("desktop")}>
-        Desktop
-      </button>
-      <button className={`open${primary ? " primary" : ""}`} title="herdr の pane に移動（閉じたセッションは claude --resume で再開）" onClick={open("herdr")}>
-        herdr
-      </button>
-    </span>
-  );
-}
-
-/// A round checkbox that ticks a todo done (or back to todo), as in a plain todo app.
-function DoneCheck({ todo, setStatus }: { todo: Todo; setStatus: (todo: Todo, status: Status) => void }) {
-  const done = todo.status === "done";
-  return (
-    <button
-      className={`check${done ? " on" : ""}`}
-      aria-label={done ? "未完了に戻す" : "完了にする"}
-      onPointerDown={(e) => e.stopPropagation()}
-      onClick={(e) => {
-        e.stopPropagation();
-        setStatus(todo, done ? "todo" : "done");
-      }}
-    >
-      {done && <Icon name="check" />}
-    </button>
-  );
-}
-
-function TodoCard({ todo, selected, onSelect, run, setStatus, children, allTodos }: {
+function TodoCard({ todo, selected, onSelect, report, allTodos }: {
   todo: Todo;
   selected: boolean;
   onSelect: () => void;
-  run: (f: () => Promise<unknown>) => void;
-  setStatus: (todo: Todo, status: Status) => void;
-  children: Todo[];
+  report: (e: unknown) => void;
   allTodos: Todo[];
 }) {
   const drag = useDraggable({ id: `todo:${todo.id}` });
-  const drop = useDroppable({ id: `card:${todo.id}` });
-  const live = todo.sessions.filter((s) => s.state !== "ended");
-  const states = new Set(live.map((s) => s.state));
+  const urgent = urgentState(liveSessions(todo));
   const direct = directSession(todo);
-  const ref = issueRef(todo.issue_url);
-  const parentTitle = todo.parent_id ? allTodos.find((t) => t.id === todo.parent_id)?.title : undefined;
-  const tags = todo.repos.length > 0 ? todo.repos.map(repoName) : todo.cwd ? [basename(todo.cwd)] : [];
+  const rel = relationLabel(todo, allTodos);
   return (
-    <div
-      ref={(el) => {
-        drag.setNodeRef(el);
-        drop.setNodeRef(el);
-      }}
+    <article
+      ref={drag.setNodeRef}
       {...drag.listeners}
       {...drag.attributes}
-      className={`card${todo.sessions.length > 0 ? " has-session" : ""}${todo.is_orchestrator ? " orchestrator" : ""}${selected ? " selected" : ""}${drop.isOver ? " drop-target" : ""}${drag.isDragging ? " dragging" : ""}${states.has("needs_input") ? " waiting" : ""}`}
+      className={`card${selected ? " selected" : ""}${drag.isDragging ? " dragging" : ""}${urgent === "needs_input" ? " waiting" : ""}${todo.status === "done" ? " done" : ""}`}
       onClick={onSelect}
     >
       <div className="card-head">
-        <span className="mono muted">{ref ?? `#${todo.id}`}</span>
-        <span className="muted">{ago(todo.updated_at)}</span>
+        <span className="mono">{todoRef(todo)}</span>
+        {urgent && <StateBadge state={urgent} />}
       </div>
-      <div className="card-title-row">
-        <DoneCheck todo={todo} setStatus={setStatus} />
-        <div className="card-title">{todo.title}</div>
-      </div>
-      {todo.is_orchestrator && (
-        <div className="progress" title="子 todo の進み具合">
-          <i style={{ width: `${children.length ? (100 * children.filter((c) => c.status === "done").length) / children.length : 0}%` }} />
-          <span>{children.length ? `子 ${children.filter((c) => c.status === "done").length}/${children.length} 完了` : "計画前（子 todo なし）"}</span>
+      <div className="card-title">{todo.title}</div>
+      {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner) && (
+        <div className="card-foot">
+          <GhChip todo={todo} report={report} />
+          {rel && <span className="tag">{rel}</span>}
+          {todo.queue_runner && <span className={`tag${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "起動待ち"}</span>}
+          <span className="grow" />
+          {direct && <OpenMenu session={direct} report={report} primary={urgent === "needs_input"} />}
         </div>
       )}
-      <div className="card-meta">
-        {todo.sessions.length > 0 && (
-          <span className="tag session-tag" title="Claude のセッションが紐づいています">
-            <Icon name="spark" /> {todo.sessions.length}
-          </span>
-        )}
-        {todo.is_orchestrator && <span className="tag orchestrator-tag">計画</span>}
-        {parentTitle && <span className="tag parent-tag" title="親の計画 todo">↑ {parentTitle}</span>}
-        {todo.kind === "research" && <span className="tag research">調査</span>}
-        {todo.queue_runner && <span className={`tag queued${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "キュー"}</span>}
-        <GhBadges todo={todo} />
-        {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
-          <StateBadge key={st} state={st} />
-        ))}
-        {tags.map((t) => (
-          <span key={t} className="tag" title={todo.repos.join(", ")}>
-            {t}
-          </span>
-        ))}
-        {live.length > 1 && <span className="muted">{live.length} sessions</span>}
-        {direct && <OpenButton session={direct} run={run} primary={states.has("needs_input")} />}
-      </div>
-    </div>
+    </article>
   );
 }
 
-function LaneColumn({ status, laneKey, todos, selectedId, onSelect, run, setStatus, allTodos, onAdd }: {
-  status: Status;
-  laneKey: string;
-  todos: Todo[];
-  selectedId: number | null;
-  onSelect: (id: number) => void;
-  run: (f: () => Promise<unknown>) => void;
-  setStatus: (todo: Todo, status: Status) => void;
-  allTodos: Todo[];
-  onAdd?: (title: string) => void;
-}) {
-  const { setNodeRef, isOver } = useDroppable({ id: `col:${status}:${laneKey}` });
+function LaneColumn({ status, lane, children, onAdd }: { status: Status; lane: Lane; children: React.ReactNode; onAdd?: (title: string) => void }) {
+  const { setNodeRef, isOver } = useDroppable({ id: `col:${status}:${lane.key}` });
   return (
     <div ref={setNodeRef} className={`cell${isOver ? " drop-target" : ""}`}>
-      {todos.map((t) => (
-        <TodoCard
-          key={t.id}
-          todo={t}
-          selected={t.id === selectedId}
-          onSelect={() => onSelect(t.id)}
-          run={run}
-          setStatus={setStatus}
-          children={allTodos.filter((c) => c.parent_id === t.id)}
-          allTodos={allTodos}
-        />
-      ))}
+      {children}
       {onAdd && <AddInline label="新規" onAdd={onAdd} />}
     </div>
   );
 }
 
-function InboxItem({ session, selected, onSelect }: { session: Session; selected: boolean; onSelect: () => void }) {
-  const { setNodeRef, listeners, attributes, isDragging } = useDraggable({ id: `session:${session.session_id}` });
+function LaneHeader({ lane, collapsed, onToggle, onOpenTodo, report }: {
+  lane: Lane;
+  collapsed?: boolean;
+  onToggle?: () => void;
+  onOpenTodo: (id: number) => void;
+  report: (e: unknown) => void;
+}) {
+  const waiting = lane.todos.flatMap(liveSessions).filter((s) => s.state === "needs_input").length;
+  const open = lane.todos.filter((t) => t.status !== "done").length;
+  const [owner, name] = lane.repo && isGithubRepo(lane.repo) ? lane.repo.split(/\/(.*)/s) : [null, lane.parent?.title ?? lane.key];
   return (
-    <div
-      ref={setNodeRef}
-      {...listeners}
-      {...attributes}
-      className={`card inbox-item${selected ? " selected" : ""}${isDragging ? " dragging" : ""}`}
-      onClick={onSelect}
-    >
-      <div className="card-head">
-        <KindTag session={session} />
-        <span className="muted">{ago(session.state_at)}</span>
-      </div>
-      <div className="card-title">{sessionLabel(session)}</div>
-      <div className="card-meta">
-        <StateBadge state={session.state} />
-        {(session.repos ?? []).length === 0 && <span className="muted ellipsis">{basename(session.cwd)}</span>}
-      </div>
+    <div className="lane-head">
+      <button className="lane-toggle" onClick={onToggle} aria-expanded={!collapsed} disabled={!onToggle}>
+        {onToggle && <Icon name={collapsed ? "chevronRight" : "chevron"} size={12} />}
+        {lane.parent ? <span className="mono muted">#{lane.parent.id}</span> : lane.repo ? <RepoDot repo={lane.repo} /> : null}
+        {owner && <span className="muted">{owner}/</span>}
+        <span className="lane-name">{name}</span>
+        {lane.parent ? (
+          <span className="muted">
+            {lane.todos.filter((t) => t.status === "done").length}/{lane.todos.length} 完了
+          </span>
+        ) : (
+          <span className="muted">{open}</span>
+        )}
+        {waiting > 0 && (
+          <span className="pill waiting">
+            <i />
+            入力待ち {waiting}
+          </span>
+        )}
+        {collapsed && lane.key === NO_REPO_LANE && <span className="muted">場所を選ぶとそのレーンへ移ります</span>}
+      </button>
+      <span className="grow" />
+      {lane.parent && (
+        <button className="link-button" onClick={() => onOpenTodo(lane.parent!.id)}>
+          親を開く
+        </button>
+      )}
+      {lane.repo && isGithubRepo(lane.repo) && (
+        <button className="link-button" onClick={() => openGithub(GITHUB + lane.repo, report)}>
+          GitHub <Icon name="open" size={11} />
+        </button>
+      )}
     </div>
   );
 }
 
-function LaneHeader({ lane, collapsed, onToggle, onOpenTodo }: { lane: Lane; collapsed?: boolean; onToggle?: () => void; onOpenTodo?: (id: number) => void }) {
-  const [owner, name] = lane.parent ? [null, lane.parent.title] : lane.key.includes("/") ? lane.key.split(/\/(.*)/s) : [null, lane.key];
-  const waiting = lane.todos.flatMap((t) => t.sessions).concat(lane.inbox).filter((s) => s.state === "needs_input").length;
-  const done = lane.todos.filter((t) => t.status === "done").length;
-  const body = (
-    <>
-      {onToggle && <span className="chevron">{collapsed ? "▸" : "▾"}</span>}
-      {lane.parent ? <span className="mono muted">#{lane.parent.id}</span> : <RepoDot repo={lane.key} />}
-      {owner && <span className="muted">{owner}/</span>}
-      <span className="lane-name">{name}</span>
-      {lane.parent ? (
-        <>
-          <span className="muted">
-            {done}/{lane.todos.length} 完了
-          </span>
-          {onOpenTodo && (
-            <span
-              role="button"
-              className="tag lane-open"
-              title="親 todo を開く"
-              onClick={(e) => {
-                e.stopPropagation();
-                onOpenTodo(lane.parent!.id);
-              }}
-            >
-              親を開く
-            </span>
-          )}
-        </>
-      ) : (
-        lane.todos.length > 0 && <span className="count">{lane.todos.length}</span>
-      )}
-      {lane.inbox.length > 0 && <span className="muted">受信箱 {lane.inbox.length}</span>}
-      {waiting > 0 && (
-        <span className="pill waiting">
-          <i />
-          入力待ち {waiting}
-        </span>
-      )}
-    </>
-  );
-  return onToggle ? (
-    <button className="lane-head" onClick={onToggle} aria-expanded={!collapsed}>
-      {body}
-    </button>
-  ) : (
-    <div className="lane-head">{body}</div>
-  );
+/// Done cards the lane shows: all, or the most recently updated few.
+function visibleDone(todos: Todo[], doneRecent: boolean) {
+  const done = todos.filter((t) => t.status === "done").sort((a, b) => b.updated_at - a.updated_at);
+  return doneRecent ? done.slice(0, DONE_RECENT) : done;
 }
 
-function LaneView({ lane, collapsed, onToggle, selectedId, selectedSessionId, onSelectTodo, onSelectSession, run, setStatus, allTodos, onAdd }: {
+function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report, allTodos, doneRecent, onAdd }: {
   lane: Lane;
   collapsed: boolean;
   onToggle: () => void;
   selectedId: number | null;
-  selectedSessionId: string | null;
   onSelectTodo: (id: number) => void;
-  onSelectSession: (id: string) => void;
-  run: (f: () => Promise<unknown>) => void;
-  setStatus: (todo: Todo, status: Status) => void;
+  report: (e: unknown) => void;
   allTodos: Todo[];
-  /// Adds a todo to this lane with the given status; absent when the lane cannot take new todos.
-  onAdd?: (status: Status, title: string) => void;
+  doneRecent: boolean;
+  onAdd: (status: Status, title: string) => void;
 }) {
   return (
-    <section className={`lane glass${collapsed ? " collapsed" : ""}`}>
-      <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} onOpenTodo={onSelectTodo} />
+    <section className={`lane${collapsed ? " collapsed" : ""}`}>
+      <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} onOpenTodo={onSelectTodo} report={report} />
       {!collapsed && (
         <div className="lane-grid">
-          {COLUMNS.map((c) => (
-            <LaneColumn
-              key={c.status}
-              status={c.status}
-              laneKey={lane.key}
-              todos={lane.todos.filter((t) => t.status === c.status).sort((a, b) => a.id - b.id)}
-              selectedId={selectedId}
-              onSelect={onSelectTodo}
-              run={run}
-              setStatus={setStatus}
-              allTodos={allTodos}
-              onAdd={onAdd && ((title) => onAdd(c.status, title))}
-            />
-          ))}
-          <div className="cell inbox-cell">
-            {lane.inbox.map((s) => (
-              <InboxItem key={s.session_id} session={s} selected={selectedSessionId === s.session_id} onSelect={() => onSelectSession(s.session_id)} />
-            ))}
-          </div>
+          {COLUMNS.map((c) => {
+            const todos = c.status === "done" ? visibleDone(lane.todos, doneRecent) : lane.todos.filter((t) => t.status === c.status).sort((a, b) => a.id - b.id);
+            return (
+              <LaneColumn key={c.status} status={c.status} lane={lane} onAdd={c.status === "done" ? undefined : (title) => onAdd(c.status, title)}>
+                {todos.map((t) => (
+                  <TodoCard key={t.id} todo={t} selected={t.id === selectedId} onSelect={() => onSelectTodo(t.id)} report={report} allTodos={allTodos} />
+                ))}
+              </LaneColumn>
+            );
+          })}
         </div>
       )}
     </section>
   );
 }
 
-/// keyCode of a key the IME handles.
-const IME_KEY_CODE = 229;
+/// The sessions waiting for the user, above the board.
+function WaitingStrip({ sessions, report }: { sessions: Session[]; report: (e: unknown) => void }) {
+  if (sessions.length === 0) return null;
+  return (
+    <div className="waiting-strip" role="status">
+      <span className="pill waiting">
+        <i />
+        入力待ち {sessions.length}
+      </span>
+      {sessions.map((s) => (
+        <span key={s.session_id} className="waiting-item">
+          <span className="ellipsis">{sessionLabel(s)}</span>
+          <span className="muted">
+            {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
+          </span>
+          <OpenMenu session={s} report={report} primary />
+        </span>
+      ))}
+    </div>
+  );
+}
 
-/// Enter that submits, not the one that confirms a Japanese IME conversion.
-/// WebKit ends the composition before that keydown, so isComposing is already
-/// false there; only keyCode 229 gives it away.
-const isEnter = (e: React.KeyboardEvent) => e.key === "Enter" && !e.nativeEvent.isComposing && e.nativeEvent.keyCode !== IME_KEY_CODE;
+/// Picks a todo's parent, or none. Subtasks go one level deep, so only
+/// top-level todos are offered and a todo with subtasks cannot move.
+function ParentPicker({ todo, allTodos, run, compact }: { todo: Todo; allTodos: Todo[]; run: (f: () => Promise<unknown>) => void; compact?: boolean }) {
+  const hasChildren = allTodos.some((c) => c.parent_id === todo.id);
+  const candidates = allTodos.filter((t) => t.id !== todo.id && t.parent_id === null && (t.status !== "done" || t.id === todo.parent_id)).sort((a, b) => b.id - a.id);
+  return (
+    <select
+      className={`select${compact ? " compact" : ""}`}
+      value={todo.parent_id ?? ""}
+      disabled={hasChildren}
+      title={hasChildren ? "サブタスクがある todo は、ほかの todo の下に入れられません" : "親タスク"}
+      onClick={stop}
+      onChange={(e) => run(() => api.setParent(todo.id, e.target.value === "" ? null : Number(e.target.value)))}
+    >
+      <option value="">{compact ? "親を設定…" : "なし"}</option>
+      {candidates.map((t) => (
+        <option key={t.id} value={t.id}>
+          #{t.id} {t.title}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function StatusSelect({ todo, setStatus }: { todo: Todo; setStatus: (todo: Todo, status: Status) => void }) {
+  return (
+    <select className="select status-select" value={todo.status} onClick={stop} onChange={(e) => setStatus(todo, e.target.value as Status)} aria-label="ステータス">
+      {COLUMNS.map((c) => (
+        <option key={c.status} value={c.status}>
+          {c.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allTodos, doneRecent, collapsed, onToggle, onAdd }: {
+  lane: Lane;
+  selectedId: number | null;
+  onSelectTodo: (id: number) => void;
+  report: (e: unknown) => void;
+  run: (f: () => Promise<unknown>) => void;
+  setStatus: (todo: Todo, status: Status) => void;
+  allTodos: Todo[];
+  doneRecent: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+  onAdd: (title: string) => void;
+}) {
+  const open = lane.todos.filter((t) => t.status !== "done").sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
+  const todos = [...open, ...visibleDone(lane.todos, doneRecent)];
+  return (
+    <section className="list-lane">
+      <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} onOpenTodo={onSelectTodo} report={report} />
+      {!collapsed && (
+        <ul className="rows">
+          {todos.map((t) => {
+            const urgent = urgentState(liveSessions(t));
+            const direct = directSession(t);
+            return (
+              <li key={t.id} className={`row${t.id === selectedId ? " selected" : ""}${t.status === "done" ? " done" : ""}`} onClick={() => onSelectTodo(t.id)}>
+                <StatusIcon status={t.status} />
+                <span className="mono muted ref">{todoRef(t)}</span>
+                <span className="row-title">{t.title}</span>
+                {urgent && <StateBadge state={urgent} />}
+                <GhChip todo={t} report={report} />
+                {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
+                {t.repos[0] && !lane.repo && (
+                  <span className="tag repo-tag">
+                    <RepoDot repo={t.repos[0]} />
+                    {repoName(t.repos[0])}
+                  </span>
+                )}
+                <StatusSelect todo={t} setStatus={setStatus} />
+                <span className="muted when">{ago(t.updated_at)}</span>
+                {direct && <OpenMenu session={direct} report={report} primary={urgent === "needs_input"} />}
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      {!collapsed && (
+        <div className="row-add">
+          <AddInline label="新しい todo" onAdd={onAdd} />
+        </div>
+      )}
+    </section>
+  );
+}
 
 // The in-place fields below are uncontrolled: the board refreshes every few
 // seconds, and nothing should touch an input's text while an IME composes in
@@ -691,13 +803,21 @@ const isEnter = (e: React.KeyboardEvent) => e.key === "Enter" && !e.nativeEvent.
 
 /// A field that saves when left or on Enter. `required` puts the stored
 /// value back instead of saving an empty one.
-function InlineInput({ value, placeholder, className, required, onSave }: { value: string; placeholder?: string; className?: string; required?: boolean; onSave: (v: string) => void }) {
+function InlineInput({ value, placeholder, className, required, label, onSave }: {
+  value: string;
+  placeholder?: string;
+  className?: string;
+  required?: boolean;
+  label?: string;
+  onSave: (v: string) => void;
+}) {
   return (
     <input
       key={value}
       className={className}
       defaultValue={value}
       placeholder={placeholder}
+      aria-label={label ?? placeholder}
       onBlur={(e) => {
         const v = e.currentTarget.value;
         if (required && !v.trim()) e.currentTarget.value = value;
@@ -719,6 +839,8 @@ function SubmitInput({ placeholder, autoFocus, onSubmit, onClose }: { placeholde
     <input
       autoFocus={autoFocus}
       placeholder={placeholder}
+      aria-label={placeholder}
+      onClick={stop}
       onBlur={(e) => {
         submit(e.currentTarget);
         onClose?.();
@@ -741,7 +863,7 @@ function AddInline({ label, onAdd }: { label: string; onAdd: (title: string) => 
   if (!open) {
     return (
       <button className="ghost add-inline" onClick={() => setOpen(true)}>
-        <Icon name="plus" /> {label}
+        <Icon name="plus" size={12} /> {label}
       </button>
     );
   }
@@ -751,7 +873,7 @@ function AddInline({ label, onAdd }: { label: string; onAdd: (title: string) => 
 const URL_RE = /https?:\/\/[^\s<>"'）)]+/g;
 
 /// Text with its URLs as links that open in the browser.
-function Linkify({ text, run }: { text: string; run: (f: () => Promise<unknown>) => void }) {
+function Linkify({ text, report }: { text: string; report: (e: unknown) => void }) {
   const parts: React.ReactNode[] = [];
   let last = 0;
   for (const m of text.matchAll(URL_RE)) {
@@ -764,7 +886,7 @@ function Linkify({ text, run }: { text: string; run: (f: () => Promise<unknown>)
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          run(() => api.openLink(url));
+          api.openLink(url).catch(report);
         }}
       >
         {url}
@@ -777,7 +899,7 @@ function Linkify({ text, run }: { text: string; run: (f: () => Promise<unknown>)
 }
 
 /// Memo text with clickable links; click to edit in place, leave to save.
-function MemoEditor({ value, run, onSave }: { value: string; run: (f: () => Promise<unknown>) => void; onSave: (v: string) => void }) {
+function MemoEditor({ value, report, onSave }: { value: string; report: (e: unknown) => void; onSave: (v: string) => void }) {
   const [editing, setEditing] = useState(false);
   if (editing) {
     return (
@@ -785,6 +907,7 @@ function MemoEditor({ value, run, onSave }: { value: string; run: (f: () => Prom
         autoFocus
         rows={6}
         defaultValue={value}
+        aria-label="メモ"
         onBlur={(e) => {
           if (e.currentTarget.value !== value) onSave(e.currentTarget.value);
           setEditing(false);
@@ -794,7 +917,7 @@ function MemoEditor({ value, run, onSave }: { value: string; run: (f: () => Prom
   }
   return (
     <div className={`memo editable${value ? "" : " muted"}`} onClick={() => setEditing(true)} title="クリックで編集">
-      {value ? <Linkify text={value} run={run} /> : "メモを書く…"}
+      {value ? <Linkify text={value} report={report} /> : "メモを書く…"}
     </div>
   );
 }
@@ -807,29 +930,6 @@ function hostOf(url: string): string {
   }
 }
 
-function Field({ label, value, placeholder, multiline, rows = 6, onSave }: {
-  label: string;
-  value: string;
-  placeholder?: string;
-  multiline?: boolean;
-  rows?: number;
-  onSave: (v: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-  useEffect(() => setDraft(value), [value]);
-  const commit = () => draft !== value && onSave(draft);
-  return (
-    <label className="field">
-      <span>{label}</span>
-      {multiline ? (
-        <textarea rows={rows} value={draft} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)} onBlur={commit} />
-      ) : (
-        <input value={draft} placeholder={placeholder} onChange={(e) => setDraft(e.target.value)} onBlur={commit} />
-      )}
-    </label>
-  );
-}
-
 /// Adds `key` to the todo's own repo list; the first pick also fills an empty working folder.
 function addRepo(todo: Todo, local: LocalRepo[], key: string): Parameters<typeof api.updateTodo>[1] | null {
   const own = todo.repos_derived ? [] : todo.repos;
@@ -839,36 +939,31 @@ function addRepo(todo: Todo, local: LocalRepo[], key: string): Parameters<typeof
   return todo.cwd || !path ? { repos } : { repos, cwd: path };
 }
 
-function RepoPicker({ todo, local, groups, update }: {
+function RepoChips({ todo, local, groups, update }: {
   todo: Todo;
   local: LocalRepo[];
   groups: string[];
   update: (u: Parameters<typeof api.updateTodo>[1]) => void;
 }) {
   const own = todo.repos_derived ? [] : todo.repos;
-  const remove = (key: string) => update({ repos: own.filter((r) => r !== key) });
   return (
-    <div className="field">
-      <span>リポジトリ / グループ{todo.repos_derived && todo.repos.length > 0 && "（issue URL / 作業フォルダから判定）"}</span>
-      <div className="chips">
-        {todo.repos.map((r) => (
-          <span key={r} className={`chip${todo.repos_derived ? " derived" : ""}`} title={r}>
-            <RepoDot repo={r} />
-            {r}
-            {!todo.repos_derived && (
-              <button className="ghost icon chip-remove" onClick={() => remove(r)} aria-label={`${r} を外す`}>
-                <Icon name="close" />
-              </button>
-            )}
-          </span>
-        ))}
-        {todo.repos.length === 0 && <span className="muted">未設定（バックログ）</span>}
-      </div>
+    <div className="chips">
+      {todo.repos.map((r) => (
+        <span key={r} className={`chip${todo.repos_derived ? " derived" : ""}`} title={todo.repos_derived ? `${r}（issue URL か作業フォルダから判定）` : r}>
+          <RepoDot repo={r} />
+          {r}
+          {!todo.repos_derived && (
+            <button className="ghost icon chip-remove" onClick={() => update({ repos: own.filter((x) => x !== r) })} aria-label={`${r} を外す`}>
+              <Icon name="close" size={11} />
+            </button>
+          )}
+        </span>
+      ))}
       <RepoChoice
         local={local}
         groups={groups}
         exclude={own}
-        placeholder="リポジトリかグループを追加…"
+        placeholder={todo.repos.length === 0 ? "リポジトリかグループを選ぶ" : "＋"}
         onPick={(key) => {
           const u = addRepo(todo, local, key);
           if (u) update(u);
@@ -878,238 +973,313 @@ function RepoPicker({ todo, local, groups, update }: {
   );
 }
 
-function SessionRow({ session, run, onUnlink }: {
-  session: Session;
-  run: (f: () => Promise<unknown>) => void;
-  onUnlink?: () => void;
-}) {
+interface StartChoice {
+  target: Target;
+  runner: Runner;
+  model: string;
+  effort: string;
+}
+
+const DEFAULT_START: StartChoice = { target: "web", runner: "auto", model: "", effort: "" };
+
+/// Prompt with its leading `/skill` swapped for `name` (or added).
+function withSkill(prompt: string, name: string) {
+  const rest = prompt.replace(/^\/\S+\s*/, "");
+  return `/${name} ${rest}`;
+}
+
+/// The first prompt, the skill it starts with, where it runs and with which
+/// model: everything a new session needs, in the panel instead of a dialog.
+function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f: () => Promise<unknown>) => void }) {
+  // An orchestrator plans locally (its session registers child todos over the local MCP server).
+  const cloudOk = !todo.is_orchestrator;
+  const [choice, setChoiceState] = useState<StartChoice>(() => loadJson(START_KEY, DEFAULT_START));
+  const target = !cloudOk && isCloudTarget(choice.target) ? "terminal" : choice.target;
+  const openWeb = useContext(OpenWebContext);
+  const setChoice = (c: Partial<StartChoice>) => {
+    const next = { ...choice, ...c };
+    remember(START_KEY, JSON.stringify(next));
+    setChoiceState(next);
+  };
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const [prompt, setPrompt] = useState(todo.prompt ?? "");
+  // The stored prompt comes back on another todo, not on every refresh.
+  useEffect(() => setPrompt(todo.prompt ?? ""), [todo.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const current = prompt.match(/^\/(\S+)/)?.[1] ?? todo.prompt_preview.match(/^\/(\S+)/)?.[1];
+  const chips = skills.slice(0, SKILL_CHIPS);
+  const others = skills.slice(SKILL_CHIPS);
+  const pickSkill = (name: string) => {
+    // From the title and memo, not the preview: the preview carries lines the app adds again on start.
+    const base = [todo.title, todo.memo?.trim()].filter(Boolean).join("\n\n");
+    setPrompt((p) => withSkill(p || base, name));
+    ref.current?.focus();
+  };
+  const cliOptions = target === "terminal" || isCloudTarget(target);
+  const options: StartOptions = cliOptions ? { model: choice.model || undefined, effort: choice.effort || undefined } : {};
+  const start = () =>
+    run(async () => {
+      // The prompt lives on the todo, so the next start (and the queue) reuse it.
+      if (prompt !== (todo.prompt ?? "")) await api.updateTodo(todo.id, { prompt });
+      if (isCloudTarget(target)) {
+        const id = await api.startCloud(todo.id, options, target === "cloud");
+        if (target === "web") openWeb?.(id, todo.id);
+      } else if (target === "desktop") await api.startDesktop(todo.id);
+      else if (target === "terminal") await api.startTerminal(todo.id, options);
+      else await api.enqueue(todo.id, choice.runner);
+    });
   return (
-    <li className={`session-row${session.state === "needs_input" ? " waiting" : ""}`}>
-      <span className={`state-dot state-${session.state}`} />
-      <div className="session-main">
-        <div className="card-title">{sessionLabel(session)}</div>
-        <div className="card-meta">
-          <KindTag session={session} />
-          <span className="muted">{STATE_LABEL[session.state]}</span>
-          <span className="muted">{ago(session.state_at)}</span>
+    <div className="composer">
+      <textarea
+        ref={ref}
+        rows={3}
+        value={prompt}
+        aria-label="最初のプロンプト"
+        placeholder={todo.prompt_preview}
+        onChange={(e) => setPrompt(e.target.value)}
+        onKeyDown={(e) => {
+          if (isEnter(e) && e.metaKey) {
+            e.preventDefault();
+            start();
+          }
+        }}
+      />
+      {skills.length > 0 && (
+        <div className="skills">
+          <span className="muted">スキル</span>
+          {chips.map((s) => (
+            <button key={s.name} className={`skill${current === s.name ? " on" : ""}`} aria-pressed={current === s.name} title={s.description} onClick={() => pickSkill(s.name)}>
+              /{s.name}
+            </button>
+          ))}
+          {others.length > 0 && (
+            <select className="select compact" value="" aria-label="ほかのスキル" onChange={(e) => e.target.value && pickSkill(e.target.value)}>
+              <option value="">その他…</option>
+              {others.map((s) => (
+                <option key={s.name} value={s.name} title={s.description}>
+                  /{s.name}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
-      </div>
-      <div className="row-actions">
-        <OpenButton session={session} run={run} primary={session.state === "needs_input"} />
-        {onUnlink && (
-          <button className="ghost" onClick={onUnlink}>
-            解除
-          </button>
+      )}
+      <div className="composer-foot">
+        <div className="segmented" role="group" aria-label="起動先">
+          {TARGETS.map((t) => (
+            <button
+              key={t.key}
+              className={target === t.key ? "on" : ""}
+              aria-pressed={target === t.key}
+              disabled={isCloudTarget(t.key) && !cloudOk}
+              title={isCloudTarget(t.key) && !cloudOk ? "計画用の todo は Local で始めます" : undefined}
+              onClick={() => setChoice({ target: t.key })}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+        {target === "queue" ? (
+          <select className="select compact" value={choice.runner} aria-label="キューからの起動方法" onChange={(e) => setChoice({ runner: e.target.value as Runner })}>
+            {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
+              <option key={r} value={r}>
+                {RUNNER_LABEL[r]}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <>
+            <select className="select compact" value={cliOptions ? choice.model : ""} disabled={!cliOptions} title={cliOptions ? "モデル" : "Desktop ではモデルを選べません"} aria-label="モデル" onChange={(e) => setChoice({ model: e.target.value })}>
+              {MODELS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <select className="select compact" value={cliOptions ? choice.effort : ""} disabled={!cliOptions} title={cliOptions ? "effort" : "Desktop では effort を選べません"} aria-label="effort" onChange={(e) => setChoice({ effort: e.target.value })}>
+              {EFFORTS.map((x) => (
+                <option key={x} value={x}>
+                  {x ? `effort: ${x}` : "既定の effort"}
+                </option>
+              ))}
+            </select>
+          </>
         )}
+        <span className="grow" />
+        <button className="primary" onClick={start}>
+          {target === "queue" ? "キューに入れる" : "開始"} <span className="kbd">⌘↵</span>
+        </button>
       </div>
-    </li>
+      <p className="muted hint">
+        [todo:{todo.id}] は自動で付きます · 空ならタイトルとメモから作ります
+        {todo.cwd ? ` · ${tildify(todo.cwd)}` : ""}
+      </p>
+    </div>
   );
 }
 
-/// Read-mostly view of a todo: what it is linked to and the ways into it.
-/// Editing and starting sessions happen in dialogs.
-function Drawer({ todo, allTodos, local, groups, onOpenTodo, run, setStatus, onClose, onStart, onAddChild }: {
+/// A page from the web in a webview laid over this one, placed on a
+/// placeholder that follows the layout. `covered` hides it while a dialog is
+/// up, since a native webview draws above everything in the page.
+function BrowserPane({ url, covered, report, onClose, actions }: {
+  url: string;
+  covered: boolean;
+  report: (e: unknown) => void;
+  onClose: () => void;
+  actions?: React.ReactNode;
+}) {
+  const slot = useRef<HTMLDivElement>(null);
+  const [shown, setShown] = useState(url);
+  useEffect(() => setShown(url), [url]);
+  useEffect(() => {
+    const off = listen<string>(BROWSER_URL_EVENT, (e) => setShown(e.payload));
+    return () => {
+      off.then((f) => f());
+    };
+  }, []);
+  const rect = () => {
+    const r = slot.current!.getBoundingClientRect();
+    return { x: r.left, y: r.top, width: r.width, height: r.height };
+  };
+  const navigate = (to: string) => api.browserOpen(to, rect()).catch(report);
+  const opened = useRef<string | null>(null);
+  useEffect(() => {
+    if (covered) {
+      api.browserHide().catch(report);
+      return;
+    }
+    // Back from under a dialog, the pane keeps the page the user moved on to.
+    navigate(opened.current === url ? shown : url);
+    opened.current = url;
+  }, [url, covered]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (covered || !slot.current) return;
+    const follow = () => api.browserBounds(rect()).catch(() => {});
+    const ro = new ResizeObserver(follow);
+    ro.observe(slot.current);
+    window.addEventListener("resize", follow);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", follow);
+    };
+  }, [covered]);
+  useEffect(() => () => void api.browserHide().catch(() => {}), []);
+  return (
+    <section className="browser" aria-label="ブラウザ">
+      <div className="browser-bar">
+        <button className="ghost icon" aria-label="戻る" onClick={() => api.browserGo("back").catch(report)}>
+          <Icon name="back" size={14} />
+        </button>
+        <button className="ghost icon" aria-label="進む" onClick={() => api.browserGo("forward").catch(report)}>
+          <Icon name="forward" size={14} />
+        </button>
+        <button className="ghost icon" aria-label="再読み込み" onClick={() => api.browserGo("reload").catch(report)}>
+          <Icon name="reload" size={14} />
+        </button>
+        <input
+          key={shown}
+          className="url mono"
+          defaultValue={shown}
+          aria-label="URL"
+          onKeyDown={(e) => {
+            if (isEnter(e)) navigate(e.currentTarget.value.trim());
+          }}
+        />
+        <button className="ghost icon" aria-label="いつものブラウザで開く" title="いつものブラウザで開く" onClick={() => api.openLink(shown).catch(report)}>
+          <Icon name="open" size={14} />
+        </button>
+        <button className="ghost icon" aria-label="ブラウザを閉じる" onClick={onClose}>
+          <Icon name="close" size={14} />
+        </button>
+      </div>
+      {actions && <div className="browser-actions">{actions}</div>}
+      <div ref={slot} className="browser-slot">
+        {covered && <span className="muted">ダイアログを閉じると表示に戻ります</span>}
+      </div>
+    </section>
+  );
+}
+
+type PanelTab = "overview" | "issue" | "pr";
+
+function TodoPanel({ todo, allTodos, local, groups, skills, covered, web, onWeb, run, report, setStatus, onOpenTodo, onClose }: {
   todo: Todo;
+  /// A cloud session's claude.ai page shown in the panel, if any.
+  web: string | null;
+  onWeb: (url: string | null) => void;
   allTodos: Todo[];
   local: LocalRepo[];
   groups: string[];
-  onOpenTodo: (id: number) => void;
+  skills: Skill[];
+  covered: boolean;
   run: (f: () => Promise<unknown>) => void;
+  report: (e: unknown) => void;
   setStatus: (todo: Todo, status: Status) => void;
+  onOpenTodo: (id: number) => void;
   onClose: () => void;
-  onStart: () => void;
-  onAddChild: () => void;
 }) {
   // Every field saves as soon as it is left.
   const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
   const children = allTodos.filter((c) => c.parent_id === todo.id);
   const parent = todo.parent_id ? allTodos.find((t) => t.id === todo.parent_id) : undefined;
+  const [tab, setTab] = useState<PanelTab>("overview");
+  const [menu, setMenu] = useState(false);
   // window.confirm never returns true inside the Tauri webview, so confirm in place.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  useEffect(() => setConfirmingDelete(false), [todo.id]);
-  const gh = (url: string) => () => run(() => api.openGithub(url));
-  const live = todo.sessions.filter((s) => s.state !== "ended");
+  useEffect(() => {
+    setConfirmingDelete(false);
+    setMenu(false);
+    setTab("overview");
+  }, [todo.id]);
+  const browserUrl = web ?? (tab === "issue" ? todo.issue_url : tab === "pr" ? todo.pr_url : null);
+  const pickTab = (t: PanelTab) => {
+    onWeb(null);
+    setTab(t);
+  };
+  const gh = githubTarget(todo);
+  const addChild = (title: string) =>
+    run(() => api.createTodo({ title, parent_id: todo.id, repos: todo.repos.length === 1 && !todo.repos_derived ? todo.repos : [], cwd: todo.repos.length === 1 ? (todo.cwd ?? undefined) : undefined }));
   return (
-    <aside className="drawer glass">
-      <header>
-        <span className="mono muted">
-          #{todo.id} · {KINDS.find((k) => k.key === todo.kind)?.label}
-        </span>
-        <span className="header-actions">
-          <button className="ghost icon" onClick={onClose} aria-label="閉じる">
-            <Icon name="close" />
-          </button>
-        </span>
-      </header>
-      <InlineInput className="drawer-title" value={todo.title} placeholder="タイトル" required onSave={(title) => update({ title: title.trim() })} />
-      <div className="segmented status-seg">
-        {COLUMNS.map((c) => (
-          <button key={c.status} className={todo.status === c.status ? "on" : ""} onClick={() => setStatus(todo, c.status)}>
-            {c.label}
-          </button>
-        ))}
-      </div>
-
-      <button className="primary start-button" onClick={onStart}>
-        <Icon name="plus" /> セッションを開始
-      </button>
-      {todo.queue_runner && (
-        <div className="notice small">
-          <span>キューで待機中（{RUNNER_LABEL[todo.queue_runner]}）{todo.queue_error && ` — ${todo.queue_error}`}</span>
-          <button className="ghost" onClick={() => run(() => api.dequeue(todo.id))}>
-            外す
-          </button>
-        </div>
-      )}
-
-      {parent && (
-        <p className="muted">
-          親:{" "}
-          <a href="#" onClick={(e) => (e.preventDefault(), onOpenTodo(parent.id))}>
-            #{parent.id} {parent.title}
-          </a>
-        </p>
-      )}
-      {!parent && (
-        <>
-          <h3>
-            サブタスク{children.length > 0 && <span className="count">{children.length}</span>}
-            <button className="ghost small" onClick={onAddChild}>
-              ＋ 追加
+    <aside className={`panel${browserUrl ? " wide" : ""}`} aria-label={`#${todo.id} ${todo.title}`}>
+      <header className="panel-head">
+        {parent && (
+          <>
+            <button className="link-button" onClick={() => onOpenTodo(parent.id)}>
+              #{parent.id} {parent.title}
             </button>
-          </h3>
-          {children.length === 0 && (
-            <p className="muted">
-              {todo.is_orchestrator
-                ? "まだありません。「セッションを開始」で計画セッションを Local で始めると、Claude がリポジトリごとの子 todo を登録します。"
-                : "まだありません。"}
-              全部 Done になるとこの todo も Done になります。
-            </p>
-          )}
-          <ul className="list">
-            {children.map((c) => (
-              <li key={c.id} className="list-row" onClick={() => onOpenTodo(c.id)}>
-                <DoneCheck todo={c} setStatus={setStatus} />
-                <span className="list-title">{c.title}</span>
-                {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
-                <GhBadges todo={c} />
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-
-      <h3>セッション{live.length > 0 && <span className="count">{live.length}</span>}</h3>
-      {todo.sessions.length === 0 && <p className="muted">まだありません。「セッションを開始」か、受信箱からカードにドラッグして紐づけます。</p>}
-      <ul className="sessions">
-        {todo.sessions.map((s) => (
-          <SessionRow key={s.session_id} session={s} run={run} onUnlink={() => run(() => api.unlinkSession(s.session_id))} />
-        ))}
-      </ul>
-
-      <h3>GitHub</h3>
-      <ul className="links">
-        <li>
-          <span className="link-label">Issue</span>
-          {todo.issue_url ? (
-            <>
-              <button className="link" onClick={gh(todo.issue_url)} title={todo.issue_url}>
-                {issueRef(todo.issue_url) ?? todo.issue_url} <Icon name="open" />
-              </button>
-              {todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>{todo.issue_state}</span>}
-              {todo.issue_state === "open" && (
-                <button className="ghost small" onClick={() => run(() => api.closeIssue(todo.id))}>
-                  close
+            <Icon name="chevronRight" size={12} />
+          </>
+        )}
+        <span className="mono">#{todo.id}</span>
+        <span className="grow" />
+        {gh && (
+          <button className="ghost icon" aria-label="GitHub で開く" title={gh} onClick={() => openGithub(gh, report)}>
+            <Icon name="open" size={14} />
+          </button>
+        )}
+        <span className="menu-anchor">
+          <button className="ghost icon" aria-label="その他" aria-expanded={menu} onClick={() => setMenu((m) => !m)}>
+            <Icon name="more" size={14} />
+          </button>
+          {menu && (
+            <span className="menu" role="menu">
+              {!todo.issue_url && todo.repos.some(isGithubRepo) && (
+                <button role="menuitem" onClick={() => (setMenu(false), run(() => api.createIssue(todo.id)))}>
+                  タイトルとメモから issue を作る
                 </button>
               )}
-              <button className="ghost icon" onClick={() => update({ issue_url: "" })} aria-label="issue を外す" title="外す">
-                <Icon name="close" />
+              <button role="menuitem" className="danger" onClick={() => (setMenu(false), setConfirmingDelete(true))}>
+                todo を削除…
               </button>
-            </>
-          ) : (
-            <>
-              <InlineInput value="" placeholder="URL を貼る" onSave={(issue_url) => update({ issue_url })} />
-              <button className="small" onClick={() => run(() => api.createIssue(todo.id))} title="タイトルとメモから issue を作って紐づけます">
-                作る
-              </button>
-            </>
-          )}
-        </li>
-        <li>
-          <span className="link-label">PR</span>
-          {todo.pr_url ? (
-            <>
-              <button className="link" onClick={gh(todo.pr_url)} title={todo.pr_url}>
-                {issueRef(todo.pr_url) ?? todo.pr_url} <Icon name="open" />
-              </button>
-              {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
-              <button className="ghost icon" onClick={() => update({ pr_url: "" })} aria-label="PR を外す" title="外す">
-                <Icon name="close" />
-              </button>
-            </>
-          ) : (
-            <InlineInput value="" placeholder={`URL を貼る（claude/todo-${todo.id}- のブランチなら自動）`} onSave={(pr_url) => update({ pr_url })} />
-          )}
-        </li>
-      </ul>
-
-      <h3>詳細</h3>
-      <RepoPicker todo={todo} local={local} groups={groups} update={update} />
-      <dl className="props">
-        <dt>種類</dt>
-        <dd>
-          <div className="segmented">
-            {KINDS.map((k) => (
-              <button key={k.key} className={todo.kind === k.key ? "on" : ""} onClick={() => update({ kind: k.key })}>
-                {k.label}
-              </button>
-            ))}
-          </div>
-        </dd>
-        <dt>フォルダ</dt>
-        <dd>
-          <InlineInput className="mono" value={todo.cwd ?? ""} placeholder="未設定" onSave={(cwd) => update({ cwd })} />
-        </dd>
-        <dt>更新</dt>
-        <dd>{ago(todo.updated_at)}</dd>
-      </dl>
-
-      <h3>メモ</h3>
-      <MemoEditor value={todo.memo ?? ""} run={run} onSave={(memo) => update({ memo })} />
-
-      <h3>リンク{todo.links.length > 0 && <span className="count">{todo.links.length}</span>}</h3>
-      <ul className="attachments">
-        {todo.links.map((l) => (
-          <li key={l.id} className="attachment" title={l.url} onClick={() => run(() => api.openLink(l.url))}>
-            {l.image ? (
-              <img src={l.image} alt="" />
-            ) : (
-              <span className="thumb">
-                <Icon name="open" />
-              </span>
-            )}
-            <span className="attachment-text">
-              <span className="attachment-title">{l.title ?? hostOf(l.url)}</span>
-              <span className="muted ellipsis">{l.url}</span>
             </span>
-            <button
-              className="ghost icon"
-              aria-label="外す"
-              onClick={(e) => {
-                e.stopPropagation();
-                run(() => api.removeLink(l.id));
-              }}
-            >
-              <Icon name="close" />
-            </button>
-          </li>
-        ))}
-      </ul>
-      <SubmitInput placeholder="URL を貼って Enter で追加" onSubmit={(url) => run(() => api.addLink(todo.id, url))} />
-
-      {confirmingDelete ? (
-        <div className="actions delete-confirm">
-          <span className="muted">#{todo.id} を削除しますか？ 紐づいたセッションは受信箱に戻ります。</span>
+          )}
+        </span>
+        <button className="ghost icon" onClick={onClose} aria-label="閉じる">
+          <Icon name="close" size={14} />
+        </button>
+      </header>
+      {confirmingDelete && (
+        <div className="notice danger-notice">
+          <span>#{todo.id} を削除しますか？ 紐づいたセッションは未紐づけに戻ります。</span>
           <button
             className="danger"
             onClick={() =>
@@ -1125,185 +1295,762 @@ function Drawer({ todo, allTodos, local, groups, onOpenTodo, run, setStatus, onC
             やめる
           </button>
         </div>
+      )}
+      <InlineInput className="panel-title" value={todo.title} label="タイトル" placeholder="タイトル" required onSave={(title) => update({ title: title.trim() })} />
+      {(todo.issue_url || todo.pr_url || web) && (
+        <div className="tabs" role="tablist">
+          <button role="tab" aria-selected={!web && tab === "overview"} className={!web && tab === "overview" ? "on" : ""} onClick={() => pickTab("overview")}>
+            概要
+          </button>
+          {todo.issue_url && (
+            <button role="tab" aria-selected={!web && tab === "issue"} className={!web && tab === "issue" ? "on" : ""} onClick={() => pickTab("issue")}>
+              {issueRef(todo.issue_url)?.split("/").pop() ?? "Issue"}
+            </button>
+          )}
+          {todo.pr_url && (
+            <button role="tab" aria-selected={!web && tab === "pr"} className={!web && tab === "pr" ? "on" : ""} onClick={() => pickTab("pr")}>
+              PR {todo.pr_state ? `· ${PR_LABEL[todo.pr_state]}` : ""}
+            </button>
+          )}
+          {web && (
+            <button role="tab" aria-selected className="on">
+              セッション（Web）
+            </button>
+          )}
+        </div>
+      )}
+      {browserUrl ? (
+        <BrowserPane url={browserUrl} covered={covered} report={report} onClose={() => pickTab("overview")} />
       ) : (
-        <button className="ghost danger" onClick={() => setConfirmingDelete(true)}>
-          todo を削除
-        </button>
+        <div className="panel-body">
+          <dl className="props">
+            <dt>ステータス</dt>
+            <dd>
+              <StatusSelect todo={todo} setStatus={setStatus} />
+            </dd>
+            <dt>場所</dt>
+            <dd>
+              <RepoChips todo={todo} local={local} groups={groups} update={update} />
+            </dd>
+            <dt>親</dt>
+            <dd>
+              <ParentPicker todo={todo} allTodos={allTodos} run={run} />
+            </dd>
+            <dt>Issue</dt>
+            <dd className="gh-row">
+              {todo.issue_url ? (
+                <>
+                  <button className="link-button mono" onClick={() => openGithub(todo.issue_url!, report)} title={todo.issue_url}>
+                    {issueRef(todo.issue_url) ?? todo.issue_url}
+                  </button>
+                  {todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>{todo.issue_state}</span>}
+                  {todo.issue_state === "open" && (
+                    <button className="ghost small" onClick={() => run(() => api.closeIssue(todo.id))}>
+                      close
+                    </button>
+                  )}
+                  <button className="ghost icon" onClick={() => update({ issue_url: "" })} aria-label="issue を外す" title="外す">
+                    <Icon name="close" size={12} />
+                  </button>
+                </>
+              ) : (
+                <InlineInput value="" placeholder="URL を貼る" onSave={(issue_url) => update({ issue_url })} />
+              )}
+            </dd>
+            <dt>PR</dt>
+            <dd className="gh-row">
+              {todo.pr_url ? (
+                <>
+                  <button className="link-button mono" onClick={() => openGithub(todo.pr_url!, report)} title={todo.pr_url}>
+                    {issueRef(todo.pr_url) ?? todo.pr_url}
+                  </button>
+                  {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+                  <button className="ghost icon" onClick={() => update({ pr_url: "" })} aria-label="PR を外す" title="外す">
+                    <Icon name="close" size={12} />
+                  </button>
+                </>
+              ) : (
+                <InlineInput value="" placeholder={`claude/todo-${todo.id}- のブランチなら自動で紐づけ`} onSave={(pr_url) => update({ pr_url })} />
+              )}
+            </dd>
+            <dt>フォルダ</dt>
+            <dd>
+              <InlineInput className="mono" value={todo.cwd ?? ""} label="作業フォルダ" placeholder="未設定" onSave={(cwd) => update({ cwd })} />
+            </dd>
+          </dl>
+
+          {!parent && (
+            <section>
+              <h3>
+                サブタスク {children.length > 0 && <span className="muted">{children.filter((c) => c.status === "done").length}/{children.length}</span>}
+              </h3>
+              {children.length === 0 && todo.is_orchestrator && (
+                <p className="muted hint">セッションを Local で始めると、Claude がリポジトリごとのサブタスクを登録します。</p>
+              )}
+              <ul className="rows compact">
+                {children.map((c) => (
+                  <li key={c.id} className="row" onClick={() => onOpenTodo(c.id)}>
+                    <StatusIcon status={c.status} />
+                    <span className="row-title">{c.title}</span>
+                    {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
+                    <GhChip todo={c} report={report} />
+                  </li>
+                ))}
+              </ul>
+              <AddInline label="サブタスクを追加" onAdd={addChild} />
+            </section>
+          )}
+
+          <section>
+            <h3>セッション {liveSessions(todo).length > 0 && <span className="muted">{liveSessions(todo).length}</span>}</h3>
+            {todo.sessions.length === 0 && <p className="muted hint">まだありません。下から始めるか、セッション画面で既存のものを紐づけます。</p>}
+            <ul className="sessions">
+              {todo.sessions.map((s) => (
+                <li key={s.session_id} className={`session-row state-bg-${s.state}`}>
+                  <span className={`dot state-${s.state}`} />
+                  <span className="session-main">
+                    <span className="ellipsis">{sessionLabel(s)}</span>
+                    <span className="muted">
+                      {STATE_LABEL[s.state]} · {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
+                    </span>
+                  </span>
+                  <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
+                  <button className="ghost small" onClick={() => run(() => api.unlinkSession(s.session_id))}>
+                    解除
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {todo.queue_runner && (
+              <div className="notice small">
+                <span>
+                  キューで起動待ち（{RUNNER_LABEL[todo.queue_runner]}）{todo.queue_error && ` — ${todo.queue_error}`}
+                </span>
+                <button className="ghost small" onClick={() => run(() => api.dequeue(todo.id))}>
+                  外す
+                </button>
+              </div>
+            )}
+          </section>
+
+          <section>
+            <h3>新しいセッション</h3>
+            <Composer todo={todo} skills={skills} run={run} />
+          </section>
+
+          <section>
+            <h3>メモ</h3>
+            <MemoEditor value={todo.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
+          </section>
+
+          <section>
+            <h3>リンク {todo.links.length > 0 && <span className="muted">{todo.links.length}</span>}</h3>
+            <ul className="attachments">
+              {todo.links.map((l) => (
+                <li key={l.id} className="attachment" title={l.url} onClick={() => api.openLink(l.url).catch(report)}>
+                  {l.image ? (
+                    <img src={l.image} alt="" />
+                  ) : (
+                    <span className="thumb">
+                      <Icon name="open" size={14} />
+                    </span>
+                  )}
+                  <span className="attachment-text">
+                    <span className="ellipsis">{l.title ?? hostOf(l.url)}</span>
+                    <span className="muted ellipsis">{l.url}</span>
+                  </span>
+                  <button
+                    className="ghost icon"
+                    aria-label="外す"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      run(() => api.removeLink(l.id));
+                    }}
+                  >
+                    <Icon name="close" size={12} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <SubmitInput placeholder="URL を貼って Enter で追加" onSubmit={(url) => run(() => api.addLink(todo.id, url))} />
+          </section>
+        </div>
       )}
     </aside>
   );
 }
 
-type StartTarget = "cloud" | "desktop" | "terminal" | "queue";
-const START_TARGETS: { key: StartTarget; title: string; sub: string }[] = [
-  { key: "cloud", title: "Cloud", sub: "Desktop で開く" },
-  { key: "desktop", title: "Local", sub: "Desktop" },
-  { key: "terminal", title: "Local", sub: "ターミナル（herdr）" },
-  { key: "queue", title: "キュー", sub: "ループで自動起動" },
-];
+interface SessionItem {
+  session: Session;
+  todo?: Todo;
+}
 
-function StartSessionDialog({ todo, run, onClose }: {
-  todo: Todo;
+/// Every session the board knows, with the todo it belongs to.
+function sessionItemsOf(board: Board): SessionItem[] {
+  return [...board.todos.flatMap((todo) => todo.sessions.map((session) => ({ session, todo }))), ...board.inbox.map((session) => ({ session }))];
+}
+
+type SessionFilter = "all" | "needs_input" | "running" | "unlinked";
+
+function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, onOpenTodo, onQuick }: {
+  board: Board;
+  repoFilter: string | null;
+  selectedId: string | null;
   run: (f: () => Promise<unknown>) => void;
-  onClose: () => void;
+  report: (e: unknown) => void;
+  onSelect: (id: string) => void;
+  onOpenTodo: (id: number) => void;
+  onQuick: () => void;
 }) {
-  // An orchestrator plans locally (its session registers child todos over the local MCP server).
-  const cloudOk = !todo.is_orchestrator;
-  const hasGithub = todo.repos.some((r) => r.includes("/"));
-  // A todo whose only repository is a local folder starts there; anything else defaults to the cloud.
-  const [target, setTarget] = useState<StartTarget>(cloudOk && (hasGithub || !todo.cwd) ? "cloud" : "desktop");
-  const [kind, setKind] = useState<Kind>(todo.kind);
-  const [prompt, setPrompt] = useState(todo.prompt ?? "");
-  const [runner, setRunner] = useState<Runner>("auto");
-  const start = () =>
-    run(async () => {
-      // Kind and prompt live on the todo, so the next start (and the loop) reuse them.
-      if (kind !== todo.kind || prompt !== (todo.prompt ?? "")) await api.updateTodo(todo.id, { kind, prompt });
-      if (target === "cloud") await api.startCloud(todo.id);
-      else if (target === "desktop") await api.startDesktop(todo.id);
-      else if (target === "terminal") await api.startTerminal(todo.id);
-      else await api.enqueue(todo.id, runner);
-      onClose();
-    });
+  const [filter, setFilter] = useState<SessionFilter>("all");
+  const [showEnded, setShowEnded] = useState(false);
+  const all = sessionItemsOf(board).filter(
+    (i) => repoFilter === null || laneKey(i.todo?.repos ?? i.session.repos) === repoFilter,
+  );
+  const live = all.filter((i) => i.session.state !== "ended");
+  const counts: Record<SessionFilter, number> = {
+    all: live.length,
+    needs_input: live.filter((i) => i.session.state === "needs_input").length,
+    running: live.filter((i) => i.session.state === "running").length,
+    unlinked: live.filter((i) => !i.todo).length,
+  };
+  const FILTERS: { key: SessionFilter; label: string }[] = [
+    { key: "all", label: "すべて" },
+    { key: "needs_input", label: "入力待ち" },
+    { key: "running", label: "実行中" },
+    { key: "unlinked", label: "未紐づけ" },
+  ];
+  const pass = (i: SessionItem) => filter === "all" || (filter === "unlinked" ? !i.todo : i.session.state === filter);
+  const rank = (s: Session) => STATE_ORDER.indexOf(s.state);
+  const rows = (showEnded ? all : live).filter(pass).sort((a, b) => rank(a.session) - rank(b.session) || b.session.state_at - a.session.state_at);
+  const ended = all.length - live.length;
+  const queued = board.todos.filter((t) => t.queue_runner).sort((a, b) => (a.queue_pos ?? 0) - (b.queue_pos ?? 0) || a.id - b.id);
   return (
-    <Modal
-      title={`セッションを開始 — ${todo.title}`}
-      onClose={onClose}
-      wide
-      footer={
-        <>
-          <button className="ghost" onClick={onClose}>
-            キャンセル
-          </button>
-          <button className="primary" disabled={target === "cloud" && !cloudOk} onClick={start}>
-            {target === "queue" ? "キューに入れる" : "開始"}
-          </button>
-        </>
-      }
-    >
-      <div className="field">
-        <span>どこで始める</span>
-        <div className="launchers four">
-          {START_TARGETS.map((t) => (
-            <button
-              key={t.key}
-              className={`launcher${target === t.key ? " primary" : ""}`}
-              disabled={t.key === "cloud" && !cloudOk}
-              title={t.key === "cloud" && !cloudOk ? "計画用の todo は Local で始めます" : undefined}
-              onClick={() => setTarget(t.key)}
-            >
-              <b>{t.title}</b>
-              <span>{t.key === "cloud" && !hasGithub ? "リポジトリなしで開く" : t.sub}</span>
+    <>
+      <header className="toolbar">
+        <h1>セッション</h1>
+        <div className="segmented" role="group" aria-label="絞り込み">
+          {FILTERS.map((f) => (
+            <button key={f.key} className={`${filter === f.key ? "on" : ""}${f.key === "needs_input" && counts.needs_input > 0 ? " warn" : ""}`} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>
+              {f.label} {counts[f.key]}
             </button>
           ))}
         </div>
-      </div>
-      {target === "queue" && (
-        <label className="field">
-          <span>キューからの起動方法</span>
-          <select value={runner} onChange={(e) => setRunner(e.target.value as Runner)}>
-            {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
-              <option key={r} value={r}>
-                {RUNNER_LABEL[r]}
-              </option>
+        <span className="grow" />
+        <button onClick={onQuick} title="todo に紐づけずに herdr でホームフォルダの claude を開く">
+          <Icon name="spark" size={13} /> ちょっと Claude
+        </button>
+      </header>
+      <div className="content">
+        <section className="box">
+          <div className="box-head">
+            <b>起動待ち</b>
+            <span className="muted">{queued.length}</span>
+            <span className="muted">上から順に、ループが動いていれば自動で始めます</span>
+            <span className="grow" />
+            <label className="toggle">
+              <input type="checkbox" checked={board.loop_enabled} onChange={(e) => run(() => api.setLoopEnabled(e.target.checked))} />
+              ループを動かす
+            </label>
+          </div>
+          {queued.length === 0 && <p className="muted hint pad">todo のパネルで起動先に「キュー」を選ぶと、ここに並びます。</p>}
+          <ul className="rows">
+            {queued.map((t, i) => (
+              <li key={t.id} className="row" onClick={() => onOpenTodo(t.id)}>
+                <span className="mono muted">{i + 1}</span>
+                <span className="mono muted">#{t.id}</span>
+                <span className="row-title">
+                  {t.title}
+                  {t.queue_error && <span className="error-text"> — {t.queue_error}</span>}
+                </span>
+                <select className="select compact" value={t.queue_runner ?? "auto"} aria-label="起動方法" onClick={stop} onChange={(e) => run(() => api.enqueue(t.id, e.target.value as Runner))}>
+                  {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
+                    <option key={r} value={r}>
+                      {RUNNER_LABEL[r]}
+                    </option>
+                  ))}
+                </select>
+                <span className="order-buttons" onClick={stop}>
+                  <button className="ghost icon" disabled={i === 0} aria-label="上へ" onClick={() => run(() => api.moveInQueue(t.id, -1))}>
+                    <Icon name="up" size={12} />
+                  </button>
+                  <button className="ghost icon" disabled={i === queued.length - 1} aria-label="下へ" onClick={() => run(() => api.moveInQueue(t.id, 1))}>
+                    <Icon name="down" size={12} />
+                  </button>
+                </span>
+                {t.queue_error && (
+                  <button className="small" onClick={(e) => (e.stopPropagation(), run(() => api.enqueue(t.id, t.queue_runner ?? "auto")))}>
+                    再試行
+                  </button>
+                )}
+                <button className="ghost small" onClick={(e) => (e.stopPropagation(), run(() => api.dequeue(t.id)))}>
+                  外す
+                </button>
+              </li>
             ))}
-          </select>
-        </label>
-      )}
-      <div className="field">
-        <span>種類</span>
-        <div className="segmented">
-          {KINDS.map((k) => (
-            <button key={k.key} className={kind === k.key ? "on" : ""} onClick={() => setKind(k.key)}>
-              {k.label}
+          </ul>
+        </section>
+
+        <section>
+          <div className="table-head sessions-grid">
+            <span>状態</span>
+            <span>セッション</span>
+            <span>todo</span>
+            <span>場所</span>
+            <span />
+          </div>
+          {rows.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
+          <ul className="rows">
+            {rows.map(({ session: s, todo }) => (
+              <li key={s.session_id} className={`row sessions-grid${s.session_id === selectedId ? " selected" : ""}${s.state === "ended" ? " done" : ""}`} onClick={() => onSelect(s.session_id)}>
+                <StateBadge state={s.state} />
+                <span className="ellipsis">{sessionLabel(s)}</span>
+                {todo ? (
+                  <button className="link-button ellipsis" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))}>
+                    #{todo.id} {todo.title}
+                  </button>
+                ) : (
+                  <span className="tag">未紐づけ</span>
+                )}
+                <span className="muted ellipsis">
+                  {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
+                </span>
+                <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
+              </li>
+            ))}
+          </ul>
+          {ended > 0 && (
+            <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
+              {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件を表示`}
             </button>
-          ))}
-        </div>
+          )}
+        </section>
       </div>
-      <label className="field">
-        <span>最初のプロンプト（空なら種類に応じた既定文。[todo:{todo.id}] は自動で付きます）</span>
-        <textarea rows={5} value={prompt} placeholder={kind === "research" ? "調査: タイトル＋メモ＋完了条件・出力条件を確認する指示" : "/grilling タイトル＋メモ"} onChange={(e) => setPrompt(e.target.value)} />
-      </label>
-      {!prompt && kind === todo.kind && <pre className="prompt-preview">{todo.prompt_preview}</pre>}
-      <p className="muted hint">
-        作業フォルダ: <span className="mono">{todo.cwd ?? "未設定（Desktop は一時フォルダ、ターミナルはホーム）"}</span>
-      </p>
-    </Modal>
+    </>
   );
 }
 
-function SessionDrawer({ session, todos, run, onClose, onCreated }: {
-  session: Session;
+function SessionPanel({ item, todos, covered, web, onWeb, run, report, onClose, onOpenTodo }: {
+  item: SessionItem;
+  covered: boolean;
+  web: string | null;
+  onWeb: (url: string | null) => void;
   todos: Todo[];
   run: (f: () => Promise<unknown>) => void;
+  report: (e: unknown) => void;
   onClose: () => void;
-  onCreated: (todoId: number) => void;
+  onOpenTodo: (id: number) => void;
 }) {
+  const s = item.session;
+  const [detail, setDetail] = useState<SessionDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  useEffect(() => {
+    setDetail(null);
+    setDetailError(null);
+    const load = () =>
+      api.sessionDetail(s.session_id).then(
+        (d) => (setDetail(d), setDetailError(null)),
+        (e) => setDetailError(String(e)),
+      );
+    load();
+    const t = setInterval(load, DETAIL_REFRESH_MS);
+    return () => clearInterval(t);
+  }, [s.session_id]);
   const [target, setTarget] = useState<number | "">("");
-  const [newTitle, setNewTitle] = useState(session.title ?? "");
-  useEffect(() => setNewTitle(session.title ?? ""), [session.session_id, session.title]);
+  const [newTitle, setNewTitle] = useState(s.title ?? "");
+  useEffect(() => setNewTitle(s.title ?? ""), [s.session_id, s.title]);
   // A local session's cwd is a folder the todo can reuse; a cloud session's is a repo URL.
-  const cwd = session.cwd.startsWith("/") ? session.cwd : undefined;
+  const cwd = s.cwd.startsWith("/") ? s.cwd : undefined;
   const createAndLink = () => {
     const title = newTitle.trim();
     if (!title) return;
     run(async () => {
-      const todo = await api.createTodo({ title, cwd, repos: session.repos ?? [] });
-      await api.linkSession(session.session_id, todo.id);
-      onCreated(todo.id);
+      const todo = await api.createTodo({ title, cwd, repos: s.repos ?? [] });
+      await api.linkSession(s.session_id, todo.id);
+      onOpenTodo(todo.id);
     });
   };
+  if (web) {
+    return (
+      <aside className="panel wide" aria-label={sessionLabel(s)}>
+        <header className="panel-head">
+          <StateBadge state={s.state} />
+          <span className="ellipsis">{sessionLabel(s)}</span>
+          <span className="grow" />
+          <button className="ghost icon" onClick={onClose} aria-label="閉じる">
+            <Icon name="close" size={14} />
+          </button>
+        </header>
+        <BrowserPane url={web} covered={covered} report={report} onClose={() => onWeb(null)} />
+      </aside>
+    );
+  }
   return (
-    <aside className="drawer glass">
-      <header>
-        <span className="mono muted">セッション</span>
+    <aside className="panel" aria-label={sessionLabel(s)}>
+      <header className="panel-head">
+        <StateBadge state={s.state} />
+        <span className="muted">{ago(s.state_at)}から</span>
+        <span className="grow" />
         <button className="ghost icon" onClick={onClose} aria-label="閉じる">
-          <Icon name="close" />
+          <Icon name="close" size={14} />
         </button>
       </header>
-      <h2 className="drawer-title">{sessionLabel(session)}</h2>
-      <div className="card-meta">
-        <StateBadge state={session.state} />
-        <KindTag session={session} />
-        <span className="muted">{ago(session.state_at)}</span>
-      </div>
-      <dl className="props">
-        {(session.repos ?? []).length > 0 && (
+      <div className="panel-body">
+        <div>
+          <h2 className="panel-title static">{sessionLabel(s)}</h2>
+          {item.todo && (
+            <button className="link-button" onClick={() => onOpenTodo(item.todo!.id)}>
+              todo #{item.todo.id} {item.todo.title}
+            </button>
+          )}
+        </div>
+        <div className="actions">
+          {isCloud(s) ? (
+            <>
+              <button className="primary grow" onClick={() => onWeb(cloudWebUrl(s.session_id))}>
+                Web で開く
+              </button>
+              <button className="grow" onClick={() => api.openSession(s.session_id, "desktop").catch(report)}>
+                Desktop で開く
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="primary grow" onClick={() => api.openSession(s.session_id, "herdr").catch(report)}>
+                herdr で開く
+              </button>
+              <button className="grow" onClick={() => api.openSession(s.session_id, "desktop").catch(report)}>
+                Desktop で開く
+              </button>
+            </>
+          )}
+        </div>
+
+        <section>
+          <h3>最後のメッセージ</h3>
+          {detailError && <p className="error-text">{detailError}</p>}
+          {!detail && !detailError && <p className="muted">読み込み中…</p>}
+          {detail && <div className="message">{detail.last_text ?? <span className="muted">まだありません</span>}</div>}
+        </section>
+
+        {detail && (detail.context_tokens !== null || detail.model) && (
+          <dl className="props">
+            {detail.context_tokens !== null && (
+              <>
+                <dt>コンテキスト</dt>
+                <dd>{tokensLabel(detail.context_tokens)} トークン</dd>
+              </>
+            )}
+            {detail.model && (
+              <>
+                <dt>モデル</dt>
+                <dd>{MODELS.find((m) => m.id === detail.model)?.label ?? detail.model}</dd>
+              </>
+            )}
+          </dl>
+        )}
+
+        {detail && detail.tools.length > 0 && (
+          <section>
+            <h3>直近の操作</h3>
+            <ul className="activity">
+              {detail.tools.map((t, i) => (
+                <li key={i}>
+                  <span className="mono tool">{t.name}</span>
+                  <span className="mono muted ellipsis">{t.summary}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        <dl className="props">
+          <dt>起動先</dt>
+          <dd>{isCloud(s) ? "Cloud" : "Local"}</dd>
+          {(s.repos ?? []).length > 0 && (
+            <>
+              <dt>リポジトリ</dt>
+              <dd>{(s.repos ?? []).join(", ")}</dd>
+            </>
+          )}
+          <dt>場所</dt>
+          <dd className="mono small-text">{tildify(s.cwd)}</dd>
+          <dt>ID</dt>
+          <dd className="mono small-text">{s.session_id}</dd>
+        </dl>
+
+        {item.todo ? (
+          <button className="ghost small align-start" onClick={() => run(() => api.unlinkSession(s.session_id))}>
+            todo との紐づけを外す
+          </button>
+        ) : (
           <>
-            <dt>repo</dt>
-            <dd>{(session.repos ?? []).join(", ")}</dd>
+            <section>
+              <h3>このセッションから todo を作る</h3>
+              <div className="actions">
+                <input value={newTitle} placeholder="todo のタイトル" aria-label="todo のタイトル" onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && createAndLink()} />
+                <button className="primary" disabled={!newTitle.trim()} onClick={createAndLink}>
+                  作って紐づける
+                </button>
+              </div>
+            </section>
+            <section>
+              <h3>既存の todo に紐づける</h3>
+              <div className="actions">
+                <select className="select grow" value={target} aria-label="紐づける todo" onChange={(e) => setTarget(e.target.value === "" ? "" : Number(e.target.value))}>
+                  <option value="">todo を選ぶ</option>
+                  {todos
+                    .filter((t) => t.status !== "done")
+                    .map((t) => (
+                      <option key={t.id} value={t.id}>
+                        #{t.id} {t.title}
+                      </option>
+                    ))}
+                </select>
+                <button disabled={target === ""} onClick={() => target !== "" && run(() => api.linkSession(s.session_id, target))}>
+                  紐づける
+                </button>
+              </div>
+            </section>
           </>
         )}
-        <dt>場所</dt>
-        <dd className="mono">{session.cwd}</dd>
-        <dt>ID</dt>
-        <dd className="mono">{session.session_id}</dd>
-      </dl>
-      <div className="actions">
-        <OpenButton session={session} run={run} primary />
-      </div>
-      <h3>このセッションから todo を作る</h3>
-      <div className="actions">
-        <input value={newTitle} placeholder="todo のタイトル" onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && createAndLink()} />
-        <button className="primary" disabled={!newTitle.trim()} onClick={createAndLink}>
-          作って紐づける
-        </button>
-      </div>
-      <h3>既存の todo に紐づける</h3>
-      <div className="actions">
-        <select value={target} onChange={(e) => setTarget(e.target.value === "" ? "" : Number(e.target.value))}>
-          <option value="">todo を選ぶ</option>
-          {todos.map((t) => (
-            <option key={t.id} value={t.id}>
-              #{t.id} {t.title}
-            </option>
-          ))}
-        </select>
-        <button disabled={target === ""} onClick={() => target !== "" && run(() => api.linkSession(session.session_id, target))}>
-          紐づける
-        </button>
       </div>
     </aside>
+  );
+}
+
+type PrFilter = "all" | "review" | "mine";
+type PrRow = Pr & { kind: "review" | "mine" };
+
+function PrsPage({ prs, prError, todos, local, repoFilter, covered, run, report, onRefresh, onOpenTodo }: {
+  prs: PrLists | null;
+  prError: string | null;
+  todos: Todo[];
+  local: LocalRepo[];
+  repoFilter: string | null;
+  covered: boolean;
+  run: (f: () => Promise<unknown>) => void;
+  report: (e: unknown) => void;
+  onRefresh: () => void;
+  onOpenTodo: (id: number) => void;
+}) {
+  const [filter, setFilter] = useState<PrFilter>("all");
+  const [selected, setSelected] = useState<PrRow | null>(null);
+  const [reviewRunner, setReviewRunnerState] = useState<Target>(() => load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal"] as const, "web"));
+  const openWeb = useContext(OpenWebContext);
+  const setReviewRunner = (t: Target) => {
+    remember(REVIEW_RUNNER_KEY, t);
+    setReviewRunnerState(t);
+  };
+  const byRepo = (p: Pr) => repoFilter === null || p.repo === repoFilter;
+  const review = (prs?.review ?? []).filter(byRepo).map((p) => ({ ...p, kind: "review" as const }));
+  const mine = (prs?.mine ?? []).filter(byRepo).map((p) => ({ ...p, kind: "mine" as const }));
+  const todoOf = (p: Pr) => todos.find((t) => t.pr_url === p.url);
+  const cwdOf = (p: Pr) => local.find((r) => r.key === p.repo)?.path;
+  // A PR becomes a todo that ships as it, so its state keeps the todo current.
+  const makeTodo = (p: Pr, title: string) =>
+    api.createTodo({ title, repos: [p.repo], cwd: cwdOf(p) }).then((t) => api.updateTodo(t.id, { pr_url: p.url }));
+  const startReview = (p: Pr) =>
+    run(async () => {
+      const todo = todoOf(p) ?? (await makeTodo(p, `レビュー: ${p.title}`));
+      await api.updateTodo(todo.id, { prompt: `/review ${p.url}` });
+      if (reviewRunner === "desktop") await api.startDesktop(todo.id);
+      else if (reviewRunner === "terminal") await api.startTerminal(todo.id);
+      else {
+        const id = await api.startCloud(todo.id, undefined, reviewRunner === "cloud");
+        if (reviewRunner === "web") openWeb?.(id, todo.id);
+      }
+    });
+  const sections: { key: "review" | "mine"; title: string; hint: string; rows: PrRow[] }[] = [
+    { key: "review", title: "レビュー依頼", hint: "自分にレビューが来ている PR", rows: review },
+    { key: "mine", title: "自分の PR", hint: "自分が出している open の PR", rows: mine },
+  ];
+  const actionsFor = (p: PrRow) => {
+    const todo = todoOf(p);
+    return (
+      <>
+        <span className="mono muted">
+          {p.repo}#{p.number}
+        </span>
+        <span className="muted">{p.kind === "review" ? `${p.author} からのレビュー依頼` : "自分の PR"}</span>
+        <span className="grow" />
+        {todo ? (
+          <button className="small" onClick={() => onOpenTodo(todo.id)}>
+            todo #{todo.id} を開く
+          </button>
+        ) : (
+          <button className="small" onClick={() => run(() => makeTodo(p, p.title))}>
+            todo にする
+          </button>
+        )}
+        {p.kind === "review" && (
+          <>
+            <select className="select compact" value={reviewRunner} aria-label="レビューを始める場所" onChange={(e) => setReviewRunner(e.target.value as Target)}>
+              <option value="web">Cloud・Web</option>
+              <option value="cloud">Cloud・Desktop</option>
+              <option value="desktop">Local・Desktop</option>
+              <option value="terminal">herdr</option>
+            </select>
+            <button className="primary small" onClick={() => startReview(p)}>
+              <span className="mono">/review</span> で開始
+            </button>
+          </>
+        )}
+      </>
+    );
+  };
+  return (
+    <div className="split">
+      <div className="split-list">
+        <header className="toolbar">
+          <h1>PR</h1>
+          <div className="segmented" role="group" aria-label="絞り込み">
+            <button className={filter === "all" ? "on" : ""} aria-pressed={filter === "all"} onClick={() => setFilter("all")}>
+              すべて
+            </button>
+            <button className={filter === "review" ? "on" : ""} aria-pressed={filter === "review"} onClick={() => setFilter("review")}>
+              レビュー依頼 {review.length}
+            </button>
+            <button className={filter === "mine" ? "on" : ""} aria-pressed={filter === "mine"} onClick={() => setFilter("mine")}>
+              自分の PR {mine.length}
+            </button>
+          </div>
+          <span className="grow" />
+          <button className="ghost icon" aria-label="PR を取り直す" title="PR を取り直す" onClick={onRefresh}>
+            <Icon name="sync" size={14} />
+          </button>
+        </header>
+        <div className="content flush">
+          {prError && <p className="error-text pad">{prError}</p>}
+          {!prs && !prError && <p className="muted pad">gh で取得しています…</p>}
+          {sections
+            .filter((sec) => filter === "all" || filter === sec.key)
+            .map((sec) => (
+              <section key={sec.key}>
+                <div className="section-head">
+                  <b>{sec.title}</b>
+                  <span className="muted">{sec.rows.length}</span>
+                  <span className="muted">{sec.hint}</span>
+                </div>
+                {prs && sec.rows.length === 0 && <p className="muted pad">ありません。</p>}
+                <ul className="rows">
+                  {sec.rows.map((p) => {
+                    const todo = todoOf(p);
+                    return (
+                      <li key={p.url} className={`row pr-row${selected?.url === p.url ? " selected" : ""}`} onClick={() => setSelected(p)}>
+                        <span className="pr-main">
+                          <span className="pr-meta">
+                            <span className="mono">
+                              {repoName(p.repo)}#{p.number}
+                            </span>
+                            {todo?.pr_state ? <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span> : p.is_draft && <span className="gh gh-pr-draft">Draft</span>}
+                            <span>
+                              {p.kind === "review" ? `${p.author} · ` : ""}
+                              {isoAgo(p.updated_at)}
+                            </span>
+                          </span>
+                          <span className="ellipsis">{p.title}</span>
+                        </span>
+                        {todo ? (
+                          <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
+                            #{todo.id} {todo.title}
+                          </button>
+                        ) : (
+                          p.kind === "mine" && (
+                            <button className="small" onClick={(e) => (e.stopPropagation(), run(() => makeTodo(p, p.title)))}>
+                              todo にする
+                            </button>
+                          )
+                        )}
+                        {p.kind === "review" && (
+                          <button className={`small${selected?.url === p.url ? " primary" : ""}`} onClick={(e) => (e.stopPropagation(), startReview(p))}>
+                            <span className="mono">/review</span> で開始
+                          </button>
+                        )}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </section>
+            ))}
+        </div>
+      </div>
+      <div className="split-browser">
+        {selected ? (
+          <BrowserPane url={selected.url} covered={covered} report={report} onClose={() => setSelected(null)} actions={actionsFor(selected)} />
+        ) : (
+          <p className="muted empty">PR を選ぶと、ここで開きます。</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const NOTICE_LABEL: Record<Notice["kind"], string> = {
+  finished: "作業が終わりました",
+  needs_input: "入力待ち",
+};
+
+/// Every notification the app posted, unread ones marked; opening one reads it.
+function NoticesPage({ board, report, onOpenTodo, run }: {
+  board: Board;
+  report: (e: unknown) => void;
+  onOpenTodo: (id: number) => void;
+  run: (f: () => Promise<unknown>) => void;
+}) {
+  const [unreadOnly, setUnreadOnly] = useState(false);
+  const unread = board.notifications.filter((n) => !n.read).length;
+  const rows = unreadOnly ? board.notifications.filter((n) => !n.read) : board.notifications;
+  const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
+  const read = (n: Notice) => !n.read && run(() => api.readNotifications(n.id));
+  return (
+    <>
+      <header className="toolbar">
+        <h1>通知</h1>
+        <div className="segmented" role="group" aria-label="絞り込み">
+          <button className={unreadOnly ? "" : "on"} aria-pressed={!unreadOnly} onClick={() => setUnreadOnly(false)}>
+            すべて
+          </button>
+          <button className={unreadOnly ? "on" : ""} aria-pressed={unreadOnly} onClick={() => setUnreadOnly(true)}>
+            未読 {unread}
+          </button>
+        </div>
+        <span className="grow" />
+        <button disabled={unread === 0} onClick={() => run(() => api.readNotifications())}>
+          <Icon name="check" size={13} /> すべて既読にする
+        </button>
+      </header>
+      <div className="content">
+        {rows.length === 0 && <p className="muted empty">{unreadOnly ? "未読の通知はありません。" : "まだ通知はありません。セッションの作業が終わるか入力待ちになると、ここに残ります。"}</p>}
+        <ul className="rows">
+          {rows.map((n) => {
+            const todo = todoOf(n);
+            return (
+              <li key={n.id} className={`row notice-row${n.read ? " read" : ""}`} onClick={() => (read(n), todo && onOpenTodo(todo.id))}>
+                <span className={`unread-dot${n.read ? "" : " on"}`} aria-label={n.read ? "既読" : "未読"} />
+                <span className={`state ${n.kind === "needs_input" ? "state-needs_input" : "state-running"}`}>
+                  <i />
+                  {NOTICE_LABEL[n.kind]}
+                </span>
+                <span className="row-title">{n.title}</span>
+                {todo && <span className="tag ellipsis notice-todo">#{todo.id} {todo.title}</span>}
+                <span className="muted when">{ago(n.created_at)}</span>
+                <button
+                  className="small"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    read(n);
+                    api.openSession(n.session_id).catch(report);
+                  }}
+                >
+                  開く
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </>
   );
 }
 
@@ -1321,11 +2068,11 @@ function Modal({ title, onClose, children, footer, wide }: {
   }, [onClose]);
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className={`modal glass${wide ? " wide" : ""}`} role="dialog" aria-label={title} onClick={(e) => e.stopPropagation()}>
+      <div className={`modal${wide ? " wide" : ""}`} role="dialog" aria-label={title} onClick={stop}>
         <header>
           <h2>{title}</h2>
           <button className="ghost icon" onClick={onClose} aria-label="閉じる">
-            <Icon name="close" />
+            <Icon name="close" size={14} />
           </button>
         </header>
         <div className="modal-body">{children}</div>
@@ -1336,19 +2083,17 @@ function Modal({ title, onClose, children, footer, wide }: {
 }
 
 /// Adds todos one after another: the dialog stays open and lists what it added.
-function AddTodoDialog({ local, groups, parent, run, onClose, onOpenTodo }: {
+function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo }: {
   local: LocalRepo[];
   groups: string[];
-  /// When set, every todo added here becomes this todo's subtask.
-  parent?: Todo;
+  initialRepo: string | null;
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
   onOpenTodo: (id: number) => void;
 }) {
   const [title, setTitle] = useState("");
-  const [repo, setRepo] = useState(parent?.repos.length === 1 ? parent.repos[0] : "");
+  const [repo, setRepo] = useState(initialRepo && initialRepo !== NO_REPO_LANE ? initialRepo : "");
   const [issueUrl, setIssueUrl] = useState("");
-  const [kind, setKind] = useState<Kind>("implementation");
   const [added, setAdded] = useState<Todo[]>([]);
   const titleRef = useRef<HTMLInputElement>(null);
   useEffect(() => titleRef.current?.focus(), []);
@@ -1357,7 +2102,7 @@ function AddTodoDialog({ local, groups, parent, run, onClose, onOpenTodo }: {
     if (!t) return;
     const path = local.find((r) => r.key === repo)?.path;
     run(async () => {
-      const todo = await api.createTodo({ title: t, kind, repos: repo ? [repo] : [], cwd: path, issue_url: issueUrl.trim() || undefined, parent_id: parent?.id });
+      const todo = await api.createTodo({ title: t, repos: repo ? [repo] : [], cwd: path, issue_url: issueUrl.trim() || undefined });
       setAdded((prev) => [todo, ...prev]);
       setTitle("");
       setIssueUrl("");
@@ -1366,11 +2111,12 @@ function AddTodoDialog({ local, groups, parent, run, onClose, onOpenTodo }: {
   };
   return (
     <Modal
-      title={parent ? `サブタスクを追加 — #${parent.id} ${parent.title}` : "todo を追加"}
+      title="todo を追加"
       onClose={onClose}
       footer={
         <>
           <span className="muted">Enter で追加。続けて入力できます</span>
+          <span className="grow" />
           <button className="ghost" onClick={onClose}>
             閉じる
           </button>
@@ -1384,20 +2130,10 @@ function AddTodoDialog({ local, groups, parent, run, onClose, onOpenTodo }: {
         <span>タイトル</span>
         <input ref={titleRef} value={title} placeholder="何をする？" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && submit()} />
       </label>
-      <div className="field">
-        <span>種類</span>
-        <div className="segmented">
-          {KINDS.map((k) => (
-            <button key={k.key} className={kind === k.key ? "on" : ""} onClick={() => setKind(k.key)}>
-              {k.label}
-            </button>
-          ))}
-        </div>
-      </div>
       <div className="two-col">
         <div className="field">
-          <span>リポジトリ / グループ（任意。空ならバックログへ）</span>
-          <RepoChoice local={local} groups={repo && !repo.includes("/") && !groups.includes(repo) ? [repo, ...groups] : groups} value={repo} placeholder="バックログ" onPick={setRepo} />
+          <span>リポジトリ / グループ（任意）</span>
+          <RepoChoice local={local} groups={repo && !isGithubRepo(repo) && !groups.includes(repo) ? [repo, ...groups] : groups} value={repo} placeholder={NO_REPO_LANE} onPick={setRepo} />
         </div>
         <label className="field">
           <span>Issue / PR URL（任意）</span>
@@ -1407,12 +2143,12 @@ function AddTodoDialog({ local, groups, parent, run, onClose, onOpenTodo }: {
       {added.length > 0 && (
         <div className="added">
           <span className="muted">追加済み {added.length} 件</span>
-          <ul className="list">
+          <ul className="rows compact">
             {added.map((t) => (
-              <li key={t.id} className="list-row" onClick={() => onOpenTodo(t.id)}>
+              <li key={t.id} className="row" onClick={() => onOpenTodo(t.id)}>
                 <span className="mono muted">#{t.id}</span>
-                <span className="list-title">{t.title}</span>
-                {t.repos.length > 0 ? <span className="tag">{repoName(t.repos[0])}</span> : <span className="muted">バックログ</span>}
+                <span className="row-title">{t.title}</span>
+                <span className="tag">{t.repos[0] ? repoName(t.repos[0]) : NO_REPO_LANE}</span>
               </li>
             ))}
           </ul>
@@ -1449,6 +2185,7 @@ function ImportDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => vo
       wide
       footer={
         <>
+          <span className="grow" />
           <button className="ghost" onClick={onClose}>
             キャンセル
           </button>
@@ -1467,12 +2204,12 @@ function ImportDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => vo
             <label>
               <input type="checkbox" checked={checked.has(i.url)} onChange={() => toggle(i.url)} />
               <span className="issue-main">
-                <span className="card-title">{i.title}</span>
-                <span className="card-meta">
-                  <span className="mono muted">
+                <span>{i.title}</span>
+                <span className="muted">
+                  <span className="mono">
                     {i.repo}#{i.number}
-                  </span>
-                  {i.cwd ? <span className="tag">{basename(i.cwd)}</span> : <span className="muted">ローカルに未 clone</span>}
+                  </span>{" "}
+                  · {i.cwd ? basename(i.cwd) : "ローカルに未 clone"}
                 </span>
               </span>
             </label>
@@ -1480,220 +2217,6 @@ function ImportDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => vo
         ))}
       </ul>
     </Modal>
-  );
-}
-
-function ListPage({ lanes, selectedId, run, setStatus, onSelectTodo }: {
-  lanes: Lane[];
-  selectedId: number | null;
-  run: (f: () => Promise<unknown>) => void;
-  setStatus: (todo: Todo, status: Status) => void;
-  onSelectTodo: (id: number) => void;
-}) {
-  if (lanes.length === 0) return <p className="muted empty">表示できる todo はありません。</p>;
-  return (
-    <div className="stack">
-      {lanes.map((lane) => {
-        const todos = [...lane.todos].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
-        return (
-          <section key={lane.key} className="glass panel">
-            <LaneHeader lane={lane} onOpenTodo={onSelectTodo} />
-            <ul className="list">
-              {todos.map((t) => {
-                const live = t.sessions.filter((x) => x.state !== "ended");
-                const direct = directSession(t);
-                const states = new Set(live.map((x) => x.state));
-                return (
-                  <li key={t.id} className={`list-row${t.sessions.length > 0 ? " has-session" : ""}${t.id === selectedId ? " selected" : ""}${states.has("needs_input") ? " waiting" : ""}`} onClick={() => onSelectTodo(t.id)}>
-                    <DoneCheck todo={t} setStatus={setStatus} />
-                    <select
-                      className={`status-select st-${t.status}`}
-                      value={t.status}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => setStatus(t, e.target.value as Status)}
-                    >
-                      {COLUMNS.map((c) => (
-                        <option key={c.status} value={c.status}>
-                          {c.label}
-                        </option>
-                      ))}
-                    </select>
-                    <span className="mono muted ref">{issueRef(t.issue_url) ?? `#${t.id}`}</span>
-                    <span className="list-title">{t.title}</span>
-                    {t.sessions.length > 0 && (
-                      <span className="tag session-tag" title="Claude のセッションが紐づいています">
-                        <Icon name="spark" /> {t.sessions.length}
-                      </span>
-                    )}
-                    <GhBadges todo={t} />
-                    {STATE_ORDER.filter((st) => states.has(st)).map((st) => (
-                      <StateBadge key={st} state={st} />
-                    ))}
-                    {live.length > 1 && <span className="muted">{live.length} sessions</span>}
-                    <span className="muted when">{ago(t.updated_at)}</span>
-                    {direct && <OpenButton session={direct} run={run} primary={states.has("needs_input")} />}
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        );
-      })}
-    </div>
-  );
-}
-
-function BacklogPage({ board, local, groups, selectedId, run, onSelectTodo, onAdd }: {
-  board: Board;
-  local: LocalRepo[];
-  groups: string[];
-  selectedId: number | null;
-  run: (f: () => Promise<unknown>) => void;
-  onSelectTodo: (id: number) => void;
-  onAdd: (title: string) => void;
-}) {
-  const todos = board.todos.filter((t) => t.repos.length === 0).sort((a, b) => b.updated_at - a.updated_at);
-  return (
-    <div className="stack">
-      <p className="muted hint">リポジトリもグループも未設定の todo。どちらかを選ぶとボードに移ります。調査など、リポジトリに紐づかないものは「＋ 新しいグループ…」で分けられます。</p>
-      <section className="glass panel">
-        <div className="panel-add">
-          <AddInline label="新しい todo" onAdd={onAdd} />
-        </div>
-        {todos.length > 0 && (
-          <ul className="list">
-            {todos.map((t) => (
-              <li key={t.id} className={`list-row${t.id === selectedId ? " selected" : ""}`} onClick={() => onSelectTodo(t.id)}>
-                <span className="mono muted">#{t.id}</span>
-                <span className="list-title">{t.title}</span>
-                {t.status !== "todo" && <span className="tag">{t.status}</span>}
-                <span className="muted when">{ago(t.updated_at)}</span>
-                <div className="row-choice" onClick={(e) => e.stopPropagation()}>
-                  <RepoChoice
-                    local={local}
-                    groups={groups}
-                    placeholder="リポジトリかグループを選ぶ…"
-                    onPick={(key) => {
-                      const u = addRepo(t, local, key);
-                      if (u) run(() => api.updateTodo(t.id, u));
-                    }}
-                  />
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function InboxPage({ board, selectedSessionId, run, onSelectSession }: {
-  board: Board;
-  selectedSessionId: string | null;
-  run: (f: () => Promise<unknown>) => void;
-  onSelectSession: (id: string) => void;
-}) {
-  const groups = new Map<string, Session[]>();
-  for (const s of board.inbox) {
-    const key = laneKey(s.repos);
-    groups.set(key, [...(groups.get(key) ?? []), s]);
-  }
-  const keys = [...groups.keys()].sort((a, b) => (a === BACKLOG_LANE ? 1 : b === BACKLOG_LANE ? -1 : a.localeCompare(b, "en", { sensitivity: "base" })));
-  return (
-    <div className="stack">
-      <p className="muted hint">todo に紐づいていないセッション。クリックして todo を作るか、ボードでカードにドラッグします。</p>
-      {board.inbox.length === 0 && <p className="muted empty">受信箱は空です。</p>}
-      {keys.map((key) => (
-        <section key={key} className="glass panel">
-          <LaneHeader lane={{ key: key === BACKLOG_LANE ? "リポジトリ不明" : key, todos: [], inbox: groups.get(key) ?? [] }} />
-          <ul className="list">
-            {(groups.get(key) ?? []).map((s) => (
-              <li key={s.session_id} className={`list-row${s.session_id === selectedSessionId ? " selected" : ""}${s.state === "needs_input" ? " waiting" : ""}`} onClick={() => onSelectSession(s.session_id)}>
-                <span className={`state-dot state-${s.state}`} />
-                <KindTag session={s} />
-                <span className="list-title">{sessionLabel(s)}</span>
-                <span className="muted">{STATE_LABEL[s.state]}</span>
-                <span className="muted when">{ago(s.state_at)}</span>
-                <OpenButton session={s} run={run} primary={s.state === "needs_input"} />
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
-    </div>
-  );
-}
-
-function QueuePage({ board, selectedId, run, onSelectTodo }: {
-  board: Board;
-  selectedId: number | null;
-  run: (f: () => Promise<unknown>) => void;
-  onSelectTodo: (id: number) => void;
-}) {
-  const rows = board.todos.filter((t) => t.queue_runner).sort((a, b) => (a.queue_pos ?? 0) - (b.queue_pos ?? 0) || a.id - b.id);
-  return (
-    <div className="stack">
-      <div className="panel glass loop-head">
-        <div>
-          <b>ループ</b>
-          <p className="muted hint">キューに入れた todo を、上から順にすべて同時にセッションとして始めます。始まった todo はキューから外れ、ボードで状態を追えます。入力待ちになったら通知します。</p>
-        </div>
-        <label className="toggle big">
-          <input type="checkbox" checked={board.loop_enabled} onChange={(e) => run(() => api.setLoopEnabled(e.target.checked))} />
-          {board.loop_enabled ? "実行中" : "停止中"}
-        </label>
-      </div>
-      {rows.length === 0 && <p className="muted empty">キューは空です。todo のパネルの「キューに入れる」から追加できます。</p>}
-      {rows.length > 0 && (
-        <section className="glass panel">
-          <ul className="list">
-            {rows.map((t, i) => (
-              <li key={t.id} className={`list-row${t.id === selectedId ? " selected" : ""}`} onClick={() => onSelectTodo(t.id)}>
-                <span className="mono muted">{i + 1}</span>
-                <span className="order-buttons" onClick={(e) => e.stopPropagation()}>
-                  <button className="ghost icon" disabled={i === 0} aria-label="上へ" onClick={() => run(() => api.moveInQueue(t.id, -1))}>
-                    <Icon name="up" />
-                  </button>
-                  <button className="ghost icon" disabled={i === rows.length - 1} aria-label="下へ" onClick={() => run(() => api.moveInQueue(t.id, 1))}>
-                    <Icon name="down" />
-                  </button>
-                </span>
-                <span className="list-title">
-                  {t.title}
-                  {t.queue_error && <span className="error-text queue-error">{t.queue_error}</span>}
-                </span>
-                {t.repos.map((r) => (
-                  <span key={r} className="tag">
-                    {repoName(r)}
-                  </span>
-                ))}
-                <select
-                  className="runner-select"
-                  value={t.queue_runner ?? "auto"}
-                  onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => run(() => api.enqueue(t.id, e.target.value as Runner))}
-                >
-                  {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
-                    <option key={r} value={r}>
-                      {RUNNER_LABEL[r]}
-                    </option>
-                  ))}
-                </select>
-                {t.queue_error && (
-                  <button onClick={(e) => { e.stopPropagation(); run(() => api.enqueue(t.id, t.queue_runner ?? "auto")); }}>
-                    再試行
-                  </button>
-                )}
-                <button className="ghost" onClick={(e) => { e.stopPropagation(); run(() => api.dequeue(t.id)); }}>
-                  外す
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-    </div>
   );
 }
 
@@ -1714,6 +2237,7 @@ function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) 
       footer={
         <>
           <span className="muted">⌘Enter で起動。todo には紐づけません</span>
+          <span className="grow" />
           <button className="ghost" onClick={onClose}>
             キャンセル
           </button>
@@ -1729,7 +2253,7 @@ function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) 
           ref={ref}
           rows={5}
           value={prompt}
-          placeholder="例: この エラーの意味を教えて …"
+          placeholder="例: このエラーの意味を教えて …"
           onChange={(e) => setPrompt(e.target.value)}
           onKeyDown={(e) => {
             if (isEnter(e) && e.metaKey) {
@@ -1743,34 +2267,160 @@ function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) 
   );
 }
 
+interface Command {
+  key: string;
+  label: string;
+  hint?: string;
+  run: () => void;
+}
+
+/// ⌘K: the actions that used to crowd the sidebar, the screens, and a jump to any todo.
+function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Command[]; todos: Todo[]; onOpenTodo: (id: number) => void; onClose: () => void }) {
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const q = query.trim().toLowerCase();
+  const items: Command[] = [
+    ...commands.filter((c) => c.label.toLowerCase().includes(q)),
+    ...(q
+      ? todos
+          .filter((t) => t.title.toLowerCase().includes(q) || `#${t.id}` === q || String(t.id) === q)
+          .slice(0, 20)
+          .map((t) => ({ key: `todo:${t.id}`, label: `#${t.id} ${t.title}`, hint: t.status, run: () => onOpenTodo(t.id) }))
+      : []),
+  ];
+  useEffect(() => setActive(0), [query]);
+  const pick = (c: Command) => {
+    onClose();
+    c.run();
+  };
+  return (
+    <div className="modal-backdrop palette-backdrop" onClick={onClose}>
+      <div className="palette" role="dialog" aria-label="コマンド" onClick={stop}>
+        <input
+          autoFocus
+          value={query}
+          placeholder="操作を選ぶ、または todo を検索"
+          aria-label="操作を選ぶ、または todo を検索"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActive((a) => Math.min(a + 1, items.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActive((a) => Math.max(a - 1, 0));
+            } else if (isEnter(e)) {
+              e.preventDefault();
+              if (items[active]) pick(items[active]);
+            } else if (e.key === "Escape") {
+              onClose();
+            }
+          }}
+        />
+        <ul role="listbox" className="palette-list">
+          {items.length === 0 && <li className="muted palette-empty">見つかりません</li>}
+          {items.map((c, i) => (
+            <li
+              key={c.key}
+              role="option"
+              aria-selected={i === active}
+              className={i === active ? "active" : ""}
+              onMouseEnter={() => setActive(i)}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                pick(c);
+              }}
+            >
+              <span className="ellipsis">{c.label}</span>
+              {c.hint && <span className="muted">{c.hint}</span>}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function resetLabel(iso: string | null) {
+  if (!iso) return null;
+  const ms = Date.parse(iso) - Date.now();
+  if (ms <= 0) return "まもなくリセット";
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `リセットまで ${minutes}分`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `リセットまで ${hours}時間${minutes % 60}分`;
+  return `${new Date(iso).toLocaleString("ja-JP", { month: "numeric", day: "numeric", weekday: "short", hour: "numeric", minute: "2-digit" })} にリセット`;
+}
+
+/// Plan usage kept in view (session, weekly, per model), warning colours from the API.
+function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | null }) {
+  return (
+    <div className="usage" title={error ?? undefined}>
+      <div className="section-title">Claude の使用量</div>
+      {error && !limits && <span className="muted small-text">取得できませんでした</span>}
+      {!limits && !error && <span className="muted small-text">取得しています…</span>}
+      {limits?.map((l) => (
+        <div key={l.label} className={`meter${l.severity !== "normal" || l.percent >= 80 ? " warn" : ""}`}>
+          <div className="meter-row">
+            <span>{l.label}</span>
+            <b>{Math.round(l.percent)}%</b>
+          </div>
+          <div className="bar">
+            <i style={{ width: `${Math.min(100, l.percent)}%` }} />
+          </div>
+          {resetLabel(l.resets_at) && <span className="muted small-text">{resetLabel(l.resets_at)}</span>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | null;
 
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
-  const [selection, setSelection] = useState<Selection>(null);
-  const [dragging, setDragging] = useState<string | null>(null);
+  const [selection, setSelectionState] = useState<Selection>(null);
+  // A cloud session's claude.ai page in the open panel; picking something else drops it.
+  const [panelWeb, setPanelWeb] = useState<string | null>(null);
+  const setSelection = (s: Selection, web: string | null = null) => {
+    setSelectionState(s);
+    setPanelWeb(web);
+  };
+  const [dragging, setDragging] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"add" | "addChild" | "import" | "start" | "quick" | null>(null);
-  const [view, setViewState] = useState<View>(loadView);
+  const [dialog, setDialog] = useState<DialogKind>(null);
+  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "sessions", "prs", "notices"] as const, "todos"));
+  const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
+  const [groupBy, setGroupByState] = useState<GroupBy>(() => load(GROUP_KEY, ["repo", "parent"] as const, "repo"));
+  const [doneRecent, setDoneRecentState] = useState<boolean>(() => load(DONE_RECENT_KEY, ["1", "0"] as const, "1") === "1");
+  const [waitingOnly, setWaitingOnly] = useState(false);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
-  const [stateFilter, setStateFilter] = useState<StateFilter>("all");
-  const [hideDone, setHideDoneState] = useState<boolean>(loadHideDone);
-  const [groupBy, setGroupByState] = useState<GroupBy>(loadGroupBy);
   const [local, setLocal] = useState<LocalRepo[]>([]);
-  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
+  // The no-repository lane starts folded; it held the old backlog page.
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadJson<string[]>(COLLAPSED_KEY, [NO_REPO_LANE])));
+  const [limits, setLimits] = useState<Limit[] | null>(null);
+  const [usageError, setUsageError] = useState<string | null>(null);
+  const [prs, setPrs] = useState<PrLists | null>(null);
+  const [prError, setPrError] = useState<string | null>(null);
+  const [skillsByCwd, setSkillsByCwd] = useState<Record<string, Skill[]>>({});
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: DRAG_DISTANCE_PX } }));
 
   const setView = (v: View) => {
     remember(VIEW_KEY, v);
     setViewState(v);
   };
+  const setLayout = (v: Layout) => {
+    remember(LAYOUT_KEY, v);
+    setLayoutState(v);
+  };
   const setGroupBy = (v: GroupBy) => {
     remember(GROUP_KEY, v);
     setGroupByState(v);
   };
-  const setHideDone = (v: boolean) => {
-    remember(HIDE_DONE_KEY, v ? "1" : "0");
-    setHideDoneState(v);
+  const setDoneRecent = (v: boolean) => {
+    remember(DONE_RECENT_KEY, v ? "1" : "0");
+    setDoneRecentState(v);
   };
   const toggleLane = (key: string) =>
     setCollapsed((prev) => {
@@ -1780,8 +2430,15 @@ export default function App() {
       return next;
     });
 
+  const report = useCallback((e: unknown) => setError(String(e)), []);
   const refresh = useCallback(() => {
-    api.board().then(setBoard, (e) => setError(String(e)));
+    api.board().then(setBoard, report);
+  }, [report]);
+  const loadPrs = useCallback(() => {
+    api.ghPrs().then(
+      (p) => (setPrs(p), setPrError(null)),
+      (e) => setPrError(String(e)),
+    );
   }, []);
 
   useEffect(() => {
@@ -1791,6 +2448,27 @@ export default function App() {
     return () => clearInterval(t);
   }, [refresh]);
 
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout>;
+    let got = false;
+    const load = () =>
+      api
+        .usage()
+        .then(
+          (l) => ((got = true), setLimits(l), setUsageError(null)),
+          (e) => setUsageError(String(e)),
+        )
+        .finally(() => (timer = setTimeout(load, got ? USAGE_REFRESH_MS : USAGE_RETRY_MS)));
+    load();
+    return () => clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    loadPrs();
+    const t = setInterval(loadPrs, PR_REFRESH_MS);
+    return () => clearInterval(t);
+  }, [loadPrs]);
+
   // Coming back to the window is when fresh GitHub and cloud state matters.
   useEffect(() => {
     const onFocus = () => api.syncNow().catch(() => {});
@@ -1798,12 +2476,14 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // ⌘N adds a todo from anywhere.
+  // ⌘N adds a todo and ⌘K opens the commands, from anywhere.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey && e.key.toLowerCase() === "n") {
+      if (!e.metaKey) return;
+      const k = e.key.toLowerCase();
+      if (k === "n" || k === "k") {
         e.preventDefault();
-        setDialog("add");
+        setDialog(k === "n" ? "add" : "palette");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1812,296 +2492,361 @@ export default function App() {
 
   const run = (f: () => Promise<unknown>) => {
     setError(null);
-    f().then(refresh, (e) => setError(String(e)));
+    f().then(refresh, report);
   };
 
   // Moving a todo with an open issue to Done offers to close the issue too.
   const [closePrompt, setClosePrompt] = useState<Todo | null>(null);
   const setStatus = (todo: Todo, status: Status) => {
     run(() => api.updateTodo(todo.id, { status }));
-    if (status === "done" && todo.issue_url && todo.issue_state !== "closed") setClosePrompt(todo);
+    if (status === "done" && todo.issue_url?.includes("/issues/") && todo.issue_state !== "closed") setClosePrompt(todo);
   };
 
-  // "+ 新規" in a column: a todo in that lane with that status, a subtask when the lane is a parent's.
+  const allTodos = board?.todos ?? [];
+  const selectedTodo = selection?.kind === "todo" ? allTodos.find((t) => t.id === selection.id) ?? null : null;
+
+  // Skills depend on the folder a session starts in; fetch each folder's once.
+  const skillsKey = selectedTodo?.cwd ?? "";
+  useEffect(() => {
+    if (!selectedTodo || skillsByCwd[skillsKey]) return;
+    api.skills(skillsKey || null).then((s) => setSkillsByCwd((prev) => ({ ...prev, [skillsKey]: s })), report);
+  }, [selectedTodo?.id, skillsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // "+ 新規" in a lane: a todo there with that status, a subtask when the lane is a parent's.
   const addTodoIn = (lane: Lane, status: Status, title: string) =>
     run(async () => {
-      const repos = lane.parent ? (lane.parent.repos.length === 1 ? lane.parent.repos : []) : [lane.key];
+      const repos = lane.parent ? (lane.parent.repos.length === 1 && !lane.parent.repos_derived ? lane.parent.repos : []) : lane.repo && lane.repo !== NO_REPO_LANE ? [lane.repo] : [];
       const cwd = repos.length === 1 ? local.find((r) => r.key === repos[0])?.path : undefined;
       const todo = await api.createTodo({ title, repos, cwd, parent_id: lane.parent?.id });
       if (status !== "todo") await api.updateTodo(todo.id, { status });
     });
 
-  const onDragStart = ({ active }: DragStartEvent) => setDragging(String(active.id));
-
-  const onDragEnd = ({ active, over }: DragEndEvent) => {
+  const onDragStart = ({ active }: DragStartEvent) => setDragging(Number(String(active.id).split(":")[1]));
+  const onDragEnd = ({ over }: DragEndEvent) => {
+    const id = dragging;
     setDragging(null);
-    if (!over) return;
-    const [kind, id] = String(active.id).split(/:(.*)/s);
-    const [target, targetId] = String(over.id).split(/:(.*)/s);
-    if (kind === "todo" && target === "col") {
-      const status = targetId.split(":")[0] as Status;
-      const todo = board?.todos.find((t) => t.id === Number(id));
-      if (todo) setStatus(todo, status);
-    } else if (kind === "session" && target === "card") {
-      run(() => api.linkSession(id, Number(targetId)));
-    }
+    if (!over || id === null) return;
+    const status = String(over.id).split(":")[1] as Status;
+    const todo = allTodos.find((t) => t.id === id);
+    if (todo && todo.status !== status) setStatus(todo, status);
   };
 
-  // Sidebar counts come from the unfiltered board; the pages get the filtered one.
-  const allLanes = board ? buildLanes(board) : [];
-  const matchesState = (sessions: Session[]) => stateFilter === "all" || sessions.some((s) => s.state === stateFilter);
-  const visible: Board | null = board && {
-    ...board,
-    todos: board.todos.filter(
-      (t) =>
-        (!hideDone || t.status !== "done") &&
-        (repoFilter === null || laneKey(t.repos) === repoFilter) &&
-        matchesState(t.sessions.filter((s) => s.state !== "ended")),
-    ),
-    inbox: board.inbox.filter((s) => (repoFilter === null || laneKey(s.repos) === repoFilter) && matchesState([s])),
-  };
-  const lanes = visible && board ? buildLanes(visible, groupBy, board.todos) : [];
+  const inRepo = (repos: string[] | undefined) => repoFilter === null || laneKey(repos) === repoFilter;
+  const visibleTodos = allTodos.filter((t) => inRepo(t.repos) && (!waitingOnly || liveSessions(t).some((s) => s.state === "needs_input")));
+  const lanes = buildLanes(visibleTodos, groupBy, allTodos);
+  const repoLanes = buildLanes(allTodos, "repo", allTodos);
   // Free group names in use, offered beside repositories when picking.
-  const groups = [...new Set((board?.todos ?? []).flatMap((t) => t.repos).filter((r) => !r.includes("/")))].sort();
-  const waiting = board ? board.todos.flatMap((t) => t.sessions).filter((s) => s.state === "needs_input").length : 0;
-  const backlogCount = board?.todos.filter((t) => t.repos.length === 0).length ?? 0;
-  const queuedCount = board?.todos.filter((t) => t.queue_runner).length ?? 0;
-  const doneHidden = hideDone ? (board?.todos.filter((t) => t.status === "done").length ?? 0) : 0;
+  const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
+  const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? [])];
+  const waiting = allSessions.filter((s) => s.state === "needs_input");
+  const openTodoCount = allTodos.filter((t) => t.status !== "done").length;
+  const colCounts = Object.fromEntries(COLUMNS.map((c) => [c.status, visibleTodos.filter((t) => t.status === c.status).length])) as Record<Status, number>;
 
-  const selectedTodo = selection?.kind === "todo" ? board?.todos.find((t) => t.id === selection.id) ?? null : null;
-  const selectedSession =
-    selection?.kind === "session" ? board?.inbox.find((s) => s.session_id === selection.id) ?? null : null;
-  const selectedId = selectedTodo?.id ?? null;
-  const overlay = (() => {
-    if (!dragging || !board) return null;
-    const [kind, id] = dragging.split(/:(.*)/s);
-    if (kind === "todo") {
-      const t = board.todos.find((x) => x.id === Number(id));
-      return t && <div className="card overlay">{t.title}</div>;
-    }
-    const s = board.inbox.find((x) => x.session_id === id);
-    return s && <div className="card overlay">{sessionLabel(s)}</div>;
-  })();
+  const selectedSession = selection?.kind === "session" && board ? sessionItemsOf(board).find((i) => i.session.session_id === selection.id) ?? null : null;
 
   const openTodo = (id: number) => {
     setSelection({ kind: "todo", id });
-    // The drawer shows issue and PR state; fetch this todo's now.
+    // The panel shows issue and PR state; fetch this todo's now.
     api.syncNow(id).catch(() => {});
+  };
+  const goTodo = (id: number) => {
+    setView("todos");
+    openTodo(id);
+  };
+  const openWeb: OpenWeb = (sessionId, todoId) => {
+    const url = cloudWebUrl(sessionId);
+    if (todoId !== null) {
+      setView("todos");
+      setSelection({ kind: "todo", id: todoId }, url);
+    } else {
+      setView("sessions");
+      setSelection({ kind: "session", id: sessionId }, url);
+    }
   };
   const [syncing, setSyncing] = useState(false);
   const syncAll = () => {
     setSyncing(true);
     run(() => api.syncNow());
+    loadPrs();
     // The syncs run in the background; the board refresh shows their results.
-    setTimeout(() => setSyncing(false), 3000);
+    setTimeout(() => setSyncing(false), REFRESH_MS);
   };
-  const openSession = (id: string) => setSelection({ kind: "session", id });
+
+  const commands: Command[] = [
+    { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
+    { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
+    { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
+    { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
+    { key: "todos", label: "Todo を表示", run: () => setView("todos") },
+    { key: "sessions", label: "セッションを表示", run: () => setView("sessions") },
+    { key: "prs", label: "PR を表示", run: () => setView("prs") },
+    { key: "notices", label: "通知を表示", run: () => setView("notices") },
+  ];
+
+  const covered = dialog !== null;
+  const draggedTodo = dragging !== null ? allTodos.find((t) => t.id === dragging) : undefined;
+  const reviewCount = prs?.review.length ?? 0;
+  const unreadCount = board?.notifications.filter((n) => !n.read).length ?? 0;
+
+  const nav: { key: View; label: string; icon: IconName; badge?: React.ReactNode; count?: number }[] = [
+    { key: "todos", label: "Todo", icon: "board", count: openTodoCount },
+    {
+      key: "sessions",
+      label: "セッション",
+      icon: "spark",
+      count: allSessions.length,
+      badge: waiting.length > 0 && (
+        <span className="pill waiting">
+          <i />
+          {waiting.length}
+        </span>
+      ),
+    },
+    { key: "prs", label: "PR", icon: "pr", badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
+    { key: "notices", label: "通知", icon: "bell", badge: unreadCount > 0 && <span className="pill accent">未読 {unreadCount}</span> },
+  ];
+
+  const panel = view === "todos" && selectedTodo ? "todo" : view === "sessions" && selectedSession ? "session" : null;
 
   return (
-    <div className={`app${selectedTodo || selectedSession ? " with-drawer" : ""}`}>
-      <aside className="sidebar glass">
-        <div className="brand">
-          <span className="brand-mark" />
-          <span>Todo Sessions</span>
-        </div>
-        <div className="sidebar-actions">
-          <button title="issue を取り込む" onClick={() => setDialog("import")}>
-            <Icon name="import" /> <span className="label">issue を取り込む</span>
-          </button>
-          <button title="herdr でホームフォルダの claude を開く（todo に紐づけない）" onClick={() => setDialog("quick")}>
-            <Icon name="spark" /> <span className="label">ちょっと Claude</span>
-          </button>
-        </div>
-        <nav className="nav">
-          {VIEWS.map((v) => (
-            <button key={v.key} className={view === v.key ? "on" : ""} title={v.label} onClick={() => setView(v.key)}>
-              <Icon name={v.key} />
-              <span className="label">{v.label}</span>
-              {v.key === "backlog" && backlogCount > 0 && <span className="count">{backlogCount}</span>}
-              {v.key === "inbox" && (board?.inbox.length ?? 0) > 0 && <span className="count">{board?.inbox.length}</span>}
-              {v.key === "queue" && queuedCount > 0 && <span className="count">{queuedCount}</span>}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-section">
-          <div className="section-title">リポジトリ</div>
-          {allLanes.map((lane) => {
-            const w = lane.todos.flatMap((t) => t.sessions).concat(lane.inbox).filter((s) => s.state === "needs_input").length;
-            return (
-              <button
-                key={lane.key}
-                className={`repo${repoFilter === lane.key ? " on" : ""}`}
-                title={lane.key}
-                onClick={() => {
-                  setRepoFilter(repoFilter === lane.key ? null : lane.key);
-                  // A repository is looked at on the board; the list keeps its own view.
-                  if (view !== "board" && view !== "list") setView("board");
-                }}
-              >
-                <RepoDot repo={lane.key} />
-                <span className="ellipsis label">{lane.key.includes("/") ? repoName(lane.key) : lane.key}</span>
-                {w > 0 && <span className="pill waiting">{w}</span>}
-                <span className="count">{lane.todos.length}</span>
-              </button>
-            );
-          })}
-          {allLanes.length === 0 && <p className="muted hint">まだありません</p>}
-        </div>
-        <div className="sidebar-foot">
-          <div className={`waiting-box${waiting > 0 ? " on" : ""}`} title={`入力待ち ${waiting}`}>
-            <i />
-            <span className="label">入力待ち</span> <b>{waiting}</b>
+    <OpenWebContext.Provider value={openWeb}>
+      <div className="app">
+        <aside className="sidebar">
+          <div className="brand">
+            <span className="brand-mark" />
+            <span>Todo Sessions</span>
           </div>
-          <button className="ghost sync-button" onClick={syncAll} disabled={syncing} title="GitHub とクラウドのセッションを今すぐ同期">
-            <Icon name="sync" />
-            <span className="label">{syncing ? "同期中…" : "今すぐ同期"}</span>
+          <button className="search" onClick={() => setDialog("palette")}>
+            <Icon name="search" size={13} />
+            <span className="grow ellipsis">検索・操作</span>
+            <span className="kbd">⌘K</span>
           </button>
-          <div className="muted sync label">{board?.sync_status}</div>
-        </div>
-      </aside>
-
-      <main className="main">
-        <header className="toolbar">
-          <h1>{VIEWS.find((v) => v.key === view)?.label}</h1>
-          {repoFilter && (
-            <button className="chip-filter" onClick={() => setRepoFilter(null)}>
-              <RepoDot repo={repoFilter} />
-              {repoFilter} <Icon name="close" />
-            </button>
-          )}
-          <div className="segmented">
-            {STATE_FILTERS.map((f) => (
-              <button key={f.key} className={stateFilter === f.key ? "on" : ""} onClick={() => setStateFilter(f.key)}>
-                {f.label}
+          <nav className="nav" aria-label="画面">
+            {nav.map((n) => (
+              <button key={n.key} className={view === n.key ? "on" : ""} aria-current={view === n.key ? "page" : undefined} onClick={() => setView(n.key)}>
+                <Icon name={n.icon} />
+                <span className="grow">{n.label}</span>
+                {n.badge}
+                {n.count !== undefined && <span className="muted">{n.count}</span>}
               </button>
             ))}
+          </nav>
+          <div className="sidebar-section">
+            <div className="section-title">場所</div>
+            {repoLanes.map((lane) => {
+              const w = lane.todos.flatMap(liveSessions).concat((board?.inbox ?? []).filter((s) => laneKey(s.repos) === lane.key)).filter((s) => s.state === "needs_input").length;
+              return (
+                <div key={lane.key} className={`repo${repoFilter === lane.key ? " on" : ""}`}>
+                  <button className="repo-main" title={lane.key} aria-pressed={repoFilter === lane.key} onClick={() => setRepoFilter(repoFilter === lane.key ? null : lane.key)}>
+                    <RepoDot repo={lane.key} />
+                    <span className="ellipsis grow">{isGithubRepo(lane.key) ? repoName(lane.key) : lane.key}</span>
+                    {w > 0 && <span className="pill waiting">{w}</span>}
+                    <span className="muted">{lane.todos.filter((t) => t.status !== "done").length}</span>
+                  </button>
+                  {isGithubRepo(lane.key) && (
+                    <button className="ghost icon repo-gh" aria-label={`${lane.key} を GitHub で開く`} title="GitHub で開く" onClick={() => openGithub(GITHUB + lane.key, report)}>
+                      <Icon name="open" size={12} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {repoLanes.length === 0 && <p className="muted hint">まだありません</p>}
           </div>
-          {(view === "board" || view === "list") && (
-            <div className="segmented" title="レーンのまとめ方">
-              {GROUPINGS.map((g) => (
-                <button key={g.key} className={groupBy === g.key ? "on" : ""} onClick={() => setGroupBy(g.key)}>
-                  {g.label}
-                </button>
-              ))}
+          <div className="sidebar-foot">
+            <UsageBox limits={limits} error={usageError} />
+            <div className="sync-line">
+              <span className="dot state-running" />
+              <span className="grow ellipsis muted" title={board?.sync_status}>
+                {board?.sync_status}
+              </span>
+              <button className="ghost icon" onClick={syncAll} disabled={syncing} aria-label="GitHub とクラウドを今すぐ同期" title="今すぐ同期">
+                <Icon name="sync" size={12} />
+              </button>
+            </div>
+          </div>
+        </aside>
+
+        <main className="main">
+          {(closePrompt || error) && (
+            <div className="banners">
+              {closePrompt && (
+                <div className="notice" role="status">
+                  <span>
+                    #{closePrompt.id} を Done にしました。{issueRef(closePrompt.issue_url) ?? "issue"} も close しますか？
+                  </span>
+                  <button
+                    className="primary small"
+                    onClick={() => {
+                      const id = closePrompt.id;
+                      setClosePrompt(null);
+                      run(() => api.closeIssue(id));
+                    }}
+                  >
+                    close する
+                  </button>
+                  <button className="ghost small" onClick={() => setClosePrompt(null)}>
+                    そのまま
+                  </button>
+                </div>
+              )}
+              {error && (
+                <div className="error" role="alert">
+                  <span className="grow">{error}</span>
+                  <button className="ghost icon" onClick={() => setError(null)} aria-label="閉じる">
+                    <Icon name="close" size={12} />
+                  </button>
+                </div>
+              )}
             </div>
           )}
-          <label className="toggle">
-            <input type="checkbox" checked={hideDone} onChange={(e) => setHideDone(e.target.checked)} />
-            Done を隠す{doneHidden > 0 && <span className="count">{doneHidden}</span>}
-          </label>
-        </header>
-        {closePrompt && (
-          <div className="notice" role="status">
-            <span>
-              #{closePrompt.id} を Done にしました。{issueRef(closePrompt.issue_url) ?? "issue"} も close しますか？
-            </span>
-            <button
-              className="primary"
-              onClick={() => {
-                const id = closePrompt.id;
-                setClosePrompt(null);
-                run(() => api.closeIssue(id));
-              }}
-            >
-              close する
-            </button>
-            <button className="ghost" onClick={() => setClosePrompt(null)}>
-              そのまま
-            </button>
-          </div>
-        )}
-        {error && (
-          <div className="error" role="alert">
-            {error}
-            <button className="ghost icon" onClick={() => setError(null)} aria-label="閉じる">
-              <Icon name="close" />
-            </button>
-          </div>
-        )}
-        <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
-          <div className="content">
-            {view === "board" && (
-              <>
-                <div className="col-heads">
-                  {COLUMNS.map((c) => (
-                    <h2 key={c.status}>
-                      {c.label} <span className="count">{lanes.flatMap((l) => l.todos).filter((t) => t.status === c.status).length}</span>
-                    </h2>
-                  ))}
-                  <h2>
-                    受信箱 <span className="count">{lanes.reduce((n, l) => n + l.inbox.length, 0)}</span>
-                  </h2>
-                </div>
-                {lanes.map((lane) => (
-                  <LaneView
-                    key={lane.key}
-                    lane={lane}
-                    collapsed={collapsed.has(lane.key)}
-                    onToggle={() => toggleLane(lane.key)}
-                    selectedId={selectedId}
-                    selectedSessionId={selectedSession?.session_id ?? null}
-                    onSelectTodo={openTodo}
-                    onSelectSession={openSession}
-                    run={run}
-                    setStatus={setStatus}
-                    allTodos={board?.todos ?? []}
-                    onAdd={lane.key === MULTI_LANE ? undefined : (status, title) => addTodoIn(lane, status, title)}
-                  />
-                ))}
-                {board && lanes.length === 0 && (
-                  <p className="muted empty">
-                    {groupBy === "parent"
-                      ? "サブタスクを持つ todo がありません。サイドパネルの「サブタスク ＋ 追加」で作れます。"
-                      : "表示できる todo がありません。フィルタを外すか、バックログでリポジトリを選ぶか、issue を取り込んでください。"}
-                  </p>
-                )}
-              </>
-            )}
-            {view === "list" && <ListPage lanes={lanes} selectedId={selectedId} run={run} setStatus={setStatus} onSelectTodo={openTodo} />}
-            {view === "backlog" && visible && (
-              <BacklogPage board={visible} local={local} groups={groups} selectedId={selectedId} run={run} onSelectTodo={openTodo} onAdd={(title) => run(() => api.createTodo({ title }))} />
-            )}
-            {view === "queue" && board && <QueuePage board={board} selectedId={selectedId} run={run} onSelectTodo={openTodo} />}
-            {view === "inbox" && visible && <InboxPage board={visible} selectedSessionId={selectedSession?.session_id ?? null} run={run} onSelectSession={openSession} />}
-          </div>
-          {/* The overlay follows the pointer across columns; the originals stay in place. */}
-          <DragOverlay dropAnimation={null}>{overlay}</DragOverlay>
-        </DndContext>
-      </main>
 
-      {selectedTodo && (
-        <Drawer
-          todo={selectedTodo}
-          allTodos={board?.todos ?? []}
-          local={local}
-          groups={groups}
-          onOpenTodo={openTodo}
-          run={run}
-          setStatus={setStatus}
-          onClose={() => setSelection(null)}
-          onStart={() => setDialog("start")}
-          onAddChild={() => setDialog("addChild")}
-        />
-      )}
-      {dialog === "start" && selectedTodo && <StartSessionDialog todo={selectedTodo} run={run} onClose={() => setDialog(null)} />}
-      {selectedSession && board && (
-        <SessionDrawer session={selectedSession} todos={board.todos} run={run} onClose={() => setSelection(null)} onCreated={openTodo} />
-      )}
-      {(dialog === "add" || (dialog === "addChild" && selectedTodo)) && (
-        <AddTodoDialog
-          local={local}
-          groups={groups}
-          parent={dialog === "addChild" ? selectedTodo ?? undefined : undefined}
-          run={run}
-          onClose={() => setDialog(null)}
-          onOpenTodo={(id) => {
-            setDialog(null);
-            openTodo(id);
-          }}
-        />
-      )}
-      {dialog === "import" && <ImportDialog run={run} onClose={() => setDialog(null)} />}
-      {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
-    </div>
+          {view === "todos" && (
+            <>
+              <header className="toolbar">
+                <h1>Todo</h1>
+                <div className="segmented" role="group" aria-label="表示">
+                  <button className={layout === "board" ? "on" : ""} aria-pressed={layout === "board"} onClick={() => setLayout("board")}>
+                    ボード
+                  </button>
+                  <button className={layout === "list" ? "on" : ""} aria-pressed={layout === "list"} onClick={() => setLayout("list")}>
+                    リスト
+                  </button>
+                </div>
+                <div className="segmented" role="group" aria-label="まとめ方">
+                  {GROUPINGS.map((g) => (
+                    <button key={g.key} className={groupBy === g.key ? "on" : ""} aria-pressed={groupBy === g.key} onClick={() => setGroupBy(g.key)}>
+                      {g.label}
+                    </button>
+                  ))}
+                </div>
+                {repoFilter && (
+                  <button className="filter on" onClick={() => setRepoFilter(null)} title="絞り込みを外す">
+                    <RepoDot repo={repoFilter} />
+                    {repoFilter} <Icon name="close" size={11} />
+                  </button>
+                )}
+                <button className={`filter${waitingOnly ? " on" : ""}`} aria-pressed={waitingOnly} onClick={() => setWaitingOnly((v) => !v)}>
+                  入力待ちだけ
+                </button>
+                <button className={`filter${doneRecent ? " on" : ""}`} aria-pressed={doneRecent} onClick={() => setDoneRecent(!doneRecent)}>
+                  Done は直近{DONE_RECENT}件
+                </button>
+                <span className="grow" />
+                <button className="primary" onClick={() => setDialog("add")}>
+                  <Icon name="plus" size={13} /> 新しい todo <span className="kbd">⌘N</span>
+                </button>
+              </header>
+              <WaitingStrip sessions={waiting} report={report} />
+              <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
+                <div className="content">
+                  {layout === "board" && lanes.length > 0 && (
+                    <div className="col-heads">
+                      {COLUMNS.map((c) => (
+                        <h2 key={c.status}>
+                          <StatusIcon status={c.status} />
+                          {c.label} <span className="muted">{colCounts[c.status]}</span>
+                        </h2>
+                      ))}
+                    </div>
+                  )}
+                  {lanes.map((lane) =>
+                    layout === "board" ? (
+                      <BoardLane
+                        key={lane.key}
+                        lane={lane}
+                        collapsed={collapsed.has(lane.key)}
+                        onToggle={() => toggleLane(lane.key)}
+                        selectedId={selectedTodo?.id ?? null}
+                        onSelectTodo={openTodo}
+                        report={report}
+                        allTodos={allTodos}
+                        doneRecent={doneRecent}
+                        onAdd={(status, title) => addTodoIn(lane, status, title)}
+                      />
+                    ) : (
+                      <ListLane
+                        key={lane.key}
+                        lane={lane}
+                        collapsed={collapsed.has(lane.key)}
+                        onToggle={() => toggleLane(lane.key)}
+                        selectedId={selectedTodo?.id ?? null}
+                        onSelectTodo={openTodo}
+                        report={report}
+                        run={run}
+                        setStatus={setStatus}
+                        allTodos={allTodos}
+                        doneRecent={doneRecent}
+                        onAdd={(title) => addTodoIn(lane, "todo", title)}
+                      />
+                    ),
+                  )}
+                  {board && lanes.length === 0 && (
+                    <p className="muted empty">
+                      {waitingOnly ? "入力待ちの todo はありません。" : "表示できる todo がありません。⌘N で追加するか、⌘K から issue を取り込めます。"}
+                    </p>
+                  )}
+                </div>
+                <DragOverlay dropAnimation={null}>{draggedTodo && <div className="card overlay">{draggedTodo.title}</div>}</DragOverlay>
+              </DndContext>
+            </>
+          )}
+          {view === "sessions" && board && (
+            <SessionsPage
+              board={board}
+              repoFilter={repoFilter}
+              selectedId={selectedSession?.session.session_id ?? null}
+              run={run}
+              report={report}
+              onSelect={(id) => setSelection({ kind: "session", id })}
+              onOpenTodo={goTodo}
+              onQuick={() => setDialog("quick")}
+            />
+          )}
+          {view === "notices" && board && <NoticesPage board={board} report={report} onOpenTodo={goTodo} run={run} />}
+          {view === "prs" && (
+            <PrsPage prs={prs} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} covered={covered} run={run} report={report} onRefresh={loadPrs} onOpenTodo={goTodo} />
+          )}
+        </main>
+
+        {panel === "todo" && selectedTodo && (
+          <TodoPanel
+            todo={selectedTodo}
+            allTodos={allTodos}
+            local={local}
+            groups={groups}
+            skills={skillsByCwd[skillsKey] ?? []}
+            covered={covered}
+            web={panelWeb}
+            onWeb={setPanelWeb}
+            run={run}
+            report={report}
+            setStatus={setStatus}
+            onOpenTodo={openTodo}
+            onClose={() => setSelection(null)}
+          />
+        )}
+        {panel === "session" && selectedSession && (
+          <SessionPanel item={selectedSession} todos={allTodos} covered={covered} web={panelWeb} onWeb={setPanelWeb} run={run} report={report} onClose={() => setSelection(null)} onOpenTodo={goTodo} />
+        )}
+
+        {dialog === "add" && (
+          <AddTodoDialog
+            local={local}
+            groups={groups}
+            initialRepo={repoFilter}
+            run={run}
+            onClose={() => setDialog(null)}
+            onOpenTodo={(id) => {
+              setDialog(null);
+              goTodo(id);
+            }}
+          />
+        )}
+        {dialog === "import" && <ImportDialog run={run} onClose={() => setDialog(null)} />}
+        {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
+        {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
+      </div>
+    </OpenWebContext.Provider>
   );
 }
