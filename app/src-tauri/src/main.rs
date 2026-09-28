@@ -7,11 +7,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cts_core::{launch, Db, NewTodo, Session, SessionState, Status, Todo, TodoPatch};
+use cts_core::launch::StartOptions;
+use cts_core::{launch, Db, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, State, WebviewBuilder, WebviewUrl, WindowEvent};
 use mac_notification_sys::{Notification, NotificationResponse};
 
 const DB_ENV: &str = "CTS_DB";
@@ -117,6 +118,8 @@ struct SessionView {
 struct Board {
     todos: Vec<TodoView>,
     inbox: Vec<SessionView>,
+    /// Notifications posted, newest first, for the in-app list.
+    notifications: Vec<cts_core::Notice>,
     sync_status: String,
     loop_enabled: bool,
 }
@@ -195,7 +198,7 @@ fn desktop_archived() -> HashSet<String> {
 
 #[tauri::command]
 fn board(state: State<AppState>) -> Result<Board, String> {
-    let (todos, inbox) = {
+    let (todos, inbox, notifications) = {
         let db = state.db.lock().map_err(err)?;
         let todos = db
             .list_todos(None)
@@ -210,7 +213,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             .into_iter()
             .filter(|s| s.state != SessionState::Ended && !archived.contains(&s.session_id))
             .collect();
-        (todos, inbox)
+        (todos, inbox, db.notifications().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -230,7 +233,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, inbox, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
+    Ok(Board { todos, inbox, notifications, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
 }
 
 #[tauri::command]
@@ -465,7 +468,7 @@ fn start_in_ghostty(cwd: &str, command: &str) -> Result<(), String> {
 
 /// Starts `claude --session-id` for the todo in herdr (Ghostty if herdr is
 /// down), linked before it starts. `focus` brings the new workspace forward.
-fn launch_terminal(state: &AppState, todo_id: i64, focus: bool) -> Result<(), String> {
+fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOptions) -> Result<(), String> {
     let (todo, session_id) = {
         let db = state.db.lock().map_err(err)?;
         let todo = todo_or_err(&db, todo_id)?;
@@ -478,8 +481,9 @@ fn launch_terminal(state: &AppState, todo_id: i64, focus: bool) -> Result<(), St
         (todo, session_id)
     };
     let cwd = terminal_cwd(&todo);
+    let flags: String = opts.claude_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
     let command = format!(
-        "claude --session-id {session_id} {}",
+        "claude --session-id {session_id}{flags} {}",
         shell_quote(&launch::start_prompt(todo.id, &todo.prompt_body()))
     );
     start_in_herdr(&cwd, &todo.title, &command, focus).or_else(|herdr_err| {
@@ -489,7 +493,7 @@ fn launch_terminal(state: &AppState, todo_id: i64, focus: bool) -> Result<(), St
 }
 
 /// Creates a cloud session for the todo and returns its `cse_…` id.
-fn launch_cloud(state: &AppState, todo_id: i64) -> Result<String, String> {
+fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions) -> Result<String, String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
     if todo.is_orchestrator() {
         // Planning creates child todos through the local MCP server, which cloud sessions cannot reach.
@@ -498,20 +502,25 @@ fn launch_cloud(state: &AppState, todo_id: i64) -> Result<String, String> {
     // Without a GitHub repository the session runs with no checkout, which is fine for research.
     let repos = launch::github_repos(&repos_of_todo(state, &todo));
     let db = state.db.lock().map_err(err)?;
-    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &todo.prompt_body())
+    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &todo.prompt_body(), opts)
 }
 
 #[tauri::command]
-fn start_terminal(state: State<AppState>, todo_id: i64) -> Result<(), String> {
-    launch_terminal(&state, todo_id, true)?;
+fn start_terminal(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<(), String> {
+    launch_terminal(&state, todo_id, true, &options.unwrap_or_default())?;
     // herdr has switched to the new workspace; show it.
     cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
 }
 
+/// Starts a cloud session and returns its id. `desktop` also opens it in
+/// Claude Desktop; otherwise the page shows it on the web.
 #[tauri::command]
-fn start_cloud(state: State<AppState>, todo_id: i64) -> Result<(), String> {
-    let id = launch_cloud(&state, todo_id)?;
-    open_url(&launch::jump_url(&id, None))
+fn start_cloud(state: State<AppState>, todo_id: i64, options: Option<StartOptions>, desktop: bool) -> Result<String, String> {
+    let id = launch_cloud(&state, todo_id, &options.unwrap_or_default())?;
+    if desktop {
+        open_url(&launch::jump_url(&id, None))?;
+    }
+    Ok(id)
 }
 
 const RUNNER_CLOUD: &str = "cloud";
@@ -561,7 +570,8 @@ fn queue_loop(app: AppHandle) {
             let runner = todo.queue_runner.as_deref().unwrap_or(RUNNER_AUTO);
             let cloud = runner == RUNNER_CLOUD
                 || (runner == RUNNER_AUTO && !launch::github_repos(&repos_of_todo(&state, &todo)).is_empty());
-            let started = if cloud { launch_cloud(&state, todo.id).map(|_| ()) } else { launch_terminal(&state, todo.id, false) };
+            let opts = StartOptions::default();
+            let started = if cloud { launch_cloud(&state, todo.id, &opts).map(|_| ()) } else { launch_terminal(&state, todo.id, false, &opts) };
             if let Ok(db) = state.db.lock() {
                 let _ = match started {
                     Ok(()) => db.dequeue(todo.id),
@@ -748,8 +758,8 @@ fn mark_done(db: &Db, todo: &Todo) {
 /// Bytes read from the end of a transcript to find its latest gitBranch.
 const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
 
-/// Latest non-default branch a local session worked on, from its transcript.
-fn transcript_branch(session_id: &str) -> Option<String> {
+/// The end of a local session's transcript, `~/.claude/projects/*/<id>.jsonl`.
+fn transcript_tail(session_id: &str) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let projects = home().join(".claude/projects");
     let file = std::fs::read_dir(projects)
@@ -762,7 +772,210 @@ fn transcript_branch(session_id: &str) -> Option<String> {
     f.seek(SeekFrom::Start(len.saturating_sub(TRANSCRIPT_TAIL_BYTES))).ok()?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
-    launch::last_git_branch(&String::from_utf8_lossy(&buf))
+    Some(String::from_utf8_lossy(&buf).into())
+}
+
+/// Latest non-default branch a local session worked on, from its transcript.
+fn transcript_branch(session_id: &str) -> Option<String> {
+    launch::last_git_branch(&transcript_tail(session_id)?)
+}
+
+/// What a session is doing: its last message, context size and recent tool
+/// calls, from the transcript (local) or the events API (cloud).
+#[tauri::command]
+async fn session_detail(session_id: String) -> Result<cts_core::transcript::Detail, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let entries = if launch::is_cloud_session(&session_id) {
+            cts_core::cloud::recent_entries(&session_id)?
+        } else {
+            transcript_tail(&session_id).map(|t| cts_core::transcript::parse_jsonl(&t)).unwrap_or_default()
+        };
+        Ok(cts_core::transcript::detail(&entries))
+    })
+    .await
+    .map_err(err)?
+}
+
+#[tauri::command]
+async fn usage() -> Result<Vec<cts_core::usage::Limit>, String> {
+    tauri::async_runtime::spawn_blocking(cts_core::cloud::usage).await.map_err(err)?
+}
+
+const INSTALLED_PLUGINS: &str = ".claude/plugins/installed_plugins.json";
+const USER_SKILLS_DIR: &str = ".claude/skills";
+
+/// Skills a session in `cwd` can use (the user's, the project's, installed
+/// plugins' and the built-in commands), the ones past prompts used most first.
+#[tauri::command]
+fn skills(state: State<AppState>, cwd: Option<String>) -> Result<Vec<cts_core::skills::Skill>, String> {
+    use cts_core::skills;
+    let mut all = skills::read_dir(&home().join(USER_SKILLS_DIR), None);
+    if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
+        all.extend(skills::read_dir(&PathBuf::from(cwd).join(USER_SKILLS_DIR), None));
+    }
+    let plugins: serde_json::Value = std::fs::read(home().join(INSTALLED_PLUGINS))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default();
+    for (key, installs) in plugins["plugins"].as_object().into_iter().flatten() {
+        let name = key.split('@').next().unwrap_or(key);
+        if let Some(path) = installs[0]["installPath"].as_str() {
+            all.extend(skills::read_dir(&PathBuf::from(path).join("skills"), Some(name)));
+        }
+    }
+    all.extend(skills::builtin());
+    let prompts: Vec<String> = state.db.lock().map_err(err)?.list_todos(None).map_err(err)?.into_iter().filter_map(|t| t.prompt).collect();
+    Ok(skills::rank(all, &prompts))
+}
+
+/// Marks one notification read, or all of them with None.
+#[tauri::command]
+fn read_notifications(state: State<AppState>, id: Option<i64>) -> Result<(), String> {
+    let db = state.db.lock().map_err(err)?;
+    match id {
+        Some(id) => db.mark_notification_read(id),
+        None => db.mark_all_notifications_read(),
+    }
+    .map_err(err)
+}
+
+#[tauri::command]
+fn set_parent(state: State<AppState>, todo_id: i64, parent_id: Option<i64>) -> Result<Todo, String> {
+    state.db.lock().map_err(err)?.set_parent(todo_id, parent_id).map_err(err)
+}
+
+const GH_PR_LIMIT: &str = "50";
+const GH_PR_FIELDS: &str = "number,title,url,repository,author,updatedAt,isDraft";
+
+#[derive(Deserialize)]
+struct GhAuthor {
+    login: String,
+}
+
+#[derive(Deserialize)]
+struct GhPr {
+    number: i64,
+    title: String,
+    url: String,
+    repository: GhRepo,
+    author: GhAuthor,
+    #[serde(rename = "updatedAt")]
+    updated_at: String,
+    #[serde(rename = "isDraft")]
+    is_draft: bool,
+}
+
+#[derive(Serialize)]
+struct PrView {
+    number: i64,
+    title: String,
+    url: String,
+    repo: String,
+    author: String,
+    updated_at: String,
+    is_draft: bool,
+}
+
+#[derive(Serialize)]
+struct PrLists {
+    /// Open PRs asking the user for a review.
+    review: Vec<PrView>,
+    /// Open PRs the user opened.
+    mine: Vec<PrView>,
+}
+
+fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
+    let json = gh(&["search", "prs", filter, "@me", "--state", "open", "--limit", GH_PR_LIMIT, "--json", GH_PR_FIELDS])?;
+    let prs: Vec<GhPr> = serde_json::from_str(&json).map_err(|e| format!("gh output: {e}"))?;
+    Ok(prs
+        .into_iter()
+        .map(|p| PrView {
+            number: p.number,
+            title: p.title,
+            url: p.url,
+            repo: p.repository.name_with_owner,
+            author: p.author.login,
+            updated_at: p.updated_at,
+            is_draft: p.is_draft,
+        })
+        .collect())
+}
+
+#[tauri::command]
+async fn gh_prs() -> Result<PrLists, String> {
+    tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: search_prs("--review-requested")?, mine: search_prs("--author")? }))
+        .await
+        .map_err(err)?
+}
+
+const BROWSER_LABEL: &str = "browser";
+/// Tells the page which URL the browser pane shows after a navigation.
+const BROWSER_URL_EVENT: &str = "browser-url";
+
+fn browser_rect(x: f64, y: f64, width: f64, height: f64) -> tauri::Rect {
+    tauri::Rect { position: LogicalPosition::new(x, y).into(), size: LogicalSize::new(width, height).into() }
+}
+
+/// Shows `url` in the browser pane: a webview laid over the main one at the
+/// given rectangle (logical pixels), created on first use. GitHub refuses to
+/// be framed, so the pane cannot be an iframe.
+#[tauri::command]
+fn browser_open(app: AppHandle, url: String, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    if !is_web_url(&url) {
+        return Err(format!("開けない URL です: {url}"));
+    }
+    let parsed: tauri::Url = url.parse().map_err(err)?;
+    if let Some(view) = app.get_webview(BROWSER_LABEL) {
+        // Showing the pane again keeps the page the user moved on to.
+        if view.url().ok().as_ref() != Some(&parsed) {
+            view.navigate(parsed).map_err(err)?;
+        }
+        view.set_bounds(browser_rect(x, y, width, height)).map_err(err)?;
+        return view.show().map_err(err);
+    }
+    let window = app.get_window("main").ok_or("main window not found")?;
+    let handle = app.clone();
+    let builder = WebviewBuilder::new(BROWSER_LABEL, WebviewUrl::External(parsed))
+        .on_page_load(move |_, payload| {
+            let _ = handle.emit(BROWSER_URL_EVENT, payload.url().to_string());
+        })
+        // Sign-in pages (claude.ai, GitHub) open popups; let them.
+        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Allow);
+    window
+        .add_child(builder, LogicalPosition::new(x, y), LogicalSize::new(width, height))
+        .map(|_| ())
+        .map_err(err)
+}
+
+/// Follows the pane's placeholder when the layout changes.
+#[tauri::command]
+fn browser_bounds(app: AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+    match app.get_webview(BROWSER_LABEL) {
+        Some(view) => view.set_bounds(browser_rect(x, y, width, height)).map_err(err),
+        None => Ok(()),
+    }
+}
+
+/// Hides the pane; it keeps its page for the next open.
+#[tauri::command]
+fn browser_hide(app: AppHandle) -> Result<(), String> {
+    match app.get_webview(BROWSER_LABEL) {
+        Some(view) => view.hide().map_err(err),
+        None => Ok(()),
+    }
+}
+
+/// "back", "forward" or "reload" in the pane.
+#[tauri::command]
+fn browser_go(app: AppHandle, action: String) -> Result<(), String> {
+    let view = app.get_webview(BROWSER_LABEL).ok_or("ブラウザが開いていません")?;
+    match action.as_str() {
+        "back" => view.eval("history.back()"),
+        "forward" => view.eval("history.forward()"),
+        "reload" => view.reload(),
+        other => return Err(format!("unknown browser action {other}")),
+    }
+    .map_err(err)
 }
 
 /// A PR opened from the branch any of the todo's sessions works on, however
@@ -913,7 +1126,9 @@ fn issue_sync_loop(wake: std::sync::mpsc::Receiver<Option<i64>>) {
 }
 
 fn show_window(app: &AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+    // A window holding the browser pane's webview is no longer a "webview
+    // window" to Tauri, so it is looked up as a plain window.
+    if let Some(w) = app.get_window("main") {
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -940,10 +1155,15 @@ fn tray_menu(app: &AppHandle, sessions: &[Session]) -> tauri::Result<Menu<tauri:
     Menu::with_items(app, &refs)
 }
 
-/// Posts a notification for a session waiting for input and opens the session
-/// when the notification is clicked. The thread lives until the notification
-/// is clicked or removed from Notification Center.
-fn notify_session(session: Session, headline: &'static str) {
+/// Records a notification for the in-app list, posts it, and opens the
+/// session (marking it read) when it is clicked. The thread lives until the
+/// notification is clicked or removed from Notification Center.
+fn notify_session(db: &Db, session: Session, kind: NoticeKind) {
+    let headline = match kind {
+        NoticeKind::NeedsInput => "入力待ち",
+        NoticeKind::Finished => "作業が終わりました",
+    };
+    let id = db.add_notification(&session, kind).map_err(|e| eprintln!("{e}")).ok();
     std::thread::spawn(move || {
         let label = session.title.clone().unwrap_or_else(|| session.session_id.clone());
         let response = Notification::new()
@@ -953,6 +1173,9 @@ fn notify_session(session: Session, headline: &'static str) {
             .send();
         match response {
             Ok(NotificationResponse::Click) => {
+                if let (Some(id), Ok(db)) = (id, open_db()) {
+                    let _ = db.mark_notification_read(id).map_err(|e| eprintln!("{e}"));
+                }
                 if let Err(e) = jump_to_session(&session.session_id, false) {
                     eprintln!("{e}");
                 }
@@ -1041,7 +1264,7 @@ fn watch_loop(app: AppHandle) {
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
             if !first {
                 for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
-                    notify_session(s.clone(), "入力待ち");
+                    notify_session(&db, s.clone(), NoticeKind::NeedsInput);
                 }
             }
             // A linked session that stops running has finished its turn and waits for a reply.
@@ -1049,7 +1272,7 @@ fn watch_loop(app: AppHandle) {
                 for s in linked.iter().filter(|s| !archived.contains(&s.session_id)) {
                     let before = last_state.insert(s.session_id.clone(), s.state);
                     if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
-                        notify_session(s.clone(), "作業が終わりました");
+                        notify_session(&db, s.clone(), NoticeKind::Finished);
                         // A finished turn often just opened a PR: look now.
                         if let (Some(todo_id), Ok(tx)) = (s.todo_id, app.state::<AppState>().github_wake.lock()) {
                             let _ = tx.send(Some(todo_id));
@@ -1177,7 +1400,17 @@ fn main() {
             enqueue,
             dequeue,
             move_in_queue,
-            set_loop_enabled
+            set_loop_enabled,
+            set_parent,
+            read_notifications,
+            session_detail,
+            usage,
+            skills,
+            gh_prs,
+            browser_open,
+            browser_bounds,
+            browser_hide,
+            browser_go
         ])
         .run(tauri::generate_context!())
         .expect("run tauri app");
