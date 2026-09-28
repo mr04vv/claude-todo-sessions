@@ -919,16 +919,18 @@ fn show_window(app: &AppHandle) {
     }
 }
 
-fn tray_menu(app: &AppHandle, waiting: &[Session]) -> tauri::Result<Menu<tauri::Wry>> {
+/// Linked sessions waiting for input or idle, as the menu bar lists them.
+fn tray_menu(app: &AppHandle, sessions: &[Session]) -> tauri::Result<Menu<tauri::Wry>> {
     let open = MenuItem::with_id(app, MENU_OPEN, "Todo Sessions を開く", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, MENU_QUIT, "終了", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = vec![Box::new(open), Box::new(sep)];
-    if waiting.is_empty() {
-        items.push(Box::new(MenuItem::with_id(app, "none", "入力待ちのセッションはありません", false, None::<&str>)?));
+    if sessions.is_empty() {
+        items.push(Box::new(MenuItem::with_id(app, "none", "入力待ち・待機中のセッションはありません", false, None::<&str>)?));
     }
-    for s in waiting {
-        let label = format!("入力待ち: {}", s.title.as_deref().unwrap_or(&s.session_id));
+    for s in sessions {
+        let state = if s.state == SessionState::NeedsInput { "入力待ち" } else { "待機中" };
+        let label = format!("{state}: {}", s.title.as_deref().unwrap_or(&s.session_id));
         let id = format!("{MENU_SESSION_PREFIX}{}", s.session_id);
         items.push(Box::new(MenuItem::with_id(app, id, label, true, None::<&str>)?));
     }
@@ -1021,6 +1023,7 @@ fn watch_loop(app: AppHandle) {
         Err(e) => return eprintln!("watch loop stopped: {e}"),
     };
     let mut known: HashSet<String> = HashSet::new();
+    let mut tray_shown: Option<Vec<(String, SessionState)>> = None;
     let mut last_state: HashMap<String, SessionState> = HashMap::new();
     let mut first = true;
     let mut tick: u32 = 0;
@@ -1054,9 +1057,14 @@ fn watch_loop(app: AppHandle) {
                     }
                 }
             }
-            if first || now != known {
-                if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), tray_menu(&app, &waiting)) {
-                    let _ = tray.set_menu(Some(menu));
+            if let Ok(mut listed) = db.tray_sessions() {
+                listed.retain(|s| !archived.contains(&s.session_id));
+                let shown: Vec<(String, SessionState)> = listed.iter().map(|s| (s.session_id.clone(), s.state)).collect();
+                if tray_shown.as_ref() != Some(&shown) {
+                    if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), tray_menu(&app, &listed)) {
+                        let _ = tray.set_menu(Some(menu));
+                    }
+                    tray_shown = Some(shown);
                 }
             }
             known = now;
