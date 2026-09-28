@@ -18,6 +18,7 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 
 - `.cargo/config.toml` でリンカと CC を `/usr/bin/cc` に固定している（nix の gcc だと `-liconv` が見つからない）。
 - ビルドした `.app` は利用者が自分で `/Applications` に入れ替える。コマンドは `pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" && cp -R target/release/bundle/macos/"Todo Sessions.app" /Applications/ && open -a "Todo Sessions"`（`sleep 1` がないと起動時に -600 になる）。
+- アプリ（`app/`）の実装が終わったら、`cd app && pnpm tauri build` でビルドし、上の入れ替えコマンドを `cp -R` のパスを絶対パスにして `pbcopy` でクリップボードにコピーしておく。入れ替え（アプリの終了と再起動）は利用者が貼り付けて実行する。
 - `crates/cts` を変えたら `plugin/.claude-plugin/plugin.json` の version を上げる。上げないと `claude plugin update todo-sessions@claude-todo-sessions` で新しいバイナリがキャッシュに入らない。
 
 ## 全体像
