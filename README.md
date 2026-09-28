@@ -44,7 +44,7 @@ claude --plugin-dir ./plugin
 
 ## アプリ
 
-`app/` は Tauri + React のデスクトップアプリです。todo / doing / done の3列のカンバンと、未紐づけのセッションを並べる受信箱があります。
+`app/` は Tauri + React のデスクトップアプリです。
 
 ```sh
 cd app
@@ -56,15 +56,35 @@ pnpm tauri build    # target/release/bundle/macos/Todo Sessions.app を作成
 ビルドした `.app` は `/Applications` に置いて使います（ビルドし直したら入れ替えます）。
 
 ```sh
-pkill -f todo-sessions-app; rm -rf "/Applications/Todo Sessions.app" && ditto "target/release/bundle/macos/Todo Sessions.app" "/Applications/Todo Sessions.app" && open "/Applications/Todo Sessions.app"
+pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" && cp -R "target/release/bundle/macos/Todo Sessions.app" /Applications/ && open -a "Todo Sessions"
 ```
 
-- カードを列のあいだで動かすと status が変わり、受信箱のセッションをカードに落とすと紐づきます
-- カードをクリックすると詳細パネルが開きます。セッションを開いたり、新しく始めたりできます（Desktop / クラウド / ターミナル（herdr））
-- アプリは30秒ごとに cloud sync を実行します
-- ウインドウを閉じてもメニューバーに常駐します。メニューバーのアイコンから、入力待ちのセッションを開いたり、アプリを終了したりできます
-- todo に紐づいたセッションが入力待ちになると通知します。通知をクリックするとそのセッションが開きます
+### 画面
+
+- ボード：Todo / Doing / Review / Done の4列のカンバンと、未紐づけのセッションを並べる受信箱の列があります
+  - 「リポジトリ」表示ではリポジトリ（またはグループ）ごとに、「親タスク」表示では親 todo ごとにレーンが分かれます
+  - カードを列のあいだで動かすと status が変わり、受信箱のセッションをカードに落とすと紐づきます
+  - 各列の「＋ 新規」でその場で todo を追加できます。親タスクのレーンではサブタスクになります
+- リスト、バックログ（リポジトリ未設定の todo）、受信箱、キューの画面があります
+- 左のサイドバーのリポジトリをクリックすると、そのリポジトリだけに絞り込みます
+- カードをクリックするとサイドパネルが開きます。タイトル・メモ・リポジトリなどはその場で編集できます
+  - サブタスクの追加、リンク（URL）の添付（OGP のタイトルと画像を表示）、GitHub の issue / PR の紐づけもここで行います
+  - 「セッションを開始」で、Cloud（Desktop で開く）/ Local（Desktop）/ Local（ターミナル＝herdr）/ キューのどこで始めるかを選べます
+  - リポジトリのない todo（調査など）も Cloud で始められます
+  - 紐づいたセッションは Desktop か herdr で開けます。閉じたセッションは、herdr では `claude --resume` で再開します
 - 「issue を取り込む」で、自分に割り当てられた GitHub issue（`gh search issues --assignee @me`）を todo にします。作業フォルダは ghq の配置（`<ghq root>/github.com/<owner>/<repo>`）にあれば自動で入ります
+- 「ちょっと Claude」で、todo に紐づけずに herdr でホームフォルダの claude を開きます
+
+### 自動で行うこと
+
+- クラウドセッションを30秒ごとに同期します
+- GitHub は1分ごと（ウインドウを前に出したときと「今すぐ同期」でも）に同期します
+  - `claude/todo-<id>-` ブランチの PR、またはセッションの作業ブランチでセッション開始後に作られた PR を todo に紐づけます
+  - PR にレビュー依頼が入るか Approve されると Review、修正依頼で Doing、マージで Done にします。マージ時は、紐づいた issue が開いていれば close します
+  - issue が close されたら Done にします
+- サブタスクが全部 Done になると、親の todo も Done にします
+- 紐づいたセッションが入力待ちになったときや、作業が終わったときに通知します。通知をクリックするとそのセッションが開きます
+- ウインドウを閉じてもメニューバーに常駐します。メニューバーのアイコンから、入力待ちのセッションを開いたり、アプリを終了したりできます
 
 ## 使い方
 
