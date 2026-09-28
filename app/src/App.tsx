@@ -1806,13 +1806,21 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
   );
 }
 
+/// How a review session submits its review: after asking, or on its own.
+type ReviewSubmit = "ask" | "auto";
+const REVIEW_SUBMIT_KEY = "reviewSubmit";
+
+const REVIEW_SUBMIT_HOW = "指摘はインラインコメントと本文にまとめて提出してください（gh pr review、使えなければ GitHub のツール）。";
+
 /// First prompt of a review session. /review answers in English unless asked
-/// otherwise, and submitting the review stays the user's call.
-const reviewPrompt = (url: string) =>
+/// otherwise; `submit` says whether it asks before posting the review.
+const reviewPrompt = (url: string, submit: ReviewSubmit) =>
   [
     `/review ${url} レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`,
-    "レビューが終わったら、GitHub への提出方法を AskUserQuestion で私に聞いてください。ブロッカー（マージ前に直すべき問題）があれば Request changes を、なければ Comment か Approve を選択肢に出し、おすすめを先頭にしてください。",
-    "選ばれた方法で、指摘をインラインコメントと本文にまとめて提出してください（gh pr review、使えなければ GitHub のツール）。私が選ぶまでは提出しないでください。",
+    submit === "ask"
+      ? "レビューが終わったら、GitHub への提出方法を AskUserQuestion で私に聞いてください。ブロッカー（マージ前に直すべき問題）があれば Request changes を、なければ Comment か Approve を選択肢に出し、おすすめを先頭にしてください。私が選ぶまでは提出しないでください。"
+      : "レビューが終わったら、確認せずに GitHub に提出してください。ブロッカー（マージ前に直すべき問題）があれば Request changes、なければ Approve で、ブロッカーでない指摘はコメントとして添えてください。",
+    REVIEW_SUBMIT_HOW,
   ].join("\n\n");
 
 type PrFilter = "all" | "review" | "mine";
@@ -1833,6 +1841,11 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   const [filter, setFilter] = useState<PrFilter>("all");
   const [reviewRunner, setReviewRunnerState] = useState<Target>(() => load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal"] as const, "web"));
   const openInBrowser = useContext(BrowserContext);
+  const [reviewSubmit, setReviewSubmitState] = useState<ReviewSubmit>(() => load(REVIEW_SUBMIT_KEY, ["ask", "auto"] as const, "ask"));
+  const setReviewSubmit = (v: ReviewSubmit) => {
+    remember(REVIEW_SUBMIT_KEY, v);
+    setReviewSubmitState(v);
+  };
   const setReviewRunner = (t: Target) => {
     remember(REVIEW_RUNNER_KEY, t);
     setReviewRunnerState(t);
@@ -1848,7 +1861,7 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   const startReview = (p: Pr) =>
     run(async () => {
       const todo = todoOf(p) ?? (await makeTodo(p, `レビュー: ${p.title}`));
-      await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url) });
+      await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url, reviewSubmit) });
       if (reviewRunner === "desktop") await api.startDesktop(todo.id);
       else if (reviewRunner === "terminal") await api.startTerminal(todo.id);
       else {
@@ -1881,6 +1894,10 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
           <option value="cloud">/review は Cloud・Desktop</option>
           <option value="desktop">/review は Local・Desktop</option>
           <option value="terminal">/review は herdr</option>
+        </select>
+        <select className="select compact" value={reviewSubmit} aria-label="レビューの提出" title="レビューを GitHub に出す前に聞くか" onChange={(e) => setReviewSubmit(e.target.value as ReviewSubmit)}>
+          <option value="ask">提出前に確認する</option>
+          <option value="auto">自動で提出する</option>
         </select>
         <button className="ghost icon" aria-label="PR を取り直す" title="PR を取り直す" onClick={onRefresh}>
           <Icon name="sync" size={14} />
