@@ -353,6 +353,19 @@ fn is_web_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
 
+/// Dia, by bundle id so it opens wherever it is installed.
+const DIA_BUNDLE_ID: &str = "company.thebrowser.dia";
+
+/// Opens a page in Dia, with the user's own sign-ins there.
+#[tauri::command]
+fn open_in_dia(url: String) -> Result<(), String> {
+    if !is_web_url(&url) {
+        return Err(format!("開けない URL です: {url}"));
+    }
+    let status = cli("open").args(["-b", DIA_BUNDLE_ID, &url]).status().map_err(err)?;
+    status.success().then_some(()).ok_or_else(|| format!("Dia で開けませんでした（{status}）。Dia が入っているか確認してください"))
+}
+
 #[tauri::command]
 fn open_link(url: String) -> Result<(), String> {
     if !is_web_url(&url) {
@@ -1441,6 +1454,7 @@ fn main() {
             add_link,
             remove_link,
             open_link,
+            open_in_dia,
             link_session,
             unlink_session,
             open_session,

@@ -63,6 +63,10 @@ const DONE_RECENT_KEY = "doneRecent";
 const GROUP_KEY = "groupBy";
 const START_KEY = "startChoice";
 const REVIEW_RUNNER_KEY = "reviewRunner";
+const LINK_TARGET_KEY = "linkTarget";
+
+/// Where pages open: the app's browser pane, or Dia with its own sign-ins.
+type LinkTarget = "app" | "dia";
 
 type View = "todos" | "sessions" | "prs" | "notices";
 type Layout = "board" | "list";
@@ -1205,8 +1209,8 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
             if (isEnter(e)) navigate(e.currentTarget.value.trim());
           }}
         />
-        <button className="ghost icon" aria-label="いつものブラウザで開く" title="いつものブラウザで開く" onClick={() => api.openLink(active.url).catch(report)}>
-          <Icon name="open" size={14} />
+        <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
+          Dia で開く
         </button>
       </div>
       <div ref={slot} className="browser-slot">
@@ -2312,8 +2316,18 @@ export default function App() {
   const nextTab = useRef(1);
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1] ?? null;
   const browserUrl = activeTab?.url ?? null;
-  /// A page already open in a tab comes to the front; anything else gets a new tab.
+  const [linkTarget, setLinkTargetState] = useState<LinkTarget>(() => load(LINK_TARGET_KEY, ["app", "dia"] as const, "app"));
+  const setLinkTarget = (t: LinkTarget) => {
+    remember(LINK_TARGET_KEY, t);
+    setLinkTargetState(t);
+  };
+  /// In the pane, a page already open in a tab comes to the front and anything
+  /// else gets a new tab; with Dia chosen, pages go there instead.
   const openInBrowser = (url: string) => {
+    if (linkTarget === "dia") {
+      api.openInDia(url).catch(report);
+      return;
+    }
     const open = tabs.find((t) => t.url === url);
     if (open) return setActiveTabId(open.id);
     const id = `t${nextTab.current++}`;
@@ -2523,6 +2537,9 @@ export default function App() {
     { key: "sessions", label: "セッションを表示", run: () => setView("sessions") },
     { key: "prs", label: "PR を表示", run: () => setView("prs") },
     { key: "notices", label: "通知を表示", run: () => setView("notices") },
+    linkTarget === "app"
+      ? { key: "linkDia", label: "リンクを Dia で開くようにする", run: () => setLinkTarget("dia") }
+      : { key: "linkApp", label: "リンクをアプリ内のブラウザで開くようにする", run: () => setLinkTarget("app") },
   ];
 
   const covered = dialog !== null;
@@ -2596,6 +2613,17 @@ export default function App() {
             {repoLanes.length === 0 && <p className="muted hint">まだありません</p>}
           </div>
           <div className="sidebar-foot">
+            <div className="link-target">
+              <span className="muted">リンクを開く</span>
+              <div className="segmented" role="group" aria-label="リンクを開く場所">
+                <button className={linkTarget === "app" ? "on" : ""} aria-pressed={linkTarget === "app"} onClick={() => setLinkTarget("app")}>
+                  アプリ内
+                </button>
+                <button className={linkTarget === "dia" ? "on" : ""} aria-pressed={linkTarget === "dia"} onClick={() => setLinkTarget("dia")}>
+                  Dia
+                </button>
+              </div>
+            </div>
             <UsageBox limits={limits} error={usageError} />
             <div className="sync-line">
               <span className="dot state-running" />

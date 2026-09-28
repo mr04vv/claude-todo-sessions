@@ -501,6 +501,21 @@ a:hover {
   gap: 8px;
 }
 
+.link-target {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px 0 8px;
+  font-size: 11px;
+}
+
+.link-target .segmented button {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
 .usage {
   display: flex;
   flex-direction: column;

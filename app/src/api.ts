@@ -205,6 +205,7 @@ export const api = {
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openGithub: (url: string) => invoke<void>("open_github", { url }),
   openLink: (url: string) => invoke<void>("open_link", { url }),
+  openInDia: (url: string) => invoke<void>("open_in_dia", { url }),
   addLink: (todoId: number, url: string) => invoke<Link>("add_link", { todoId, url }),
   removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
