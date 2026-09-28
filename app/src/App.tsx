@@ -98,6 +98,7 @@ const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "Todo" },
   { status: "doing", label: "Doing" },
   { status: "review", label: "Review" },
+  { status: "pending", label: "Pending" },
   { status: "done", label: "Done" },
 ];
 
@@ -112,7 +113,7 @@ const STATE_LABEL: Record<SessionState, string> = {
 const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle", "ended"];
 
 /// Status order for the list: what is in progress first, done last.
-const STATUS_RANK: Record<Status, number> = { review: 0, doing: 1, todo: 2, done: 3 };
+const STATUS_RANK: Record<Status, number> = { review: 0, doing: 1, todo: 2, pending: 3, done: 4 };
 
 const PR_LABEL: Record<PrState, string> = {
   draft: "Draft",
@@ -326,6 +327,14 @@ function StatusIcon({ status }: { status: Status }) {
     );
   }
   const color = `var(--st-${status})`;
+  if (status === "pending") {
+    return (
+      <svg className="status-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8" fill="none" stroke={color} strokeWidth="2.2" strokeDasharray="3.2 2.6" />
+        <path d="M10 9v6M14 9v6" stroke={color} strokeWidth="2.2" strokeLinecap="round" />
+      </svg>
+    );
+  }
   const fill = { todo: null, doing: "M12 7a5 5 0 0 1 0 10z", review: "M12 7a5 5 0 1 1-5 5h5z" }[status];
   return (
     <svg className="status-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">

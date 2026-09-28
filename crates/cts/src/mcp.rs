@@ -12,7 +12,7 @@ The current session_id is given in the session context by the SessionStart hook.
 
 #[derive(Deserialize, JsonSchema)]
 struct ListArgs {
-    /// Filter by status: todo, doing, review or done.
+    /// Filter by status: todo, doing, review, pending or done.
     status: Option<String>,
 }
 
@@ -42,7 +42,7 @@ struct CreateArgs {
 struct UpdateArgs {
     id: i64,
     title: Option<String>,
-    /// todo, doing, review or done.
+    /// todo, doing, review, pending or done.
     status: Option<String>,
     memo: Option<String>,
     cwd: Option<String>,
@@ -75,7 +75,7 @@ struct TodoWithSessions {
 fn parse_status(s: Option<String>) -> Result<Option<Status>, String> {
     s.map(|s| {
         serde_json::from_value(serde_json::Value::String(s.clone()))
-            .map_err(|_| format!("invalid status {s:?}: expected todo, doing, review or done"))
+            .map_err(|_| format!("invalid status {s:?}: expected todo, doing, review, pending or done"))
     })
     .transpose()
 }

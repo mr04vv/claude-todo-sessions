@@ -63,7 +63,7 @@ pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" &&
 
 左のサイドバーから Todo・セッション・PR・通知の4つの画面を切り替えます。⌘K で操作（issue の取り込み、ちょっと Claude、今すぐ同期、画面の移動）と todo の検索、⌘N で todo の追加ができます。
 
-- Todo：ボード（Todo / Doing / Review / Done の4列）とリストを切り替えられます
+- Todo：ボード（Todo / Doing / Review / Pending / Done の5列）とリストを切り替えられます。Pending は外部の返事待ちなどで止めている todo です
   - 「リポジトリ」でまとめると、最初のリポジトリ（またはグループ）ごとにレーンが分かれます。リポジトリのない todo は「リポジトリなし」レーンに入ります
   - 「親タスク」でまとめると、親 todo ごとのレーンと、親のない todo の「親なし」レーンに分かれます。リストでは「親なし」の行から親を設定できます
   - カードを列のあいだで動かすと status が変わります。各列の「＋ 新規」でその場で todo を追加できます（親タスクのレーンではサブタスクになります）

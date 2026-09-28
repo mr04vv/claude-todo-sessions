@@ -586,3 +586,30 @@ fn notifications_work_on_databases_made_before_them() {
     db.add_notification(&s1, NoticeKind::Finished).unwrap();
     assert_eq!(db.notifications().unwrap()[0].title, "s1");
 }
+
+#[test]
+fn todos_can_be_pending() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("wait for review")).unwrap();
+    let t = db.update_todo(t.id, TodoPatch { status: Some(Status::Pending), ..Default::default() }).unwrap();
+    assert_eq!(t.status, Status::Pending);
+    assert_eq!(db.list_todos(Some(Status::Pending)).unwrap().len(), 1);
+}
+
+#[test]
+fn pending_works_on_databases_made_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'review', 'done')),
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL);
+         INSERT INTO todos (title, status, updated_at) VALUES ('keep me', 'review', 5);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let t = db.update_todo(1, TodoPatch { status: Some(Status::Pending), ..Default::default() }).unwrap();
+    assert_eq!((t.title.as_str(), t.status), ("keep me", Status::Pending));
+}

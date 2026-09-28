@@ -34,6 +34,7 @@
   --st-todo: #8b8e96;
   --st-doing: #e5b94a;
   --st-review: #b69cff;
+  --st-pending: #8aa4c8;
   --st-done: #45d483;
   --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
   --radius: 8px;
@@ -82,6 +83,7 @@
     --st-todo: #8a8d95;
     --st-doing: #c9971f;
     --st-review: #7c5cd6;
+    --st-pending: #5f7ea8;
     --st-done: #22a560;
     --shadow: 0 12px 32px rgba(20, 22, 30, 0.14);
     color-scheme: light;
@@ -771,7 +773,7 @@ button.gh:hover:not(:disabled) {
 .col-heads,
 .lane-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 

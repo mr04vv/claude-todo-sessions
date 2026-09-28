@@ -53,6 +53,8 @@ pub enum Status {
     Doing,
     /// A PR is up and waiting on review.
     Review,
+    /// On hold, waiting on something outside the work.
+    Pending,
     Done,
 }
 
@@ -285,7 +287,7 @@ const TODOS_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS {name} (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'review', 'done')),
+    status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'review', 'pending', 'done')),
     issue_url TEXT,
     cwd TEXT,
     memo TEXT,
@@ -348,6 +350,7 @@ impl Status {
             Status::Todo => "todo",
             Status::Doing => "doing",
             Status::Review => "review",
+            Status::Pending => "pending",
             Status::Done => "done",
         }
     }
@@ -355,6 +358,7 @@ impl Status {
         match s {
             "doing" => Status::Doing,
             "review" => Status::Review,
+            "pending" => Status::Pending,
             "done" => Status::Done,
             _ => Status::Todo,
         }
@@ -455,10 +459,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     // Sessions recorded before start times were kept: their last state change is the best guess.
     conn.execute("UPDATE sessions SET started_at = state_at WHERE started_at IS NULL", [])?;
-    // The status CHECK predates 'review'; SQLite cannot alter a CHECK, so the
-    // table is rebuilt (which also gives migrated integer columns their type).
+    // The status CHECK predates 'review' or 'pending'; SQLite cannot alter a CHECK,
+    // so the table is rebuilt (which also gives migrated integer columns their type).
     let todos_sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE name = 'todos'", [], |r| r.get(0))?;
-    if !todos_sql.contains("'review'") {
+    if !todos_sql.contains("'pending'") {
         let cols = TODO_TABLE_COLS;
         conn.execute_batch(&format!(
             "PRAGMA foreign_keys = OFF;
