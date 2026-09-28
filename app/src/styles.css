@@ -1664,6 +1664,50 @@ input.panel-title:focus-visible {
   flex-direction: column;
 }
 
+.browser-tabs {
+  display: flex;
+  gap: 2px;
+  min-height: 36px;
+  padding: 4px 8px 0;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+
+.browser-tab {
+  display: inline-flex;
+  align-items: center;
+  max-width: 200px;
+  min-width: 90px;
+  border-radius: 6px 6px 0 0;
+  color: var(--text-2);
+}
+
+.browser-tab.on {
+  background: var(--card-hover);
+  color: var(--text);
+}
+
+.browser-tab-main {
+  flex-grow: 1;
+  min-width: 0;
+  height: 30px;
+  padding: 0 4px 0 10px;
+  background: none;
+  border: 0;
+  color: inherit;
+}
+
+.browser-tab-main:hover:not(:disabled) {
+  background: none;
+}
+
+.browser-tab-close {
+  width: 20px !important;
+  height: 20px !important;
+  margin-right: 4px;
+}
+
 .browser-bar {
   display: flex;
   align-items: center;

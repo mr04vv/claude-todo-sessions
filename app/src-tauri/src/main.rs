@@ -908,25 +908,64 @@ async fn gh_prs() -> Result<PrLists, String> {
         .map_err(err)?
 }
 
-const BROWSER_LABEL: &str = "browser";
-/// Tells the page which URL the browser pane shows after a navigation.
+/// The browser pane's tabs are child webviews labelled with this prefix and the tab id.
+const BROWSER_PREFIX: &str = "browser-";
+/// Tells the page what a tab shows after a navigation: `{tab, url}`.
 const BROWSER_URL_EVENT: &str = "browser-url";
+/// `{tab, title}` when a tab's page title changes.
+const BROWSER_TITLE_EVENT: &str = "browser-title";
+/// `{url}` for a link a page opens in a new window, which becomes a new tab.
+const BROWSER_NEW_TAB_EVENT: &str = "browser-new-tab";
+
+#[derive(Clone, Serialize)]
+struct TabUrl {
+    tab: String,
+    url: String,
+}
+
+#[derive(Clone, Serialize)]
+struct TabTitle {
+    tab: String,
+    title: String,
+}
+
+#[derive(Clone, Serialize)]
+struct NewTab {
+    url: String,
+}
 
 fn browser_rect(x: f64, y: f64, width: f64, height: f64) -> tauri::Rect {
     tauri::Rect { position: LogicalPosition::new(x, y).into(), size: LogicalSize::new(width, height).into() }
 }
 
-/// Shows `url` in the browser pane: a webview laid over the main one at the
-/// given rectangle (logical pixels), created on first use. GitHub refuses to
-/// be framed, so the pane cannot be an iframe.
+/// Webview label of a tab; tab ids come from the page, so only plain ones pass.
+fn tab_label(tab: &str) -> Result<String, String> {
+    if tab.is_empty() || !tab.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err(format!("bad tab id {tab:?}"));
+    }
+    Ok(format!("{BROWSER_PREFIX}{tab}"))
+}
+
+fn browser_tabs(app: &AppHandle) -> Vec<tauri::Webview> {
+    app.webviews().into_iter().filter(|(label, _)| label.starts_with(BROWSER_PREFIX)).map(|(_, v)| v).collect()
+}
+
+/// Shows tab `tab` with `url` in the browser pane: a webview laid over the
+/// main one at the given rectangle (logical pixels), created on first use,
+/// with the other tabs hidden behind it. GitHub refuses to be framed, so the
+/// pane cannot be an iframe.
 #[tauri::command]
-fn browser_open(app: AppHandle, url: String, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
     if !is_web_url(&url) {
         return Err(format!("開けない URL です: {url}"));
     }
+    let label = tab_label(&tab)?;
     let parsed: tauri::Url = url.parse().map_err(err)?;
-    if let Some(view) = app.get_webview(BROWSER_LABEL) {
-        // Showing the pane again keeps the page the user moved on to.
+    for other in browser_tabs(&app).iter().filter(|v| v.label() != label) {
+        other.hide().map_err(err)?;
+    }
+    if let Some(view) = app.get_webview(&label) {
+        // Showing the tab again keeps the page the user moved on to.
         if view.url().ok().as_ref() != Some(&parsed) {
             view.navigate(parsed).map_err(err)?;
         }
@@ -934,13 +973,24 @@ fn browser_open(app: AppHandle, url: String, x: f64, y: f64, width: f64, height:
         return view.show().map_err(err);
     }
     let window = app.get_window("main").ok_or("main window not found")?;
-    let handle = app.clone();
-    let builder = WebviewBuilder::new(BROWSER_LABEL, WebviewUrl::External(parsed))
+    let (on_load, on_title, on_new) = (app.clone(), app.clone(), app.clone());
+    let (load_tab, title_tab) = (tab.clone(), tab);
+    let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
         .on_page_load(move |_, payload| {
-            let _ = handle.emit(BROWSER_URL_EVENT, payload.url().to_string());
+            let _ = on_load.emit(BROWSER_URL_EVENT, TabUrl { tab: load_tab.clone(), url: payload.url().to_string() });
         })
-        // Sign-in pages (claude.ai, GitHub) open popups; let them.
-        .on_new_window(|_, _| tauri::webview::NewWindowResponse::Allow);
+        .on_document_title_changed(move |_, title| {
+            let _ = on_title.emit(BROWSER_TITLE_EVENT, TabTitle { tab: title_tab.clone(), title });
+        })
+        // A sized window is a popup (sign-in pages rely on those); a plain
+        // "open in new window" link becomes a tab instead.
+        .on_new_window(move |url, features| {
+            if features.size().is_some() {
+                return tauri::webview::NewWindowResponse::Allow;
+            }
+            let _ = on_new.emit(BROWSER_NEW_TAB_EVENT, NewTab { url: url.to_string() });
+            tauri::webview::NewWindowResponse::Deny
+        });
     window
         .add_child(builder, LogicalPosition::new(x, y), LogicalSize::new(width, height))
         .map(|_| ())
@@ -950,25 +1000,33 @@ fn browser_open(app: AppHandle, url: String, x: f64, y: f64, width: f64, height:
 /// Follows the pane's placeholder when the layout changes.
 #[tauri::command]
 fn browser_bounds(app: AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
-    match app.get_webview(BROWSER_LABEL) {
-        Some(view) => view.set_bounds(browser_rect(x, y, width, height)).map_err(err),
-        None => Ok(()),
+    for view in browser_tabs(&app) {
+        view.set_bounds(browser_rect(x, y, width, height)).map_err(err)?;
     }
+    Ok(())
 }
 
-/// Hides the pane; it keeps its page for the next open.
+/// Hides every tab; they keep their pages for the next open.
 #[tauri::command]
 fn browser_hide(app: AppHandle) -> Result<(), String> {
-    match app.get_webview(BROWSER_LABEL) {
-        Some(view) => view.hide().map_err(err),
+    for view in browser_tabs(&app) {
+        view.hide().map_err(err)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
+    match app.get_webview(&tab_label(&tab)?) {
+        Some(view) => view.close().map_err(err),
         None => Ok(()),
     }
 }
 
-/// "back", "forward" or "reload" in the pane.
+/// "back", "forward" or "reload" in a tab.
 #[tauri::command]
-fn browser_go(app: AppHandle, action: String) -> Result<(), String> {
-    let view = app.get_webview(BROWSER_LABEL).ok_or("ブラウザが開いていません")?;
+fn browser_go(app: AppHandle, tab: String, action: String) -> Result<(), String> {
+    let view = app.get_webview(&tab_label(&tab)?).ok_or("このタブは開いていません")?;
     match action.as_str() {
         "back" => view.eval("history.back()"),
         "forward" => view.eval("history.forward()"),
@@ -1410,6 +1468,7 @@ fn main() {
             browser_open,
             browser_bounds,
             browser_hide,
+            browser_close,
             browser_go
         ])
         .run(tauri::generate_context!())

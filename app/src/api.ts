@@ -219,14 +219,20 @@ export const api = {
   usage: () => invoke<Limit[]>("usage"),
   skills: (cwd: string | null) => invoke<Skill[]>("skills", { cwd }),
   ghPrs: () => invoke<PrLists>("gh_prs"),
-  browserOpen: (url: string, r: Rect) => invoke<void>("browser_open", { url, ...r }),
+  /** Shows tab `tab` (created on first use) at `url` and hides the other tabs. */
+  browserOpen: (tab: string, url: string, r: Rect) => invoke<void>("browser_open", { tab, url, ...r }),
   browserBounds: (r: Rect) => invoke<void>("browser_bounds", { ...r }),
   browserHide: () => invoke<void>("browser_hide"),
-  browserGo: (action: "back" | "forward" | "reload") => invoke<void>("browser_go", { action }),
+  browserClose: (tab: string) => invoke<void>("browser_close", { tab }),
+  browserGo: (tab: string, action: "back" | "forward" | "reload") => invoke<void>("browser_go", { tab, action }),
 };
 
-/** Event the browser pane sends with the URL it navigated to. */
+/** `{tab, url}` after a tab navigates. */
 export const BROWSER_URL_EVENT = "browser-url";
+/** `{tab, title}` when a tab's page title changes. */
+export const BROWSER_TITLE_EVENT = "browser-title";
+/** `{url}` for a link a page opens in a new window; it becomes a new tab. */
+export const BROWSER_NEW_TAB_EVENT = "browser-new-tab";
 
 export const isCloud = (s: Session) => s.session_id.startsWith("cse_");
 

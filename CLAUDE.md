@@ -32,7 +32,7 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
   - `watch_loop`: トレイ（入力待ち・待機中）、通知（`notifications` に記録してアプリ内で一覧）、`claude agents --json` と herdr からのセッション発見（herdr の状態を優先）
   - `issue_sync_loop`: PR の発見と issue / PR 状態の同期
   - `queue_loop`: キューに入った todo の自動起動
-  - アプリ内ブラウザは `tauri` の `unstable` 機能で、main ウインドウに子 WebView（label `browser`）を重ねる。GitHub は iframe に埋め込めないため。子 WebView を足すと main は「webview window」でなくなり `get_webview_window("main")` が None を返すので、`get_window` を使う。
+  - アプリ内ブラウザは `tauri` の `unstable` 機能で、main ウインドウに子 WebView を重ねる。タブごとに1つ（label `browser-<tab id>`）で、表示中以外は hide。サイズ指定つきの新規ウインドウ（ログインのポップアップ）はそのまま開かせ、それ以外はタブにする。GitHub は iframe に埋め込めないため。子 WebView を足すと main は「webview window」でなくなり `get_webview_window("main")` が None を返すので、`get_window` を使う。
 - `app/src`: React 19。UI はほぼ `App.tsx` に集約（画面は Todo・セッション・PR・通知）、`api.ts` が Tauri コマンドと型の写し。
 - `plugin/`: hooks・`.mcp.json`・skill。`.claude-plugin/marketplace.json` で手元から入れる。
 

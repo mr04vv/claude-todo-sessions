@@ -16,6 +16,8 @@ import {
 import {
   ago,
   api,
+  BROWSER_NEW_TAB_EVENT,
+  BROWSER_TITLE_EVENT,
   BROWSER_URL_EVENT,
   cloudWebUrl,
   EFFORTS,
@@ -1128,39 +1130,36 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
   );
 }
 
-/// A page from the web in a webview laid over this one, placed on a
-/// placeholder that follows the layout. `covered` hides it while a dialog is
-/// up, since a native webview draws above everything in the page.
-function BrowserPane({ url, covered, report, onClose }: {
+/// A page in the browser pane.
+interface BrowserTab {
+  id: string;
   url: string;
+  title: string | null;
+}
+
+/// The browser pane: tabs of web pages, each a webview laid over this one on
+/// a placeholder that follows the layout. `covered` hides them while a dialog
+/// is up, since a native webview draws above everything in the page.
+function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
+  tabs: BrowserTab[];
+  active: BrowserTab;
   covered: boolean;
   report: (e: unknown) => void;
-  onClose: () => void;
+  onSelect: (id: string) => void;
+  onClose: (id: string) => void;
 }) {
   const slot = useRef<HTMLDivElement>(null);
-  const [shown, setShown] = useState(url);
-  useEffect(() => setShown(url), [url]);
-  useEffect(() => {
-    const off = listen<string>(BROWSER_URL_EVENT, (e) => setShown(e.payload));
-    return () => {
-      off.then((f) => f());
-    };
-  }, []);
   const rect = () => {
     const r = slot.current!.getBoundingClientRect();
     return { x: r.left, y: r.top, width: r.width, height: r.height };
   };
-  const navigate = (to: string) => api.browserOpen(to, rect()).catch(report);
-  const opened = useRef<string | null>(null);
+  const navigate = (to: string) => api.browserOpen(active.id, to, rect()).catch(report);
+  // Switching tabs or coming back from under a dialog shows the page the tab
+  // is on; the backend leaves a tab alone when it already shows that URL.
   useEffect(() => {
-    if (covered) {
-      api.browserHide().catch(report);
-      return;
-    }
-    // Back from under a dialog, the pane keeps the page the user moved on to.
-    navigate(opened.current === url ? shown : url);
-    opened.current = url;
-  }, [url, covered]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (covered) api.browserHide().catch(report);
+    else navigate(active.url);
+  }, [active.id, covered]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (covered || !slot.current) return;
     const follow = () => api.browserBounds(rect()).catch(() => {});
@@ -1175,30 +1174,39 @@ function BrowserPane({ url, covered, report, onClose }: {
   useEffect(() => () => void api.browserHide().catch(() => {}), []);
   return (
     <section className="browser" aria-label="ブラウザ">
+      <div className="browser-tabs" role="tablist">
+        {tabs.map((t) => (
+          <span key={t.id} className={`browser-tab${t.id === active.id ? " on" : ""}`}>
+            <button role="tab" aria-selected={t.id === active.id} className="browser-tab-main" title={t.url} onClick={() => onSelect(t.id)}>
+              <span className="ellipsis">{t.title || hostOf(t.url)}</span>
+            </button>
+            <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を閉じる`} onClick={() => onClose(t.id)}>
+              <Icon name="close" size={11} />
+            </button>
+          </span>
+        ))}
+      </div>
       <div className="browser-bar">
-        <button className="ghost icon" aria-label="戻る" onClick={() => api.browserGo("back").catch(report)}>
+        <button className="ghost icon" aria-label="戻る" onClick={() => api.browserGo(active.id, "back").catch(report)}>
           <Icon name="back" size={14} />
         </button>
-        <button className="ghost icon" aria-label="進む" onClick={() => api.browserGo("forward").catch(report)}>
+        <button className="ghost icon" aria-label="進む" onClick={() => api.browserGo(active.id, "forward").catch(report)}>
           <Icon name="forward" size={14} />
         </button>
-        <button className="ghost icon" aria-label="再読み込み" onClick={() => api.browserGo("reload").catch(report)}>
+        <button className="ghost icon" aria-label="再読み込み" onClick={() => api.browserGo(active.id, "reload").catch(report)}>
           <Icon name="reload" size={14} />
         </button>
         <input
-          key={shown}
+          key={`${active.id}:${active.url}`}
           className="url mono"
-          defaultValue={shown}
+          defaultValue={active.url}
           aria-label="URL"
           onKeyDown={(e) => {
             if (isEnter(e)) navigate(e.currentTarget.value.trim());
           }}
         />
-        <button className="ghost icon" aria-label="いつものブラウザで開く" title="いつものブラウザで開く" onClick={() => api.openLink(shown).catch(report)}>
+        <button className="ghost icon" aria-label="いつものブラウザで開く" title="いつものブラウザで開く" onClick={() => api.openLink(active.url).catch(report)}>
           <Icon name="open" size={14} />
-        </button>
-        <button className="ghost icon" aria-label="ブラウザを閉じる" onClick={onClose}>
-          <Icon name="close" size={14} />
         </button>
       </div>
       <div ref={slot} className="browser-slot">
@@ -2298,8 +2306,39 @@ type DialogKind = "add" | "import" | "quick" | "palette" | null;
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
-  // The page in the browser pane; it stays across screens until closed.
-  const [browserUrl, setBrowserUrl] = useState<string | null>(null);
+  // Pages in the browser pane; it stays across screens until the last tab closes.
+  const [tabs, setTabs] = useState<BrowserTab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const nextTab = useRef(1);
+  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1] ?? null;
+  const browserUrl = activeTab?.url ?? null;
+  /// A page already open in a tab comes to the front; anything else gets a new tab.
+  const openInBrowser = (url: string) => {
+    const open = tabs.find((t) => t.url === url);
+    if (open) return setActiveTabId(open.id);
+    const id = `t${nextTab.current++}`;
+    setTabs((prev) => [...prev, { id, url, title: null }]);
+    setActiveTabId(id);
+  };
+  const closeTab = (id: string) => {
+    api.browserClose(id).catch(report);
+    const i = tabs.findIndex((t) => t.id === id);
+    const rest = tabs.filter((t) => t.id !== id);
+    setTabs(rest);
+    if (id === activeTab?.id) setActiveTabId(rest[Math.min(i, rest.length - 1)]?.id ?? null);
+  };
+  // Pages report where they went and what they are called; links they open in
+  // a new window arrive as new tabs.
+  const openRef = useRef(openInBrowser);
+  openRef.current = openInBrowser;
+  useEffect(() => {
+    const offs = [
+      listen<{ tab: string; url: string }>(BROWSER_URL_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url } : t)))),
+      listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
+      listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
+    ];
+    return () => offs.forEach((off) => off.then((f) => f()));
+  }, []);
   const [dragging, setDragging] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
@@ -2512,7 +2551,7 @@ export default function App() {
   const panel = view === "todos" && selectedTodo ? "todo" : view === "sessions" && selectedSession ? "session" : null;
 
   return (
-    <BrowserContext.Provider value={setBrowserUrl}>
+    <BrowserContext.Provider value={openInBrowser}>
       <div className={`app${browserUrl ? " with-browser" : ""}`}>
         <aside className="sidebar">
           <div className="brand">
@@ -2729,9 +2768,9 @@ export default function App() {
         {panel === "session" && selectedSession && (
           <SessionPanel item={selectedSession} todos={allTodos} run={run} report={report} onClose={() => setSelection(null)} onOpenTodo={goTodo} />
         )}
-        {browserUrl && (
+        {activeTab && (
           <aside className="browser-dock">
-            <BrowserPane url={browserUrl} covered={covered} report={report} onClose={() => setBrowserUrl(null)} />
+            <BrowserDock tabs={tabs} active={activeTab} covered={covered} report={report} onSelect={setActiveTabId} onClose={closeTab} />
           </aside>
         )}
 
