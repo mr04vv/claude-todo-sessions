@@ -89,10 +89,10 @@ const TARGETS: { key: Target; label: string }[] = [
 ];
 const isCloudTarget = (t: Target) => t === "web" || t === "cloud";
 
-/// Shows a cloud session's claude.ai page in the browser pane, in its todo's
-/// panel (or the session's when it has no todo).
-type OpenWeb = (sessionId: string, todoId: number | null) => void;
-const OpenWebContext = createContext<OpenWeb | null>(null);
+/// Opens a page in the browser pane docked on the right. It stays open across
+/// screens until closed, so opening a page never leaves the current one.
+type OpenInBrowser = (url: string) => void;
+const BrowserContext = createContext<OpenInBrowser | null>(null);
 
 const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "Todo" },
@@ -357,8 +357,9 @@ function openGithub(url: string, report: (e: unknown) => void) {
   api.openGithub(url).catch(report);
 }
 
-/// Issue or PR chip; the PR wins when there is one. Opens it on GitHub.
+/// Issue or PR chip; the PR wins when there is one. Opens it in the browser pane.
 function GhChip({ todo, report }: { todo: Todo; report: (e: unknown) => void }) {
+  const openInBrowser = useContext(BrowserContext);
   const [url, label, cls] = todo.pr_url
     ? [todo.pr_url, todo.pr_state ? PR_LABEL[todo.pr_state] : "PR", `gh-pr-${todo.pr_state ?? "open"}`]
     : todo.issue_url
@@ -372,10 +373,11 @@ function GhChip({ todo, report }: { todo: Todo; report: (e: unknown) => void }) 
       onPointerDown={stop}
       onClick={(e) => {
         e.stopPropagation();
-        openGithub(url, report);
+        if (openInBrowser) openInBrowser(url);
+        else openGithub(url, report);
       }}
     >
-      {label} <Icon name="open" size={10} />
+      {label}
     </button>
   );
 }
@@ -400,11 +402,11 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
     window.addEventListener("mousedown", onDown);
     return () => window.removeEventListener("mousedown", onDown);
   }, [open]);
-  const openWeb = useContext(OpenWebContext);
+  const openInBrowser = useContext(BrowserContext);
   const cloud = isCloud(session);
   const go = (target?: "desktop" | "herdr" | "web") => {
     setOpen(false);
-    if (target === "web" && openWeb) openWeb(session.session_id, session.todo_id);
+    if (target === "web" && openInBrowser) openInBrowser(cloudWebUrl(session.session_id));
     else api.openSession(session.session_id, target === "web" ? "desktop" : target).catch(report);
   };
   return (
@@ -417,7 +419,7 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
       </button>
       {open && (
         <span className="menu" role="menu">
-          {cloud && openWeb && (
+          {cloud && openInBrowser && (
             <button role="menuitem" onClick={() => go("web")}>
               Web で開く（アプリ内）
             </button>
@@ -995,7 +997,7 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
   const cloudOk = !todo.is_orchestrator;
   const [choice, setChoiceState] = useState<StartChoice>(() => loadJson(START_KEY, DEFAULT_START));
   const target = !cloudOk && isCloudTarget(choice.target) ? "terminal" : choice.target;
-  const openWeb = useContext(OpenWebContext);
+  const openInBrowser = useContext(BrowserContext);
   const setChoice = (c: Partial<StartChoice>) => {
     const next = { ...choice, ...c };
     remember(START_KEY, JSON.stringify(next));
@@ -1022,7 +1024,7 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
       if (prompt !== (todo.prompt ?? "")) await api.updateTodo(todo.id, { prompt });
       if (isCloudTarget(target)) {
         const id = await api.startCloud(todo.id, options, target === "cloud");
-        if (target === "web") openWeb?.(id, todo.id);
+        if (target === "web") openInBrowser?.(cloudWebUrl(id));
       } else if (target === "desktop") await api.startDesktop(todo.id);
       else if (target === "terminal") await api.startTerminal(todo.id, options);
       else await api.enqueue(todo.id, choice.runner);
@@ -1120,12 +1122,11 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
 /// A page from the web in a webview laid over this one, placed on a
 /// placeholder that follows the layout. `covered` hides it while a dialog is
 /// up, since a native webview draws above everything in the page.
-function BrowserPane({ url, covered, report, onClose, actions }: {
+function BrowserPane({ url, covered, report, onClose }: {
   url: string;
   covered: boolean;
   report: (e: unknown) => void;
   onClose: () => void;
-  actions?: React.ReactNode;
 }) {
   const slot = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(url);
@@ -1191,7 +1192,6 @@ function BrowserPane({ url, covered, report, onClose, actions }: {
           <Icon name="close" size={14} />
         </button>
       </div>
-      {actions && <div className="browser-actions">{actions}</div>}
       <div ref={slot} className="browser-slot">
         {covered && <span className="muted">ダイアログを閉じると表示に戻ります</span>}
       </div>
@@ -1199,47 +1199,36 @@ function BrowserPane({ url, covered, report, onClose, actions }: {
   );
 }
 
-type PanelTab = "overview" | "issue" | "pr";
-
-function TodoPanel({ todo, allTodos, local, groups, skills, covered, web, onWeb, run, report, setStatus, onOpenTodo, onClose }: {
+function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStatus, onOpenTodo, onClose }: {
   todo: Todo;
-  /// A cloud session's claude.ai page shown in the panel, if any.
-  web: string | null;
-  onWeb: (url: string | null) => void;
   allTodos: Todo[];
   local: LocalRepo[];
   groups: string[];
   skills: Skill[];
-  covered: boolean;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   setStatus: (todo: Todo, status: Status) => void;
   onOpenTodo: (id: number) => void;
   onClose: () => void;
 }) {
+  const openInBrowser = useContext(BrowserContext);
+  const browse = (url: string) => (openInBrowser ? openInBrowser(url) : openGithub(url, report));
   // Every field saves as soon as it is left.
   const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
   const children = allTodos.filter((c) => c.parent_id === todo.id);
   const parent = todo.parent_id ? allTodos.find((t) => t.id === todo.parent_id) : undefined;
-  const [tab, setTab] = useState<PanelTab>("overview");
   const [menu, setMenu] = useState(false);
   // window.confirm never returns true inside the Tauri webview, so confirm in place.
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   useEffect(() => {
     setConfirmingDelete(false);
     setMenu(false);
-    setTab("overview");
   }, [todo.id]);
-  const browserUrl = web ?? (tab === "issue" ? todo.issue_url : tab === "pr" ? todo.pr_url : null);
-  const pickTab = (t: PanelTab) => {
-    onWeb(null);
-    setTab(t);
-  };
   const gh = githubTarget(todo);
   const addChild = (title: string) =>
     run(() => api.createTodo({ title, parent_id: todo.id, repos: todo.repos.length === 1 && !todo.repos_derived ? todo.repos : [], cwd: todo.repos.length === 1 ? (todo.cwd ?? undefined) : undefined }));
   return (
-    <aside className={`panel${browserUrl ? " wide" : ""}`} aria-label={`#${todo.id} ${todo.title}`}>
+    <aside className="panel" aria-label={`#${todo.id} ${todo.title}`}>
       <header className="panel-head">
         {parent && (
           <>
@@ -1297,185 +1286,159 @@ function TodoPanel({ todo, allTodos, local, groups, skills, covered, web, onWeb,
         </div>
       )}
       <InlineInput className="panel-title" value={todo.title} label="タイトル" placeholder="タイトル" required onSave={(title) => update({ title: title.trim() })} />
-      {(todo.issue_url || todo.pr_url || web) && (
-        <div className="tabs" role="tablist">
-          <button role="tab" aria-selected={!web && tab === "overview"} className={!web && tab === "overview" ? "on" : ""} onClick={() => pickTab("overview")}>
-            概要
-          </button>
-          {todo.issue_url && (
-            <button role="tab" aria-selected={!web && tab === "issue"} className={!web && tab === "issue" ? "on" : ""} onClick={() => pickTab("issue")}>
-              {issueRef(todo.issue_url)?.split("/").pop() ?? "Issue"}
-            </button>
-          )}
-          {todo.pr_url && (
-            <button role="tab" aria-selected={!web && tab === "pr"} className={!web && tab === "pr" ? "on" : ""} onClick={() => pickTab("pr")}>
-              PR {todo.pr_state ? `· ${PR_LABEL[todo.pr_state]}` : ""}
-            </button>
-          )}
-          {web && (
-            <button role="tab" aria-selected className="on">
-              セッション（Web）
-            </button>
-          )}
-        </div>
-      )}
-      {browserUrl ? (
-        <BrowserPane url={browserUrl} covered={covered} report={report} onClose={() => pickTab("overview")} />
-      ) : (
-        <div className="panel-body">
-          <dl className="props">
-            <dt>ステータス</dt>
-            <dd>
-              <StatusSelect todo={todo} setStatus={setStatus} />
-            </dd>
-            <dt>場所</dt>
-            <dd>
-              <RepoChips todo={todo} local={local} groups={groups} update={update} />
-            </dd>
-            <dt>親</dt>
-            <dd>
-              <ParentPicker todo={todo} allTodos={allTodos} run={run} />
-            </dd>
-            <dt>Issue</dt>
-            <dd className="gh-row">
-              {todo.issue_url ? (
-                <>
-                  <button className="link-button mono" onClick={() => openGithub(todo.issue_url!, report)} title={todo.issue_url}>
-                    {issueRef(todo.issue_url) ?? todo.issue_url}
-                  </button>
-                  {todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>{todo.issue_state}</span>}
-                  {todo.issue_state === "open" && (
-                    <button className="ghost small" onClick={() => run(() => api.closeIssue(todo.id))}>
-                      close
-                    </button>
-                  )}
-                  <button className="ghost icon" onClick={() => update({ issue_url: "" })} aria-label="issue を外す" title="外す">
-                    <Icon name="close" size={12} />
-                  </button>
-                </>
-              ) : (
-                <InlineInput value="" placeholder="URL を貼る" onSave={(issue_url) => update({ issue_url })} />
-              )}
-            </dd>
-            <dt>PR</dt>
-            <dd className="gh-row">
-              {todo.pr_url ? (
-                <>
-                  <button className="link-button mono" onClick={() => openGithub(todo.pr_url!, report)} title={todo.pr_url}>
-                    {issueRef(todo.pr_url) ?? todo.pr_url}
-                  </button>
-                  {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
-                  <button className="ghost icon" onClick={() => update({ pr_url: "" })} aria-label="PR を外す" title="外す">
-                    <Icon name="close" size={12} />
-                  </button>
-                </>
-              ) : (
-                <InlineInput value="" placeholder={`claude/todo-${todo.id}- のブランチなら自動で紐づけ`} onSave={(pr_url) => update({ pr_url })} />
-              )}
-            </dd>
-            <dt>フォルダ</dt>
-            <dd>
-              <InlineInput className="mono" value={todo.cwd ?? ""} label="作業フォルダ" placeholder="未設定" onSave={(cwd) => update({ cwd })} />
-            </dd>
-          </dl>
-
-          {!parent && (
-            <section>
-              <h3>
-                サブタスク {children.length > 0 && <span className="muted">{children.filter((c) => c.status === "done").length}/{children.length}</span>}
-              </h3>
-              {children.length === 0 && todo.is_orchestrator && (
-                <p className="muted hint">セッションを Local で始めると、Claude がリポジトリごとのサブタスクを登録します。</p>
-              )}
-              <ul className="rows compact">
-                {children.map((c) => (
-                  <li key={c.id} className="row" onClick={() => onOpenTodo(c.id)}>
-                    <StatusIcon status={c.status} />
-                    <span className="row-title">{c.title}</span>
-                    {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
-                    <GhChip todo={c} report={report} />
-                  </li>
-                ))}
-              </ul>
-              <AddInline label="サブタスクを追加" onAdd={addChild} />
-            </section>
-          )}
-
-          <section>
-            <h3>セッション {liveSessions(todo).length > 0 && <span className="muted">{liveSessions(todo).length}</span>}</h3>
-            {todo.sessions.length === 0 && <p className="muted hint">まだありません。下から始めるか、セッション画面で既存のものを紐づけます。</p>}
-            <ul className="sessions">
-              {todo.sessions.map((s) => (
-                <li key={s.session_id} className={`session-row state-bg-${s.state}`}>
-                  <span className={`dot state-${s.state}`} />
-                  <span className="session-main">
-                    <span className="ellipsis">{sessionLabel(s)}</span>
-                    <span className="muted">
-                      {STATE_LABEL[s.state]} · {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
-                    </span>
-                  </span>
-                  <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
-                  <button className="ghost small" onClick={() => run(() => api.unlinkSession(s.session_id))}>
-                    解除
-                  </button>
-                </li>
-              ))}
-            </ul>
-            {todo.queue_runner && (
-              <div className="notice small">
-                <span>
-                  キューで起動待ち（{RUNNER_LABEL[todo.queue_runner]}）{todo.queue_error && ` — ${todo.queue_error}`}
-                </span>
-                <button className="ghost small" onClick={() => run(() => api.dequeue(todo.id))}>
-                  外す
+      <div className="panel-body">
+        <dl className="props">
+          <dt>ステータス</dt>
+          <dd>
+            <StatusSelect todo={todo} setStatus={setStatus} />
+          </dd>
+          <dt>場所</dt>
+          <dd>
+            <RepoChips todo={todo} local={local} groups={groups} update={update} />
+          </dd>
+          <dt>親</dt>
+          <dd>
+            <ParentPicker todo={todo} allTodos={allTodos} run={run} />
+          </dd>
+          <dt>Issue</dt>
+          <dd className="gh-row">
+            {todo.issue_url ? (
+              <>
+                <button className="link-button mono" onClick={() => browse(todo.issue_url!)} title={todo.issue_url}>
+                  {issueRef(todo.issue_url) ?? todo.issue_url}
                 </button>
-              </div>
-            )}
-          </section>
-
-          <section>
-            <h3>新しいセッション</h3>
-            <Composer todo={todo} skills={skills} run={run} />
-          </section>
-
-          <section>
-            <h3>メモ</h3>
-            <MemoEditor value={todo.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
-          </section>
-
-          <section>
-            <h3>リンク {todo.links.length > 0 && <span className="muted">{todo.links.length}</span>}</h3>
-            <ul className="attachments">
-              {todo.links.map((l) => (
-                <li key={l.id} className="attachment" title={l.url} onClick={() => api.openLink(l.url).catch(report)}>
-                  {l.image ? (
-                    <img src={l.image} alt="" />
-                  ) : (
-                    <span className="thumb">
-                      <Icon name="open" size={14} />
-                    </span>
-                  )}
-                  <span className="attachment-text">
-                    <span className="ellipsis">{l.title ?? hostOf(l.url)}</span>
-                    <span className="muted ellipsis">{l.url}</span>
-                  </span>
-                  <button
-                    className="ghost icon"
-                    aria-label="外す"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      run(() => api.removeLink(l.id));
-                    }}
-                  >
-                    <Icon name="close" size={12} />
+                {todo.issue_state && <span className={`gh gh-issue-${todo.issue_state}`}>{todo.issue_state}</span>}
+                {todo.issue_state === "open" && (
+                  <button className="ghost small" onClick={() => run(() => api.closeIssue(todo.id))}>
+                    close
                   </button>
+                )}
+                <button className="ghost icon" onClick={() => update({ issue_url: "" })} aria-label="issue を外す" title="外す">
+                  <Icon name="close" size={12} />
+                </button>
+              </>
+            ) : (
+              <InlineInput value="" placeholder="URL を貼る" onSave={(issue_url) => update({ issue_url })} />
+            )}
+          </dd>
+          <dt>PR</dt>
+          <dd className="gh-row">
+            {todo.pr_url ? (
+              <>
+                <button className="link-button mono" onClick={() => browse(todo.pr_url!)} title={todo.pr_url}>
+                  {issueRef(todo.pr_url) ?? todo.pr_url}
+                </button>
+                {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+                <button className="ghost icon" onClick={() => update({ pr_url: "" })} aria-label="PR を外す" title="外す">
+                  <Icon name="close" size={12} />
+                </button>
+              </>
+            ) : (
+              <InlineInput value="" placeholder={`claude/todo-${todo.id}- のブランチなら自動で紐づけ`} onSave={(pr_url) => update({ pr_url })} />
+            )}
+          </dd>
+          <dt>フォルダ</dt>
+          <dd>
+            <InlineInput className="mono" value={todo.cwd ?? ""} label="作業フォルダ" placeholder="未設定" onSave={(cwd) => update({ cwd })} />
+          </dd>
+        </dl>
+
+        {!parent && (
+          <section>
+            <h3>
+              サブタスク {children.length > 0 && <span className="muted">{children.filter((c) => c.status === "done").length}/{children.length}</span>}
+            </h3>
+            {children.length === 0 && todo.is_orchestrator && (
+              <p className="muted hint">セッションを Local で始めると、Claude がリポジトリごとのサブタスクを登録します。</p>
+            )}
+            <ul className="rows compact">
+              {children.map((c) => (
+                <li key={c.id} className="row" onClick={() => onOpenTodo(c.id)}>
+                  <StatusIcon status={c.status} />
+                  <span className="row-title">{c.title}</span>
+                  {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
+                  <GhChip todo={c} report={report} />
                 </li>
               ))}
             </ul>
-            <SubmitInput placeholder="URL を貼って Enter で追加" onSubmit={(url) => run(() => api.addLink(todo.id, url))} />
+            <AddInline label="サブタスクを追加" onAdd={addChild} />
           </section>
-        </div>
-      )}
+        )}
+
+        <section>
+          <h3>セッション {liveSessions(todo).length > 0 && <span className="muted">{liveSessions(todo).length}</span>}</h3>
+          {todo.sessions.length === 0 && <p className="muted hint">まだありません。下から始めるか、セッション画面で既存のものを紐づけます。</p>}
+          <ul className="sessions">
+            {todo.sessions.map((s) => (
+              <li key={s.session_id} className={`session-row state-bg-${s.state}`}>
+                <span className={`dot state-${s.state}`} />
+                <span className="session-main">
+                  <span className="ellipsis">{sessionLabel(s)}</span>
+                  <span className="muted">
+                    {STATE_LABEL[s.state]} · {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
+                  </span>
+                </span>
+                <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
+                <button className="ghost small" onClick={() => run(() => api.unlinkSession(s.session_id))}>
+                  解除
+                </button>
+              </li>
+            ))}
+          </ul>
+          {todo.queue_runner && (
+            <div className="notice small">
+              <span>
+                キューで起動待ち（{RUNNER_LABEL[todo.queue_runner]}）{todo.queue_error && ` — ${todo.queue_error}`}
+              </span>
+              <button className="ghost small" onClick={() => run(() => api.dequeue(todo.id))}>
+                外す
+              </button>
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h3>新しいセッション</h3>
+          <Composer todo={todo} skills={skills} run={run} />
+        </section>
+
+        <section>
+          <h3>メモ</h3>
+          <MemoEditor value={todo.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
+        </section>
+
+        <section>
+          <h3>リンク {todo.links.length > 0 && <span className="muted">{todo.links.length}</span>}</h3>
+          <ul className="attachments">
+            {todo.links.map((l) => (
+              <li key={l.id} className="attachment" title={l.url} onClick={() => api.openLink(l.url).catch(report)}>
+                {l.image ? (
+                  <img src={l.image} alt="" />
+                ) : (
+                  <span className="thumb">
+                    <Icon name="open" size={14} />
+                  </span>
+                )}
+                <span className="attachment-text">
+                  <span className="ellipsis">{l.title ?? hostOf(l.url)}</span>
+                  <span className="muted ellipsis">{l.url}</span>
+                </span>
+                <button
+                  className="ghost icon"
+                  aria-label="外す"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    run(() => api.removeLink(l.id));
+                  }}
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <SubmitInput placeholder="URL を貼って Enter で追加" onSubmit={(url) => run(() => api.addLink(todo.id, url))} />
+        </section>
+      </div>
     </aside>
   );
 }
@@ -1630,11 +1593,8 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   );
 }
 
-function SessionPanel({ item, todos, covered, web, onWeb, run, report, onClose, onOpenTodo }: {
+function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
   item: SessionItem;
-  covered: boolean;
-  web: string | null;
-  onWeb: (url: string | null) => void;
   todos: Todo[];
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
@@ -1642,6 +1602,7 @@ function SessionPanel({ item, todos, covered, web, onWeb, run, report, onClose, 
   onOpenTodo: (id: number) => void;
 }) {
   const s = item.session;
+  const openInBrowser = useContext(BrowserContext);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   useEffect(() => {
@@ -1670,21 +1631,6 @@ function SessionPanel({ item, todos, covered, web, onWeb, run, report, onClose, 
       onOpenTodo(todo.id);
     });
   };
-  if (web) {
-    return (
-      <aside className="panel wide" aria-label={sessionLabel(s)}>
-        <header className="panel-head">
-          <StateBadge state={s.state} />
-          <span className="ellipsis">{sessionLabel(s)}</span>
-          <span className="grow" />
-          <button className="ghost icon" onClick={onClose} aria-label="閉じる">
-            <Icon name="close" size={14} />
-          </button>
-        </header>
-        <BrowserPane url={web} covered={covered} report={report} onClose={() => onWeb(null)} />
-      </aside>
-    );
-  }
   return (
     <aside className="panel" aria-label={sessionLabel(s)}>
       <header className="panel-head">
@@ -1707,7 +1653,7 @@ function SessionPanel({ item, todos, covered, web, onWeb, run, report, onClose, 
         <div className="actions">
           {isCloud(s) ? (
             <>
-              <button className="primary grow" onClick={() => onWeb(cloudWebUrl(s.session_id))}>
+              <button className="primary grow" onClick={() => openInBrowser?.(cloudWebUrl(s.session_id))}>
                 Web で開く
               </button>
               <button className="grow" onClick={() => api.openSession(s.session_id, "desktop").catch(report)}>
@@ -1822,22 +1768,21 @@ function SessionPanel({ item, todos, covered, web, onWeb, run, report, onClose, 
 type PrFilter = "all" | "review" | "mine";
 type PrRow = Pr & { kind: "review" | "mine" };
 
-function PrsPage({ prs, prError, todos, local, repoFilter, covered, run, report, onRefresh, onOpenTodo }: {
+function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRefresh, onOpenTodo }: {
   prs: PrLists | null;
   prError: string | null;
   todos: Todo[];
   local: LocalRepo[];
   repoFilter: string | null;
-  covered: boolean;
+  /// The page the browser pane shows, to mark its row.
+  browserUrl: string | null;
   run: (f: () => Promise<unknown>) => void;
-  report: (e: unknown) => void;
   onRefresh: () => void;
   onOpenTodo: (id: number) => void;
 }) {
   const [filter, setFilter] = useState<PrFilter>("all");
-  const [selected, setSelected] = useState<PrRow | null>(null);
   const [reviewRunner, setReviewRunnerState] = useState<Target>(() => load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal"] as const, "web"));
-  const openWeb = useContext(OpenWebContext);
+  const openInBrowser = useContext(BrowserContext);
   const setReviewRunner = (t: Target) => {
     remember(REVIEW_RUNNER_KEY, t);
     setReviewRunnerState(t);
@@ -1858,131 +1803,94 @@ function PrsPage({ prs, prError, todos, local, repoFilter, covered, run, report,
       else if (reviewRunner === "terminal") await api.startTerminal(todo.id);
       else {
         const id = await api.startCloud(todo.id, undefined, reviewRunner === "cloud");
-        if (reviewRunner === "web") openWeb?.(id, todo.id);
+        if (reviewRunner === "web") openInBrowser?.(cloudWebUrl(id));
       }
     });
   const sections: { key: "review" | "mine"; title: string; hint: string; rows: PrRow[] }[] = [
     { key: "review", title: "レビュー依頼", hint: "自分にレビューが来ている PR", rows: review },
     { key: "mine", title: "自分の PR", hint: "自分が出している open の PR", rows: mine },
   ];
-  const actionsFor = (p: PrRow) => {
-    const todo = todoOf(p);
-    return (
-      <>
-        <span className="mono muted">
-          {p.repo}#{p.number}
-        </span>
-        <span className="muted">{p.kind === "review" ? `${p.author} からのレビュー依頼` : "自分の PR"}</span>
-        <span className="grow" />
-        {todo ? (
-          <button className="small" onClick={() => onOpenTodo(todo.id)}>
-            todo #{todo.id} を開く
-          </button>
-        ) : (
-          <button className="small" onClick={() => run(() => makeTodo(p, p.title))}>
-            todo にする
-          </button>
-        )}
-        {p.kind === "review" && (
-          <>
-            <select className="select compact" value={reviewRunner} aria-label="レビューを始める場所" onChange={(e) => setReviewRunner(e.target.value as Target)}>
-              <option value="web">Cloud・Web</option>
-              <option value="cloud">Cloud・Desktop</option>
-              <option value="desktop">Local・Desktop</option>
-              <option value="terminal">herdr</option>
-            </select>
-            <button className="primary small" onClick={() => startReview(p)}>
-              <span className="mono">/review</span> で開始
-            </button>
-          </>
-        )}
-      </>
-    );
-  };
   return (
-    <div className="split">
-      <div className="split-list">
-        <header className="toolbar">
-          <h1>PR</h1>
-          <div className="segmented" role="group" aria-label="絞り込み">
-            <button className={filter === "all" ? "on" : ""} aria-pressed={filter === "all"} onClick={() => setFilter("all")}>
-              すべて
-            </button>
-            <button className={filter === "review" ? "on" : ""} aria-pressed={filter === "review"} onClick={() => setFilter("review")}>
-              レビュー依頼 {review.length}
-            </button>
-            <button className={filter === "mine" ? "on" : ""} aria-pressed={filter === "mine"} onClick={() => setFilter("mine")}>
-              自分の PR {mine.length}
-            </button>
-          </div>
-          <span className="grow" />
-          <button className="ghost icon" aria-label="PR を取り直す" title="PR を取り直す" onClick={onRefresh}>
-            <Icon name="sync" size={14} />
+    <>
+      <header className="toolbar">
+        <h1>PR</h1>
+        <div className="segmented" role="group" aria-label="絞り込み">
+          <button className={filter === "all" ? "on" : ""} aria-pressed={filter === "all"} onClick={() => setFilter("all")}>
+            すべて
           </button>
-        </header>
-        <div className="content flush">
-          {prError && <p className="error-text pad">{prError}</p>}
-          {!prs && !prError && <p className="muted pad">gh で取得しています…</p>}
-          {sections
-            .filter((sec) => filter === "all" || filter === sec.key)
-            .map((sec) => (
-              <section key={sec.key}>
-                <div className="section-head">
-                  <b>{sec.title}</b>
-                  <span className="muted">{sec.rows.length}</span>
-                  <span className="muted">{sec.hint}</span>
-                </div>
-                {prs && sec.rows.length === 0 && <p className="muted pad">ありません。</p>}
-                <ul className="rows">
-                  {sec.rows.map((p) => {
-                    const todo = todoOf(p);
-                    return (
-                      <li key={p.url} className={`row pr-row${selected?.url === p.url ? " selected" : ""}`} onClick={() => setSelected(p)}>
-                        <span className="pr-main">
-                          <span className="pr-meta">
-                            <span className="mono">
-                              {repoName(p.repo)}#{p.number}
-                            </span>
-                            {todo?.pr_state ? <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span> : p.is_draft && <span className="gh gh-pr-draft">Draft</span>}
-                            <span>
-                              {p.kind === "review" ? `${p.author} · ` : ""}
-                              {isoAgo(p.updated_at)}
-                            </span>
-                          </span>
-                          <span className="ellipsis">{p.title}</span>
-                        </span>
-                        {todo ? (
-                          <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
-                            #{todo.id} {todo.title}
-                          </button>
-                        ) : (
-                          p.kind === "mine" && (
-                            <button className="small" onClick={(e) => (e.stopPropagation(), run(() => makeTodo(p, p.title)))}>
-                              todo にする
-                            </button>
-                          )
-                        )}
-                        {p.kind === "review" && (
-                          <button className={`small${selected?.url === p.url ? " primary" : ""}`} onClick={(e) => (e.stopPropagation(), startReview(p))}>
-                            <span className="mono">/review</span> で開始
-                          </button>
-                        )}
-                      </li>
-                    );
-                  })}
-                </ul>
-              </section>
-            ))}
+          <button className={filter === "review" ? "on" : ""} aria-pressed={filter === "review"} onClick={() => setFilter("review")}>
+            レビュー依頼 {review.length}
+          </button>
+          <button className={filter === "mine" ? "on" : ""} aria-pressed={filter === "mine"} onClick={() => setFilter("mine")}>
+            自分の PR {mine.length}
+          </button>
         </div>
+        <span className="grow" />
+        <select className="select compact" value={reviewRunner} aria-label="/review を始める場所" title="/review を始める場所" onChange={(e) => setReviewRunner(e.target.value as Target)}>
+          <option value="web">/review は Cloud・Web</option>
+          <option value="cloud">/review は Cloud・Desktop</option>
+          <option value="desktop">/review は Local・Desktop</option>
+          <option value="terminal">/review は herdr</option>
+        </select>
+        <button className="ghost icon" aria-label="PR を取り直す" title="PR を取り直す" onClick={onRefresh}>
+          <Icon name="sync" size={14} />
+        </button>
+      </header>
+      <div className="content flush">
+        {prError && <p className="error-text pad">{prError}</p>}
+        {!prs && !prError && <p className="muted pad">gh で取得しています…</p>}
+        {sections
+          .filter((sec) => filter === "all" || filter === sec.key)
+          .map((sec) => (
+            <section key={sec.key}>
+              <div className="section-head">
+                <b>{sec.title}</b>
+                <span className="muted">{sec.rows.length}</span>
+                <span className="muted">{sec.hint}</span>
+              </div>
+              {prs && sec.rows.length === 0 && <p className="muted pad">ありません。</p>}
+              <ul className="rows">
+                {sec.rows.map((p) => {
+                  const todo = todoOf(p);
+                  return (
+                    <li key={p.url} className={`row pr-row${browserUrl === p.url ? " selected" : ""}`} onClick={() => openInBrowser?.(p.url)}>
+                      <span className="pr-main">
+                        <span className="pr-meta">
+                          <span className="mono">
+                            {repoName(p.repo)}#{p.number}
+                          </span>
+                          {todo?.pr_state ? <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span> : p.is_draft && <span className="gh gh-pr-draft">Draft</span>}
+                          <span>
+                            {p.kind === "review" ? `${p.author} · ` : ""}
+                            {isoAgo(p.updated_at)}
+                          </span>
+                        </span>
+                        <span className="ellipsis">{p.title}</span>
+                      </span>
+                      {todo ? (
+                        <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
+                          #{todo.id} {todo.title}
+                        </button>
+                      ) : (
+                        p.kind === "mine" && (
+                          <button className="small" onClick={(e) => (e.stopPropagation(), run(() => makeTodo(p, p.title)))}>
+                            todo にする
+                          </button>
+                        )
+                      )}
+                      {p.kind === "review" && (
+                        <button className={`small${browserUrl === p.url ? " primary" : ""}`} onClick={(e) => (e.stopPropagation(), startReview(p))}>
+                          <span className="mono">/review</span> で開始
+                        </button>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          ))}
       </div>
-      <div className="split-browser">
-        {selected ? (
-          <BrowserPane url={selected.url} covered={covered} report={report} onClose={() => setSelected(null)} actions={actionsFor(selected)} />
-        ) : (
-          <p className="muted empty">PR を選ぶと、ここで開きます。</p>
-        )}
-      </div>
-    </div>
+    </>
   );
 }
 
@@ -2380,13 +2288,9 @@ type DialogKind = "add" | "import" | "quick" | "palette" | null;
 
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
-  const [selection, setSelectionState] = useState<Selection>(null);
-  // A cloud session's claude.ai page in the open panel; picking something else drops it.
-  const [panelWeb, setPanelWeb] = useState<string | null>(null);
-  const setSelection = (s: Selection, web: string | null = null) => {
-    setSelectionState(s);
-    setPanelWeb(web);
-  };
+  const [selection, setSelection] = useState<Selection>(null);
+  // The page in the browser pane; it stays across screens until closed.
+  const [browserUrl, setBrowserUrl] = useState<string | null>(null);
   const [dragging, setDragging] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
@@ -2553,16 +2457,6 @@ export default function App() {
     setView("todos");
     openTodo(id);
   };
-  const openWeb: OpenWeb = (sessionId, todoId) => {
-    const url = cloudWebUrl(sessionId);
-    if (todoId !== null) {
-      setView("todos");
-      setSelection({ kind: "todo", id: todoId }, url);
-    } else {
-      setView("sessions");
-      setSelection({ kind: "session", id: sessionId }, url);
-    }
-  };
   const [syncing, setSyncing] = useState(false);
   const syncAll = () => {
     setSyncing(true);
@@ -2609,8 +2503,8 @@ export default function App() {
   const panel = view === "todos" && selectedTodo ? "todo" : view === "sessions" && selectedSession ? "session" : null;
 
   return (
-    <OpenWebContext.Provider value={openWeb}>
-      <div className="app">
+    <BrowserContext.Provider value={setBrowserUrl}>
+      <div className={`app${browserUrl ? " with-browser" : ""}`}>
         <aside className="sidebar">
           <div className="brand">
             <span className="brand-mark" />
@@ -2805,7 +2699,7 @@ export default function App() {
           )}
           {view === "notices" && board && <NoticesPage board={board} report={report} onOpenTodo={goTodo} run={run} />}
           {view === "prs" && (
-            <PrsPage prs={prs} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} covered={covered} run={run} report={report} onRefresh={loadPrs} onOpenTodo={goTodo} />
+            <PrsPage prs={prs} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} />
           )}
         </main>
 
@@ -2816,9 +2710,6 @@ export default function App() {
             local={local}
             groups={groups}
             skills={skillsByCwd[skillsKey] ?? []}
-            covered={covered}
-            web={panelWeb}
-            onWeb={setPanelWeb}
             run={run}
             report={report}
             setStatus={setStatus}
@@ -2827,7 +2718,12 @@ export default function App() {
           />
         )}
         {panel === "session" && selectedSession && (
-          <SessionPanel item={selectedSession} todos={allTodos} covered={covered} web={panelWeb} onWeb={setPanelWeb} run={run} report={report} onClose={() => setSelection(null)} onOpenTodo={goTodo} />
+          <SessionPanel item={selectedSession} todos={allTodos} run={run} report={report} onClose={() => setSelection(null)} onOpenTodo={goTodo} />
+        )}
+        {browserUrl && (
+          <aside className="browser-dock">
+            <BrowserPane url={browserUrl} covered={covered} report={report} onClose={() => setBrowserUrl(null)} />
+          </aside>
         )}
 
         {dialog === "add" && (
@@ -2847,6 +2743,6 @@ export default function App() {
         {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
         {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
       </div>
-    </OpenWebContext.Provider>
+    </BrowserContext.Provider>
   );
 }

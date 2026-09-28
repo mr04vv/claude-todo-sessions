@@ -73,11 +73,12 @@ pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" &&
   - 上の「起動待ち」がキューです。ループを止めたり、順番や起動方法を変えたりできます
 - PR：自分へのレビュー依頼（`gh search prs --review-requested @me`）と自分の PR（`--author @me`）を並べます
   - 「/review で開始」で、レビュー用の todo を作ってセッションを始めます。「todo にする」で PR を todo にします
-  - 選んだ PR は右半分のアプリ内ブラウザで開きます
+  - 選んだ PR は右側のアプリ内ブラウザで開きます
 - 通知：入力待ち・作業が終わったときの通知の一覧です。未読に印が付きます
+- アプリ内ブラウザは右側に開き、画面を切り替えても閉じるまで開いたままです。issue / PR のチップ、PR の行、Cloud セッションの「開く」がここに開きます
 - サイドバーのリポジトリをクリックするとそのリポジトリだけに絞り込み、↗ で GitHub のリポジトリを開きます。左下に Claude の使用量（5時間・週間・モデルごと）が出ます
 - カードをクリックするとサイドパネルが開きます。タイトル・ステータス・場所・親・issue / PR・フォルダ・メモ・リンクはその場で編集できます
-  - issue / PR はタブでアプリ内ブラウザに開きます。パネル右上の ↗ は PR、issue、リポジトリの順に GitHub を開きます
+  - issue / PR のリンクはアプリ内ブラウザで開きます。パネル右上の ↗ は PR、issue、リポジトリの順にいつものブラウザで GitHub を開きます
   - 「新しいセッション」で最初のプロンプトを書き、スキル（過去によく使ったものが先）・起動先・モデル・effort を選んで始めます
   - 起動先は Cloud・Web（claude.ai をアプリ内ブラウザで開く。既定）/ Cloud・Desktop / Local・Desktop / herdr / キューです。モデルと effort は Cloud と herdr で効きます
   - 紐づいたセッションの「開く」は、Cloud ならアプリ内の Web、Local なら herdr の pane（なければ Desktop）で開きます。▾ でほかの開き方を選べます。閉じたセッションは、herdr では `claude --resume` で再開します

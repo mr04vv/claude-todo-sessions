@@ -39,6 +39,7 @@
   --radius: 8px;
   --sidebar-w: 232px;
   --panel-w: 440px;
+  --dock-w: max(520px, 44vw);
   color-scheme: dark;
   font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
   font-size: 13px;
@@ -310,9 +311,21 @@ a:hover {
 /* Layout */
 
 .app {
+  position: relative;
   display: flex;
   height: 100%;
   overflow: hidden;
+}
+
+/* With the browser docked, the side panel floats over the screen beside it
+   instead of squeezing it further. */
+.app.with-browser .panel {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: var(--dock-w);
+  z-index: 20;
+  box-shadow: var(--shadow);
 }
 
 .sidebar {
@@ -1172,10 +1185,6 @@ button.gh:hover:not(:disabled) {
   overflow: hidden;
 }
 
-.panel.wide {
-  width: max(560px, 50vw);
-}
-
 .panel-head {
   display: flex;
   align-items: center;
@@ -1214,35 +1223,6 @@ button.gh:hover:not(:disabled) {
 input.panel-title:focus-visible {
   outline: none;
   box-shadow: 0 1px 0 var(--accent);
-}
-
-.tabs {
-  display: flex;
-  gap: 4px;
-  flex-shrink: 0;
-  margin: 10px 20px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.tabs button {
-  height: 30px;
-  padding: 0 10px;
-  background: none;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  border-radius: 0;
-  color: var(--text-2);
-}
-
-.tabs button:hover:not(:disabled) {
-  background: none;
-  color: var(--text);
-}
-
-.tabs button.on {
-  border-bottom-color: var(--accent);
-  color: var(--text);
-  font-weight: 600;
 }
 
 .panel-body {
@@ -1664,7 +1644,16 @@ input.panel-title:focus-visible {
   color: var(--text);
 }
 
-/* Browser pane */
+/* Browser pane, docked on the right across screens */
+
+.browser-dock {
+  width: var(--dock-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--sidebar);
+  border-left: 1px solid var(--border);
+}
 
 .browser {
   flex-grow: 1;
@@ -1689,18 +1678,6 @@ input.panel-title:focus-visible {
   color: var(--text-2);
 }
 
-.browser-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  min-height: 44px;
-  padding: 6px 14px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  flex-shrink: 0;
-}
-
 .browser-slot {
   flex-grow: 1;
   min-height: 0;
@@ -1711,29 +1688,6 @@ input.panel-title:focus-visible {
 }
 
 /* PR page */
-
-.split {
-  flex-grow: 1;
-  min-height: 0;
-  display: flex;
-}
-
-.split-list {
-  width: 540px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--border);
-  min-height: 0;
-}
-
-.split-browser {
-  flex-grow: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--sidebar);
-}
 
 .pr-row {
   padding: 8px 12px 8px 16px;
