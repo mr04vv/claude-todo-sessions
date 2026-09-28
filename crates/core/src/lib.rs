@@ -5,6 +5,9 @@ pub mod github;
 pub mod herdr;
 pub mod launch;
 pub mod ogp;
+pub mod skills;
+pub mod transcript;
+pub mod usage;
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -18,6 +21,8 @@ pub enum Error {
     Sql(rusqlite::Error),
     TodoNotFound(i64),
     SessionNotFound(String),
+    /// Subtasks go one level deep: why this parent cannot be set.
+    InvalidParent(String),
 }
 
 impl std::fmt::Display for Error {
@@ -26,6 +31,7 @@ impl std::fmt::Display for Error {
             Error::Sql(e) => write!(f, "sqlite: {e}"),
             Error::TodoNotFound(id) => write!(f, "todo {id} not found"),
             Error::SessionNotFound(id) => write!(f, "session {id} not found"),
+            Error::InvalidParent(why) => write!(f, "{why}"),
         }
     }
 }
@@ -219,6 +225,43 @@ pub struct Session {
     pub started_at: i64,
 }
 
+/// Why the app notified about a session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoticeKind {
+    /// A turn ended: the session went from running to idle.
+    Finished,
+    NeedsInput,
+}
+
+impl NoticeKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            NoticeKind::Finished => "finished",
+            NoticeKind::NeedsInput => "needs_input",
+        }
+    }
+    fn parse(s: &str) -> NoticeKind {
+        if s == "needs_input" { NoticeKind::NeedsInput } else { NoticeKind::Finished }
+    }
+}
+
+/// A notification the app posted, kept so it can be read again in the app.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Notice {
+    pub id: i64,
+    pub session_id: String,
+    pub todo_id: Option<i64>,
+    pub kind: NoticeKind,
+    /// The session's title when it was posted.
+    pub title: String,
+    pub created_at: i64,
+    pub read: bool,
+}
+
+/// Notifications kept for the in-app list, newest first.
+const NOTICES_LIMIT: i64 = 200;
+
 /// A URL attached to a todo, with the page's Open Graph title and image
 /// once they have been fetched.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -274,6 +317,15 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    read_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS links (
     id INTEGER PRIMARY KEY,
@@ -626,6 +678,13 @@ impl Db {
         self.query_sessions("todo_id IS NOT NULL AND state != 'ended'", None)
     }
 
+    /// Linked sessions for the menu bar: waiting for input first, then idle.
+    pub fn tray_sessions(&self) -> Result<Vec<Session>> {
+        let mut sessions = self.query_sessions("todo_id IS NOT NULL AND state IN ('needs_input', 'idle')", None)?;
+        sessions.sort_by_key(|s| s.state != SessionState::NeedsInput);
+        Ok(sessions)
+    }
+
     /// Sessions waiting for the user that belong to a todo; these get notified.
     pub fn linked_needs_input(&self) -> Result<Vec<Session>> {
         self.query_sessions("todo_id IS NOT NULL AND state = 'needs_input'", None)
@@ -678,6 +737,44 @@ impl Db {
         }
     }
 
+    /// Records a notification about the session, unread.
+    pub fn add_notification(&self, session: &Session, kind: NoticeKind) -> Result<i64> {
+        let title = session.title.clone().unwrap_or_else(|| session.session_id.clone());
+        self.conn.execute(
+            "INSERT INTO notifications (session_id, todo_id, kind, title, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![session.session_id, session.todo_id, kind.as_str(), title, now()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn notifications(&self) -> Result<Vec<Notice>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, session_id, todo_id, kind, title, created_at, read_at IS NOT NULL FROM notifications ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([NOTICES_LIMIT], |r| {
+            Ok(Notice {
+                id: r.get(0)?,
+                session_id: r.get(1)?,
+                todo_id: r.get(2)?,
+                kind: NoticeKind::parse(&r.get::<_, String>(3)?),
+                title: r.get(4)?,
+                created_at: r.get(5)?,
+                read: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn mark_notification_read(&self, id: i64) -> Result<()> {
+        self.conn.execute("UPDATE notifications SET read_at = ?2 WHERE id = ?1 AND read_at IS NULL", params![id, now()])?;
+        Ok(())
+    }
+
+    pub fn mark_all_notifications_read(&self) -> Result<()> {
+        self.conn.execute("UPDATE notifications SET read_at = ?1 WHERE read_at IS NULL", [now()])?;
+        Ok(())
+    }
+
     /// Whether a cloud session's first prompt was already searched for a marker.
     /// Records the issue's GitHub state and returns the one seen before.
     pub fn set_issue_state(&self, id: i64, state: &str) -> Result<Option<String>> {
@@ -690,6 +787,26 @@ impl Db {
         let mut stmt = self.conn.prepare(&format!("SELECT {TODO_COLS} FROM todos WHERE parent_id = ?1 ORDER BY id"))?;
         let rows = stmt.query_map([parent_id], todo_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Makes the todo a subtask of `parent`, or a top-level todo with None.
+    /// Subtasks go one level deep, so the parent must not be a subtask and
+    /// the todo must not have subtasks of its own.
+    pub fn set_parent(&self, id: i64, parent: Option<i64>) -> Result<Todo> {
+        self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?;
+        if let Some(p) = parent {
+            if p == id {
+                return Err(Error::InvalidParent("自分自身は親にできません".into()));
+            }
+            if self.get_todo(p)?.ok_or(Error::TodoNotFound(p))?.parent_id.is_some() {
+                return Err(Error::InvalidParent(format!("#{p} はサブタスクなので親にできません")));
+            }
+            if !self.children(id)?.is_empty() {
+                return Err(Error::InvalidParent(format!("#{id} にはサブタスクがあるので、ほかの todo の下には入れられません")));
+            }
+        }
+        self.conn.execute("UPDATE todos SET parent_id = ?2, updated_at = ?3 WHERE id = ?1", params![id, parent, now()])?;
+        self.get_todo(id)?.ok_or(Error::TodoNotFound(id))
     }
 
     /// Marks the parent done once every child is.

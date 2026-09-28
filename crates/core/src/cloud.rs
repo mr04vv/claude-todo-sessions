@@ -1,5 +1,6 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::launch::StartOptions;
 use crate::{Db, SessionState};
 use serde_json::{json, Value};
 
@@ -131,6 +132,17 @@ pub fn create_body(env_id: &str, repos: &[String], branch: &str, prompt: &str, t
     })
 }
 
+/// Sets the model and effort a cloud session runs with, as the sessions
+/// list reports them in `config.model` and `config.effort_level`.
+pub fn apply_options(body: &mut Value, opts: &StartOptions) {
+    if let Some(m) = opts.model() {
+        body["session_context"]["model"] = json!(m);
+    }
+    if let Some(e) = opts.effort() {
+        body["session_context"]["effort_level"] = json!(e);
+    }
+}
+
 /// The create API answers `session_…`; the code-sessions API lists the same
 /// session as `cse_…`.
 pub fn code_session_id(created_id: &str) -> Option<String> {
@@ -239,6 +251,9 @@ fn refresh(creds: &Value) -> Result<Value, String> {
 
 /// Header set the sessions create API needs on top of the OAuth ones.
 const CREATE_BETA: &str = "ccr-byoc-2025-07-29";
+/// Plan usage limits, as `/usage` in Claude Code shows them.
+const USAGE_PATH: &str = "/api/oauth/usage";
+const OAUTH_BETA: &str = "oauth-2025-04-20";
 const CLAUDE_JSON: &str = ".claude.json";
 const RECENT_SESSIONS_FOR_ENV: u32 = 20;
 /// Branch Claude pushes to, like the ones the CLI and Desktop create.
@@ -268,10 +283,14 @@ fn organization_uuid() -> Result<String, String> {
 }
 
 fn api_get(token: &str, path: &str) -> Result<Value, ureq::Error> {
-    ureq::get(format!("{API_BASE}{path}"))
+    let mut req = ureq::get(format!("{API_BASE}{path}"))
         .header("Authorization", format!("Bearer {token}"))
-        .header("anthropic-version", ANTHROPIC_VERSION)
-        .call()?
+        .header("anthropic-version", ANTHROPIC_VERSION);
+    // The usage API answers only with the OAuth beta header.
+    if path == USAGE_PATH {
+        req = req.header("anthropic-beta", OAUTH_BETA);
+    }
+    req.call()?
         .body_mut()
         .read_json()
 }
@@ -341,7 +360,7 @@ impl Client {
 /// links it right away. Returns the `cse_…` id.
 // ponytail: reuses the environment of the latest cloud session; add an
 // environment picker if more than one environment is in use.
-pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prompt_body: &str) -> Result<String, String> {
+pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prompt_body: &str, opts: &StartOptions) -> Result<String, String> {
     let repo_url = repos.first().map(|main| format!("https://github.com/{main}")).unwrap_or_default();
     let mut client = Client::new()?;
     let recent = client.get(&format!("/v1/code/sessions?limit={RECENT_SESSIONS_FOR_ENV}"))?;
@@ -356,7 +375,8 @@ pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prom
     let prompt = crate::launch::start_prompt(todo_id, prompt_body);
     let uuid = uuid::Uuid::new_v4().to_string();
     let branch = format!("{BRANCH_PREFIX}todo-{todo_id}-{}", &uuid[..BRANCH_SUFFIX_LEN]);
-    let body = create_body(&env_id, repos, &branch, &prompt, title, &uuid);
+    let mut body = create_body(&env_id, repos, &branch, &prompt, title, &uuid);
+    apply_options(&mut body, opts);
     let created = client.post("/v1/sessions", &organization_uuid()?, &body)?;
     let id = created["id"]
         .as_str()
@@ -368,6 +388,16 @@ pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prom
     db.link_session(&id, todo_id).map_err(|e| e.to_string())?;
     db.mark_marker_checked(&id).map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+/// The plan's usage limits (session, weekly, per model).
+pub fn usage() -> Result<Vec<crate::usage::Limit>, String> {
+    Ok(crate::usage::parse_limits(&Client::new()?.get(USAGE_PATH)?))
+}
+
+/// The latest messages of a cloud session, oldest first.
+pub fn recent_entries(session_id: &str) -> Result<Vec<Value>, String> {
+    Ok(crate::transcript::from_events(&Client::new()?.get(&format!("/v1/code/sessions/{session_id}/events"))?))
 }
 
 enum Outcome {
@@ -507,6 +537,16 @@ mod tests {
             b["session_context"]["outcomes"][0],
             json!({"type": "git_repository", "git_info": {"type": "github", "repo": "o/r", "branches": ["claude/todo-2-ab12"]}})
         );
+    }
+
+    #[test]
+    fn start_options_set_model_and_effort_only_when_given() {
+        let mut b = create_body("env_1", &[], "claude/x", "p", "t", "u");
+        apply_options(&mut b, &StartOptions::default());
+        assert!(b["session_context"].get("model").is_none() && b["session_context"].get("effort_level").is_none());
+        apply_options(&mut b, &StartOptions { model: Some("claude-opus-5-5".into()), effort: Some("high".into()) });
+        assert_eq!(b["session_context"]["model"], "claude-opus-5-5");
+        assert_eq!(b["session_context"]["effort_level"], "high");
     }
 
     #[test]

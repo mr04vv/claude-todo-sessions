@@ -1,4 +1,4 @@
-use cts_core::{parse_todo_marker, Db, Error, NewTodo, SessionState, Status, TodoPatch};
+use cts_core::{parse_todo_marker, Db, Error, NewTodo, NoticeKind, SessionState, Status, TodoPatch};
 
 fn open() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -507,4 +507,82 @@ fn review_status_works_on_databases_made_before_it() {
     assert_eq!((t.title.as_str(), t.status), ("keep me", Status::Review));
     assert_eq!(db.get_session("s1").unwrap().unwrap().todo_id, Some(1));
     assert_eq!(db.list_todos(Some(Status::Review)).unwrap().len(), 1);
+}
+
+#[test]
+fn set_parent_moves_a_todo_under_another_and_back() {
+    let (_d, db) = open();
+    let p = db.create_todo(new_todo("p")).unwrap();
+    let c = db.create_todo(new_todo("c")).unwrap();
+    assert_eq!(db.set_parent(c.id, Some(p.id)).unwrap().parent_id, Some(p.id));
+    assert_eq!(db.children(p.id).unwrap().len(), 1);
+    assert_eq!(db.set_parent(c.id, None).unwrap().parent_id, None);
+    assert!(db.children(p.id).unwrap().is_empty());
+}
+
+#[test]
+fn set_parent_keeps_one_level() {
+    let (_d, db) = open();
+    let p = db.create_todo(new_todo("p")).unwrap();
+    let c = db.create_todo(NewTodo { title: "c".into(), parent_id: Some(p.id), ..Default::default() }).unwrap();
+    let x = db.create_todo(new_todo("x")).unwrap();
+    // Under a subtask would make a second level.
+    assert!(matches!(db.set_parent(x.id, Some(c.id)), Err(Error::InvalidParent(_))));
+    // A todo with subtasks cannot become one.
+    assert!(matches!(db.set_parent(p.id, Some(x.id)), Err(Error::InvalidParent(_))));
+    assert!(matches!(db.set_parent(x.id, Some(x.id)), Err(Error::InvalidParent(_))));
+    assert!(matches!(db.set_parent(x.id, Some(999)), Err(Error::TodoNotFound(999))));
+}
+
+#[test]
+fn tray_lists_waiting_then_idle_linked_sessions() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("t")).unwrap();
+    for (id, state) in [("run", SessionState::Running), ("idle", SessionState::Idle), ("wait", SessionState::NeedsInput), ("gone", SessionState::Ended)] {
+        db.record_session(id, "/w", state).unwrap();
+        db.link_session(id, t.id).unwrap();
+    }
+    db.record_session("loose", "/w", SessionState::Idle).unwrap();
+    let ids: Vec<String> = db.tray_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
+    assert_eq!(ids, ["wait", "idle"]);
+}
+
+#[test]
+fn notifications_are_listed_newest_first_until_read() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("t")).unwrap();
+    db.record_session("s1", "/w", SessionState::Idle).unwrap();
+    db.set_session_title("s1", "fix it").unwrap();
+    db.link_session("s1", t.id).unwrap();
+    let s1 = db.get_session("s1").unwrap().unwrap();
+    let a = db.add_notification(&s1, NoticeKind::Finished).unwrap();
+    let b = db.add_notification(&s1, NoticeKind::NeedsInput).unwrap();
+    let list = db.notifications().unwrap();
+    assert_eq!(list.iter().map(|n| n.id).collect::<Vec<_>>(), [b, a]);
+    assert_eq!((list[1].kind, list[1].title.as_str(), list[1].todo_id, list[1].read), (NoticeKind::Finished, "fix it", Some(t.id), false));
+    db.mark_notification_read(a).unwrap();
+    assert!(db.notifications().unwrap().iter().find(|n| n.id == a).unwrap().read);
+    db.mark_all_notifications_read().unwrap();
+    assert!(db.notifications().unwrap().iter().all(|n| n.read));
+}
+
+#[test]
+fn notifications_work_on_databases_made_before_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'review', 'done')),
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL);
+         CREATE TABLE sessions (session_id TEXT PRIMARY KEY, todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
+         cwd TEXT NOT NULL, state TEXT NOT NULL, state_at INTEGER NOT NULL);
+         INSERT INTO sessions VALUES ('s1', NULL, '/w', 'idle', 0);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let s1 = db.get_session("s1").unwrap().unwrap();
+    db.add_notification(&s1, NoticeKind::Finished).unwrap();
+    assert_eq!(db.notifications().unwrap()[0].title, "s1");
 }

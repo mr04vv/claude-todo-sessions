@@ -36,6 +36,39 @@ pub fn desktop_new_url(cwd: Option<&str>, prompt: &str) -> String {
     }
 }
 
+/// Model and effort picked for a new session; None (or blank) keeps the default.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+pub struct StartOptions {
+    pub model: Option<String>,
+    pub effort: Option<String>,
+}
+
+impl StartOptions {
+    fn given(v: &Option<String>) -> Option<&str> {
+        v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    pub fn model(&self) -> Option<&str> {
+        Self::given(&self.model)
+    }
+
+    pub fn effort(&self) -> Option<&str> {
+        Self::given(&self.effort)
+    }
+
+    /// `claude` flags for a terminal session.
+    pub fn claude_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(m) = self.model() {
+            args.extend(["--model".to_string(), m.into()]);
+        }
+        if let Some(e) = self.effort() {
+            args.extend(["--effort".to_string(), e.into()]);
+        }
+        args
+    }
+}
+
 /// A todo's repo list may hold free group names ("調査"); only `owner/repo`
 /// entries are GitHub repositories a cloud session can work on.
 pub fn github_repos(repos: &[String]) -> Vec<String> {
@@ -170,6 +203,14 @@ pub fn herdr_pane_id(created: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn start_options_become_cli_flags() {
+        let o = StartOptions { model: Some("claude-fable-5-1".into()), effort: Some("xhigh".into()) };
+        assert_eq!(o.claude_args(), ["--model", "claude-fable-5-1", "--effort", "xhigh"]);
+        let blank = StartOptions { model: Some(" ".into()), effort: None };
+        assert!(blank.claude_args().is_empty());
+    }
 
     #[test]
     fn iso_times_become_unix_seconds() {
