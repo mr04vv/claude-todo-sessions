@@ -24,14 +24,15 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 
 3つのバイナリが1つの SQLite（WAL）を共有する。DB は `~/Library/Application Support/claude-todo-sessions/db.sqlite`（`CTS_DB` で変更可）。
 
-- `crates/core`（`cts-core`）: DB と外部連携のロジック。`lib.rs` が todo / session / link のスキーマ・マイグレーション・クエリ、`cloud.rs` がクラウドセッション API、`launch.rs` が Desktop のディープリンクと起動プロンプト、`herdr.rs` / `agents.rs` / `desktop.rs` がローカルセッションの発見、`github.rs` が GraphQL の一括状態取得、`ogp.rs` がリンクの OGP 取得。
+- `crates/core`（`cts-core`）: DB と外部連携のロジック。`lib.rs` が todo / session / link / notification のスキーマ・マイグレーション・クエリ、`cloud.rs` がクラウドセッション API（使用量と events も）、`launch.rs` が Desktop のディープリンク・起動プロンプト・モデルと effort（`StartOptions`）、`usage.rs` が使用量の解釈、`transcript.rs` がセッションの最後のメッセージ・コンテキスト・直近の操作の抽出（ローカルの jsonl とクラウドの events で共通）、`skills.rs` がスキルの発見と並び替え、`herdr.rs` / `agents.rs` / `desktop.rs` がローカルセッションの発見、`github.rs` が GraphQL の一括状態取得、`ogp.rs` がリンクの OGP 取得。
 - `crates/cts`: Claude Code プラグインから呼ばれる CLI。`cts mcp`（rmcp の stdio MCP サーバー。todo の CRUD と紐づけ）、`cts hook <event>`（セッション状態の記録と `[todo:N]` マーカーでの紐づけ）、`cts cloud sync`。
 - `app/src-tauri`（`todo-sessions-app`）: Tauri 2 のアプリ本体。`main.rs` 1ファイルに Tauri コマンドとバックグラウンドスレッドがある。
   - `sync_loop`: クラウドセッションの同期
-  - `watch_loop`: トレイ、通知、`claude agents --json` と herdr からのセッション発見（herdr の状態を優先）
+  - `watch_loop`: トレイ（入力待ち・待機中）、通知（`notifications` に記録してアプリ内で一覧）、`claude agents --json` と herdr からのセッション発見（herdr の状態を優先）
   - `issue_sync_loop`: PR の発見と issue / PR 状態の同期
   - `queue_loop`: キューに入った todo の自動起動
-- `app/src`: React 19。UI はほぼ `App.tsx` に集約、`api.ts` が Tauri コマンドと型の写し。
+  - アプリ内ブラウザは `tauri` の `unstable` 機能で、main ウインドウに子 WebView（label `browser`）を重ねる。GitHub は iframe に埋め込めないため。子 WebView を足すと main は「webview window」でなくなり `get_webview_window("main")` が None を返すので、`get_window` を使う。
+- `app/src`: React 19。UI はほぼ `App.tsx` に集約（画面は Todo・セッション・PR・通知）、`api.ts` が Tauri コマンドと型の写し。
 - `plugin/`: hooks・`.mcp.json`・skill。`.claude-plugin/marketplace.json` で手元から入れる。
 
 ### セッションと todo の紐づけ
@@ -39,11 +40,14 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 - 最初のプロンプトに `[todo:N]` を入れて起動し、hook（ローカル）か cloud sync（クラウド）が拾って紐づける。プロンプトが `/` で始まる場合（`/grilling` など）はマーカーを末尾に置く（`launch::start_prompt`）。
 - ターミナル起動は `claude --session-id <uuid>` で先に DB に登録してから herdr の新しいワークスペースで動かす。閉じたセッションの herdr ボタンは `claude --resume` で再開する。
 - Desktop への遷移: アーカイブされていなければ `claude://code/continue?session=local_…`、アーカイブ済みなら `claude://resume?session=<uuid>`（アーカイブも解除される）。クラウドは `claude://code/cse_…`。
+- クラウドの Web は `https://claude.ai/code/session_…`（`cse_` を `session_` に置き換える。`api.ts` の `cloudWebUrl`）。既定ではアプリ内ブラウザで開く。
 
 ### クラウド（非公開 API）
 
 - `GET /v1/code/sessions` と `POST /v1/sessions`（`anthropic-beta: ccr-byoc-2025-07-29`、`x-organization-uuid`）を使う。仕様は予告なく変わりうる。
 - リポジトリなしのセッション（sources / outcomes が空）も作れる。ブランチは `claude/todo-<id>-<suffix>`。
+- モデルと effort は作成時の `session_context.model` / `effort_level` に入れる（一覧では `config.model` / `config.effort_level` として見える）。既定のままなら送らない。
+- 使用量は `GET /api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`）の `limits`。頻繁に呼ぶと 429 になるので、フロントは取れたら5分おきに取り直す。
 - 認証情報は Keychain の "Claude Code-credentials" を `/usr/bin/security` 経由で読み書きする。Security.framework を直接使うと、再ビルドのたびに Keychain の許可ダイアログが出る。
 
 ### GitHub 連携の自動化（`issue_sync_loop`）
