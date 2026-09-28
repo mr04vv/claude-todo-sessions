@@ -1806,8 +1806,14 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
   );
 }
 
-/// First prompt of a review session: /review answers in English unless asked otherwise.
-const reviewPrompt = (url: string) => `/review ${url} レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`;
+/// First prompt of a review session. /review answers in English unless asked
+/// otherwise, and submitting the review stays the user's call.
+const reviewPrompt = (url: string) =>
+  [
+    `/review ${url} レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`,
+    "レビューが終わったら、GitHub への提出方法を AskUserQuestion で私に聞いてください。ブロッカー（マージ前に直すべき問題）があれば Request changes を、なければ Comment か Approve を選択肢に出し、おすすめを先頭にしてください。",
+    "選ばれた方法で、指摘をインラインコメントと本文にまとめて提出してください（gh pr review、使えなければ GitHub のツール）。私が選ぶまでは提出しないでください。",
+  ].join("\n\n");
 
 type PrFilter = "all" | "review" | "mine";
 type PrRow = Pr & { kind: "review" | "mine" };
