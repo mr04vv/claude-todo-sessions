@@ -1806,6 +1806,9 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
   );
 }
 
+/// First prompt of a review session: /review answers in English unless asked otherwise.
+const reviewPrompt = (url: string) => `/review ${url} レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`;
+
 type PrFilter = "all" | "review" | "mine";
 type PrRow = Pr & { kind: "review" | "mine" };
 
@@ -1839,7 +1842,7 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   const startReview = (p: Pr) =>
     run(async () => {
       const todo = todoOf(p) ?? (await makeTodo(p, `レビュー: ${p.title}`));
-      await api.updateTodo(todo.id, { prompt: `/review ${p.url}` });
+      await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url) });
       if (reviewRunner === "desktop") await api.startDesktop(todo.id);
       else if (reviewRunner === "terminal") await api.startTerminal(todo.id);
       else {
