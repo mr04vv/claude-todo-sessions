@@ -50,6 +50,8 @@ const USAGE_REFRESH_MS = 5 * 60_000;
 const USAGE_RETRY_MS = 60_000;
 const PR_REFRESH_MS = 5 * 60_000;
 const DETAIL_REFRESH_MS = 10_000;
+/// How long "コピーしました" stays after ⌘L.
+const COPIED_MS = 1400;
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
 /// Done cards kept per lane while "Done は直近のみ" is on.
@@ -1176,6 +1178,22 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
     };
   }, [covered]);
   useEffect(() => () => void api.browserHide().catch(() => {}), []);
+  // ⌘L copies the page's URL; inside the page itself a script does the same.
+  const [copied, setCopied] = useState(false);
+  const url = useRef(active.url);
+  url.current = active.url;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey || e.key.toLowerCase() !== "l") return;
+      e.preventDefault();
+      api.copyText(url.current).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), COPIED_MS);
+      }, report);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [report]);
   return (
     <section className="browser" aria-label="ブラウザ">
       <div className="browser-tabs" role="tablist">
@@ -1204,11 +1222,13 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
           key={`${active.id}:${active.url}`}
           className="url mono"
           defaultValue={active.url}
-          aria-label="URL"
+          aria-label="URL（⌘L でコピー）"
+          title="⌘L でコピー"
           onKeyDown={(e) => {
             if (isEnter(e)) navigate(e.currentTarget.value.trim());
           }}
         />
+        {copied && <span className="muted small-text">コピーしました</span>}
         <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
           Dia で開く
         </button>

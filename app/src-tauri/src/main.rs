@@ -947,6 +947,19 @@ struct NewTab {
     url: String,
 }
 
+/// ⌘L inside a page copies its URL.
+const COPY_LINK_SCRIPT: &str = include_str!("copy_link.js");
+
+/// Puts text on the clipboard, for ⌘L while the app itself has focus.
+#[tauri::command]
+fn copy_text(text: String) -> Result<(), String> {
+    use std::io::Write;
+    let mut child = cli("pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(|e| format!("pbcopy: {e}"))?;
+    child.stdin.take().ok_or("pbcopy has no stdin")?.write_all(text.as_bytes()).map_err(err)?;
+    let status = child.wait().map_err(err)?;
+    status.success().then_some(()).ok_or_else(|| format!("pbcopy failed: {status}"))
+}
+
 fn browser_rect(x: f64, y: f64, width: f64, height: f64) -> tauri::Rect {
     tauri::Rect { position: LogicalPosition::new(x, y).into(), size: LogicalSize::new(width, height).into() }
 }
@@ -989,6 +1002,7 @@ fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width:
     let (on_load, on_title, on_new) = (app.clone(), app.clone(), app.clone());
     let (load_tab, title_tab) = (tab.clone(), tab);
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
+        .initialization_script(COPY_LINK_SCRIPT)
         .on_page_load(move |_, payload| {
             let _ = on_load.emit(BROWSER_URL_EVENT, TabUrl { tab: load_tab.clone(), url: payload.url().to_string() });
         })
@@ -1483,6 +1497,7 @@ fn main() {
             browser_bounds,
             browser_hide,
             browser_close,
+            copy_text,
             browser_go
         ])
         .run(tauri::generate_context!())
