@@ -997,6 +997,12 @@ button.gh:hover:not(:disabled) {
   color: var(--on-waiting);
 }
 
+.open-menu.accent > button {
+  background: var(--accent-fill);
+  border-color: var(--accent-fill);
+  color: var(--on-accent);
+}
+
 .open-menu.primary .open-caret {
   border-left: 1px solid rgba(0, 0, 0, 0.15) !important;
 }

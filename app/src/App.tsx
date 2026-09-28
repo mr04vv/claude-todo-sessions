@@ -408,17 +408,22 @@ function relationLabel(todo: Todo, allTodos: Todo[]): string | null {
   return null;
 }
 
+/// Closes a menu when the pointer goes down outside `root`.
+function useOutsideClose(root: React.RefObject<HTMLElement | null>, open: boolean, close: () => void) {
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => !root.current?.contains(e.target as Node) && close();
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
+}
+
 /// "開く" jumps to the session where it runs (its herdr pane, else Desktop);
 /// the caret picks Desktop or herdr explicitly.
 function OpenMenu({ session, report, primary, label = "開く" }: { session: Session; report: (e: unknown) => void; primary?: boolean; label?: string }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => !root.current?.contains(e.target as Node) && setOpen(false);
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [open]);
+  useOutsideClose(root, open, () => setOpen(false));
   const openInBrowser = useContext(BrowserContext);
   const cloud = isCloud(session);
   const go = (target?: "desktop" | "herdr" | "web") => {
@@ -1808,7 +1813,6 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
 
 /// How a review session submits its review: after asking, or on its own.
 type ReviewSubmit = "ask" | "auto";
-const REVIEW_SUBMIT_KEY = "reviewSubmit";
 
 const REVIEW_SUBMIT_HOW = "指摘はインラインコメントと本文にまとめて提出してください（gh pr review、使えなければ GitHub のツール）。";
 
@@ -1822,6 +1826,38 @@ const reviewPrompt = (url: string, submit: ReviewSubmit) =>
       : "レビューが終わったら、確認せずに GitHub に提出してください。ブロッカー（マージ前に直すべき問題）があれば Request changes、なければ Approve で、ブロッカーでない指摘はコメントとして添えてください。",
     REVIEW_SUBMIT_HOW,
   ].join("\n\n");
+
+/// "/review で開始" asks before submitting the review; the caret picks, per
+/// PR, whether the session may submit on its own.
+function ReviewButton({ accent, onStart }: { accent: boolean; onStart: (submit: ReviewSubmit) => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLSpanElement>(null);
+  useOutsideClose(root, open, () => setOpen(false));
+  const start = (submit: ReviewSubmit) => {
+    setOpen(false);
+    onStart(submit);
+  };
+  return (
+    <span ref={root} className={`open-menu${accent ? " accent" : ""}`} onClick={stop}>
+      <button className="open-main" title="レビューして、提出する前に確認する" onClick={() => start("ask")}>
+        <span className="mono">/review</span> で開始
+      </button>
+      <button className="open-caret" aria-label="提出のしかたを選んで開始" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        <Icon name="chevron" size={10} />
+      </button>
+      {open && (
+        <span className="menu" role="menu">
+          <button role="menuitem" onClick={() => start("ask")}>
+            提出前に確認して開始
+          </button>
+          <button role="menuitem" onClick={() => start("auto")}>
+            自動で提出まで行う
+          </button>
+        </span>
+      )}
+    </span>
+  );
+}
 
 type PrFilter = "all" | "review" | "mine";
 type PrRow = Pr & { kind: "review" | "mine" };
@@ -1841,11 +1877,6 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   const [filter, setFilter] = useState<PrFilter>("all");
   const [reviewRunner, setReviewRunnerState] = useState<Target>(() => load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal"] as const, "web"));
   const openInBrowser = useContext(BrowserContext);
-  const [reviewSubmit, setReviewSubmitState] = useState<ReviewSubmit>(() => load(REVIEW_SUBMIT_KEY, ["ask", "auto"] as const, "ask"));
-  const setReviewSubmit = (v: ReviewSubmit) => {
-    remember(REVIEW_SUBMIT_KEY, v);
-    setReviewSubmitState(v);
-  };
   const setReviewRunner = (t: Target) => {
     remember(REVIEW_RUNNER_KEY, t);
     setReviewRunnerState(t);
@@ -1858,10 +1889,10 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   // A PR becomes a todo that ships as it, so its state keeps the todo current.
   const makeTodo = (p: Pr, title: string) =>
     api.createTodo({ title, repos: [p.repo], cwd: cwdOf(p) }).then((t) => api.updateTodo(t.id, { pr_url: p.url }));
-  const startReview = (p: Pr) =>
+  const startReview = (p: Pr, submit: ReviewSubmit) =>
     run(async () => {
       const todo = todoOf(p) ?? (await makeTodo(p, `レビュー: ${p.title}`));
-      await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url, reviewSubmit) });
+      await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url, submit) });
       if (reviewRunner === "desktop") await api.startDesktop(todo.id);
       else if (reviewRunner === "terminal") await api.startTerminal(todo.id);
       else {
@@ -1894,10 +1925,6 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
           <option value="cloud">/review は Cloud・Desktop</option>
           <option value="desktop">/review は Local・Desktop</option>
           <option value="terminal">/review は herdr</option>
-        </select>
-        <select className="select compact" value={reviewSubmit} aria-label="レビューの提出" title="レビューを GitHub に出す前に聞くか" onChange={(e) => setReviewSubmit(e.target.value as ReviewSubmit)}>
-          <option value="ask">提出前に確認する</option>
-          <option value="auto">自動で提出する</option>
         </select>
         <button className="ghost icon" aria-label="PR を取り直す" title="PR を取り直す" onClick={onRefresh}>
           <Icon name="sync" size={14} />
@@ -1945,11 +1972,7 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
                           </button>
                         )
                       )}
-                      {p.kind === "review" && (
-                        <button className={`small${browserUrl === p.url ? " primary" : ""}`} onClick={(e) => (e.stopPropagation(), startReview(p))}>
-                          <span className="mono">/review</span> で開始
-                        </button>
-                      )}
+                      {p.kind === "review" && <ReviewButton accent={browserUrl === p.url} onStart={(submit) => startReview(p, submit)} />}
                     </li>
                   );
                 })}
