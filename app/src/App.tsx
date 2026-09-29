@@ -22,6 +22,7 @@ import {
   BROWSER_SWITCH_TAB_EVENT,
   BROWSER_CLOSE_TAB_EVENT,
   BROWSER_ARCHIVE_EVENT,
+  OPEN_PALETTE_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -3181,6 +3182,7 @@ export default function App() {
       listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => switchRef.current(payload)),
       listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => closeShownRef.current()),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => archiveShownRef.current()),
+      listen(OPEN_PALETTE_EVENT, () => setDialog((d) => (d === "palette" ? null : "palette"))),
       // The menu bar and notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];

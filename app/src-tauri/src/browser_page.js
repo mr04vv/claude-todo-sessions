@@ -1,6 +1,7 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: ⌘L moves to the app's address bar, ⌘T opens a new tab (⌘W, the app
-// menu's, closes it), ⌘⇧A archives the cloud session it shows, ⌘R reloads,
+// menu's, closes it), ⌘⇧A archives the cloud session it shows, ⌘K opens the
+// app's commands, ⌘R reloads,
 // ⌘[ ⌘] go back and forward, ⌘⇧[ ⌘⇧] switch tabs, and right-click offers
 // translation (WKWebView has no translate item).
 (() => {
@@ -13,6 +14,7 @@
   const PREV_TAB = "todo-sessions://tab-prev";
   const NEXT_TAB = "todo-sessions://tab-next";
   const ARCHIVE = "todo-sessions://archive";
+  const PALETTE = "todo-sessions://palette";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
 
@@ -39,6 +41,13 @@
         return;
       }
       if (e.shiftKey) return;
+      // The app's commands win over the page's own ⌘K (ChatGPT's search).
+      if (key === "k") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        location.href = PALETTE;
+        return;
+      }
       if (key === "r") {
         e.preventDefault();
         location.reload();
