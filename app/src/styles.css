@@ -2366,3 +2366,20 @@ body.resizing {
   align-items: center;
   padding: 4px 8px;
 }
+
+/* The focus mode's page picker (FocusPicker). */
+.focus-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.focus-picker h3 {
+  margin: 10px 0 2px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.focus-picker .add-inline {
+  opacity: 1;
+}

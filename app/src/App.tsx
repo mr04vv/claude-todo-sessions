@@ -1609,6 +1609,8 @@ interface BrowserTab {
   term?: TerminalRun;
   /// One of PINNED_PAGES.
   pinned?: boolean;
+  /// The focus mode's own page on its left, apart from the pane's tabs.
+  focus?: boolean;
 }
 
 /// The browser pane: tabs of web pages, each a webview laid over this one on
@@ -1701,7 +1703,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
           );
         })}
         <span className="browser-tabs-sep" />
-        {tabs.filter((t) => !t.pinned).map((t) => (
+        {tabs.filter((t) => !t.pinned && !t.focus).map((t) => (
           <span
             key={t.id}
             data-tab={t.id}
@@ -1810,9 +1812,103 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
   );
 }
 
-/// The focus mode: the tab the pane showed (a page or a terminal) on the
-/// left and a pinned page (ChatGPT or Claude Code) on the right, nothing else.
-function FocusMode({ left, right, covered, report, width, onResize, onRight, onAddress, onExit }: {
+/// A page kept for studying, offered when picking the focus mode's left page.
+interface StudyPage {
+  label: string;
+  url: string;
+}
+const STUDY_PAGES_KEY = "studyPages";
+/// What the focus mode's left opens: a page, or a terminal the pane has.
+type FocusItem = { url: string } | { terminal: string };
+
+/// Picks the focus mode's left page: a URL, a study page (kept and edited
+/// here) or a terminal the pane has open.
+function FocusPicker({ terminals, adding, onPick, onClose }: {
+  terminals: BrowserTab[];
+  /// Adding to a running focus mode, rather than starting one.
+  adding: boolean;
+  onPick: (item: FocusItem) => void;
+  onClose: () => void;
+}) {
+  const [pages, setPagesState] = useState<StudyPage[]>(() => loadJson<StudyPage[]>(STUDY_PAGES_KEY, []));
+  const setPages = (list: StudyPage[]) => {
+    remember(STUDY_PAGES_KEY, JSON.stringify(list));
+    setPagesState(list);
+  };
+  const [addingPage, setAddingPage] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const toUrl = (text: string) => {
+    const url = addressToUrl(text);
+    return url && !url.startsWith(SEARCH_URL) ? url : null;
+  };
+  const addPage = (address: string) => {
+    const url = toUrl(address);
+    if (!url) return;
+    setPages([...pages.filter((p) => p.url !== url), { label: nameRef.current?.value.trim() || hostOf(url), url }]);
+    setAddingPage(false);
+  };
+  return (
+    <Modal title={adding ? "左に開くページ" : "フォーカスモードで開くページ"} onClose={onClose}>
+      <div className="focus-picker">
+        <input
+          autoFocus
+          className="mono"
+          placeholder="URL を入力して Enter"
+          aria-label="開く URL"
+          onKeyDown={(e) => {
+            const url = isEnter(e) ? toUrl(e.currentTarget.value) : null;
+            if (url) onPick({ url });
+          }}
+        />
+        <h3>学習ページ</h3>
+        {pages.length === 0 && !addingPage && <p className="muted">まだありません。よく読むページを足しておくと、ここから選べます。</p>}
+        {pages.map((p) => (
+          <div key={p.url} className="start-page">
+            <button onClick={() => onPick({ url: p.url })}>
+              {p.label}
+              <span className="muted mono">{hostOf(p.url)}</span>
+            </button>
+            <button className="ghost icon" aria-label={`${p.label} を学習ページから外す`} title="外す" onClick={() => setPages(pages.filter((x) => x.url !== p.url))}>
+              <Icon name="close" size={12} />
+            </button>
+          </div>
+        ))}
+        {addingPage ? (
+          <div className="start-page-add">
+            <input ref={nameRef} autoFocus placeholder="名前（なくてもよい）" aria-label="名前" />
+            <input className="mono" placeholder="URL を入力して Enter" aria-label="学習ページの URL" onKeyDown={(e) => isEnter(e) && addPage(e.currentTarget.value)} />
+          </div>
+        ) : (
+          <button className="ghost add-inline" onClick={() => setAddingPage(true)}>
+            <Icon name="plus" size={12} /> 学習ページを追加
+          </button>
+        )}
+        {terminals.length > 0 && (
+          <>
+            <h3>ターミナル</h3>
+            {terminals.map((t) => (
+              <div key={t.id} className="start-page">
+                <button onClick={() => onPick({ terminal: t.id })}>
+                  <span>
+                    <span className="muted mono">$ </span>
+                    {t.title}
+                  </span>
+                  <span className="muted mono ellipsis">{t.term?.cwd}</span>
+                </button>
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+/// The focus mode: its own pages (and terminals) on the left and a pinned
+/// page (ChatGPT, Claude Code or Notion) on the right, nothing else.
+function FocusMode({ lefts, left, right, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onExit }: {
+  /// The left side's tabs (its own pages, and terminals), and the one shown.
+  lefts: BrowserTab[];
   left: BrowserTab | null;
   right: BrowserTab | undefined;
   covered: boolean;
@@ -1821,18 +1917,39 @@ function FocusMode({ left, right, covered, report, width, onResize, onRight, onA
   onResize: (w: number) => void;
   onRight: (pinnedId: string) => void;
   onAddress: (tab: string, url: string) => void;
+  onSelectLeft: (id: string) => void;
+  onCloseLeft: (id: string) => void;
+  /// Picks another page (or terminal) for the left.
+  onAddLeft: () => void;
   onExit: () => void;
 }) {
   const leftWeb = left && !left.term ? left.id : undefined;
   return (
     <div className="focus-mode">
       <section className="browser focus-left" aria-label="フォーカスモードの左側">
+        <div className="browser-tabs" role="tablist">
+          {lefts.map((t) => (
+            <span key={t.id} className={`browser-tab${t.id === left?.id ? " on" : ""}`}>
+              <button role="tab" aria-selected={t.id === left?.id} className="browser-tab-main" title={t.term?.command ?? t.url} onClick={() => onSelectLeft(t.id)}>
+                {t.loading && <span className="spinner" aria-label="読み込み中" />}
+                {t.term && <span className="muted mono">$</span>}
+                <span className="ellipsis">{t.title || hostOf(t.url)}</span>
+              </button>
+              <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を左から外す`} onClick={() => onCloseLeft(t.id)}>
+                <Icon name="close" size={11} />
+              </button>
+            </span>
+          ))}
+          <button className="ghost icon browser-new-tab" aria-label="左に開くページを選ぶ" title="左に開くページを選ぶ" onClick={onAddLeft}>
+            <Icon name="plus" size={13} />
+          </button>
+        </div>
         {left?.term ? (
           <TerminalView key={left.id} id={left.id} run={left.term} report={report} />
         ) : left ? (
           <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} />
         ) : (
-          <p className="muted empty">ブラウザのタブかターミナルを開いてから入ると、ここに出ます。</p>
+          <p className="muted empty">＋ から左に開くページを選びます。</p>
         )}
       </section>
       <aside className="browser-dock focus-right">
@@ -3328,7 +3445,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "exitFocus" | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | null;
 
 /// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
@@ -3466,12 +3583,14 @@ export default function App() {
     setNewTab(false);
   };
   const nextTab = useRef(1);
-  const activeTab = newTab ? null : (tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1] ?? null);
+  // The pane's tabs: the focus mode's own pages are apart from them.
+  const paneTabs = tabs.filter((t) => !t.focus);
+  const activeTab = newTab ? null : (paneTabs.find((t) => t.id === activeTabId) ?? paneTabs[paneTabs.length - 1] ?? null);
   const browserUrl = browserShown ? (activeTab?.url ?? null) : null;
   /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]).
   const switchTab = (delta: number) => {
     // The tabs the strip shows (the focus mode's own page, Notion, is not one).
-    const shown = tabs.filter((t) => !t.pinned || PINNED_PAGES.some((p) => p.id === t.id));
+    const shown = tabs.filter((t) => !t.focus && (!t.pinned || PINNED_PAGES.some((p) => p.id === t.id)));
     if (!browserShown || shown.length === 0) return;
     const i = activeTab ? shown.findIndex((t) => t.id === activeTab.id) : delta > 0 ? -1 : shown.length;
     setActiveTabId(shown[(i + delta + shown.length) % shown.length].id);
@@ -3508,7 +3627,7 @@ export default function App() {
     setBrowserShown(true);
     // Only a Claude session's page comes back to its tab; anything else, the
     // claude.ai home included, may be open in as many tabs as asked.
-    const open = CLOUD_SESSION_PAGE.test(url) ? tabs.find((t) => sameTarget(t.url, url)) : undefined;
+    const open = CLOUD_SESSION_PAGE.test(url) ? paneTabs.find((t) => sameTarget(t.url, url)) : undefined;
     if (open) return setActiveTabId(open.id);
     const id = `t${nextTab.current++}`;
     setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
@@ -3562,29 +3681,57 @@ export default function App() {
   const exitFocus = () => {
     setDialog(null);
     setFocusMode(false);
+    // The focus pages go with it; the terminals were the pane's all along.
+    for (const t of tabs.filter((t) => t.focus)) api.browserClose(t.id).catch(report);
+    setTabs((prev) => prev.filter((t) => !t.focus));
+    setFocusLeftIds([]);
+    setFocusActive(null);
     setHeldNotices(Math.max(0, unreadNow() - unreadAtFocus.current));
   };
-  /// The focus mode with the todo's page on the left: its first attached link,
-  /// else its PR or issue; with none, the tab the pane shows.
-  const focusTodo = (todo: Todo) => {
-    const url = todo.links[0]?.url ?? todo.pr_url ?? todo.issue_url;
-    if (url) {
-      // In the app whatever "リンクを開く" says: the focus mode shows it here.
-      const open = tabs.find((t) => !t.pinned && sameTarget(t.url, url));
-      const id = open?.id ?? `t${nextTab.current++}`;
-      if (!open) setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
-      setActiveTabId(id);
-    }
-    enterFocus();
+  // The focus mode's left: its own tabs (focus pages, apart from the pane's)
+  // and terminals the pane has, and the one shown.
+  const [focusLeftIds, setFocusLeftIds] = useState<string[]>([]);
+  const [focusActive, setFocusActive] = useState<string | null>(null);
+  const focusLefts = focusLeftIds.map((id) => tabs.find((t) => t.id === id)).filter((t): t is BrowserTab => t !== undefined);
+  const focusLeft = focusLefts.find((t) => t.id === focusActive) ?? focusLefts[0] ?? null;
+  /// Puts items on the left, the first of them shown.
+  const addToFocus = (items: FocusItem[]) => {
+    const ids = items.map((item) => {
+      if ("terminal" in item) return item.terminal;
+      const id = `f${nextTab.current++}`;
+      setTabs((prev) => [...prev, { id, url: item.url, title: null, loading: true, nav: 0, focus: true }]);
+      return id;
+    });
+    setFocusLeftIds((prev) => [...prev, ...ids.filter((id) => !prev.includes(id))]);
+    if (ids[0]) setFocusActive(ids[0]);
   };
-  const enterFocus = () => {
+  /// Takes a tab off the left (a focus page closes; a terminal stays the pane's).
+  const removeFromFocus = (id: string) => {
+    setFocusLeftIds((prev) => prev.filter((x) => x !== id));
+    if (tabs.find((t) => t.id === id)?.focus) {
+      api.browserClose(id).catch(report);
+      setTabs((prev) => prev.filter((t) => t.id !== id));
+    }
+  };
+  const [focusPicking, setFocusPicking] = useState<"start" | "add">("start");
+  const pickFocus = (mode: "start" | "add") => {
+    setFocusPicking(mode);
+    setDialog("focusPick");
+  };
+  /// The focus mode with the todo's pages on the left (its links, PR and
+  /// issue); with none, the pages to pick from.
+  const focusTodo = (todo: Todo) => {
+    const urls = [...new Set([...todo.links.map((l) => l.url), todo.pr_url, todo.issue_url].filter((u): u is string => !!u))];
+    if (urls.length === 0) return pickFocus("start");
+    enterFocus(urls.map((url) => ({ url })));
+  };
+  const enterFocus = (items: FocusItem[]) => {
     unreadAtFocus.current = unreadNow();
     ensurePinned(focusRight);
     typeInto = focusRight;
+    addToFocus(items);
     setFocusMode(true);
   };
-  // The left side: the tab the pane shows, or else the latest other one.
-  const focusLeft = activeTab && activeTab.id !== focusRight ? activeTab : ([...tabs].reverse().find((t) => t.id !== focusRight) ?? null);
   /// Brings up a pinned page, opening its tab the first time, with its text
   /// box ready for typing.
   const showPinned = (id: string) => {
@@ -4099,7 +4246,7 @@ export default function App() {
     { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザ", run: toggleBrowser },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
-    { key: "focus", label: "フォーカスモード（左に今のタブ、右に ChatGPT）", run: enterFocus },
+    { key: "focus", label: "フォーカスモード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
     { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
@@ -4145,7 +4292,7 @@ export default function App() {
             <button className={browserShown ? "on" : ""} aria-pressed={browserShown} title="ブラウザを表示・隠す（⌘T で新しいタブ）" onClick={toggleBrowser}>
               <Icon name="globe" />
               <span className="grow">ブラウザ</span>
-              {tabs.some((t) => !t.pinned) && <span className="muted">{tabs.filter((t) => !t.pinned).length}</span>}
+              {paneTabs.some((t) => !t.pinned) && <span className="muted">{paneTabs.filter((t) => !t.pinned).length}</span>}
             </button>
             {PINNED_PAGES.map((p) => (
               <button key={p.id} className={browserShown && activeTab?.id === p.id ? "on" : ""} title={`${p.label} を右のペインで開く（開いたままになります）`} onClick={() => showPinned(p.id)}>
@@ -4443,7 +4590,11 @@ export default function App() {
         )}
         {focusMode && (
           <FocusMode
+            lefts={focusLefts}
             left={focusLeft}
+            onSelectLeft={setFocusActive}
+            onCloseLeft={removeFromFocus}
+            onAddLeft={() => pickFocus("add")}
             right={tabs.find((t) => t.id === focusRight)}
             covered={covered}
             report={report}
@@ -4510,6 +4661,18 @@ export default function App() {
           />
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+        {dialog === "focusPick" && (
+          <FocusPicker
+            adding={focusPicking === "add"}
+            terminals={paneTabs.filter((t) => t.term)}
+            onClose={() => setDialog(null)}
+            onPick={(item) => {
+              setDialog(null);
+              if (focusPicking === "add") addToFocus([item]);
+              else enterFocus([item]);
+            }}
+          />
+        )}
         {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
       </div>
     </TerminalContext.Provider>
