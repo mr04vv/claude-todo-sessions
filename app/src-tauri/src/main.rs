@@ -1212,10 +1212,11 @@ fn browser_tabs(app: &AppHandle) -> Vec<tauri::Webview> {
 
 /// Shows tab `tab` with `url` in the browser pane: a webview laid over the
 /// main one at the given rectangle (logical pixels), created on first use,
-/// with the other tabs hidden behind it. GitHub refuses to be framed, so the
-/// pane cannot be an iframe.
+/// with the other tabs hidden behind it (but `keep`, shown beside it in the
+/// focus mode). GitHub refuses to be framed, so the pane cannot be an iframe.
 #[tauri::command(async)]
-fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, keep: Option<String>) -> Result<(), String> {
     if !is_web_url(&url) {
         return Err(format!("開けない URL です: {url}"));
     }
@@ -1223,7 +1224,8 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
     let parsed: tauri::Url = url.parse().map_err(err)?;
     // Two opens of a new tab at once (a re-render) would both create it.
     let _one_at_a_time = state.browser_lock.lock().map_err(err)?;
-    for other in browser_tabs(&app).iter().filter(|v| v.label() != label) {
+    let keep = keep.map(|k| tab_label(&k)).transpose()?;
+    for other in browser_tabs(&app).iter().filter(|v| v.label() != label && Some(v.label()) != keep.as_deref()) {
         other.hide().map_err(err)?;
     }
     if let Some(view) = app.get_webview(&label) {
@@ -1292,19 +1294,20 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
         .map_err(err)
 }
 
-/// Follows the pane's placeholder when the layout changes.
+/// Follows tab `tab`'s placeholder when the layout changes.
 #[tauri::command(async)]
-fn browser_bounds(app: AppHandle, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
-    for view in browser_tabs(&app) {
-        view.set_bounds(browser_rect(&app, x, y, width, height, viewport)).map_err(err)?;
+fn browser_bounds(app: AppHandle, tab: String, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
+    match app.get_webview(&tab_label(&tab)?) {
+        Some(view) => view.set_bounds(browser_rect(&app, x, y, width, height, viewport)).map_err(err),
+        None => Ok(()),
     }
-    Ok(())
 }
 
-/// Hides every tab; they keep their pages for the next open.
+/// Hides tab `tab`, or every tab; they keep their pages for the next open.
 #[tauri::command(async)]
-fn browser_hide(app: AppHandle) -> Result<(), String> {
-    for view in browser_tabs(&app) {
+fn browser_hide(app: AppHandle, tab: Option<String>) -> Result<(), String> {
+    let only = tab.map(|t| tab_label(&t)).transpose()?;
+    for view in browser_tabs(&app).iter().filter(|v| only.as_deref().is_none_or(|l| v.label() == l)) {
         view.hide().map_err(err)?;
     }
     Ok(())

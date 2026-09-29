@@ -240,9 +240,11 @@ export const api = {
   skills: (cwd: string | null) => invoke<Skill[]>("skills", { cwd }),
   ghPrs: () => invoke<PrLists>("gh_prs"),
   /** Shows tab `tab` (created on first use) at `url` and hides the other tabs. */
-  browserOpen: (tab: string, url: string, r: Rect) => invoke<void>("browser_open", { tab, url, ...r }),
-  browserBounds: (r: Rect) => invoke<void>("browser_bounds", { ...r }),
-  browserHide: () => invoke<void>("browser_hide"),
+  /// Shows `tab`, hiding the other tabs but `keep` (the focus mode's other side).
+  browserOpen: (tab: string, url: string, r: Rect, keep?: string) => invoke<void>("browser_open", { tab, url, ...r, keep: keep ?? null }),
+  browserBounds: (tab: string, r: Rect) => invoke<void>("browser_bounds", { tab, ...r }),
+  /// Hides `tab`, or every tab.
+  browserHide: (tab?: string) => invoke<void>("browser_hide", { tab: tab ?? null }),
   browserClose: (tab: string) => invoke<void>("browser_close", { tab }),
   /// With `input`, the page's text box takes the typing too.
   browserFocus: (tab: string, input?: boolean) => invoke<void>("browser_focus", { tab, input: input ?? null }),

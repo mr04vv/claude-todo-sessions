@@ -1758,13 +1758,15 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
 /// A tab to give the typing to (its page's text box) once it is shown.
 let typeInto: string | null = null;
 
-function TabView({ tab: active, covered, report, onAddress, onArchive }: {
+function TabView({ tab: active, covered, report, onAddress, onArchive, keep }: {
   tab: BrowserTab;
   covered: boolean;
   report: (e: unknown) => void;
   onAddress: (url: string) => void;
   /// Set on a cloud session's page.
   onArchive?: () => void;
+  /// The tab shown beside this one (the focus mode's other side), left shown.
+  keep?: string;
 }) {
   const slot = useRef<HTMLDivElement>(null);
   const rect = () => {
@@ -1773,7 +1775,7 @@ function TabView({ tab: active, covered, report, onAddress, onArchive }: {
   };
   const navigate = (to: string) =>
     api
-      .browserOpen(active.id, to, rect())
+      .browserOpen(active.id, to, rect(), keep)
       .then(() => {
         if (typeInto !== active.id) return;
         typeInto = null;
@@ -1783,9 +1785,9 @@ function TabView({ tab: active, covered, report, onAddress, onArchive }: {
   // Switching tabs or coming back from under a dialog shows the page the tab
   // is on; the backend leaves a tab alone when it already shows that URL.
   useEffect(() => {
-    if (covered) api.browserHide().catch(report);
+    if (covered) api.browserHide(active.id).catch(report);
     else navigate(active.url);
-  }, [active.id, active.nav, covered]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active.id, active.nav, covered, keep]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (covered || !slot.current) return;
     // One resize in flight at a time, then the latest size: the page lays
@@ -1805,7 +1807,7 @@ function TabView({ tab: active, covered, report, onAddress, onArchive }: {
       if (document.body.classList.contains(RESIZING_CLASS) && size) Object.assign(r, size);
       else size = { width: r.width, height: r.height };
       api
-        .browserBounds(r)
+        .browserBounds(tabId.current, r)
         .catch(() => {})
         .finally(() => {
           inFlight = false;
@@ -1825,7 +1827,7 @@ function TabView({ tab: active, covered, report, onAddress, onArchive }: {
       window.removeEventListener(PANE_RESIZED_EVENT, follow);
     };
   }, [covered]);
-  useEffect(() => () => void api.browserHide().catch(() => {}), []);
+  useEffect(() => () => void api.browserHide(tabId.current).catch(() => {}), []);
   // Some pages move (history.pushState) without loading or retitling; catch
   // up with them, but leave the address alone while it is being edited.
   const shownUrl = useRef(active.url);
