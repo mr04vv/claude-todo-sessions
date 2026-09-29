@@ -33,13 +33,14 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
   - `issue_sync_loop`: PR の発見と issue / PR 状態の同期
   - `queue_loop`: キューに入った todo の自動起動
   - アプリ内ブラウザは `tauri` の `unstable` 機能で、main ウインドウに子 WebView を重ねる。タブごとに1つ（label `browser-<tab id>`）で、表示中以外は hide。サイズ指定つきの新規ウインドウ（ログインのポップアップ）はそのまま開かせ、それ以外はタブにする。GitHub は iframe に埋め込めないため。子 WebView を足すと main は「webview window」でなくなり `get_webview_window("main")` が None を返すので、`get_window` を使う。
+  - 端末ペイン（お試し）は `terminal.rs`（portable-pty で PTY を開き、出力を base64 の `term-output` イベントで送る）と `app/src/Terminal.tsx`（xterm.js。端末はビューより長生きするようにモジュールで持つ）。ブラウザペインのタブの1種類（`BrowserTab.term`）として出す。起動するコマンドは herdr と共通の `prepare_terminal` / `quick_run` / `resume_run` が組み立てる。シェルは `$SHELL -l -i -c` で、`.zshrc` の PATH や `claude` 関数がそのまま効く。外すときは、この2ファイル、`main.rs` の `mod terminal` と `terminal_*` コマンド、`App.tsx` の `TerminalContext` まわりとサイドバーの「ターミナル」を消す。
 - `app/src`: React 19。UI はほぼ `App.tsx` に集約（画面は Todo・セッション・PR・通知）、`api.ts` が Tauri コマンドと型の写し。
 - `plugin/`: hooks・`.mcp.json`・skill。`.claude-plugin/marketplace.json` で手元から入れる。
 
 ### セッションと todo の紐づけ
 
 - 最初のプロンプトに `[todo:N]` を入れて起動し、hook（ローカル）か cloud sync（クラウド）が拾って紐づける。プロンプトが `/` で始まる場合（`/grilling` など）はマーカーを末尾に置く（`launch::start_prompt`）。
-- ターミナル起動は `claude --session-id <uuid>` で先に DB に登録してから herdr の新しいワークスペースで動かす。閉じたセッションの herdr ボタンは `claude --resume` で再開する。
+- ターミナル起動は `claude --session-id <uuid>` で先に DB に登録してから herdr の新しいワークスペースで動かす。閉じたセッションの herdr ボタンは `claude --resume` で再開する。サイドバーの「ターミナル」がアプリ内なら、同じコマンドを端末ペインのタブで動かす（`terminal_start` / `terminal_quick` / `terminal_resume`。herdr で動いているセッションは herdr を前に出す）。
 - Desktop への遷移: アーカイブされていなければ `claude://code/continue?session=local_…`、アーカイブ済みなら `claude://resume?session=<uuid>`（アーカイブも解除される）。クラウドは `claude://code/cse_…`。
 - クラウドの Web は `https://claude.ai/code/session_…`（`cse_` を `session_` に置き換える。フロントは `api.ts` の `cloudWebUrl`、Rust は `launch::web_url`）。「開く」はサイドバーの「Cloud を開く」（Web / Desktop）に従う。メニューバーと macOS 通知からは `open-cloud` イベントでフロントに開かせる。
 
