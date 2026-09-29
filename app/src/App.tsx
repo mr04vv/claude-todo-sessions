@@ -1212,6 +1212,20 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
   );
 }
 
+/// Whether a tab already shows `url`: the same page, or a page under it
+/// (a PR's Files tab, a session page after claude.ai added a query), so
+/// opening it again comes back to that tab.
+function sameTarget(tabUrl: string, url: string): boolean {
+  try {
+    const a = new URL(tabUrl);
+    const b = new URL(url);
+    const path = (p: string) => p.replace(/\/+$/, "");
+    return a.origin === b.origin && (path(a.pathname) === path(b.pathname) || (path(b.pathname) !== "" && path(a.pathname).startsWith(`${path(b.pathname)}/`)));
+  } catch {
+    return tabUrl === url;
+  }
+}
+
 /// A page in the browser pane.
 interface BrowserTab {
   id: string;
@@ -2513,7 +2527,7 @@ export default function App() {
       api.openInDia(url).catch(report);
       return;
     }
-    const open = tabs.find((t) => t.url === url);
+    const open = tabs.find((t) => sameTarget(t.url, url));
     if (open) return setActiveTabId(open.id);
     const id = `t${nextTab.current++}`;
     setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
