@@ -23,9 +23,15 @@ export const terminalApi = {
   start: (todoId: number, options?: { model?: string; effort?: string }) =>
     invoke<TerminalRun>("terminal_start", { todoId, options: options ?? null }),
   quick: (prompt: string) => invoke<TerminalRun>("terminal_quick", { prompt }),
-  /// Null when the session still runs in herdr, which then has the focus.
-  resume: (sessionId: string) => invoke<TerminalRun | null>("terminal_resume", { sessionId }),
+  /// Null when the session still runs in herdr, which then has the focus, or
+  /// (with `desktop`) when Claude Desktop knows it and opens it.
+  resume: (sessionId: string, desktop: boolean) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop }),
+  /// Lets the menu bar and notifications open local sessions through the page.
+  setInApp: (on: boolean) => invoke<void>("set_in_app_terminal", { on }),
 };
+
+/// `{session_id}` from the menu bar or a notification, for a local session.
+export const OPEN_LOCAL_EVENT = "open-local";
 
 /// Where "herdr" targets run: herdr in Ghostty, or a tab of this app.
 export type TerminalTarget = "ghostty" | "app";

@@ -48,7 +48,7 @@ import {
   type Status,
   type Todo,
 } from "./api";
-import { closeTerminal, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
+import { closeTerminal, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
 /// The usage API answers 429 when asked often (status lines poll it too), so
@@ -148,12 +148,14 @@ interface InAppTerminal {
   focus: (sessionId: string) => boolean;
 }
 const TerminalContext = createContext<InAppTerminal | null>(null);
-/// herdr, or a terminal tab when the in-app terminal is chosen, for a session
-/// that runs locally: one still running comes to the front where it runs.
-function openLocal(terminal: InAppTerminal | null, sessionId: string, report: (e: unknown) => void) {
-  if (!terminal) return void api.openSession(sessionId, "herdr").catch(report);
+/// Opens a local session in herdr, or in a terminal tab when the in-app
+/// terminal is chosen; one still running comes to the front where it runs.
+/// `main` is "開く": with herdr it falls back to Desktop, and with the
+/// in-app terminal a session Desktop knows opens there.
+function openLocal(terminal: InAppTerminal | null, sessionId: string, report: (e: unknown) => void, main = false) {
+  if (!terminal) return void api.openSession(sessionId, main ? undefined : "herdr").catch(report);
   if (terminal.focus(sessionId)) return;
-  terminalApi.resume(sessionId).then((r) => r && terminal.open(r), report);
+  terminalApi.resume(sessionId, main).then((r) => r && terminal.open(r), report);
 }
 
 const COLUMNS: { status: Status; label: string }[] = [
@@ -598,8 +600,10 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
     if (cloud && openCloud) {
       setOpen(false);
       openCloud(session.session_id);
-    } else if (!terminal?.focus(session.session_id)) go();
-    else setOpen(false);
+    } else {
+      setOpen(false);
+      openLocal(terminal, session.session_id, report, true);
+    }
   };
   return (
     <span ref={root} className={`open-menu${primary ? " primary" : ""}`} onPointerDown={stop} onClick={stop}>
@@ -2417,6 +2421,7 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
   // Unread first: that is what the page is opened for.
   const [unreadOnly, setUnreadOnly] = useState(true);
   const openCloud = useContext(OpenCloudContext);
+  const terminal = useContext(TerminalContext);
   const unread = board.notifications.filter((n) => !n.read).length;
   const rows = unreadOnly ? board.notifications.filter((n) => !n.read) : board.notifications;
   const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
@@ -2459,7 +2464,7 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
                     e.stopPropagation();
                     read(n);
                     if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
-                    else api.openSession(n.session_id).catch(report);
+                    else openLocal(terminal, n.session_id, report, true);
                   }}
                 >
                   開く
@@ -2902,6 +2907,13 @@ export default function App() {
           },
         }
       : null;
+  useEffect(() => void terminalApi.setInApp(terminalTarget === "app").catch((e) => setError(String(e))), [terminalTarget]);
+  const openLocalRef = useRef((sessionId: string) => openLocal(inAppTerminal, sessionId, report, true));
+  openLocalRef.current = (sessionId) => openLocal(inAppTerminal, sessionId, report, true);
+  useEffect(() => {
+    const off = listen<{ session_id: string }>(OPEN_LOCAL_EVENT, ({ payload }) => openLocalRef.current(payload.session_id));
+    return () => void off.then((f) => f());
+  }, []);
   const closeTab = (id: string) => {
     if (tabs.find((t) => t.id === id)?.term) closeTerminal(id);
     else api.browserClose(id).catch(report);

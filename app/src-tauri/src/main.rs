@@ -64,6 +64,8 @@ struct AppState {
     cloud_wake: Mutex<std::sync::mpsc::Sender<()>>,
     /// herdr session the user picked for new workspaces, if any.
     herdr_session: Mutex<Option<String>>,
+    /// Local sessions run in the in-app terminal pane rather than herdr.
+    in_app_terminal: AtomicBool,
     /// Held while a browser tab is shown or created.
     browser_lock: Mutex<()>,
     /// CLI session ids archived in Desktop. Reading every Desktop record is
@@ -329,14 +331,17 @@ fn quick_claude(state: State<AppState>, prompt: Option<String>) -> Result<(), St
     }
 }
 
-/// A plain `claude` at home, with the prompt if one is given.
+/// A plain `claude` at home, with the prompt if one is given. Its session id
+/// is picked here so the in-app terminal can find its tab again.
 fn quick_run(prompt: Option<&str>) -> TerminalRun {
     let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
+    let session = uuid::Uuid::new_v4().to_string();
+    let first = prompt.map(|p| format!(" {}", shell_quote(p))).unwrap_or_default();
     TerminalRun {
         cwd: home().to_string_lossy().to_string(),
         title: prompt.map(|p| p.chars().take(24).collect()).unwrap_or_else(|| "claude".into()),
-        command: prompt.map_or_else(|| "claude".into(), |p| format!("claude {}", shell_quote(p))),
-        session: None,
+        command: format!("claude --session-id {session}{first}"),
+        session: Some(session),
     }
 }
 
@@ -352,14 +357,25 @@ fn terminal_quick(prompt: Option<String>) -> TerminalRun {
     quick_run(prompt.as_deref())
 }
 
-/// A session still running in herdr is focused there (None); one that runs
-/// nowhere comes back as a `claude --resume` to run in the app.
+/// A session still running in herdr is focused there (None), and with
+/// `desktop` one Claude Desktop knows opens there (None); any other comes back
+/// as a `claude --resume` to run in the app.
 #[tauri::command(async)]
-fn terminal_resume(state: State<AppState>, session_id: String) -> Result<Option<TerminalRun>, String> {
+fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) -> Result<Option<TerminalRun>, String> {
     if focus_in_herdr(&session_id) {
         return Ok(None);
     }
+    if desktop {
+        if let Some(local) = cts_core::desktop::find_local_id(&home().join(DESKTOP_SESSIONS_DIR), &session_id) {
+            return open_url(&launch::jump_url(&session_id, Some(&local))).map(|_| None);
+        }
+    }
     resume_run(&state, &session_id).map(Some)
+}
+
+#[tauri::command]
+fn set_in_app_terminal(state: State<AppState>, on: bool) {
+    state.in_app_terminal.store(on, Ordering::Relaxed);
 }
 
 /// `claude --resume` in the folder the session ran in, where its transcript is.
@@ -457,6 +473,8 @@ fn open_session(state: State<AppState>, session_id: String, target: Option<Strin
 /// Asks the page to open a cloud session as it is set to: its web page in
 /// the browser pane (or Dia), or Claude Desktop.
 const OPEN_CLOUD_EVENT: &str = "open-cloud";
+/// Asks the page to open a local session in the in-app terminal (see `terminal_resume`).
+const OPEN_LOCAL_EVENT: &str = "open-local";
 
 #[derive(Clone, Serialize)]
 struct OpenCloud {
@@ -465,12 +483,15 @@ struct OpenCloud {
 
 /// Opens a session from the menu bar or a notification: a cloud one as the
 /// page is set to open them, a local one where it runs (see `jump_to_session`).
+/// With the in-app terminal chosen, the page opens local sessions too.
 fn open_from_outside(app: &AppHandle, session_id: &str) -> Result<(), String> {
-    if !launch::is_cloud_session(session_id) {
+    let cloud = launch::is_cloud_session(session_id);
+    if !cloud && !app.state::<AppState>().in_app_terminal.load(Ordering::Relaxed) {
         return jump_to_session(session_id, false);
     }
     show_window(app);
-    app.emit(OPEN_CLOUD_EVENT, OpenCloud { session_id: session_id.into() }).map_err(err)
+    let event = if cloud { OPEN_CLOUD_EVENT } else { OPEN_LOCAL_EVENT };
+    app.emit(event, OpenCloud { session_id: session_id.into() }).map_err(err)
 }
 
 fn jump_to_session(session_id: &str, desktop: bool) -> Result<(), String> {
@@ -1612,6 +1633,7 @@ fn main() {
             origin_cache: Mutex::new(HashMap::new()),
             loop_enabled: AtomicBool::new(true),
             herdr_session: Mutex::new(None),
+            in_app_terminal: AtomicBool::new(false),
             archived: Mutex::new(HashSet::new()),
             browser_lock: Mutex::new(()),
             github_wake: Mutex::new(github_tx),
@@ -1705,6 +1727,7 @@ fn main() {
             terminal_start,
             terminal_quick,
             terminal_resume,
+            set_in_app_terminal,
             terminal::term_open,
             terminal::term_write,
             terminal::term_resize,
