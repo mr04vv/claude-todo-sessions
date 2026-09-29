@@ -2769,13 +2769,38 @@ interface Command {
   run: () => void;
 }
 
+/// Other words a command is found by, for a word in its label: "プルリク"
+/// finds "PR を表示", "session" finds "セッションを表示".
+const SEARCH_ALIASES: Record<string, string[]> = {
+  pr: ["pull request", "プルリク", "プルリクエスト", "レビュー", "review"],
+  セッション: ["session", "claude"],
+  todo: ["タスク", "task"],
+  通知: ["notification", "notice", "お知らせ", "bell"],
+  ブラウザ: ["browser", "web", "タブ", "tab"],
+  タブ: ["tab"],
+  同期: ["sync", "更新", "refresh", "reload"],
+  issue: ["イシュー", "課題", "import", "取り込み"],
+  chatgpt: ["gpt", "openai", "チャット", "chat"],
+  "claude code": ["クロード", "cloud", "web"],
+  ちょっと: ["quick", "claude"],
+  新しい: ["new", "add", "作成", "追加"],
+  リンク: ["link"],
+  表示: ["show", "open", "開く"],
+};
+/// Whether every word of the query is in the label or the label's aliases.
+function commandMatches(label: string, query: string) {
+  const text = label.toLowerCase();
+  const hay = [text, ...Object.entries(SEARCH_ALIASES).filter(([word]) => text.includes(word)).flatMap(([, aliases]) => aliases)].join(" ");
+  return query.split(/\s+/).every((w) => hay.includes(w));
+}
+
 /// ⌘K: the actions that used to crowd the sidebar, the screens, and a jump to any todo.
 function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Command[]; todos: Todo[]; onOpenTodo: (id: number) => void; onClose: () => void }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const q = query.trim().toLowerCase();
   const items: Command[] = [
-    ...commands.filter((c) => c.label.toLowerCase().includes(q)),
+    ...commands.filter((c) => commandMatches(c.label, q)),
     ...(q
       ? todos
           .filter((t) => t.title.toLowerCase().includes(q) || `#${t.id}` === q || String(t.id) === q)
