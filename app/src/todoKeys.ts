@@ -17,6 +17,8 @@ export interface TodoKeyActions {
   open: (todoId: number) => void;
   /// s: the status menu.
   status: (todoId: number) => void;
+  /// f: the focus mode with the todo's page.
+  focus: (todoId: number) => void;
   /// The kanban's ⇧h ⇧l (⇧← ⇧→): to the column before (-1) or after (1).
   shift: (todoId: number, delta: -1 | 1) => void;
   /// u: the todo's parent's panel.
@@ -99,6 +101,7 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
         [matches(e, "link"), () => actions.link(id!)],
         [matches(e, "parent"), () => actions.parent(id!)],
         [matches(e, "status"), () => actions.status(id!)],
+        [matches(e, "focusTodo"), () => actions.focus(id!)],
         // Moves the card as dragging it to the next column does.
         [layout === "board" && (matches(e, "moveLeft") || arrow("ArrowLeft", true)), () => actions.shift(id!, -1)],
         [layout === "board" && (matches(e, "moveRight") || arrow("ArrowRight", true)), () => actions.shift(id!, 1)],

@@ -25,6 +25,7 @@ export type Action =
   | "moveLeft"
   | "moveRight"
   | "status"
+  | "focusTodo"
   | "session"
   | "link"
   | "parent"
@@ -69,6 +70,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["moveLeft", "カンバン：カードを左の列へ"],
       ["moveRight", "カンバン：カードを右の列へ"],
       ["status", "ステータスを変える"],
+      ["focusTodo", "Todo：フォーカスモードで開く（添付の URL を左に）"],
       ["session", "セッションを開く"],
       ["link", "PR / issue を開く"],
       ["parent", "親の todo を開く"],
@@ -107,6 +109,7 @@ export const DEFAULT_KEYS: Record<Action, string> = {
   moveLeft: "shift+h",
   moveRight: "shift+l",
   status: "s",
+  focusTodo: "f",
   session: "o",
   link: "p",
   parent: "u",

@@ -2025,7 +2025,7 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep }: {
   );
 }
 
-function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStatus, onOpenTodo, onClose }: {
+function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStatus, onOpenTodo, onFocus, onClose }: {
   todo: Todo;
   allTodos: Todo[];
   local: LocalRepo[];
@@ -2035,6 +2035,8 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
   report: (e: unknown) => void;
   setStatus: (todo: Todo, status: Status) => void;
   onOpenTodo: (id: number) => void;
+  /// The focus mode, with the todo's page on the left.
+  onFocus: () => void;
   onClose: () => void;
 }) {
   const browse = useOpenLink(report);
@@ -2065,6 +2067,9 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
         )}
         <span className="mono">#{todo.id}</span>
         <span className="grow" />
+        <button className="ghost small" title={`フォーカスモードで開く（${keyLabel(keyOf("focusTodo"))}）：添付の URL を左、ChatGPT を右に`} onClick={onFocus}>
+          フォーカス
+        </button>
         {gh && (
           <button className="ghost icon" aria-label="GitHub で開く" title={gh} onClick={() => browse(gh)}>
             <Icon name="open" size={14} />
@@ -3559,6 +3564,19 @@ export default function App() {
     setFocusMode(false);
     setHeldNotices(Math.max(0, unreadNow() - unreadAtFocus.current));
   };
+  /// The focus mode with the todo's page on the left: its first attached link,
+  /// else its PR or issue; with none, the tab the pane shows.
+  const focusTodo = (todo: Todo) => {
+    const url = todo.links[0]?.url ?? todo.pr_url ?? todo.issue_url;
+    if (url) {
+      // In the app whatever "リンクを開く" says: the focus mode shows it here.
+      const open = tabs.find((t) => !t.pinned && sameTarget(t.url, url));
+      const id = open?.id ?? `t${nextTab.current++}`;
+      if (!open) setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
+      setActiveTabId(id);
+    }
+    enterFocus();
+  };
   const enterFocus = () => {
     unreadAtFocus.current = unreadNow();
     ensurePinned(focusRight);
@@ -4026,6 +4044,10 @@ export default function App() {
   useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode, selectedTodo !== null, {
     open: openTodo,
     status: setStatusMenuFor,
+    focus: (id) => {
+      const todo = allTodos.find((t) => t.id === id);
+      if (todo) focusTodo(todo);
+    },
     link: (id) => {
       const todo = allTodos.find((t) => t.id === id);
       const url = todo?.pr_url ?? todo?.issue_url;
@@ -4409,6 +4431,7 @@ export default function App() {
             report={report}
             setStatus={setStatus}
             onOpenTodo={openTodo}
+            onFocus={() => focusTodo(selectedTodo)}
             onClose={() => setSelection(null)}
           />
         )}
