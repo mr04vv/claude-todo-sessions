@@ -41,7 +41,7 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 - 最初のプロンプトに `[todo:N]` を入れて起動し、hook（ローカル）か cloud sync（クラウド）が拾って紐づける。プロンプトが `/` で始まる場合（`/grilling` など）はマーカーを末尾に置く（`launch::start_prompt`）。
 - ターミナル起動は `claude --session-id <uuid>` で先に DB に登録してから herdr の新しいワークスペースで動かす。閉じたセッションの herdr ボタンは `claude --resume` で再開する。
 - Desktop への遷移: アーカイブされていなければ `claude://code/continue?session=local_…`、アーカイブ済みなら `claude://resume?session=<uuid>`（アーカイブも解除される）。クラウドは `claude://code/cse_…`。
-- クラウドの Web は `https://claude.ai/code/session_…`（`cse_` を `session_` に置き換える。`api.ts` の `cloudWebUrl`）。既定ではアプリ内ブラウザで開く。
+- クラウドの Web は `https://claude.ai/code/session_…`（`cse_` を `session_` に置き換える。フロントは `api.ts` の `cloudWebUrl`、Rust は `launch::web_url`）。アプリ内ブラウザで開く。メニューバーと macOS 通知からは `open-in-browser` イベントでフロントに開かせる。
 
 ### クラウド（非公開 API）
 
