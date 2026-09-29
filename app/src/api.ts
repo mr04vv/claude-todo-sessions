@@ -62,10 +62,12 @@ export interface Notice {
   id: number;
   session_id: string;
   todo_id: number | null;
-  kind: "finished" | "needs_input";
+  kind: "finished" | "needs_input" | "review_requested";
   title: string;
   created_at: number;
   read: boolean;
+  /// The PR of a review request; its session_id is empty.
+  url: string | null;
 }
 
 export interface Board {

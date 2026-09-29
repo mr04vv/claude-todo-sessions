@@ -642,6 +642,14 @@ a:hover {
   background: var(--waiting);
 }
 
+.state-review {
+  color: var(--review-text);
+}
+
+.state-review i {
+  background: var(--st-review);
+}
+
 .state-idle {
   color: var(--text-2);
 }

@@ -2409,6 +2409,12 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
 const NOTICE_LABEL: Record<Notice["kind"], string> = {
   finished: "作業が終わりました",
   needs_input: "入力待ち",
+  review_requested: "レビュー依頼",
+};
+const NOTICE_STATE: Record<Notice["kind"], string> = {
+  finished: "state-running",
+  needs_input: "state-needs_input",
+  review_requested: "state-review",
 };
 
 /// Every notification the app posted, unread ones marked; opening one reads it.
@@ -2422,6 +2428,7 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
   const [unreadOnly, setUnreadOnly] = useState(true);
   const openCloud = useContext(OpenCloudContext);
   const terminal = useContext(TerminalContext);
+  const openInBrowser = useContext(BrowserContext);
   const unread = board.notifications.filter((n) => !n.read).length;
   const rows = unreadOnly ? board.notifications.filter((n) => !n.read) : board.notifications;
   const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
@@ -2451,7 +2458,7 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
             return (
               <li key={n.id} className={`row notice-row${n.read ? " read" : ""}`} onClick={() => (read(n), todo && onOpenTodo(todo.id))}>
                 <span className={`unread-dot${n.read ? "" : " on"}`} aria-label={n.read ? "既読" : "未読"} />
-                <span className={`state ${n.kind === "needs_input" ? "state-needs_input" : "state-running"}`}>
+                <span className={`state ${NOTICE_STATE[n.kind]}`}>
                   <i />
                   {NOTICE_LABEL[n.kind]}
                 </span>
@@ -2463,7 +2470,8 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
                   onClick={(e) => {
                     e.stopPropagation();
                     read(n);
-                    if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
+                    if (n.url) openInBrowser?.(n.url);
+                    else if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
                     else openLocal(terminal, n.session_id, report, true);
                   }}
                 >

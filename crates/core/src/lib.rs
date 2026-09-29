@@ -234,6 +234,8 @@ pub enum NoticeKind {
     /// A turn ended: the session went from running to idle.
     Finished,
     NeedsInput,
+    /// Someone asked for the user's review on a PR (`url`).
+    ReviewRequested,
 }
 
 impl NoticeKind {
@@ -241,10 +243,15 @@ impl NoticeKind {
         match self {
             NoticeKind::Finished => "finished",
             NoticeKind::NeedsInput => "needs_input",
+            NoticeKind::ReviewRequested => "review_requested",
         }
     }
     fn parse(s: &str) -> NoticeKind {
-        if s == "needs_input" { NoticeKind::NeedsInput } else { NoticeKind::Finished }
+        match s {
+            "needs_input" => NoticeKind::NeedsInput,
+            "review_requested" => NoticeKind::ReviewRequested,
+            _ => NoticeKind::Finished,
+        }
     }
 }
 
@@ -255,10 +262,13 @@ pub struct Notice {
     pub session_id: String,
     pub todo_id: Option<i64>,
     pub kind: NoticeKind,
-    /// The session's title when it was posted.
+    /// The session's title when it was posted, or the PR's for a review request.
     pub title: String,
     pub created_at: i64,
     pub read: bool,
+    /// The PR a review request is for; session notices have none (and an
+    /// empty `session_id` goes with one).
+    pub url: Option<String>,
 }
 
 /// Notifications kept for the in-app list, newest first.
@@ -327,7 +337,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     kind TEXT NOT NULL,
     title TEXT NOT NULL,
     created_at INTEGER NOT NULL,
-    read_at INTEGER
+    read_at INTEGER,
+    url TEXT
 );
 CREATE TABLE IF NOT EXISTS links (
     id INTEGER PRIMARY KEY,
@@ -448,7 +459,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -779,7 +790,7 @@ impl Db {
 
     pub fn notifications(&self) -> Result<Vec<Notice>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, todo_id, kind, title, created_at, read_at IS NOT NULL FROM notifications ORDER BY id DESC LIMIT ?1",
+            "SELECT id, session_id, todo_id, kind, title, created_at, read_at IS NOT NULL, url FROM notifications ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map([NOTICES_LIMIT], |r| {
             Ok(Notice {
@@ -790,9 +801,30 @@ impl Db {
                 title: r.get(4)?,
                 created_at: r.get(5)?,
                 read: r.get(6)?,
+                url: r.get(7)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Records a review request on the PR unless one was recorded before, and
+    /// returns its id when it is new. `read` keeps it out of the unread ones.
+    pub fn add_review_notice(&self, url: &str, title: &str, read: bool) -> Result<Option<i64>> {
+        let seen: bool = self.conn.query_row("SELECT EXISTS (SELECT 1 FROM notifications WHERE url = ?1)", [url], |r| r.get(0))?;
+        if seen {
+            return Ok(None);
+        }
+        let at = now();
+        self.conn.execute(
+            "INSERT INTO notifications (session_id, kind, title, created_at, read_at, url) VALUES ('', ?1, ?2, ?3, ?4, ?5)",
+            params![NoticeKind::ReviewRequested.as_str(), title, at, read.then_some(at), url],
+        )?;
+        Ok(Some(self.conn.last_insert_rowid()))
+    }
+
+    /// Whether any review request was ever recorded.
+    pub fn has_review_notices(&self) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT EXISTS (SELECT 1 FROM notifications WHERE url IS NOT NULL)", [], |r| r.get(0))?)
     }
 
     pub fn mark_notification_read(&self, id: i64) -> Result<()> {

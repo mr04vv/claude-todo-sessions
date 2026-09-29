@@ -637,3 +637,37 @@ fn sessions_and_links_come_grouped_by_todo() {
         assert_eq!(links.get(&t.id).cloned().unwrap_or_default(), db.links_for(t.id).unwrap());
     }
 }
+
+#[test]
+fn review_requests_are_noticed_once_per_pr() {
+    let (_d, db) = open();
+    assert!(!db.has_review_notices().unwrap());
+    let url = "https://github.com/o/r/pull/1";
+    let id = db.add_review_notice(url, "feat: x", false).unwrap();
+    assert!(id.is_some());
+    assert_eq!(db.add_review_notice(url, "feat: x", false).unwrap(), None);
+    assert!(db.has_review_notices().unwrap());
+    let n = &db.notifications().unwrap()[0];
+    assert_eq!((n.kind, n.url.as_deref(), n.title.as_str(), n.read), (NoticeKind::ReviewRequested, Some(url), "feat: x", false));
+    // Ones already waiting when the feature first runs are kept as read.
+    db.add_review_notice("https://github.com/o/r/pull/2", "old", true).unwrap();
+    assert!(db.notifications().unwrap()[0].read);
+}
+
+#[test]
+fn review_notices_work_on_databases_made_before_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE notifications (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL,
+         todo_id INTEGER, kind TEXT NOT NULL, title TEXT NOT NULL, created_at INTEGER NOT NULL, read_at INTEGER);
+         INSERT INTO notifications VALUES (1, 's1', NULL, 'finished', 'done', 0, NULL);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.notifications().unwrap()[0].url, None);
+    db.add_review_notice("https://github.com/o/r/pull/1", "x", false).unwrap();
+    assert_eq!(db.notifications().unwrap().len(), 2);
+}

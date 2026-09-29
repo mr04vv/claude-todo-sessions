@@ -1413,18 +1413,22 @@ fn sync_github(db: &Db, only: Option<i64>) {
 /// Syncs GitHub every ISSUE_SYNC_INTERVAL, and at once when woken: `Some(id)`
 /// for one todo (its drawer opened, its session finished a turn), `None` for
 /// all (window focused, the sync button).
-fn issue_sync_loop(wake: std::sync::mpsc::Receiver<Option<i64>>) {
+fn issue_sync_loop(app: AppHandle, wake: std::sync::mpsc::Receiver<Option<i64>>) {
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => return eprintln!("issue sync stopped: {e}"),
     };
     let mut next_full = std::time::Instant::now();
+    let mut seeded = false;
     loop {
         let wait = next_full.saturating_duration_since(std::time::Instant::now());
         match wake.recv_timeout(wait) {
             Ok(Some(id)) => sync_github(&db, Some(id)),
             Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 sync_github(&db, None);
+                if let Err(e) = notify_review_requests(&app, &db, &mut seeded) {
+                    eprintln!("review requests: {e}");
+                }
                 next_full = std::time::Instant::now() + ISSUE_SYNC_INTERVAL;
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
@@ -1466,25 +1470,26 @@ fn tray_menu(app: &AppHandle, sessions: &[Session]) -> tauri::Result<Menu<tauri:
 /// session (marking it read) when it is clicked. The thread lives until the
 /// notification is clicked or removed from Notification Center.
 fn notify_session(app: &AppHandle, db: &Db, session: Session, kind: NoticeKind) {
-    let app = app.clone();
     let headline = match kind {
         NoticeKind::NeedsInput => "入力待ち",
-        NoticeKind::Finished => "作業が終わりました",
+        _ => "作業が終わりました",
     };
     let id = db.add_notification(&session, kind).map_err(|e| eprintln!("{e}")).ok();
+    let label = session.title.clone().unwrap_or_else(|| session.session_id.clone());
+    post_banner(app, headline, label, id, move |app| open_from_outside(app, &session.session_id));
+}
+
+/// Posts a macOS notification; clicking it reads notice `id` and runs `open`.
+fn post_banner(app: &AppHandle, headline: &'static str, label: String, id: Option<i64>, open: impl FnOnce(&AppHandle) -> Result<(), String> + Send + 'static) {
+    let app = app.clone();
     std::thread::spawn(move || {
-        let label = session.title.clone().unwrap_or_else(|| session.session_id.clone());
-        let response = Notification::new()
-            .title(headline)
-            .message(&label)
-            .wait_for_click(true)
-            .send();
+        let response = Notification::new().title(headline).message(&label).wait_for_click(true).send();
         match response {
             Ok(NotificationResponse::Click) => {
                 if let (Some(id), Ok(db)) = (id, open_db()) {
                     let _ = db.mark_notification_read(id).map_err(|e| eprintln!("{e}"));
                 }
-                if let Err(e) = open_from_outside(&app, &session.session_id) {
+                if let Err(e) = open(&app) {
                     eprintln!("{e}");
                 }
             }
@@ -1492,6 +1497,27 @@ fn notify_session(app: &AppHandle, db: &Db, session: Session, kind: NoticeKind) 
             Err(e) => eprintln!("notification: {e}"),
         }
     });
+}
+
+/// Notifies each PR newly asking for the user's review. The first check,
+/// before any was ever recorded, only records the ones already waiting.
+/// ponytail: a PR re-requested after an earlier request is not noticed again.
+fn notify_review_requests(app: &AppHandle, db: &Db, seeded: &mut bool) -> Result<(), String> {
+    let prs = search_prs("--review-requested")?;
+    let quiet = !*seeded && !db.has_review_notices().map_err(err)?;
+    *seeded = true;
+    for p in prs {
+        let title = format!("{}#{} {}", p.repo, p.number, p.title);
+        let Some(id) = db.add_review_notice(&p.url, &title, quiet).map_err(err)? else { continue };
+        if !quiet {
+            let url = p.url;
+            post_banner(app, "レビュー依頼", title, Some(id), move |app| {
+                show_window(app);
+                app.emit(BROWSER_NEW_TAB_EVENT, NewTab { url }).map_err(err)
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Records every session `claude agents` reports, so sessions started before
@@ -1692,7 +1718,8 @@ fn main() {
             });
             let handle = app.handle().clone();
             std::thread::spawn(move || watch_loop(handle));
-            std::thread::spawn(move || issue_sync_loop(github_rx));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || issue_sync_loop(handle, github_rx));
             let handle = app.handle().clone();
             std::thread::spawn(move || queue_loop(handle));
             Ok(())
