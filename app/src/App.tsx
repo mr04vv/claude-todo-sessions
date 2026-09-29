@@ -3213,8 +3213,8 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // ⌘N adds a todo, ⌘K opens the commands, ⌘T and ⌘W open and close a
-  // browser tab and ⌘⇧[ ⌘⇧] switch tabs, from anywhere.
+  // ⌘N adds a todo, ⌘K opens the commands, ⌘T opens a browser tab and
+  // ⌘⇧[ ⌘⇧] switch tabs, from anywhere. (⌘W is the app menu's.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -3235,8 +3235,6 @@ export default function App() {
       } else if (k === "t") {
         e.preventDefault();
         openNewTab();
-      } else if (k === "w" && !e.shiftKey && closeShownRef.current()) {
-        e.preventDefault();
       }
     };
     window.addEventListener("keydown", onKey);

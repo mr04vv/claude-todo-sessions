@@ -1,6 +1,6 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
-// own: ⌘L moves to the app's address bar, ⌘T opens a new tab, ⌘W closes it,
-// ⌘⇧A archives the cloud session it shows, ⌘R reloads,
+// own: ⌘L moves to the app's address bar, ⌘T opens a new tab (⌘W, the app
+// menu's, closes it), ⌘⇧A archives the cloud session it shows, ⌘R reloads,
 // ⌘[ ⌘] go back and forward, ⌘⇧[ ⌘⇧] switch tabs, and right-click offers
 // translation (WKWebView has no translate item).
 (() => {
@@ -12,7 +12,6 @@
   const NEW_TAB = "todo-sessions://new-tab";
   const PREV_TAB = "todo-sessions://tab-prev";
   const NEXT_TAB = "todo-sessions://tab-next";
-  const CLOSE_TAB = "todo-sessions://close-tab";
   const ARCHIVE = "todo-sessions://archive";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
@@ -43,10 +42,10 @@
       if (key === "r") {
         e.preventDefault();
         location.reload();
-      } else if (key === "l" || key === "t" || key === "w") {
+      } else if (key === "l" || key === "t") {
         e.preventDefault();
         e.stopPropagation();
-        location.href = key === "l" ? FOCUS_URL : key === "t" ? NEW_TAB : CLOSE_TAB;
+        location.href = key === "l" ? FOCUS_URL : NEW_TAB;
       }
     },
     true,

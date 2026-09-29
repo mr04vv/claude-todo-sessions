@@ -38,6 +38,8 @@ const SYSTEM_PATHS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/run/cur
 const TRAY_ID: &str = "main";
 const MENU_OPEN: &str = "open";
 const MENU_QUIT: &str = "quit";
+/// The app menu's ⌘W, which closes a browser tab rather than the window.
+const MENU_CLOSE_TAB: &str = "close-tab";
 const MENU_SESSION_PREFIX: &str = "session:";
 const GH_ISSUE_LIMIT: &str = "100";
 /// How often linked issues are checked for open/closed.
@@ -1146,7 +1148,7 @@ const BROWSER_FOCUS_URL_EVENT: &str = "browser-focus-url";
 const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 /// `-1` or `1` when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]).
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
-/// `{tab}` when a page asks to close its tab (⌘W).
+/// When ⌘W in the app menu asks to close the shown tab.
 const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
 /// `{tab}` when a cloud session's page asks to archive it (⌘⇧A).
 const BROWSER_ARCHIVE_EVENT: &str = "browser-archive";
@@ -1225,7 +1227,6 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("new-tab") => on_focus.emit(BROWSER_OPEN_NEW_TAB_EVENT, ()),
                 Some("tab-prev") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, -1),
                 Some("tab-next") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, 1),
-                Some("close-tab") => on_focus.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("archive") => on_focus.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
@@ -1475,6 +1476,34 @@ fn show_window(app: &AppHandle) {
         let _ = w.show();
         let _ = w.set_focus();
     }
+}
+
+/// The app menu, as macOS's default one but for ⌘W: that closes the shown
+/// browser tab (the page decides), since the menu takes the key before the page.
+fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    use tauri::menu::Submenu;
+    let sep = || PredefinedMenuItem::separator(app);
+    let name = Submenu::with_items(app, "Todo Sessions", true, &[
+        &PredefinedMenuItem::about(app, None, None)?,
+        &sep()?,
+        &PredefinedMenuItem::hide(app, None)?,
+        &PredefinedMenuItem::hide_others(app, None)?,
+        &PredefinedMenuItem::show_all(app, None)?,
+        &sep()?,
+        &PredefinedMenuItem::quit(app, None)?,
+    ])?;
+    let file = Submenu::with_items(app, "ファイル", true, &[&MenuItem::with_id(app, MENU_CLOSE_TAB, "タブを閉じる", true, Some("CmdOrCtrl+W"))?])?;
+    let edit = Submenu::with_items(app, "編集", true, &[
+        &PredefinedMenuItem::undo(app, None)?,
+        &PredefinedMenuItem::redo(app, None)?,
+        &sep()?,
+        &PredefinedMenuItem::cut(app, None)?,
+        &PredefinedMenuItem::copy(app, None)?,
+        &PredefinedMenuItem::paste(app, None)?,
+        &PredefinedMenuItem::select_all(app, None)?,
+    ])?;
+    let window = Submenu::with_items(app, "ウインドウ", true, &[&PredefinedMenuItem::minimize(app, None)?, &PredefinedMenuItem::maximize(app, None)?])?;
+    Menu::with_items(app, &[&name, &file, &edit, &window])
 }
 
 /// Linked sessions waiting for input or idle, as the menu bar lists them.
@@ -1761,6 +1790,12 @@ fn main() {
             let handle = app.handle().clone();
             std::thread::spawn(move || queue_loop(handle));
             Ok(())
+        })
+        .menu(app_menu)
+        .on_menu_event(|app, event| {
+            if event.id() == MENU_CLOSE_TAB {
+                let _ = app.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: String::new() });
+            }
         })
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {

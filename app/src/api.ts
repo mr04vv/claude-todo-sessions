@@ -252,7 +252,7 @@ export const api = {
 export const BROWSER_URL_EVENT = "browser-url";
 /** `-1` or `1` when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]). */
 export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
-/** `{tab}` when a page asks to close its tab (⌘W). */
+/** When ⌘W in the app menu asks to close the shown tab. */
 export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
