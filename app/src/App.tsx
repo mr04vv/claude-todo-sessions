@@ -3676,6 +3676,11 @@ export default function App() {
   useTodoKeys(todoPage, layout, view === "todos" && !covered, selectedTodo !== null, {
     open: openTodo,
     status: setStatusMenuFor,
+    shift: (id, delta) => {
+      const todo = allTodos.find((t) => t.id === id);
+      const next = todo && COLUMNS[COLUMNS.findIndex((c) => c.status === todo.status) + delta];
+      if (todo && next) setStatus(todo, next.status);
+    },
     close: () => setSelection(null),
     toggleLane,
     isCollapsed: (lane) => collapsed.has(lane),

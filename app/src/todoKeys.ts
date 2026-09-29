@@ -1,6 +1,6 @@
 // Keyboard for the Todo kanban and list: a cursor over the cards (or rows),
 // moved with j k / h l (or the arrows), and keys acting on the todo under it:
-// Enter its panel, s its status.
+// Enter its panel, s its status, ⇧h ⇧l (kanban) the column it is in.
 // It reads the page's elements, so the pages only mark them:
 //   data-row="todo:<id>" on a card or row, data-row="lane:<key>" on a list
 //   lane's head, data-lane="<key>" on a lane, data-col="<status>" on a
@@ -13,6 +13,8 @@ export interface TodoKeyActions {
   open: (todoId: number) => void;
   /// s: the status menu.
   status: (todoId: number) => void;
+  /// The kanban's ⇧h ⇧l (⇧← ⇧→): to the column before (-1) or after (1).
+  shift: (todoId: number, delta: -1 | 1) => void;
   /// Esc: closes the panel.
   close: () => void;
   /// The list's h / l, and Enter on a lane's head.
@@ -67,6 +69,16 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
         actions.close();
         return;
       }
+      // ⇧h ⇧l move the card as dragging it to the next column does.
+      if (layout === "board" && e.shiftKey && ["H", "L", "ArrowLeft", "ArrowRight"].includes(key)) {
+        const id = at && todoId(at.dataset.row!);
+        if (id != null) {
+          e.preventDefault();
+          actions.shift(id, key === "H" || key === "ArrowLeft" ? -1 : 1);
+        }
+        return;
+      }
+      if (e.shiftKey) return;
       if (key === "s") {
         const id = at && todoId(at.dataset.row!);
         if (id != null) {
