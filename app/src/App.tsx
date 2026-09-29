@@ -26,6 +26,7 @@ import {
   FOCUS_APP_EVENT,
   FOCUS_PANE_EVENT,
   FOCUS_EXIT_EVENT,
+  FOCUS_LINK_EVENT,
   WINDOW_FOCUS_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
@@ -342,6 +343,31 @@ const DOCK_DEFAULT_SHARE = 0.44;
 const FOCUS_RIGHT_KEY = "focusRight";
 const FOCUS_RIGHT_W_KEY = "focusRightWidth";
 const FOCUS_RIGHT_SHARE = 0.45;
+/// Where the focus mode's right pages may go (address prefixes), with the
+/// sign-in pages they send to.
+const SIGN_IN_PAGES = ["https://accounts.google.com/", "https://appleid.apple.com/", "https://login.microsoftonline.com/"];
+const FOCUS_RIGHT_ALLOW: Record<string, string[]> = {
+  pinchatgpt: ["https://chatgpt.com/", "https://auth.openai.com/", ...SIGN_IN_PAGES],
+  pinclaude: ["https://claude.ai/", ...SIGN_IN_PAGES],
+  pinnotion: ["https://www.notion.so/", "https://notion.so/", ...SIGN_IN_PAGES],
+};
+/// The prefix a page's address allows: the page and the ones under it.
+const pagePrefix = (url: string) => {
+  try {
+    const u = new URL(url);
+    return u.origin + u.pathname;
+  } catch {
+    return url;
+  }
+};
+/// A study page allows its whole site.
+const sitePrefix = (url: string) => {
+  try {
+    return new URL(url).origin + "/";
+  } catch {
+    return url;
+  }
+};
 /// The focus mode's left side keeps at least this.
 const FOCUS_LEFT_MIN_W = 360;
 const SIDEBAR_W = 232;
@@ -1947,7 +1973,7 @@ function FocusMode({ lefts, left, right, covered, report, width, onResize, onRig
         {left?.term ? (
           <TerminalView key={left.id} id={left.id} run={left.term} report={report} />
         ) : left ? (
-          <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} />
+          <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} noDia />
         ) : (
           <p className="muted empty">＋ から左に開くページを選びます。</p>
         )}
@@ -1968,7 +1994,7 @@ function FocusMode({ lefts, left, right, covered, report, width, onResize, onRig
               終える <span className="kbd">Esc</span>
             </button>
           </div>
-          {right && <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} />}
+          {right && <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} noDia />}
         </section>
       </aside>
     </div>
@@ -1981,7 +2007,7 @@ function FocusMode({ lefts, left, right, covered, report, width, onResize, onRig
 /// A tab to give the typing to (its page's text box) once it is shown.
 let typeInto: string | null = null;
 
-function TabView({ tab: active, covered, report, onAddress, onArchive, keep }: {
+function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noDia }: {
   tab: BrowserTab;
   covered: boolean;
   report: (e: unknown) => void;
@@ -1990,6 +2016,8 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep }: {
   onArchive?: () => void;
   /// The tab shown beside this one (the focus mode's other side), left shown.
   keep?: string;
+  /// In the focus mode, which keeps its pages here.
+  noDia?: boolean;
 }) {
   const slot = useRef<HTMLDivElement>(null);
   const rect = () => {
@@ -2130,9 +2158,11 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep }: {
             アーカイブ
           </button>
         )}
-        <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
-          Dia で開く
-        </button>
+        {!noDia && (
+          <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
+            Dia で開く
+          </button>
+        )}
       </div>
       <div className={`load-bar${active.loading ? " on" : ""}`} aria-hidden="true" />
       <div ref={slot} className="browser-slot">
@@ -3445,7 +3475,43 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | null;
+
+/// Asked when a focus mode page links outside what it may open.
+function FocusLinkDialog({ url, onOpen, onClose }: { url: string; onOpen: () => void; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      onOpen();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onOpen]);
+  return (
+    <Modal
+      title="このページを開きますか？"
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="ghost" onClick={onClose}>
+            やめる <span className="kbd">Esc</span>
+          </button>
+          <button className="primary" onClick={onOpen}>
+            左に開く <span className="kbd">Enter</span>
+          </button>
+        </>
+      }
+    >
+      <p className="mono ellipsis" title={url}>
+        {url}
+      </p>
+      <p className="muted">フォーカスモードで開くページの外です。開くと、このページ（とその下）はこのあいだ開けるようになります。</p>
+    </Modal>
+  );
+}
 
 /// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
@@ -3686,6 +3752,8 @@ export default function App() {
     setTabs((prev) => prev.filter((t) => !t.focus));
     setFocusLeftIds([]);
     setFocusActive(null);
+    setFocusPages([]);
+    setFocusAccepted([]);
     setHeldNotices(Math.max(0, unreadNow() - unreadAtFocus.current));
   };
   // The focus mode's left: its own tabs (focus pages, apart from the pane's)
@@ -3696,6 +3764,7 @@ export default function App() {
   const focusLeft = focusLefts.find((t) => t.id === focusActive) ?? focusLefts[0] ?? null;
   /// Puts items on the left, the first of them shown.
   const addToFocus = (items: FocusItem[]) => {
+    setFocusPages((prev) => [...prev, ...items.flatMap((item) => ("url" in item ? [item.url] : []))]);
     const ids = items.map((item) => {
       if ("terminal" in item) return item.terminal;
       const id = `f${nextTab.current++}`;
@@ -3713,6 +3782,29 @@ export default function App() {
       setTabs((prev) => prev.filter((t) => t.id !== id));
     }
   };
+  // Where the focus mode's pages may go: the left's own pages (and under them),
+  // the study pages' sites and the pages let through; the right its site.
+  // A link anywhere else asks first (FOCUS_LINK_EVENT).
+  const [focusPages, setFocusPages] = useState<string[]>([]);
+  const [focusAccepted, setFocusAccepted] = useState<string[]>([]);
+  const leftAllow = () => [...focusPages.map(pagePrefix), ...focusAccepted, ...loadJson<StudyPage[]>(STUDY_PAGES_KEY, []).map((p) => sitePrefix(p.url))];
+  const allowedLeft = (url: string) => leftAllow().some((p) => url.startsWith(p));
+  useEffect(() => {
+    if (!focusMode) return;
+    const left = leftAllow();
+    for (const t of focusLefts.filter((t) => t.focus)) api.setFocusAllow(t.id, left).catch(report);
+    api.setFocusAllow(focusRight, FOCUS_RIGHT_ALLOW[focusRight] ?? null).catch(report);
+    return () => void api.setFocusAllow(focusRight, null).catch(() => {});
+  }, [focusMode, focusLeftIds.join(), focusPages.join(), focusAccepted.join(), focusRight]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [focusLink, setFocusLink] = useState<string | null>(null);
+  /// A link the focus mode's pages may not go to: asks, and opens it on the left.
+  const askFocusLink = (url: string) => {
+    if (allowedLeft(url)) return addToFocus([{ url }]);
+    setFocusLink(url);
+    setDialog("focusLink");
+  };
+  const askFocusLinkRef = useRef(askFocusLink);
+  askFocusLinkRef.current = askFocusLink;
   const [focusPicking, setFocusPicking] = useState<"start" | "add">("start");
   const pickFocus = (mode: "start" | "add") => {
     setFocusPicking(mode);
@@ -3874,7 +3966,9 @@ export default function App() {
       ),
       listen<{ tab: string; url: string }>(BROWSER_ADDRESS_EVENT, ({ payload }) => setTabUrl(payload.tab, payload.url)),
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
-      listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
+      // In the focus mode a page's new window goes to the left, if it may.
+      listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => (focusModeRef.current ? askFocusLinkRef.current(payload.url) : openRef.current(payload.url))),
+      listen<{ tab: string; url: string }>(FOCUS_LINK_EVENT, ({ payload }) => askFocusLinkRef.current(payload.url)),
       // The focus mode lets none of the app's own shortcuts through.
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => !focusModeRef.current && openNewTab()),
       listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => !focusModeRef.current && switchRef.current(payload)),
@@ -4075,7 +4169,7 @@ export default function App() {
       // the address bar its own), and ⌘ only edits text.
       if (focusModeRef.current) {
         const t = e.target as HTMLElement;
-        if (e.key === "Escape" && !t.closest(".xterm, input, textarea, [role=dialog]")) {
+        if (e.key === "Escape" && !t.closest(".xterm, input, textarea") && !document.querySelector("[role=dialog]")) {
           e.preventDefault();
           setDialog("exitFocus");
         } else if (e.metaKey && !FOCUS_EDIT_KEYS.includes(e.key.toLowerCase())) e.preventDefault();
@@ -4661,6 +4755,17 @@ export default function App() {
           />
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+        {dialog === "focusLink" && focusLink && (
+          <FocusLinkDialog
+            url={focusLink}
+            onClose={() => setDialog(null)}
+            onOpen={() => {
+              setDialog(null);
+              setFocusAccepted((prev) => [...prev, pagePrefix(focusLink)]);
+              addToFocus([{ url: focusLink }]);
+            }}
+          />
+        )}
         {dialog === "focusPick" && (
           <FocusPicker
             adding={focusPicking === "add"}

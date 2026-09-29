@@ -38,6 +38,7 @@
   const FOCUS_PANE = "todo-sessions://focus-pane";
   const FOCUS_EXIT = "todo-sessions://focus-exit";
   const CLOSE_TAB = "todo-sessions://close-tab";
+  const FOCUS_LINK = "todo-sessions://focus-link?u=";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
 
@@ -113,6 +114,19 @@
     };
     tryFocus();
   };
+
+  // In the focus mode the app sets __todoSessionsAllow, the addresses this
+  // page may go to (as prefixes); a link to anything else asks the app first.
+  const guardLink = (e) => {
+    const allow = window.__todoSessionsAllow;
+    const a = allow && e.target instanceof Element ? e.target.closest("a[href]") : null;
+    if (!a || !/^https?:/.test(a.href) || allow.some((p) => a.href.startsWith(p))) return;
+    e.preventDefault();
+    e.stopImmediatePropagation();
+    location.href = FOCUS_LINK + encodeURIComponent(a.href);
+  };
+  window.addEventListener("click", guardLink, true);
+  window.addEventListener("auxclick", guardLink, true);
 
   let menu = null;
   const close = () => {

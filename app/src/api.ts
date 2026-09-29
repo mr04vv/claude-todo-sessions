@@ -230,6 +230,8 @@ export const api = {
   setFocusMode: (on: boolean) => invoke<void>("set_focus_mode", { on }),
   /// The app's keys (keymap.ts), as JSON, for the pages' script.
   setPageKeys: (keys: string) => invoke<void>("set_page_keys", { keys }),
+  /// Where tab `tab`'s page may go in the focus mode (address prefixes); null lifts it.
+  setFocusAllow: (tab: string, allow: string[] | null) => invoke<void>("set_focus_allow", { tab, allow }),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
@@ -265,6 +267,8 @@ export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
 export const WINDOW_FOCUS_EVENT = "window-focus";
 /** `{tab}` when a page's ⌃l asks for the focus mode's right side. */
 export const FOCUS_PANE_EVENT = "focus-pane";
+/** `{tab, url}` when a page, in the focus mode, is asked to go where it may not. */
+export const FOCUS_LINK_EVENT = "focus-link";
 /** When a page's Esc, in the focus mode, asks about leaving it. */
 export const FOCUS_EXIT_EVENT = "focus-exit";
 /** When a page's ⌃h hands the typing back to the app's side. */

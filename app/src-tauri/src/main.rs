@@ -72,6 +72,8 @@ struct AppState {
     /// The focus mode is on: pages' Esc asks about leaving it, and macOS
     /// notifications wait (the in-app list still gets them).
     focus_mode: AtomicBool,
+    /// Where each tab's page may go in the focus mode (see `set_focus_allow`).
+    focus_allow: Mutex<HashMap<String, Vec<String>>>,
     /// The app's keys for the pages, as JSON (see `set_page_keys`).
     page_keys: Mutex<String>,
     /// Tabs whose page should focus its text box once it loads, and since when.
@@ -1204,6 +1206,39 @@ const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
 const FOCUS_APP_EVENT: &str = "focus-app";
 /// `{tab}` when a page's ⌃l asks for the focus mode's right side.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
+/// `{tab, url}` when a page, in the focus mode, is asked to go where it may not.
+const FOCUS_LINK_EVENT: &str = "focus-link";
+
+#[derive(Clone, Serialize)]
+struct TabUrlOnly {
+    tab: String,
+    url: String,
+}
+
+/// The addresses a page may go to in the focus mode (prefixes), for its script.
+fn focus_allow_script(allow: Option<&Vec<String>>) -> String {
+    match allow {
+        Some(list) => format!("window.__todoSessionsAllow = {};", serde_json::to_string(list).unwrap_or_else(|_| "[]".into())),
+        None => "delete window.__todoSessionsAllow;".into(),
+    }
+}
+
+/// Sets (or, with none, lifts) where tab `tab`'s page may go in the focus
+/// mode; kept for the pages it loads next, and for a tab not yet open.
+#[tauri::command]
+fn set_focus_allow(app: AppHandle, state: State<AppState>, tab: String, allow: Option<Vec<String>>) -> Result<(), String> {
+    let label = tab_label(&tab)?;
+    let mut all = state.focus_allow.lock().map_err(err)?;
+    match &allow {
+        Some(list) => all.insert(tab, list.clone()),
+        None => all.remove(&tab),
+    };
+    if let Some(view) = app.get_webview(&label) {
+        let _ = view.eval(focus_allow_script(allow.as_ref()));
+    }
+    Ok(())
+}
+
 /// When a page's Esc, in the focus mode, asks about leaving it.
 const FOCUS_EXIT_EVENT: &str = "focus-exit";
 /// Tells every page whether the focus mode is on (their Esc then asks about leaving).
@@ -1298,6 +1333,10 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("focus-pane") => on_focus.emit(FOCUS_PANE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("focus-exit") => on_focus.emit(FOCUS_EXIT_EVENT, ()),
                 Some("close-tab") => on_focus.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: focus_tab.clone() }),
+                Some("focus-link") => {
+                    let link = url.query_pairs().find(|(k, _)| k == "u").map(|(_, v)| v.into_owned()).unwrap_or_default();
+                    on_focus.emit(FOCUS_LINK_EVENT, TabUrlOnly { tab: focus_tab.clone(), url: link })
+                }
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
             false
@@ -1309,6 +1348,11 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 let state = on_load.state::<AppState>();
                 if state.focus_mode.load(Ordering::Relaxed) {
                     let _ = view.eval(focus_mode_script(true));
+                }
+                if let Ok(all) = state.focus_allow.lock() {
+                    if let Some(list) = all.get(&load_tab) {
+                        let _ = view.eval(focus_allow_script(Some(list)));
+                    }
                 }
                 // The keys as they are now; the page began with the ones set when its tab opened.
                 if let Ok(keys) = state.page_keys.lock() {
@@ -1845,6 +1889,7 @@ fn main() {
             focus_input: Mutex::new(HashMap::new()),
             focus_mode: AtomicBool::new(false),
             page_keys: Mutex::new("{}".into()),
+            focus_allow: Mutex::new(HashMap::new()),
             archived: Mutex::new(HashSet::new()),
             browser_lock: Mutex::new(()),
             github_wake: Mutex::new(github_tx),
@@ -1952,6 +1997,7 @@ fn main() {
             window_focused,
             set_focus_mode,
             set_page_keys,
+            set_focus_allow,
             start_review_cloud,
             start_desktop_prompt,
             terminal_quick,
