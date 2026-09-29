@@ -1374,9 +1374,10 @@ const START_PAGES: { label: string; url: string }[] = [
 ];
 /// Pages that stay in the pane as fixed tabs ahead of the others, opened
 /// from there or the sidebar and never closed, so they keep their state.
+/// Ids are letters and digits only, as the backend takes tab ids.
 const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[] = [
-  { id: "pin-claude", label: "Claude Code", url: CLOUD_HOME, icon: "spark" },
-  { id: "pin-chatgpt", label: "ChatGPT", url: "https://chatgpt.com/", icon: "chat" },
+  { id: "pinclaude", label: "Claude Code", url: CLOUD_HOME, icon: "spark" },
+  { id: "pinchatgpt", label: "ChatGPT", url: "https://chatgpt.com/", icon: "chat" },
 ];
 
 /// What the address bar opens: a URL as typed, a bare host over https, and
