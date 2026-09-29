@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod terminal;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::process::Command;
@@ -319,17 +321,59 @@ fn focus_in_herdr(session_id: &str) -> bool {
 /// for a quick question outside any todo.
 #[tauri::command(async)]
 fn quick_claude(state: State<AppState>, prompt: Option<String>) -> Result<(), String> {
-    let cwd = home().to_string_lossy().to_string();
-    let command = match prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-        Some(p) => format!("claude {}", shell_quote(p)),
-        None => "claude".into(),
-    };
-    let label = prompt.as_deref().map(|p| p.chars().take(24).collect::<String>()).filter(|l| !l.trim().is_empty()).unwrap_or_else(|| "claude".into());
+    let TerminalRun { cwd, title: label, command, .. } = quick_run(prompt.as_deref());
     match start_in_herdr(&state, &cwd, &label, &command, true) {
         // The new workspace is focused inside herdr; bring its terminal forward too.
         Ok(()) => cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err),
         Err(herdr_err) => start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")),
     }
+}
+
+/// A plain `claude` at home, with the prompt if one is given.
+fn quick_run(prompt: Option<&str>) -> TerminalRun {
+    let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
+    TerminalRun {
+        cwd: home().to_string_lossy().to_string(),
+        title: prompt.map(|p| p.chars().take(24).collect()).unwrap_or_else(|| "claude".into()),
+        command: prompt.map_or_else(|| "claude".into(), |p| format!("claude {}", shell_quote(p))),
+        session: None,
+    }
+}
+
+/// The in-app terminal's versions of starting a todo's session, a quick
+/// claude and reopening a session (see `terminal.rs`).
+#[tauri::command(async)]
+fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<TerminalRun, String> {
+    prepare_terminal(&state, todo_id, &options.unwrap_or_default())
+}
+
+#[tauri::command(async)]
+fn terminal_quick(prompt: Option<String>) -> TerminalRun {
+    quick_run(prompt.as_deref())
+}
+
+/// A session still running in herdr is focused there (None); one that runs
+/// nowhere comes back as a `claude --resume` to run in the app.
+#[tauri::command(async)]
+fn terminal_resume(state: State<AppState>, session_id: String) -> Result<Option<TerminalRun>, String> {
+    if focus_in_herdr(&session_id) {
+        return Ok(None);
+    }
+    resume_run(&state, &session_id).map(Some)
+}
+
+/// `claude --resume` in the folder the session ran in, where its transcript is.
+fn resume_run(state: &AppState, session_id: &str) -> Result<TerminalRun, String> {
+    let session = state.db.lock().map_err(err)?.get_session(session_id).map_err(err)?.ok_or("session not found")?;
+    if !std::path::Path::new(&session.cwd).is_dir() {
+        return Err(format!("作業フォルダ {} がもうないので再開できません", session.cwd));
+    }
+    Ok(TerminalRun {
+        title: session.title.clone().unwrap_or_else(|| session_id.chars().take(8).collect()),
+        command: format!("claude --resume {session_id}"),
+        cwd: session.cwd,
+        session: Some(session_id.to_string()),
+    })
 }
 
 /// Asks the background syncs to run now: GitHub for one todo or all, and
@@ -440,12 +484,8 @@ fn jump_to_session(session_id: &str, desktop: bool) -> Result<(), String> {
 /// Reopens a session that no longer runs anywhere: `claude --resume` in a new
 /// herdr workspace at the folder it ran in, which is where its transcript lives.
 fn resume_in_herdr(state: &AppState, session_id: &str) -> Result<(), String> {
-    let session = state.db.lock().map_err(err)?.get_session(session_id).map_err(err)?.ok_or("session not found")?;
-    if !std::path::Path::new(&session.cwd).is_dir() {
-        return Err(format!("作業フォルダ {} がもうないので再開できません", session.cwd));
-    }
-    let label = session.title.clone().unwrap_or_else(|| session_id.chars().take(8).collect());
-    start_in_herdr(state, &session.cwd, &label, &format!("claude --resume {session_id}"), true)?;
+    let TerminalRun { cwd, title, command, .. } = resume_run(state, session_id)?;
+    start_in_herdr(state, &cwd, &title, &command, true)?;
     cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
 }
 
@@ -535,9 +575,19 @@ fn start_in_ghostty(cwd: &str, command: &str) -> Result<(), String> {
     status.success().then_some(()).ok_or_else(|| format!("Ghostty failed: {status}"))
 }
 
-/// Starts `claude --session-id` for the todo in herdr (Ghostty if herdr is
-/// down), linked before it starts. `focus` brings the new workspace forward.
-fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOptions) -> Result<(), String> {
+/// A command for a terminal, where to run it and what to call its tab.
+#[derive(Serialize)]
+struct TerminalRun {
+    cwd: String,
+    title: String,
+    command: String,
+    /// The Claude session it runs, when known.
+    session: Option<String>,
+}
+
+/// Registers a session for the todo (so it is linked before it starts) and
+/// returns the `claude --session-id` command that runs it.
+fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions) -> Result<TerminalRun, String> {
     let (todo, session_id) = {
         let db = state.db.lock().map_err(err)?;
         let todo = todo_or_err(&db, todo_id)?;
@@ -549,13 +599,19 @@ fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOpti
         db.link_session(&session_id, todo.id).map_err(err)?;
         (todo, session_id)
     };
-    let cwd = terminal_cwd(&todo);
     let flags: String = opts.claude_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
     let command = format!(
         "claude --session-id {session_id}{flags} {}",
         shell_quote(&launch::start_prompt(todo.id, &todo.prompt_body()))
     );
-    start_in_herdr(state, &cwd, &todo.title, &command, focus).or_else(|herdr_err| {
+    Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: Some(session_id) })
+}
+
+/// Starts `claude --session-id` for the todo in herdr (Ghostty if herdr is
+/// down), linked before it starts. `focus` brings the new workspace forward.
+fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOptions) -> Result<(), String> {
+    let TerminalRun { cwd, title, command, .. } = prepare_terminal(state, todo_id, opts)?;
+    start_in_herdr(state, &cwd, &title, &command, focus).or_else(|herdr_err| {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", shell_quote(&cwd)))
             .map_err(|e| format!("{herdr_err} / {e}"))
     })
@@ -1549,6 +1605,7 @@ fn main() {
     let (github_tx, github_rx) = std::sync::mpsc::channel();
     let (cloud_tx, cloud_rx) = std::sync::mpsc::channel();
     tauri::Builder::default()
+        .manage(terminal::Terminals::default())
         .manage(AppState {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
@@ -1645,6 +1702,13 @@ fn main() {
             browser_focus,
             browser_url,
             herdr_sessions,
+            terminal_start,
+            terminal_quick,
+            terminal_resume,
+            terminal::term_open,
+            terminal::term_write,
+            terminal::term_resize,
+            terminal::term_close,
             set_herdr_session,
             browser_go
         ])

@@ -48,6 +48,7 @@ import {
   type Status,
   type Todo,
 } from "./api";
+import { closeTerminal, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
 /// The usage API answers 429 when asked often (status lines poll it too), so
@@ -139,6 +140,21 @@ const BeginWebContext = createContext<BeginWeb | null>(null);
 type CloudTarget = "web" | "desktop";
 const CLOUD_TARGET_KEY = "cloudTarget";
 const OpenCloudContext = createContext<((sessionId: string) => void) | null>(null);
+
+/// With the in-app terminal chosen: opens a run in a terminal tab, and brings
+/// up the tab a session already runs in (false when there is none).
+interface InAppTerminal {
+  open: (run: TerminalRun) => void;
+  focus: (sessionId: string) => boolean;
+}
+const TerminalContext = createContext<InAppTerminal | null>(null);
+/// herdr, or a terminal tab when the in-app terminal is chosen, for a session
+/// that runs locally: one still running comes to the front where it runs.
+function openLocal(terminal: InAppTerminal | null, sessionId: string, report: (e: unknown) => void) {
+  if (!terminal) return void api.openSession(sessionId, "herdr").catch(report);
+  if (terminal.focus(sessionId)) return;
+  terminalApi.resume(sessionId).then((r) => r && terminal.open(r), report);
+}
 
 const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "Todo" },
@@ -570,17 +586,20 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
   useOutsideClose(root, open, () => setOpen(false));
   const openInBrowser = useContext(BrowserContext);
   const openCloud = useContext(OpenCloudContext);
+  const terminal = useContext(TerminalContext);
   const cloud = isCloud(session);
   const go = (target?: "desktop" | "herdr" | "web") => {
     setOpen(false);
     if (target === "web" && openInBrowser) openInBrowser(cloudWebUrl(session.session_id));
+    else if (target === "herdr") openLocal(terminal, session.session_id, report);
     else api.openSession(session.session_id, target === "web" ? "desktop" : target).catch(report);
   };
   const openMain = () => {
     if (cloud && openCloud) {
       setOpen(false);
       openCloud(session.session_id);
-    } else go();
+    } else if (!terminal?.focus(session.session_id)) go();
+    else setOpen(false);
   };
   return (
     <span ref={root} className={`open-menu${primary ? " primary" : ""}`} onPointerDown={stop} onClick={stop}>
@@ -602,7 +621,7 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
           </button>
           {!cloud && (
             <button role="menuitem" onClick={() => go("herdr")}>
-              herdr で開く（閉じていれば再開）
+              {terminal ? "ターミナルで開く" : "herdr で開く"}（閉じていれば再開）
             </button>
           )}
         </span>
@@ -1194,6 +1213,7 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
   const cliOptions = target === "terminal" || isCloudTarget(target);
   const options: StartOptions = cliOptions ? { model: choice.model || undefined, effort: choice.effort || undefined } : {};
   const beginWeb = useContext(BeginWebContext);
+  const terminal = useContext(TerminalContext);
   const [starting, setStarting] = useState(false);
   const start = () => {
     if (starting) return;
@@ -1205,7 +1225,7 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
         if (prompt !== (todo.prompt ?? "")) await api.updateTodo(todo.id, { prompt });
         if (isCloudTarget(target)) finish?.(await api.startCloud(todo.id, options, target === "cloud"));
         else if (target === "desktop") await api.startDesktop(todo.id);
-        else if (target === "terminal") await api.startTerminal(todo.id, options);
+        else if (target === "terminal") terminal ? terminal.open(await terminalApi.start(todo.id, options)) : await api.startTerminal(todo.id, options);
         else await api.enqueue(todo.id, choice.runner);
       } catch (e) {
         finish?.(null);
@@ -1262,7 +1282,7 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
               title={isCloudTarget(t.key) && !cloudOk ? "計画用の todo は Local で始めます" : undefined}
               onClick={() => setChoice({ target: t.key })}
             >
-              {t.label}
+              {t.key === "terminal" && terminal ? "ターミナル" : t.label}
             </button>
           ))}
         </div>
@@ -1331,6 +1351,8 @@ interface BrowserTab {
   loading: boolean;
   /// Bumped when the app sends the tab to `url` (not when the page moves).
   nav: number;
+  /// Set on an in-app terminal tab, which shows no web page.
+  term?: TerminalRun;
 }
 
 /// The browser pane: tabs of web pages, each a webview laid over this one on
@@ -1404,8 +1426,9 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTa
             className={`browser-tab${t.id === active?.id ? " on" : ""}${t.id === dragging ? " dragging" : ""}`}
             onPointerDown={(e) => dragTab(e, t.id)}
           >
-            <button role="tab" aria-selected={t.id === active?.id} aria-busy={t.loading} className="browser-tab-main" title={t.url} onClick={() => onSelect(t.id)}>
+            <button role="tab" aria-selected={t.id === active?.id} aria-busy={t.loading} className="browser-tab-main" title={t.term?.command ?? t.url} onClick={() => onSelect(t.id)}>
               {t.loading && <span className="spinner" aria-label="読み込み中" />}
+              {t.term && <span className="muted mono">$</span>}
               <span className="ellipsis">{t.title || hostOf(t.url)}</span>
             </button>
             <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を閉じる`} onClick={() => onClose(t.id)}>
@@ -1428,7 +1451,13 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTa
           <Icon name="chevronRight" size={14} />
         </button>
       </div>
-      {active ? <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} /> : <NewTabPage onOpen={onOpen} />}
+      {active?.term ? (
+        <TerminalView key={active.id} id={active.id} run={active.term} report={report} />
+      ) : active ? (
+        <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} />
+      ) : (
+        <NewTabPage onOpen={onOpen} />
+      )}
     </section>
   );
 }
@@ -1905,7 +1934,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
           ))}
         </div>
         <span className="grow" />
-        <button onClick={onQuick} title="todo に紐づけずに herdr でホームフォルダの claude を開く">
+        <button onClick={onQuick} title="todo に紐づけずにホームフォルダの claude を開く">
           <Icon name="spark" size={13} /> ちょっと Claude
         </button>
       </header>
@@ -2008,6 +2037,7 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
 }) {
   const s = item.session;
   const openInBrowser = useContext(BrowserContext);
+  const terminal = useContext(TerminalContext);
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   useEffect(() => {
@@ -2067,8 +2097,8 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
             </>
           ) : (
             <>
-              <button className="primary grow" onClick={() => api.openSession(s.session_id, "herdr").catch(report)}>
-                herdr で開く
+              <button className="primary grow" onClick={() => openLocal(terminal, s.session_id, report)}>
+                {terminal ? "ターミナルで開く" : "herdr で開く"}
               </button>
               <button className="grow" onClick={() => api.openSession(s.session_id, "desktop").catch(report)}>
                 Desktop で開く
@@ -2259,6 +2289,7 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   const makeTodo = (p: Pr, title: string) =>
     api.createTodo({ title, repos: [p.repo], cwd: cwdOf(p) }).then((t) => api.updateTodo(t.id, { pr_url: p.url }));
   const beginWeb = useContext(BeginWebContext);
+  const terminal = useContext(TerminalContext);
   // PRs whose review session is being started, so their button shows it.
   const [starting, setStarting] = useState<Set<string>>(new Set());
   const mark = (url: string, on: boolean) =>
@@ -2277,7 +2308,7 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
         const todo = todoOf(p) ?? (await makeTodo(p, `${REVIEW_TITLE_PREFIX}${p.title}`));
         await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url, submit) });
         if (reviewRunner === "desktop") await api.startDesktop(todo.id);
-        else if (reviewRunner === "terminal") await api.startTerminal(todo.id);
+        else if (reviewRunner === "terminal") terminal ? terminal.open(await terminalApi.start(todo.id)) : await api.startTerminal(todo.id);
         else finish?.(await api.startCloud(todo.id, undefined, reviewRunner === "cloud"));
       } catch (e) {
         finish?.(null);
@@ -2311,7 +2342,7 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
           <option value="web">/review は Cloud・Web</option>
           <option value="cloud">/review は Cloud・Desktop</option>
           <option value="desktop">/review は Local・Desktop</option>
-          <option value="terminal">/review は herdr</option>
+          <option value="terminal">/review は {terminal ? "ターミナル" : "herdr"}</option>
         </select>
         <button className="ghost icon" aria-label="PR を取り直す" title="PR を取り直す" onClick={onRefresh}>
           <Icon name="sync" size={14} />
@@ -2613,9 +2644,11 @@ function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) 
   const [prompt, setPrompt] = useState("");
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
+  const terminal = useContext(TerminalContext);
   const start = () =>
     run(async () => {
-      await api.quickClaude(prompt);
+      if (terminal) terminal.open(await terminalApi.quick(prompt));
+      else await api.quickClaude(prompt);
       onClose();
     });
   return (
@@ -2630,7 +2663,7 @@ function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) 
             キャンセル
           </button>
           <button className="primary" onClick={start}>
-            herdr で起動
+            {terminal ? "ターミナルで起動" : "herdr で起動"}
           </button>
         </>
       }
@@ -2845,8 +2878,33 @@ export default function App() {
       }
     };
   };
+  const [terminalTarget, setTerminalTargetState] = useState<TerminalTarget>(() => load(TERMINAL_TARGET_KEY, ["ghostty", "app"] as const, "ghostty"));
+  const setTerminalTarget = (t: TerminalTarget) => {
+    remember(TERMINAL_TARGET_KEY, t);
+    setTerminalTargetState(t);
+  };
+  const terminalTab = (sessionId: string) => tabs.find((t) => t.term?.session === sessionId);
+  const inAppTerminal: InAppTerminal | null =
+    terminalTarget === "app"
+      ? {
+          open: (run) => {
+            const id = `t${nextTab.current++}`;
+            setBrowserShown(true);
+            setTabs((prev) => [...prev, { id, url: "", title: run.title, loading: false, nav: 0, term: run }]);
+            setActiveTabId(id);
+          },
+          focus: (sessionId) => {
+            const tab = terminalTab(sessionId);
+            if (!tab) return false;
+            setBrowserShown(true);
+            setActiveTabId(tab.id);
+            return true;
+          },
+        }
+      : null;
   const closeTab = (id: string) => {
-    api.browserClose(id).catch(report);
+    if (tabs.find((t) => t.id === id)?.term) closeTerminal(id);
+    else api.browserClose(id).catch(report);
     const i = tabs.findIndex((t) => t.id === id);
     const rest = tabs.filter((t) => t.id !== id);
     setTabs(rest);
@@ -3150,6 +3208,7 @@ export default function App() {
     <BrowserContext.Provider value={openInBrowser}>
     <BeginWebContext.Provider value={beginWeb}>
     <OpenCloudContext.Provider value={openCloud}>
+    <TerminalContext.Provider value={inAppTerminal}>
       <div className={`app${browserShown ? " with-browser" : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
         <aside className="sidebar">
           <div className="brand">
@@ -3222,6 +3281,18 @@ export default function App() {
               </div>
             </div>
             <div className="link-target">
+              <span className="muted">ターミナル</span>
+              <div className="segmented" role="group" aria-label="ローカルのセッションを動かす場所">
+                <button className={terminalTarget === "ghostty" ? "on" : ""} aria-pressed={terminalTarget === "ghostty"} onClick={() => setTerminalTarget("ghostty")}>
+                  Ghostty
+                </button>
+                <button className={terminalTarget === "app" ? "on" : ""} aria-pressed={terminalTarget === "app"} onClick={() => setTerminalTarget("app")}>
+                  アプリ内
+                </button>
+              </div>
+            </div>
+            {terminalTarget === "ghostty" && (
+            <div className="link-target">
               <span className="muted">herdr</span>
               {herdr && herdr.running.length > 0 ? (
                 <select
@@ -3245,6 +3316,7 @@ export default function App() {
                 </button>
               )}
             </div>
+            )}
             <UsageBox limits={limits} error={usageError} />
             <div className="sync-line">
               <span className="dot state-running" />
@@ -3467,6 +3539,7 @@ export default function App() {
         {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
         {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
       </div>
+    </TerminalContext.Provider>
     </OpenCloudContext.Provider>
     </BeginWebContext.Provider>
     </BrowserContext.Provider>
