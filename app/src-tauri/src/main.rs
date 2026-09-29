@@ -1020,6 +1020,8 @@ const BROWSER_PAGE_SCRIPT: &str = include_str!("browser_page.js");
 const APP_SCHEME: &str = "todo-sessions";
 /// `{tab}` when a page asks for the address bar (⌘L).
 const BROWSER_FOCUS_URL_EVENT: &str = "browser-focus-url";
+/// When a page asks for a new tab (⌘T).
+const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 
 #[derive(Clone, Serialize)]
 struct TabOnly {
@@ -1073,11 +1075,14 @@ fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width:
             if url.scheme() != APP_SCHEME {
                 return true;
             }
-            // Keys typed after ⌘L belong in the app's address bar.
+            // Keys typed next belong in the app (its address bar).
             if let Some(main) = on_focus.get_webview("main") {
                 let _ = main.set_focus();
             }
-            let _ = on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() });
+            let _ = match url.host_str() {
+                Some("new-tab") => on_focus.emit(BROWSER_OPEN_NEW_TAB_EVENT, ()),
+                _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
+            };
             false
         })
         .on_page_load(move |_, payload| {

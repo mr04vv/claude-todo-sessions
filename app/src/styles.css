@@ -2080,3 +2080,27 @@ body.resizing {
     opacity: 0.5;
   }
 }
+
+/* New tab page */
+
+.browser-new-tab,
+.browser-hide {
+  align-self: center;
+  flex-shrink: 0;
+}
+
+.new-tab {
+  flex-grow: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.new-tab button {
+  justify-content: space-between;
+  height: 40px;
+  padding: 0 14px;
+  font-size: 13px;
+}

@@ -1,12 +1,13 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
-// own: ⌘L moves to the app's address bar, ⌘R reloads, and right-click offers
-// translation (WKWebView has no translate item in its menu).
+// own: ⌘L moves to the app's address bar, ⌘T opens a new tab, ⌘R reloads,
+// and right-click offers translation (WKWebView has no translate item).
 (() => {
   if (window.__todoSessionsPage) return;
   window.__todoSessionsPage = true;
 
-  // The app cancels this navigation and focuses its address bar.
+  // The app cancels these navigations and acts on them instead.
   const FOCUS_URL = "todo-sessions://focus-url";
+  const NEW_TAB = "todo-sessions://new-tab";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
 
@@ -18,10 +19,10 @@
       if (key === "r") {
         e.preventDefault();
         location.reload();
-      } else if (key === "l") {
+      } else if (key === "l" || key === "t") {
         e.preventDefault();
         e.stopPropagation();
-        location.href = FOCUS_URL;
+        location.href = key === "l" ? FOCUS_URL : NEW_TAB;
       }
     },
     true,

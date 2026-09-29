@@ -17,6 +17,7 @@ import {
   ago,
   api,
   BROWSER_FOCUS_URL_EVENT,
+  BROWSER_OPEN_NEW_TAB_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -68,6 +69,7 @@ const GROUP_KEY = "groupBy";
 const START_KEY = "startChoice";
 const REVIEW_RUNNER_KEY = "reviewRunner";
 const LINK_TARGET_KEY = "linkTarget";
+const BROWSER_SHOWN_KEY = "browserShown";
 const HERDR_SESSION_KEY = "herdrSession";
 
 /// Where pages open: the app's browser pane, or Dia with its own sign-ins.
@@ -355,7 +357,7 @@ function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
 
 type IconName =
   | "board" | "list" | "spark" | "pr" | "search" | "sync" | "check" | "plus" | "import" | "close" | "open"
-  | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "bell";
+  | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "bell" | "globe";
 
 const ICON_PATHS: Record<IconName, string> = {
   board: "M4 4h6v16H4zM14 4h6v9h-6z",
@@ -378,6 +380,7 @@ const ICON_PATHS: Record<IconName, string> = {
   forward: "M9 6l6 6-6 6",
   reload: "M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6",
   bell: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 21h4",
+  globe: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18",
 };
 
 function Icon({ name, size = 15 }: { name: IconName; size?: number }) {
@@ -1251,14 +1254,103 @@ interface BrowserTab {
 /// The browser pane: tabs of web pages, each a webview laid over this one on
 /// a placeholder that follows the layout. `covered` hides them while a dialog
 /// is up, since a native webview draws above everything in the page.
-function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
+const SEARCH_URL = "https://www.google.com/search?q=";
+/// Pages offered on a new tab.
+const START_PAGES: { label: string; url: string }[] = [
+  { label: "GitHub", url: "https://github.com/" },
+  { label: "GitHub の通知", url: "https://github.com/notifications" },
+  { label: "Claude Code", url: CLOUD_HOME },
+];
+
+/// What the address bar opens: a URL as typed, a bare host over https, and
+/// anything else as a search.
+function addressToUrl(text: string): string | null {
+  const t = text.trim();
+  if (!t) return null;
+  if (/^https?:\/\//i.test(t)) return t;
+  if (/^[^\s/]+\.[^\s]+$/.test(t)) return `https://${t}`;
+  return SEARCH_URL + encodeURIComponent(t);
+}
+
+/// The browser pane: a tab strip over the active tab's page, or a new-tab
+/// page when no tab is picked.
+function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTab, onHide, onOpen }: {
   tabs: BrowserTab[];
-  active: BrowserTab;
+  active: BrowserTab | null;
   covered: boolean;
   report: (e: unknown) => void;
   onSelect: (id: string) => void;
   onClose: (id: string) => void;
+  onNewTab: () => void;
+  onHide: () => void;
+  onOpen: (url: string) => void;
 }) {
+  return (
+    <section className="browser" aria-label="ブラウザ">
+      <div className="browser-tabs" role="tablist">
+        {tabs.map((t) => (
+          <span key={t.id} className={`browser-tab${t.id === active?.id ? " on" : ""}`}>
+            <button role="tab" aria-selected={t.id === active?.id} aria-busy={t.loading} className="browser-tab-main" title={t.url} onClick={() => onSelect(t.id)}>
+              {t.loading && <span className="spinner" aria-label="読み込み中" />}
+              <span className="ellipsis">{t.title || hostOf(t.url)}</span>
+            </button>
+            <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を閉じる`} onClick={() => onClose(t.id)}>
+              <Icon name="close" size={11} />
+            </button>
+          </span>
+        ))}
+        {!active && (
+          <span className="browser-tab on">
+            <button role="tab" aria-selected className="browser-tab-main">
+              <span className="ellipsis">新しいタブ</span>
+            </button>
+          </span>
+        )}
+        <button className="ghost icon browser-new-tab" aria-label="新しいタブ（⌘T）" title="新しいタブ（⌘T）" onClick={onNewTab}>
+          <Icon name="plus" size={13} />
+        </button>
+        <span className="grow" />
+        <button className="ghost icon browser-hide" aria-label="ブラウザを隠す" title="ブラウザを隠す（タブは残ります）" onClick={onHide}>
+          <Icon name="chevronRight" size={14} />
+        </button>
+      </div>
+      {active ? <TabView tab={active} covered={covered} report={report} /> : <NewTabPage onOpen={onOpen} />}
+    </section>
+  );
+}
+
+/// A new tab: type an address or a search, or pick a start page.
+function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
+  return (
+    <>
+      <div className="browser-bar">
+        <input
+          autoFocus
+          className="url mono"
+          placeholder="URL か検索したい言葉を入力して Enter"
+          aria-label="URL か検索したい言葉"
+          onKeyDown={(e) => {
+            const url = isEnter(e) ? addressToUrl(e.currentTarget.value) : null;
+            if (url) onOpen(url);
+          }}
+        />
+      </div>
+      <div className="new-tab">
+        {START_PAGES.map((p) => (
+          <button key={p.url} onClick={() => onOpen(p.url)}>
+            {p.label}
+            <span className="muted mono">{hostOf(p.url)}</span>
+          </button>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/// One tab's page: its webview laid over a placeholder that follows the
+/// layout. `covered` hides it while a dialog is up, since a native webview
+/// draws above everything in the page.
+function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: boolean; report: (e: unknown) => void }) {
   const slot = useRef<HTMLDivElement>(null);
   const rect = () => {
     const r = slot.current!.getBoundingClientRect();
@@ -1312,20 +1404,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
     };
   }, [report]);
   return (
-    <section className="browser" aria-label="ブラウザ">
-      <div className="browser-tabs" role="tablist">
-        {tabs.map((t) => (
-          <span key={t.id} className={`browser-tab${t.id === active.id ? " on" : ""}`}>
-            <button role="tab" aria-selected={t.id === active.id} aria-busy={t.loading} className="browser-tab-main" title={t.url} onClick={() => onSelect(t.id)}>
-              {t.loading && <span className="spinner" aria-label="読み込み中" />}
-              <span className="ellipsis">{t.title || hostOf(t.url)}</span>
-            </button>
-            <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を閉じる`} onClick={() => onClose(t.id)}>
-              <Icon name="close" size={11} />
-            </button>
-          </span>
-        ))}
-      </div>
+    <>
       <div className="browser-bar">
         <button className="ghost icon" aria-label="戻る" onClick={() => api.browserGo(active.id, "back").catch(report)}>
           <Icon name="back" size={14} />
@@ -1344,7 +1423,8 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
           aria-label="URL（⌘L で編集）"
           title="⌘L で編集、Enter で移動"
           onKeyDown={(e) => {
-            if (isEnter(e)) navigate(e.currentTarget.value.trim());
+            const url = isEnter(e) ? addressToUrl(e.currentTarget.value) : null;
+            if (url) navigate(url);
           }}
         />
         <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
@@ -1355,7 +1435,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
       <div ref={slot} className="browser-slot">
         {covered && <span className="muted">ダイアログを閉じると表示に戻ります</span>}
       </div>
-    </section>
+    </>
   );
 }
 
@@ -2524,12 +2604,33 @@ type DialogKind = "add" | "import" | "quick" | "palette" | null;
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
-  // Pages in the browser pane; it stays across screens until the last tab closes.
+  // Pages in the browser pane. The pane stays across screens, shown or
+  // hidden from the sidebar; hiding it keeps the tabs.
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const [activeTabId, setActiveTabIdState] = useState<string | null>(null);
+  const [newTab, setNewTab] = useState(false);
+  const [browserShown, setBrowserShownState] = useState(() => load(BROWSER_SHOWN_KEY, ["1", "0"] as const, "0") === "1");
+  const setBrowserShown = (v: boolean) => {
+    remember(BROWSER_SHOWN_KEY, v ? "1" : "0");
+    setBrowserShownState(v);
+  };
+  const setActiveTabId = (id: string | null) => {
+    setActiveTabIdState(id);
+    setNewTab(false);
+  };
   const nextTab = useRef(1);
-  const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1] ?? null;
-  const browserUrl = activeTab?.url ?? null;
+  const activeTab = newTab ? null : (tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1] ?? null);
+  const browserUrl = browserShown ? (activeTab?.url ?? null) : null;
+  /// Shows the pane on a new tab page (⌘T).
+  const openNewTab = () => {
+    setBrowserShown(true);
+    setNewTab(true);
+  };
+  const toggleBrowser = () => {
+    if (browserShown) return setBrowserShown(false);
+    setBrowserShown(true);
+    if (tabs.length === 0) setNewTab(true);
+  };
   const [cloudTarget, setCloudTargetState] = useState<CloudTarget>(() => load(CLOUD_TARGET_KEY, ["web", "desktop"] as const, "web"));
   const setCloudTarget = (t: CloudTarget) => {
     remember(CLOUD_TARGET_KEY, t);
@@ -2547,6 +2648,7 @@ export default function App() {
       api.openInDia(url).catch(report);
       return;
     }
+    setBrowserShown(true);
     const open = tabs.find((t) => sameTarget(t.url, url));
     if (open) return setActiveTabId(open.id);
     const id = `t${nextTab.current++}`;
@@ -2556,6 +2658,7 @@ export default function App() {
   const beginWeb: BeginWeb = () => {
     if (linkTarget === "dia") return (sessionId) => sessionId && api.openInDia(cloudWebUrl(sessionId)).catch(report);
     const id = `t${nextTab.current++}`;
+    setBrowserShown(true);
     setTabs((prev) => [...prev, { id, url: CLOUD_HOME, title: "セッションを作成中…", loading: true, nav: 0 }]);
     setActiveTabId(id);
     return (sessionId) => {
@@ -2572,7 +2675,9 @@ export default function App() {
     const i = tabs.findIndex((t) => t.id === id);
     const rest = tabs.filter((t) => t.id !== id);
     setTabs(rest);
-    if (id === activeTab?.id) setActiveTabId(rest[Math.min(i, rest.length - 1)]?.id ?? null);
+    // Closing the last tab leaves the pane open on a new tab.
+    if (rest.length === 0) setNewTab(true);
+    else if (id === activeTab?.id) setActiveTabId(rest[Math.min(i, rest.length - 1)].id);
   };
   // Pages report where they went and what they are called; links they open in
   // a new window arrive as new tabs.
@@ -2589,6 +2694,7 @@ export default function App() {
       ),
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
+      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
       // The menu bar and notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -2718,7 +2824,7 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // ⌘N adds a todo and ⌘K opens the commands, from anywhere.
+  // ⌘N adds a todo, ⌘K opens the commands and ⌘T a browser tab, from anywhere.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -2726,6 +2832,9 @@ export default function App() {
       if (k === "n" || k === "k") {
         e.preventDefault();
         setDialog(k === "n" ? "add" : "palette");
+      } else if (k === "t") {
+        e.preventDefault();
+        openNewTab();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -2813,6 +2922,8 @@ export default function App() {
     { key: "sessions", label: "セッションを表示", run: () => setView("sessions") },
     { key: "prs", label: "PR を表示", run: () => setView("prs") },
     { key: "notices", label: "通知を表示", run: () => setView("notices") },
+    { key: "newTab", label: "ブラウザで新しいタブを開く", hint: "⌘T", run: openNewTab },
+    { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザを表示", run: toggleBrowser },
     linkTarget === "app"
       ? { key: "linkDia", label: "リンクを Dia で開くようにする", run: () => setLinkTarget("dia") }
       : { key: "linkApp", label: "リンクをアプリ内のブラウザで開くようにする", run: () => setLinkTarget("app") },
@@ -2847,7 +2958,7 @@ export default function App() {
     <BrowserContext.Provider value={openInBrowser}>
     <BeginWebContext.Provider value={beginWeb}>
     <OpenCloudContext.Provider value={openCloud}>
-      <div className={`app${browserUrl ? " with-browser" : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
+      <div className={`app${browserShown ? " with-browser" : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
         <aside className="sidebar">
           <div className="brand">
             <span className="brand-mark" />
@@ -2867,6 +2978,11 @@ export default function App() {
                 {n.count !== undefined && <span className="muted">{n.count}</span>}
               </button>
             ))}
+            <button className={browserShown ? "on" : ""} aria-pressed={browserShown} title="ブラウザを表示・隠す（⌘T で新しいタブ）" onClick={toggleBrowser}>
+              <Icon name="globe" />
+              <span className="grow">ブラウザ</span>
+              {tabs.length > 0 && <span className="muted">{tabs.length}</span>}
+            </button>
           </nav>
           <div className="sidebar-section">
             <div className="section-title">場所</div>
@@ -3094,7 +3210,7 @@ export default function App() {
 
         {panel && (
           <div className="side">
-            <Resizer label="パネルの幅" width={panelW} min={PANEL_MIN_W} max={() => maxPaneWidth(activeTab ? dockW : 0)} onResize={setPanelW} />
+            <Resizer label="パネルの幅" width={panelW} min={PANEL_MIN_W} max={() => maxPaneWidth(browserShown ? dockW : 0)} onResize={setPanelW} />
         {panel === "todo" && selectedTodo && (
           <TodoPanel
             todo={selectedTodo}
@@ -3114,10 +3230,20 @@ export default function App() {
         )}
           </div>
         )}
-        {activeTab && (
+        {browserShown && (
           <aside className="browser-dock">
             <Resizer label="ブラウザの幅" width={dockW} min={DOCK_MIN_W} max={() => maxPaneWidth(0)} onResize={setDockW} />
-            <BrowserDock tabs={tabs} active={activeTab} covered={covered} report={report} onSelect={setActiveTabId} onClose={closeTab} />
+            <BrowserDock
+              tabs={tabs}
+              active={activeTab}
+              covered={covered}
+              report={report}
+              onSelect={setActiveTabId}
+              onClose={closeTab}
+              onNewTab={openNewTab}
+              onHide={() => setBrowserShown(false)}
+              onOpen={openInBrowser}
+            />
           </aside>
         )}
 
