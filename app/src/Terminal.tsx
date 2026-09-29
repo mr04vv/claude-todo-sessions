@@ -68,6 +68,8 @@ const MODS = { meta: ["super", "cmd", "command"], alt: ["alt", "opt", "option"],
 const ALT_ARROWS: Record<string, string> = { ArrowUp: "\x1b[1;3A", ArrowDown: "\x1b[1;3B", ArrowRight: "\x1b[1;3C", ArrowLeft: "\x1b[1;3D" };
 /// Ghostty scrolls a trackpad by its pixels; the terminal does the same.
 const WHEEL_LINE_PX = 16;
+/// Big enough for xterm.js to take a replayed step as one whole row.
+const WHEEL_STEP_PX = 1000;
 const EXITED_NOTE = "\r\n\x1b[2m[終了しました]\x1b[0m\r\n";
 
 /// Each terminal outlives its view, so switching tabs or hiding the pane
@@ -185,17 +187,29 @@ function entryFor(id: string, look: Look): Entry {
       if (ev.type === "keydown") write(sends);
       return false;
     });
-    // Outside full-screen apps (which get the wheel themselves), a trackpad
-    // scrolls by its pixels as in Ghostty rather than xterm.js's slower steps.
+    // The wheel moves a row per row's height scrolled, as in Ghostty.
+    // xterm.js damps small trackpad steps and, for an app that takes the
+    // wheel (Claude Code, herdr), sends one step per event however far it
+    // went, which crawls; each row here is handed back to it as one step.
     let partial = 0;
+    let replaying = false;
     term.attachCustomWheelEventHandler((ev) => {
-      if (term.modes.mouseTrackingMode !== "none" || term.buffer.active.type !== "normal") return true;
+      if (replaying) return true;
       const rowPx = (term.element?.querySelector(".xterm-screen")?.clientHeight ?? 0) / term.rows || WHEEL_LINE_PX;
       partial += ev.deltaMode === WheelEvent.DOM_DELTA_LINE ? ev.deltaY : ev.deltaY / rowPx;
-      const lines = Math.trunc(partial);
-      partial -= lines;
-      if (lines) term.scrollLines(lines);
+      const rows = Math.trunc(partial);
+      partial -= rows;
       ev.preventDefault();
+      if (term.modes.mouseTrackingMode === "none" && term.buffer.active.type === "normal") {
+        if (rows) term.scrollLines(rows);
+        return false;
+      }
+      replaying = true;
+      for (let i = 0; i < Math.abs(rows); i++) {
+        const step = new WheelEvent("wheel", { deltaY: Math.sign(rows) * WHEEL_STEP_PX, clientX: ev.clientX, clientY: ev.clientY, bubbles: true, cancelable: true });
+        ev.target?.dispatchEvent(step);
+      }
+      replaying = false;
       return false;
     });
     term.onResize(({ cols, rows }) => void invoke("term_resize", { id, cols, rows }).catch(() => {}));
