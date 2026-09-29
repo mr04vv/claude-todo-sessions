@@ -16,6 +16,7 @@ import {
 import {
   ago,
   api,
+  BROWSER_FOCUS_URL_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -53,8 +54,6 @@ const USAGE_REFRESH_MS = 5 * 60_000;
 const USAGE_RETRY_MS = 60_000;
 const PR_REFRESH_MS = 5 * 60_000;
 const DETAIL_REFRESH_MS = 10_000;
-/// How long "コピーしました" stays after ⌘L.
-const COPIED_MS = 1400;
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
 /// Done cards kept per lane while "Done は直近のみ" is on.
@@ -1284,30 +1283,33 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
     };
   }, [covered]);
   useEffect(() => () => void api.browserHide().catch(() => {}), []);
-  // ⌘L copies the page's URL and ⌘R reloads it; inside the page a script does the same.
-  const [copied, setCopied] = useState(false);
-  const url = useRef(active.url);
-  url.current = active.url;
+  // ⌘L edits the address and ⌘R reloads, as in a browser; a script in the
+  // page sends ⌘L here too when the page has focus.
+  const address = useRef<HTMLInputElement>(null);
   const tabId = useRef(active.id);
   tabId.current = active.id;
   useEffect(() => {
+    const focusAddress = () => {
+      address.current?.focus();
+      address.current?.select();
+    };
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
       const key = e.key.toLowerCase();
       if (key === "r") {
         e.preventDefault();
         api.browserGo(tabId.current, "reload").catch(report);
-        return;
+      } else if (key === "l") {
+        e.preventDefault();
+        focusAddress();
       }
-      if (key !== "l") return;
-      e.preventDefault();
-      api.copyText(url.current).then(() => {
-        setCopied(true);
-        setTimeout(() => setCopied(false), COPIED_MS);
-      }, report);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    const off = listen<{ tab: string }>(BROWSER_FOCUS_URL_EVENT, ({ payload }) => payload.tab === tabId.current && focusAddress());
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      off.then((f) => f());
+    };
   }, [report]);
   return (
     <section className="browser" aria-label="ブラウザ">
@@ -1335,16 +1337,16 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
           <Icon name="reload" size={14} />
         </button>
         <input
+          ref={address}
           key={`${active.id}:${active.url}`}
           className="url mono"
           defaultValue={active.url}
-          aria-label="URL（⌘L でコピー）"
-          title="⌘L でコピー"
+          aria-label="URL（⌘L で編集）"
+          title="⌘L で編集、Enter で移動"
           onKeyDown={(e) => {
             if (isEnter(e)) navigate(e.currentTarget.value.trim());
           }}
         />
-        {copied && <span className="muted small-text">コピーしました</span>}
         <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
           Dia で開く
         </button>

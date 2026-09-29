@@ -1013,17 +1013,17 @@ struct NewTab {
     url: String,
 }
 
-/// ⌘L inside a page copies its URL, ⌘R reloads it.
-const BROWSER_KEYS_SCRIPT: &str = include_str!("browser_keys.js");
+/// Keys and the right-click menu inside every page (see the file).
+const BROWSER_PAGE_SCRIPT: &str = include_str!("browser_page.js");
+/// A page sends ⌘L as a navigation to this scheme; it is cancelled and the
+/// app's address bar gets focus instead.
+const APP_SCHEME: &str = "todo-sessions";
+/// `{tab}` when a page asks for the address bar (⌘L).
+const BROWSER_FOCUS_URL_EVENT: &str = "browser-focus-url";
 
-/// Puts text on the clipboard, for ⌘L while the app itself has focus.
-#[tauri::command(async)]
-fn copy_text(text: String) -> Result<(), String> {
-    use std::io::Write;
-    let mut child = cli("pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(|e| format!("pbcopy: {e}"))?;
-    child.stdin.take().ok_or("pbcopy has no stdin")?.write_all(text.as_bytes()).map_err(err)?;
-    let status = child.wait().map_err(err)?;
-    status.success().then_some(()).ok_or_else(|| format!("pbcopy failed: {status}"))
+#[derive(Clone, Serialize)]
+struct TabOnly {
+    tab: String,
 }
 
 fn browser_rect(x: f64, y: f64, width: f64, height: f64) -> tauri::Rect {
@@ -1065,10 +1065,21 @@ fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width:
         return view.show().map_err(err);
     }
     let window = app.get_window("main").ok_or("main window not found")?;
-    let (on_load, on_title, on_new) = (app.clone(), app.clone(), app.clone());
-    let (load_tab, title_tab) = (tab.clone(), tab);
+    let (on_load, on_title, on_new, on_focus) = (app.clone(), app.clone(), app.clone(), app.clone());
+    let (load_tab, title_tab, focus_tab) = (tab.clone(), tab.clone(), tab);
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
-        .initialization_script(BROWSER_KEYS_SCRIPT)
+        .initialization_script(BROWSER_PAGE_SCRIPT)
+        .on_navigation(move |url| {
+            if url.scheme() != APP_SCHEME {
+                return true;
+            }
+            // Keys typed after ⌘L belong in the app's address bar.
+            if let Some(main) = on_focus.get_webview("main") {
+                let _ = main.set_focus();
+            }
+            let _ = on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() });
+            false
+        })
         .on_page_load(move |_, payload| {
             let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
             let _ = on_load.emit(BROWSER_URL_EVENT, TabUrl { tab: load_tab.clone(), url: payload.url().to_string(), loading });
@@ -1570,7 +1581,6 @@ fn main() {
             browser_bounds,
             browser_hide,
             browser_close,
-            copy_text,
             herdr_sessions,
             set_herdr_session,
             browser_go

@@ -213,7 +213,6 @@ export const api = {
   openGithub: (url: string) => invoke<void>("open_github", { url }),
   openLink: (url: string) => invoke<void>("open_link", { url }),
   openInDia: (url: string) => invoke<void>("open_in_dia", { url }),
-  copyText: (text: string) => invoke<void>("copy_text", { text }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
   addLink: (todoId: number, url: string) => invoke<Link>("add_link", { todoId, url }),
@@ -240,6 +239,8 @@ export const api = {
 
 /** `{tab, url}` after a tab navigates. */
 export const BROWSER_URL_EVENT = "browser-url";
+/** `{tab}` when a page asks for the address bar (⌘L). */
+export const BROWSER_FOCUS_URL_EVENT = "browser-focus-url";
 /** `{tab, title}` when a tab's page title changes. */
 export const BROWSER_TITLE_EVENT = "browser-title";
 /** `{session_id}` of a cloud session picked in the menu bar or a notification. */
