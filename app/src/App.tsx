@@ -195,16 +195,12 @@ const PR_LABEL: Record<PrState, string> = {
 const NO_REPO_LANE = "リポジトリなし";
 /// Grouped by parent, top-level todos without subtasks share this lane.
 const ORPHAN_LANE = "親なし";
-/// Grouped by parent, top-level review todos (started from a PR's /review) gather here, last and folded.
-const REVIEW_LANE = "レビュー依頼";
+/// The title of a session reviewing a PR.
 const REVIEW_TITLE_PREFIX = "レビュー: ";
-
-/// A todo made to review someone's PR: its title or its /review prompt says so.
-const isReviewTodo = (t: Todo) => t.title.startsWith(REVIEW_TITLE_PREFIX) || (t.prompt ?? "").startsWith("/review ");
 
 /// Lanes that start folded, and the ones already folded once on this machine
 /// (so a lane added to the list later folds too, and stays open once opened).
-const FOLDED_BY_DEFAULT = [NO_REPO_LANE, REVIEW_LANE];
+const FOLDED_BY_DEFAULT = [NO_REPO_LANE];
 const FOLDED_ONCE_KEY = "lanesFoldedOnce";
 
 function loadCollapsed(): Set<string> {
@@ -437,10 +433,10 @@ function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
     for (const t of todos) {
       const parent = allTodos.find((p) => p.id === t.parent_id);
       if (parent) add(`parent:${parent.id}`, t, { parent });
-      else if (!hasChildren.has(t.id)) add(isReviewTodo(t) ? REVIEW_LANE : ORPHAN_LANE, t, {});
+      else if (!hasChildren.has(t.id)) add(ORPHAN_LANE, t, {});
     }
-    // Parents in id order, then the rest, the reviews last.
-    const rank = (l: Lane) => (l.parent ? l.parent.id : l.key === ORPHAN_LANE ? Number.MAX_SAFE_INTEGER - 1 : Number.MAX_SAFE_INTEGER);
+    // Parents in id order, then the rest.
+    const rank = (l: Lane) => l.parent?.id ?? Number.MAX_SAFE_INTEGER;
     return [...lanes.values()].sort((a, b) => rank(a) - rank(b));
   }
   for (const t of todos) {
@@ -871,8 +867,7 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
   report: (e: unknown) => void;
   allTodos: Todo[];
   doneRecent: boolean;
-  /// Absent where new todos do not belong (the review lane).
-  onAdd?: (status: Status, title: string) => void;
+  onAdd: (status: Status, title: string) => void;
 }) {
   return (
     <section className={`lane${collapsed ? " collapsed" : ""}`}>
@@ -882,7 +877,7 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
           {COLUMNS.map((c) => {
             const todos = c.status === "done" ? visibleDone(lane.todos, doneRecent) : lane.todos.filter((t) => t.status === c.status).sort((a, b) => a.id - b.id);
             return (
-              <LaneColumn key={c.status} status={c.status} lane={lane} onAdd={c.status === "done" || !onAdd ? undefined : (title) => onAdd(c.status, title)}>
+              <LaneColumn key={c.status} status={c.status} lane={lane} onAdd={c.status === "done" ? undefined : (title) => onAdd(c.status, title)}>
                 {todos.map((t) => (
                   <TodoCard key={t.id} todo={t} selected={t.id === selectedId} onSelect={() => onSelectTodo(t.id)} report={report} allTodos={allTodos} />
                 ))}
@@ -964,7 +959,7 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
   doneRecent: boolean;
   collapsed: boolean;
   onToggle: () => void;
-  onAdd?: (title: string) => void;
+  onAdd: (title: string) => void;
 }) {
   const open = lane.todos.filter((t) => t.status !== "done").sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
   const todos = [...open, ...visibleDone(lane.todos, doneRecent)];
@@ -998,7 +993,7 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
           })}
         </ul>
       )}
-      {!collapsed && onAdd && (
+      {!collapsed && (
         <div className="row-add">
           <AddInline label="新しい todo" onAdd={onAdd} />
         </div>
@@ -3564,7 +3559,7 @@ export default function App() {
                         report={report}
                         allTodos={allTodos}
                         doneRecent={doneRecent}
-                        onAdd={lane.key === REVIEW_LANE ? undefined : (status, title) => addTodoIn(lane, status, title)}
+                        onAdd={(status, title) => addTodoIn(lane, status, title)}
                       />
                     ) : (
                       <ListLane
@@ -3579,7 +3574,7 @@ export default function App() {
                         setStatus={setStatus}
                         allTodos={allTodos}
                         doneRecent={doneRecent}
-                        onAdd={lane.key === REVIEW_LANE ? undefined : (title) => addTodoIn(lane, "todo", title)}
+                        onAdd={(title) => addTodoIn(lane, "todo", title)}
                       />
                     ),
                   )}
