@@ -17,7 +17,7 @@ import {
   ago,
   api,
   BROWSER_NEW_TAB_EVENT,
-  OPEN_IN_BROWSER_EVENT,
+  OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
   BROWSER_URL_EVENT,
   CLOUD_HOME,
@@ -111,6 +111,11 @@ const BrowserContext = createContext<OpenInBrowser | null>(null);
 /// Call the returned function with the session id, or null if it failed.
 type BeginWeb = () => (sessionId: string | null) => void;
 const BeginWebContext = createContext<BeginWeb | null>(null);
+
+/// Where "開く" takes a cloud session: its web page, or Claude Desktop.
+type CloudTarget = "web" | "desktop";
+const CLOUD_TARGET_KEY = "cloudTarget";
+const OpenCloudContext = createContext<((sessionId: string) => void) | null>(null);
 
 const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "Todo" },
@@ -485,15 +490,22 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
   const root = useRef<HTMLSpanElement>(null);
   useOutsideClose(root, open, () => setOpen(false));
   const openInBrowser = useContext(BrowserContext);
+  const openCloud = useContext(OpenCloudContext);
   const cloud = isCloud(session);
   const go = (target?: "desktop" | "herdr" | "web") => {
     setOpen(false);
     if (target === "web" && openInBrowser) openInBrowser(cloudWebUrl(session.session_id));
     else api.openSession(session.session_id, target === "web" ? "desktop" : target).catch(report);
   };
+  const openMain = () => {
+    if (cloud && openCloud) {
+      setOpen(false);
+      openCloud(session.session_id);
+    } else go();
+  };
   return (
     <span ref={root} className={`open-menu${primary ? " primary" : ""}`} onPointerDown={stop} onClick={stop}>
-      <button className="open-main" title={`${sessionLabel(session)} を開く`} onClick={() => go(cloud ? "web" : undefined)}>
+      <button className="open-main" title={`${sessionLabel(session)} を開く`} onClick={openMain}>
         {label}
       </button>
       <button className="open-caret" aria-label="開く場所を選ぶ" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
@@ -2126,7 +2138,7 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
 }) {
   // Unread first: that is what the page is opened for.
   const [unreadOnly, setUnreadOnly] = useState(true);
-  const openInBrowser = useContext(BrowserContext);
+  const openCloud = useContext(OpenCloudContext);
   const unread = board.notifications.filter((n) => !n.read).length;
   const rows = unreadOnly ? board.notifications.filter((n) => !n.read) : board.notifications;
   const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
@@ -2168,7 +2180,7 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
                   onClick={(e) => {
                     e.stopPropagation();
                     read(n);
-                    if (n.session_id.startsWith("cse_") && openInBrowser) openInBrowser(cloudWebUrl(n.session_id));
+                    if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
                     else api.openSession(n.session_id).catch(report);
                   }}
                 >
@@ -2516,6 +2528,11 @@ export default function App() {
   const nextTab = useRef(1);
   const activeTab = tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1] ?? null;
   const browserUrl = activeTab?.url ?? null;
+  const [cloudTarget, setCloudTargetState] = useState<CloudTarget>(() => load(CLOUD_TARGET_KEY, ["web", "desktop"] as const, "web"));
+  const setCloudTarget = (t: CloudTarget) => {
+    remember(CLOUD_TARGET_KEY, t);
+    setCloudTargetState(t);
+  };
   const [linkTarget, setLinkTargetState] = useState<LinkTarget>(() => load(LINK_TARGET_KEY, ["app", "dia"] as const, "app"));
   const setLinkTarget = (t: LinkTarget) => {
     remember(LINK_TARGET_KEY, t);
@@ -2559,6 +2576,10 @@ export default function App() {
   // a new window arrive as new tabs.
   const openRef = useRef(openInBrowser);
   openRef.current = openInBrowser;
+  const openCloud = (sessionId: string) =>
+    cloudTarget === "desktop" ? api.openSession(sessionId, "desktop").catch(report) : openInBrowser(cloudWebUrl(sessionId));
+  const openCloudRef = useRef(openCloud);
+  openCloudRef.current = openCloud;
   useEffect(() => {
     const offs = [
       listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) =>
@@ -2566,8 +2587,8 @@ export default function App() {
       ),
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
-      // The menu bar and notifications open cloud sessions here.
-      listen<{ url: string }>(OPEN_IN_BROWSER_EVENT, ({ payload }) => openRef.current(payload.url)),
+      // The menu bar and notifications open cloud sessions as set here.
+      listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
     return () => offs.forEach((off) => off.then((f) => f()));
   }, []);
@@ -2823,6 +2844,7 @@ export default function App() {
   return (
     <BrowserContext.Provider value={openInBrowser}>
     <BeginWebContext.Provider value={beginWeb}>
+    <OpenCloudContext.Provider value={openCloud}>
       <div className={`app${browserUrl ? " with-browser" : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
         <aside className="sidebar">
           <div className="brand">
@@ -2875,6 +2897,17 @@ export default function App() {
                 </button>
                 <button className={linkTarget === "dia" ? "on" : ""} aria-pressed={linkTarget === "dia"} onClick={() => setLinkTarget("dia")}>
                   Dia
+                </button>
+              </div>
+            </div>
+            <div className="link-target">
+              <span className="muted">Cloud を開く</span>
+              <div className="segmented" role="group" aria-label="Cloud のセッションを開く場所">
+                <button className={cloudTarget === "web" ? "on" : ""} aria-pressed={cloudTarget === "web"} onClick={() => setCloudTarget("web")}>
+                  Web
+                </button>
+                <button className={cloudTarget === "desktop" ? "on" : ""} aria-pressed={cloudTarget === "desktop"} onClick={() => setCloudTarget("desktop")}>
+                  Desktop
                 </button>
               </div>
             </div>
@@ -3103,6 +3136,7 @@ export default function App() {
         {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
         {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
       </div>
+    </OpenCloudContext.Provider>
     </BeginWebContext.Provider>
     </BrowserContext.Provider>
   );

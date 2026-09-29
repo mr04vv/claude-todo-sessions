@@ -418,24 +418,23 @@ fn open_session(state: State<AppState>, session_id: String, target: Option<Strin
 
 /// Shows a session where it runs: its herdr pane, else Desktop (which
 /// resumes a finished or archived one). `desktop` skips the herdr lookup.
-/// Asks the page to show `url` in its browser pane (or Dia, as it is set).
-const OPEN_IN_BROWSER_EVENT: &str = "open-in-browser";
+/// Asks the page to open a cloud session as it is set to: its web page in
+/// the browser pane (or Dia), or Claude Desktop.
+const OPEN_CLOUD_EVENT: &str = "open-cloud";
 
 #[derive(Clone, Serialize)]
-struct OpenUrl {
-    url: String,
+struct OpenCloud {
+    session_id: String,
 }
 
-/// Opens a session from the menu bar or a notification: a cloud one in the
-/// app's browser pane, a local one where it runs (see `jump_to_session`).
+/// Opens a session from the menu bar or a notification: a cloud one as the
+/// page is set to open them, a local one where it runs (see `jump_to_session`).
 fn open_from_outside(app: &AppHandle, session_id: &str) -> Result<(), String> {
-    match launch::web_url(session_id) {
-        Some(url) => {
-            show_window(app);
-            app.emit(OPEN_IN_BROWSER_EVENT, OpenUrl { url }).map_err(err)
-        }
-        None => jump_to_session(session_id, false),
+    if !launch::is_cloud_session(session_id) {
+        return jump_to_session(session_id, false);
     }
+    show_window(app);
+    app.emit(OPEN_CLOUD_EVENT, OpenCloud { session_id: session_id.into() }).map_err(err)
 }
 
 fn jump_to_session(session_id: &str, desktop: bool) -> Result<(), String> {
