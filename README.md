@@ -6,6 +6,8 @@ todo や GitHub issue を Claude Code のセッションに紐づけるローカ
 - 起動時のプロンプトに `[todo:<id>]` を入れておくと、そのセッションが自動で todo に紐づきます
 - hook がセッションの状態（running / needs_input / idle / ended）を記録します
 
+機能の紹介（画像と動画つき）は [docs/features.md](docs/features.md) にあります。
+
 設計は [設計書](https://claude.ai/code/artifact/8574c0b4-3336-416f-b00d-bd6769bf6b8c) にまとめています。
 
 ## 構成
