@@ -2618,9 +2618,10 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   ];
   const shown = sections.filter((sec) => filter === "all" || filter === sec.key);
   const rowId = (p: PrRow) => `${p.kind}:${p.url}`;
-  // ↑↓ or j k pick a PR, Enter opens it, ⌥Enter opens the ways to start its review.
+  // ↑↓ or j k pick a PR. Enter on a review request offers submitting on its
+  // own or asking first; on the user's own PR, and with ⌥, it opens the PR.
   const { cursorId, setCursor, list } = useRowCursor(shown.flatMap((sec) => sec.rows.map(rowId)), (_, alt, row) =>
-    ((alt && row.querySelector<HTMLButtonElement>(".open-caret")) || row).click(),
+    ((!alt && row.querySelector<HTMLButtonElement>(".open-caret")) || row).click(),
   );
   return (
     <>
@@ -2737,17 +2738,15 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
   const rows = board.notifications.filter((n) => !n.read);
   const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
   const read = (n: Notice) => !n.read && run(() => api.readNotifications(n.id));
-  const { startReview } = useReviewStarter(local, run);
-  // ↑↓ or j k pick a notice, Enter does its button (open, or start the review), ⌥Enter its row.
+  const { startReview, starting } = useReviewStarter(local, run);
+  // ↑↓ or j k pick a notice, Enter opens its session (for a review request,
+  // the choice of submitting on its own or asking first), ⌥Enter its row.
   const { cursorId, setCursor, list } = useRowCursor(rows.map((n) => String(n.id)), (_, alt, row) =>
-    (alt ? row : (row.querySelector<HTMLButtonElement>(".notice-open") ?? row)).click(),
+    (alt ? row : (row.querySelector<HTMLButtonElement>(".open-caret, .notice-open") ?? row)).click(),
   );
-  /// A review request starts the review; anything else opens its session.
-  const act = (n: Notice) => {
+  const openSession = (n: Notice) => {
     read(n);
-    const review = reviewTargetOf(n);
-    if (review) startReview(review, "ask");
-    else if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
+    if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
     else openLocal(terminal, n.session_id, report, true);
   };
   return (
@@ -2765,6 +2764,7 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
         <ul className="rows">
           {rows.map((n) => {
             const todo = todoOf(n);
+            const review = reviewTargetOf(n);
             return (
               <li
                 key={n.id}
@@ -2786,9 +2786,13 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
                 <span className="row-title">{n.title}</span>
                 {todo && <span className="tag ellipsis notice-todo">#{todo.id} {todo.title}</span>}
                 <span className="muted when">{ago(n.created_at)}</span>
-                <button className="small notice-open" title={n.url ? "レビューを始める（提出する前に確認）" : "セッションを開く"} onClick={(e) => (e.stopPropagation(), act(n))}>
-                  {n.url ? "レビュー" : "開く"}
-                </button>
+                {review ? (
+                  <ReviewButton accent={false} busy={starting.has(review.url)} onStart={(submit) => (read(n), startReview(review, submit))} />
+                ) : (
+                  <button className="small notice-open" title="セッションを開く" onClick={(e) => (e.stopPropagation(), openSession(n))}>
+                    開く
+                  </button>
+                )}
                 <button className="ghost icon" aria-label="この通知を消す" title="消す" onClick={(e) => (e.stopPropagation(), read(n))}>
                   <Icon name="close" size={12} />
                 </button>
