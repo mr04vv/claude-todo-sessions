@@ -818,12 +818,18 @@ function LaneHeader({ lane, collapsed, onToggle, onOpenTodo, report }: {
   const waiting = lane.todos.flatMap(liveSessions).filter((s) => s.state === "needs_input").length;
   const open = lane.todos.filter((t) => t.status !== "done").length;
   const [owner, name] = lane.repo && isGithubRepo(lane.repo) ? lane.repo.split(/\/(.*)/s) : [null, lane.parent?.title ?? lane.key];
+  // Only the chevron folds the lane; a parent's title opens the parent.
+  const Title = lane.parent ? "button" : "span";
   return (
     <div className="lane-head">
-      <button className="lane-toggle" onClick={onToggle} aria-expanded={!collapsed} disabled={!onToggle}>
-        {onToggle && <Icon name={collapsed ? "chevronRight" : "chevron"} size={12} />}
+      {onToggle && (
+        <button className="lane-toggle" onClick={onToggle} aria-expanded={!collapsed} aria-label={collapsed ? "展開する" : "折りたたむ"}>
+          <Icon name={collapsed ? "chevronRight" : "chevron"} size={12} />
+        </button>
+      )}
+      <Title className="lane-toggle" {...(lane.parent ? { onClick: () => onOpenTodo(lane.parent!.id), title: "親を開く" } : {})}>
         {lane.parent ? <span className="mono muted">#{lane.parent.id}</span> : lane.repo ? <RepoDot repo={lane.repo} /> : null}
-        {owner && <span className="muted">{owner}/</span>}
+        {owner && <span className="muted lane-owner">{owner}/</span>}
         <span className="lane-name">{name}</span>
         {lane.parent ? (
           <span className="muted">
@@ -839,13 +845,8 @@ function LaneHeader({ lane, collapsed, onToggle, onOpenTodo, report }: {
           </span>
         )}
         {collapsed && lane.key === NO_REPO_LANE && <span className="muted">場所を選ぶとそのレーンへ移ります</span>}
-      </button>
+      </Title>
       <span className="grow" />
-      {lane.parent && (
-        <button className="link-button" onClick={() => onOpenTodo(lane.parent!.id)}>
-          親を開く
-        </button>
-      )}
       {lane.repo && isGithubRepo(lane.repo) && (
         <button className="link-button" onClick={() => openLink(GITHUB + lane.repo)}>
           GitHub <Icon name="open" size={11} />

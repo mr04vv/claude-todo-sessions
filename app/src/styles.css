@@ -847,6 +847,8 @@ button.gh:hover:not(:disabled) {
 }
 
 .lane-toggle {
+  display: inline-flex;
+  align-items: center;
   height: 26px;
   padding: 0 4px;
   background: none;
@@ -860,11 +862,20 @@ button.gh:hover:not(:disabled) {
   background: none;
 }
 
+button.lane-toggle:hover .lane-name {
+  text-decoration: underline;
+}
+
+.lane-toggle[aria-expanded] {
+  padding: 0 2px;
+  margin-right: -6px;
+}
+
 .lane-toggle:disabled {
   opacity: 1;
 }
 
-.lane-toggle .muted:first-of-type + .lane-name {
+.lane-owner + .lane-name {
   margin-left: -6px;
 }
 
