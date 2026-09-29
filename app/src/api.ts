@@ -252,7 +252,7 @@ export const api = {
   browserHide: (tab?: string) => invoke<void>("browser_hide", { tab: tab ?? null }),
   browserClose: (tab: string) => invoke<void>("browser_close", { tab }),
   /// With `input`, the page's text box takes the typing too.
-  browserFocus: (tab: string, input?: boolean) => invoke<void>("browser_focus", { tab, input: input ?? null }),
+  browserFocus: (tab: string, input?: boolean, text?: string) => invoke<void>("browser_focus", { tab, input: input ?? null, text: text ?? null }),
   browserUrl: (tab: string) => invoke<string | null>("browser_url", { tab }),
   browserGo: (tab: string, action: "back" | "forward" | "reload") => invoke<void>("browser_go", { tab, action }),
 };

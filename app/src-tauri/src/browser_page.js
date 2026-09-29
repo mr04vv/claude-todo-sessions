@@ -68,7 +68,11 @@
   // it cancels; the page's own (back, forward, reload) happen here.
   const KEY_ACTIONS = [
     ["sideApp", () => (location.href = FOCUS_APP)],
-    ["sidePane", () => (location.href = FOCUS_PANE)],
+    // With text selected, it goes along (the focus mode pastes it on the right).
+    ["sidePane", () => {
+      const text = String(getSelection() ?? "").trim();
+      location.href = text ? `${FOCUS_PANE}?text=${encodeURIComponent(text)}` : FOCUS_PANE;
+    }],
     ["palette", () => (location.href = PALETTE)],
     ["focusUrl", () => (location.href = FOCUS_URL)],
     ["newTab", () => (location.href = NEW_TAB)],
@@ -102,16 +106,21 @@
   );
 
   // The app asks a page (ChatGPT's) to take the typing: its prompt box, once
-  // the page has drawn it.
+  // the page has drawn it, with `text` typed into it when given.
   const INPUT = '#prompt-textarea, [contenteditable="true"], textarea, input[type="text"], input:not([type])';
   const INPUT_WAIT_MS = 10000;
   const INPUT_RETRY_MS = 200;
-  window.__todoSessionsFocusInput = () => {
+  window.__todoSessionsFocusInput = (text) => {
     const until = Date.now() + INPUT_WAIT_MS;
     const tryFocus = () => {
       const el = document.querySelector(INPUT);
-      if (el) el.focus();
-      else if (Date.now() < until) setTimeout(tryFocus, INPUT_RETRY_MS);
+      if (!el) {
+        if (Date.now() < until) setTimeout(tryFocus, INPUT_RETRY_MS);
+        return;
+      }
+      el.focus();
+      // As typing, so the page's editor (ChatGPT's) takes it.
+      if (text) document.execCommand("insertText", false, text);
     };
     tryFocus();
   };

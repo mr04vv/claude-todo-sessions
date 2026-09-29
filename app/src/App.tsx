@@ -59,7 +59,7 @@ import {
 } from "./api";
 import { useTodoKeys } from "./todoKeys";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
-import { closeTerminal, focusTerminal, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
+import { closeTerminal, focusTerminal, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
 /// The usage API answers 429 when asked often (status lines poll it too), so
@@ -1669,6 +1669,9 @@ const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[]
   { id: "pinchatgpt", label: "ChatGPT", url: "https://chatgpt.com/", icon: "chat" },
   { id: "pinclaude", label: "Claude Code", url: CLOUD_HOME, icon: "spark" },
 ];
+/// Pinned pages whose text box takes the typing when the keyboard comes over
+/// (⌃l), and the focus mode's selection pasted in.
+const CHAT_PAGES = ["pinchatgpt", "pinclaude"];
 /// What the focus mode's right side can keep: the pinned pages, and Notion,
 /// which is pinned (kept open) only there.
 const FOCUS_PAGES: typeof PINNED_PAGES = [...PINNED_PAGES, { id: "pinnotion", label: "Notion", url: "https://www.notion.so/", icon: "list" }];
@@ -4006,12 +4009,17 @@ export default function App() {
   useEffect(() => {
     sideItems().forEach((el, i) => el.toggleAttribute("data-cursor", sideZone && i === sideCursor));
   });
-  const focusSide = (pane: boolean) => {
-    // The focus mode's two sides: its left tab and the pinned page on the right.
+  /// `text` (selected on the focus mode's left) is typed into the right's box.
+  const focusSide = (pane: boolean, text?: string) => {
+    // The focus mode's two sides: its left tab and the pinned page on the right,
+    // whose text box (ChatGPT's) takes the typing, in a chat going on too.
     if (focusMode) {
       const side = pane ? tabs.find((t) => t.id === focusRight) : focusLeft;
       if (side?.term) focusTerminal(side.id);
-      else if (side) api.browserFocus(side.id).catch(report);
+      else if (side) {
+        const chat = pane && CHAT_PAGES.includes(side.id);
+        api.browserFocus(side.id, chat, chat ? text : undefined).catch(report);
+      }
       return;
     }
     // Left from the Todo side is the sidebar; right from the sidebar, the Todo side.
@@ -4022,8 +4030,10 @@ export default function App() {
     if (sideZoneRef.current) return setSideZone(false);
     if (!browserShown || !activeTab) return;
     if (activeTab.term) focusTerminal(activeTab.id);
-    else api.browserFocus(activeTab.id).catch(report);
+    else api.browserFocus(activeTab.id, CHAT_PAGES.includes(activeTab.id)).catch(report);
   };
+  const focusLeftRef = useRef(focusLeft);
+  focusLeftRef.current = focusLeft;
   const focusSideRef = useRef(focusSide);
   focusSideRef.current = focusSide;
   // Which side has the typing, marked on the page: this one, the pane (its
@@ -4099,7 +4109,7 @@ export default function App() {
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
       listen(OPEN_PALETTE_EVENT, () => !focusModeRef.current && setDialog((d) => (d === "palette" ? null : "palette"))),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
-      listen(FOCUS_PANE_EVENT, () => focusSideRef.current(true)),
+      listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
       listen(FOCUS_APP_EVENT, () => (focusModeRef.current ? focusSideRef.current(false) : (document.activeElement as HTMLElement | null)?.blur())),
       // The menu bar and notifications open cloud sessions as set here.
@@ -4285,7 +4295,9 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (matches(e, "sideApp") || matches(e, "sidePane")) {
         e.preventDefault();
-        focusSideRef.current(matches(e, "sidePane"));
+        // A selection in the focus mode's terminal goes along to the right.
+        const inTerminal = (e.target as HTMLElement).closest(".xterm");
+        focusSideRef.current(matches(e, "sidePane"), inTerminal && focusLeftRef.current ? terminalSelection(focusLeftRef.current.id) : undefined);
         return;
       }
       if (sideZoneRef.current && !e.metaKey && !e.ctrlKey) {

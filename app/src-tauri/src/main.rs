@@ -1204,7 +1204,8 @@ const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
 /// `{tab}` when a page's ⌃h hands the typing back to the app's side (the
 /// main page already has the keyboard by then), or to the focus mode's left.
 const FOCUS_APP_EVENT: &str = "focus-app";
-/// `{tab}` when a page's ⌃l asks for the focus mode's right side.
+/// `{tab, text}` when a page's ⌃l asks for the focus mode's right side, with
+/// the text selected in it (to paste there), if any.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
 /// `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo.
 const ADD_INPUT_EVENT: &str = "add-input";
@@ -1217,6 +1218,12 @@ struct InputLink {
 
 /// `{tab, url}` when a page, in the focus mode, is asked to go where it may not.
 const FOCUS_LINK_EVENT: &str = "focus-link";
+
+#[derive(Clone, Serialize)]
+struct TabText {
+    tab: String,
+    text: Option<String>,
+}
 
 #[derive(Clone, Serialize)]
 struct TabUrlOnly {
@@ -1339,7 +1346,10 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("archive") => on_focus.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("palette") => on_focus.emit(OPEN_PALETTE_EVENT, ()),
                 Some("focus-app") => on_focus.emit(FOCUS_APP_EVENT, TabOnly { tab: focus_tab.clone() }),
-                Some("focus-pane") => on_focus.emit(FOCUS_PANE_EVENT, TabOnly { tab: focus_tab.clone() }),
+                Some("focus-pane") => {
+                    let text = url.query_pairs().find(|(k, _)| k == "text").map(|(_, v)| v.into_owned());
+                    on_focus.emit(FOCUS_PANE_EVENT, TabText { tab: focus_tab.clone(), text })
+                }
                 Some("focus-exit") => on_focus.emit(FOCUS_EXIT_EVENT, ()),
                 Some("close-tab") => on_focus.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("add-input") => {
@@ -1429,14 +1439,19 @@ fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
 }
 
 /// Gives a tab's page the keyboard, as leaving the address bar with Esc does;
-/// with `input`, its text box too (ChatGPT's prompt), now or once it loads.
+/// with `input`, its text box too (ChatGPT's prompt), now or once it loads,
+/// and `text` typed into it.
 #[tauri::command(async)]
-fn browser_focus(app: AppHandle, state: State<AppState>, tab: String, input: Option<bool>) -> Result<(), String> {
+fn browser_focus(app: AppHandle, state: State<AppState>, tab: String, input: Option<bool>, text: Option<String>) -> Result<(), String> {
     let Some(view) = app.get_webview(&tab_label(&tab)?) else { return Ok(()) };
     view.set_focus().map_err(err)?;
     if input == Some(true) {
         state.focus_input.lock().map_err(err)?.insert(tab, std::time::Instant::now());
-        view.eval(FOCUS_INPUT_SCRIPT).map_err(err)?;
+        match text {
+            Some(text) => view.eval(format!("window.__todoSessionsFocusInput?.({})", serde_json::to_string(&text).map_err(err)?)),
+            None => view.eval(FOCUS_INPUT_SCRIPT),
+        }
+        .map_err(err)?;
     }
     Ok(())
 }

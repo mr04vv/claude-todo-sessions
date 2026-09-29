@@ -256,6 +256,9 @@ export function focusTerminal(id: string) {
   invoke("term_focus").catch(() => {}).finally(() => term.focus());
 }
 
+/// What is selected in terminal `id`, if anything.
+export const terminalSelection = (id: string) => entries.get(id)?.term.getSelection().trim() || undefined;
+
 /// Ends the program and forgets the terminal (closing its tab).
 export function closeTerminal(id: string) {
   entries.get(id)?.term.dispose();
