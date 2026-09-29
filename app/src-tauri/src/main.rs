@@ -981,6 +981,15 @@ async fn gh_prs() -> Result<PrLists, String> {
 const BROWSER_PREFIX: &str = "browser-";
 /// Tells the page what a tab shows as it loads: `{tab, url, loading}`.
 const BROWSER_URL_EVENT: &str = "browser-url";
+/// `{tab, url}` when a tab's address changes without a page load.
+const BROWSER_ADDRESS_EVENT: &str = "browser-address";
+
+#[derive(Clone, Serialize)]
+struct TabAddress {
+    tab: String,
+    url: String,
+}
+
 /// `{tab, title}` when a tab's page title changes.
 const BROWSER_TITLE_EVENT: &str = "browser-title";
 /// `{url}` for a link a page opens in a new window, which becomes a new tab.
@@ -1099,8 +1108,13 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
             let _ = on_load.emit(BROWSER_URL_EVENT, TabUrl { tab: load_tab.clone(), url: payload.url().to_string(), loading });
         })
-        .on_document_title_changed(move |_, title| {
+        .on_document_title_changed(move |view, title| {
             let _ = on_title.emit(BROWSER_TITLE_EVENT, TabTitle { tab: title_tab.clone(), title });
+            // Pages that move without loading (GitHub, ChatGPT, claude.ai)
+            // change their title as they go: pass the address on with it.
+            if let Ok(url) = view.url() {
+                let _ = on_title.emit(BROWSER_ADDRESS_EVENT, TabAddress { tab: title_tab.clone(), url: url.to_string() });
+            }
         })
         // A sized window is a popup (sign-in pages rely on those); a plain
         // "open in new window" link becomes a tab instead.
@@ -1150,6 +1164,13 @@ fn browser_focus(app: AppHandle, tab: String) -> Result<(), String> {
         Some(view) => view.set_focus().map_err(err),
         None => Ok(()),
     }
+}
+
+/// A tab's address right now, which a page moving without a load (history
+/// pushState) changes without any event.
+#[tauri::command(async)]
+fn browser_url(app: AppHandle, tab: String) -> Result<Option<String>, String> {
+    Ok(app.get_webview(&tab_label(&tab)?).and_then(|v| v.url().ok()).map(|u| u.to_string()))
 }
 
 /// "back", "forward" or "reload" in a tab.
@@ -1622,6 +1643,7 @@ fn main() {
             browser_hide,
             browser_close,
             browser_focus,
+            browser_url,
             herdr_sessions,
             set_herdr_session,
             browser_go

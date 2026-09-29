@@ -236,6 +236,7 @@ export const api = {
   browserHide: () => invoke<void>("browser_hide"),
   browserClose: (tab: string) => invoke<void>("browser_close", { tab }),
   browserFocus: (tab: string) => invoke<void>("browser_focus", { tab }),
+  browserUrl: (tab: string) => invoke<string | null>("browser_url", { tab }),
   browserGo: (tab: string, action: "back" | "forward" | "reload") => invoke<void>("browser_go", { tab, action }),
 };
 
@@ -247,6 +248,8 @@ export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 export const BROWSER_OPEN_NEW_TAB_EVENT = "browser-open-new-tab";
 /** `{tab}` when a page asks for the address bar (⌘L). */
 export const BROWSER_FOCUS_URL_EVENT = "browser-focus-url";
+/** `{tab, url}` when a tab's address changes without a page load. */
+export const BROWSER_ADDRESS_EVENT = "browser-address";
 /** `{tab, title}` when a tab's page title changes. */
 export const BROWSER_TITLE_EVENT = "browser-title";
 /** `{session_id}` of a cloud session picked in the menu bar or a notification. */

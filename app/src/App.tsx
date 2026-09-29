@@ -16,6 +16,7 @@ import {
 import {
   ago,
   api,
+  BROWSER_ADDRESS_EVENT,
   BROWSER_FOCUS_URL_EVENT,
   BROWSER_OPEN_NEW_TAB_EVENT,
   BROWSER_SWITCH_TAB_EVENT,
@@ -56,6 +57,11 @@ const USAGE_REFRESH_MS = 5 * 60_000;
 const USAGE_RETRY_MS = 60_000;
 const PR_REFRESH_MS = 5 * 60_000;
 const DETAIL_REFRESH_MS = 10_000;
+/// The shown tab's address is checked this often, for pages that move
+/// without loading or changing their title.
+const ADDRESS_POLL_MS = 500;
+/// A tab starts moving once the pointer has gone this far with the button down.
+const TAB_DRAG_PX = 4;
 
 /// The window is on screen. Closing it only hides it (the app stays in the
 /// menu bar), and there is no point polling for a page nobody sees.
@@ -1300,14 +1306,14 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
   );
 }
 
+const CLOUD_SESSION_PAGE = /^https:\/\/claude\.ai\/code\/session_/;
+
 /// Whether a tab already shows `url`: the same page, or a page under it
 /// (a PR's Files tab, a session page after claude.ai added a query), so
 /// opening it again comes back to that tab.
 function sameTarget(tabUrl: string, url: string): boolean {
   try {
     const a = new URL(tabUrl);
-const CLOUD_SESSION_PAGE = /^https:\/\/claude\.ai\/code\/session_/;
-
     const b = new URL(url);
     const path = (p: string) => p.replace(/\/+$/, "");
     return a.origin === b.origin && (path(a.pathname) === path(b.pathname) || (path(b.pathname) !== "" && path(a.pathname).startsWith(`${path(b.pathname)}/`)));
@@ -1351,7 +1357,7 @@ function addressToUrl(text: string): string | null {
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
-function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTab, onHide, onOpen }: {
+function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTab, onHide, onOpen, onAddress, onMove }: {
   tabs: BrowserTab[];
   active: BrowserTab | null;
   covered: boolean;
@@ -1361,12 +1367,43 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTa
   onNewTab: () => void;
   onHide: () => void;
   onOpen: (url: string) => void;
+  onAddress: (tab: string, url: string) => void;
+  /// Moves a dragged tab to where another one is.
+  onMove: (tab: string, to: string) => void;
 }) {
+  // Tabs move by dragging with the pointer; the tab under it takes the dragged
+  // one's place. (Pointer events rather than HTML drag and drop, which the
+  // webview's file drop handling can swallow.)
+  const [dragging, setDragging] = useState<string | null>(null);
+  const dragTab = (e: React.PointerEvent, id: string) => {
+    if (e.button !== 0) return;
+    const startX = e.clientX;
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.abs(ev.clientX - startX) < TAB_DRAG_PX) return;
+      moved = true;
+      setDragging(id);
+      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-tab]")?.dataset.tab;
+      if (over && over !== id) onMove(id, over);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDragging(null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
   return (
     <section className="browser" aria-label="ブラウザ">
       <div className="browser-tabs" role="tablist">
         {tabs.map((t) => (
-          <span key={t.id} className={`browser-tab${t.id === active?.id ? " on" : ""}`}>
+          <span
+            key={t.id}
+            data-tab={t.id}
+            className={`browser-tab${t.id === active?.id ? " on" : ""}${t.id === dragging ? " dragging" : ""}`}
+            onPointerDown={(e) => dragTab(e, t.id)}
+          >
             <button role="tab" aria-selected={t.id === active?.id} aria-busy={t.loading} className="browser-tab-main" title={t.url} onClick={() => onSelect(t.id)}>
               {t.loading && <span className="spinner" aria-label="読み込み中" />}
               <span className="ellipsis">{t.title || hostOf(t.url)}</span>
@@ -1391,7 +1428,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTa
           <Icon name="chevronRight" size={14} />
         </button>
       </div>
-      {active ? <TabView tab={active} covered={covered} report={report} /> : <NewTabPage onOpen={onOpen} />}
+      {active ? <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} /> : <NewTabPage onOpen={onOpen} />}
     </section>
   );
 }
@@ -1427,7 +1464,7 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
 /// One tab's page: its webview laid over a placeholder that follows the
 /// layout. `covered` hides it while a dialog is up, since a native webview
 /// draws above everything in the page.
-function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: boolean; report: (e: unknown) => void }) {
+function TabView({ tab: active, covered, report, onAddress }: { tab: BrowserTab; covered: boolean; report: (e: unknown) => void; onAddress: (url: string) => void }) {
   const slot = useRef<HTMLDivElement>(null);
   const rect = () => {
     const r = slot.current!.getBoundingClientRect();
@@ -1480,6 +1517,23 @@ function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: b
     };
   }, [covered]);
   useEffect(() => () => void api.browserHide().catch(() => {}), []);
+  // Some pages move (history.pushState) without loading or retitling; catch
+  // up with them, but leave the address alone while it is being edited.
+  const shownUrl = useRef(active.url);
+  shownUrl.current = active.url;
+  const onAddressRef = useRef(onAddress);
+  onAddressRef.current = onAddress;
+  useEffect(() => {
+    if (covered) return;
+    const t = setInterval(() => {
+      if (!pageVisible() || document.activeElement === address.current) return;
+      api
+        .browserUrl(active.id)
+        .then((url) => url && url !== shownUrl.current && onAddressRef.current(url))
+        .catch(() => {});
+    }, ADDRESS_POLL_MS);
+    return () => clearInterval(t);
+  }, [active.id, covered]);
   // ⌘L edits the address, ⌘R reloads and ⌘[ ⌘] go back and forward, as in a
   // browser; a script in the page does the same when the page has focus.
   const address = useRef<HTMLInputElement>(null);
@@ -2802,6 +2856,8 @@ export default function App() {
   };
   // Pages report where they went and what they are called; links they open in
   // a new window arrive as new tabs.
+  /// A tab moved on its own; the address bar follows without navigating it again.
+  const setTabUrl = (id: string, url: string) => setTabs((prev) => prev.map((t) => (t.id === id && t.url !== url ? { ...t, url } : t)));
   const openRef = useRef(openInBrowser);
   openRef.current = openInBrowser;
   const openCloud = (sessionId: string) =>
@@ -2813,6 +2869,7 @@ export default function App() {
       listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) =>
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url, loading: payload.loading } : t))),
       ),
+      listen<{ tab: string; url: string }>(BROWSER_ADDRESS_EVENT, ({ payload }) => setTabUrl(payload.tab, payload.url)),
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
@@ -3378,6 +3435,17 @@ export default function App() {
               onNewTab={openNewTab}
               onHide={() => setBrowserShown(false)}
               onOpen={openInBrowser}
+              onAddress={setTabUrl}
+              onMove={(id, to) =>
+                setTabs((prev) => {
+                  const from = prev.findIndex((t) => t.id === id);
+                  const target = prev.findIndex((t) => t.id === to);
+                  if (from < 0 || target < 0) return prev;
+                  const next = [...prev];
+                  next.splice(target, 0, ...next.splice(from, 1));
+                  return next;
+                })
+              }
             />
           </aside>
         )}

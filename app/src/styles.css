@@ -2104,3 +2104,7 @@ body.resizing {
   padding: 0 14px;
   font-size: 13px;
 }
+
+.browser-tab.dragging {
+  opacity: 0.5;
+}
