@@ -1983,7 +1983,8 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   onRefresh: () => void;
   onOpenTodo: (id: number) => void;
 }) {
-  const [filter, setFilter] = useState<PrFilter>("all");
+  // Review requests first: they are what waits on the user.
+  const [filter, setFilter] = useState<PrFilter>("review");
   const [reviewRunner, setReviewRunnerState] = useState<Target>(() => load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal"] as const, "web"));
   const openInBrowser = useContext(BrowserContext);
   const setReviewRunner = (t: Target) => {
