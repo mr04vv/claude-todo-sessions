@@ -3645,25 +3645,6 @@ export default function App() {
     setTimeout(() => setSyncing(false), REFRESH_MS);
   };
 
-  const commands: Command[] = [
-    { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
-    { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
-    { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
-    { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
-    { key: "board", label: "Todo カンバンを表示", run: () => showTodos("board") },
-    { key: "list", label: "Todo リストを表示", run: () => showTodos("list") },
-    { key: "sessions", label: "セッションを表示", run: () => setView("sessions") },
-    { key: "prs", label: "PR を表示", run: () => setView("prs") },
-    { key: "notices", label: "通知を表示", run: () => setView("notices") },
-    ...PINNED_PAGES.map((p) => ({ key: p.id, label: `${p.label} を開く`, run: () => showPinned(p.id) })),
-    ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
-    ...(filterCount(todoFilter) > 0 ? [{ key: "clearFilter", label: "フィルターを外す", run: () => setTodoFilter(NO_FILTER, true) }] : []),
-    { key: "newTab", label: "ブラウザで新しいタブを開く", hint: "⌘T", run: openNewTab },
-    { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザを表示", run: toggleBrowser },
-    linkTarget === "app"
-      ? { key: "linkDia", label: "リンクを Dia で開くようにする", run: () => setLinkTarget("dia") }
-      : { key: "linkApp", label: "リンクをアプリ内のブラウザで開くようにする", run: () => setLinkTarget("app") },
-  ];
 
   const covered = dialog !== null;
   // j k / h l and the other keys of the Todo pages (todoKeys.ts).
@@ -3697,6 +3678,23 @@ export default function App() {
     },
     { key: "prs", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
     { key: "notices", label: "通知", icon: "bell", on: view === "notices", go: () => setView("notices"), badge: unreadCount > 0 && <span className="pill accent">{unreadCount}</span> },
+  ];
+
+  // ⌘K lists the sidebar's entries first, in its order, then the actions.
+  const commands: Command[] = [
+    ...nav.map((n) => ({ key: `nav:${n.key}`, label: n.label, run: n.go })),
+    { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザ", run: toggleBrowser },
+    ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
+    ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
+    { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
+    { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
+    { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
+    { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
+    ...(filterCount(todoFilter) > 0 ? [{ key: "clearFilter", label: "フィルターを外す", run: () => setTodoFilter(NO_FILTER, true) }] : []),
+    { key: "newTab", label: "ブラウザで新しいタブを開く", hint: "⌘T", run: openNewTab },
+    linkTarget === "app"
+      ? { key: "linkDia", label: "リンクを Dia で開くようにする", run: () => setLinkTarget("dia") }
+      : { key: "linkApp", label: "リンクをアプリ内のブラウザで開くようにする", run: () => setLinkTarget("app") },
   ];
 
   const panel = view === "todos" && selectedTodo ? "todo" : view === "sessions" && selectedSession ? "session" : null;
