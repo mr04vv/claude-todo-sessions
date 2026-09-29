@@ -2149,3 +2149,11 @@ body.resizing {
 .browser-tab.dragging {
   opacity: 0.5;
 }
+
+.inline-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-2);
+  font-size: 12px;
+}

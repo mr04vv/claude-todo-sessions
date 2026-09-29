@@ -671,3 +671,27 @@ fn review_notices_work_on_databases_made_before_them() {
     db.add_review_notice("https://github.com/o/r/pull/1", "x", false).unwrap();
     assert_eq!(db.notifications().unwrap().len(), 2);
 }
+
+#[test]
+fn cloud_sessions_of_done_todos_are_the_ones_to_archive() {
+    let (_d, db) = open();
+    let done = db.create_todo(new_todo("shipped")).unwrap();
+    let open_todo = db.create_todo(new_todo("still going")).unwrap();
+    for (id, state, todo) in [
+        ("cse_idle", SessionState::Idle, done.id),
+        ("cse_wait", SessionState::NeedsInput, done.id),
+        ("cse_run", SessionState::Running, done.id),
+        ("cse_gone", SessionState::Ended, done.id),
+        ("cse_open", SessionState::Idle, open_todo.id),
+        ("local", SessionState::Idle, done.id),
+    ] {
+        db.record_session(id, "/w", state).unwrap();
+        db.link_session(id, todo).unwrap();
+    }
+    // After linking, which moves a todo to Doing.
+    db.update_todo(done.id, TodoPatch { status: Some(Status::Done), ..Default::default() }).unwrap();
+    let mut ids: Vec<String> = db.cloud_sessions_to_archive().unwrap().into_iter().map(|s| s.session_id).collect();
+    ids.sort();
+    // A running session is left to finish its turn; ended ones are archived already.
+    assert_eq!(ids, ["cse_idle", "cse_wait"]);
+}

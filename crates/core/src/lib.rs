@@ -740,6 +740,16 @@ impl Db {
         )
     }
 
+    /// Cloud sessions of Done todos that are still open and not in a turn,
+    /// which the app archives so they leave the session lists.
+    pub fn cloud_sessions_to_archive(&self) -> Result<Vec<Session>> {
+        self.query_sessions(
+            "session_id LIKE 'cse\\_%' ESCAPE '\\' AND state NOT IN ('ended', 'running')
+             AND todo_id IN (SELECT id FROM todos WHERE status = 'done')",
+            None,
+        )
+    }
+
     /// Local (hook- or `claude agents`-tracked) sessions not yet ended.
     pub fn live_local_sessions(&self) -> Result<Vec<Session>> {
         self.query_sessions(

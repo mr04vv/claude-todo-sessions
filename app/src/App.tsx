@@ -21,6 +21,7 @@ import {
   BROWSER_OPEN_NEW_TAB_EVENT,
   BROWSER_SWITCH_TAB_EVENT,
   BROWSER_CLOSE_TAB_EVENT,
+  BROWSER_ARCHIVE_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -626,6 +627,11 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
           <button role="menuitem" onClick={() => go("desktop")}>
             Claude Desktop で開く
           </button>
+          {cloud && (
+            <button role="menuitem" onClick={() => (setOpen(false), api.archiveSessions([session.session_id]).catch(report))}>
+              アーカイブ
+            </button>
+          )}
           {!cloud && (
             <button role="menuitem" onClick={() => go("herdr")}>
               {terminal ? "ターミナルで開く" : "herdr で開く"}（閉じていれば再開）
@@ -1334,6 +1340,8 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
 }
 
 const CLOUD_SESSION_PAGE = /^https:\/\/claude\.ai\/code\/session_/;
+/// The `cse_…` id of the cloud session a claude.ai page shows, if it shows one.
+const cloudIdOfPage = (url: string) => url.match(/^https:\/\/claude\.ai\/code\/session_([A-Za-z0-9]+)/)?.[1]?.replace(/^/, "cse_") ?? null;
 
 /// Whether a tab already shows `url`: the same page, or a page under it
 /// (a PR's Files tab, a session page after claude.ai added a query), so
@@ -1393,7 +1401,7 @@ function addressToUrl(text: string): string | null {
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
-function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove }: {
+function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove, onArchive }: {
   tabs: BrowserTab[];
   active: BrowserTab | null;
   covered: boolean;
@@ -1408,6 +1416,8 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
   onAddress: (tab: string, url: string) => void;
   /// Moves a dragged tab to where another one is.
   onMove: (tab: string, to: string) => void;
+  /// Archives the cloud session the shown tab is on and closes it (⌘⇧A).
+  onArchive: () => void;
 }) {
   // Tabs move by dragging with the pointer; the tab under it takes the dragged
   // one's place. (Pointer events rather than HTML drag and drop, which the
@@ -1482,7 +1492,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
       {active?.term ? (
         <TerminalView key={active.id} id={active.id} run={active.term} report={report} />
       ) : active ? (
-        <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} />
+        <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} />
       ) : (
         <NewTabPage onOpen={onOpen} />
       )}
@@ -1521,7 +1531,14 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
 /// One tab's page: its webview laid over a placeholder that follows the
 /// layout. `covered` hides it while a dialog is up, since a native webview
 /// draws above everything in the page.
-function TabView({ tab: active, covered, report, onAddress }: { tab: BrowserTab; covered: boolean; report: (e: unknown) => void; onAddress: (url: string) => void }) {
+function TabView({ tab: active, covered, report, onAddress, onArchive }: {
+  tab: BrowserTab;
+  covered: boolean;
+  report: (e: unknown) => void;
+  onAddress: (url: string) => void;
+  /// Set on a cloud session's page.
+  onArchive?: () => void;
+}) {
   const slot = useRef<HTMLDivElement>(null);
   const rect = () => {
     const r = slot.current!.getBoundingClientRect();
@@ -1650,6 +1667,11 @@ function TabView({ tab: active, covered, report, onAddress }: { tab: BrowserTab;
             if (url) navigate(url);
           }}
         />
+        {onArchive && (
+          <button className="ghost small" title="この Cloud セッションをアーカイブしてタブを閉じる（⌘⇧A）" onClick={onArchive}>
+            アーカイブ
+          </button>
+        )}
         <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
           Dia で開く
         </button>
@@ -1949,6 +1971,9 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   const rank = (s: Session) => STATE_ORDER.indexOf(s.state);
   const rows = (showEnded ? all : live).filter(pass).sort((a, b) => rank(a.session) - rank(b.session) || b.session.state_at - a.session.state_at);
   const ended = all.length - live.length;
+  // Cloud sessions done with their turn, which the bulk archive takes.
+  const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
+  const [confirmArchive, setConfirmArchive] = useState(false);
   const queued = board.todos.filter((t) => t.queue_runner).sort((a, b) => (a.queue_pos ?? 0) - (b.queue_pos ?? 0) || a.id - b.id);
   return (
     <>
@@ -1962,6 +1987,23 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
           ))}
         </div>
         <span className="grow" />
+        {confirmArchive ? (
+          <span className="inline-confirm">
+            待機中の Cloud {archivable.length} 件をアーカイブしますか？
+            <button className="primary small" onClick={() => (setConfirmArchive(false), run(() => api.archiveSessions(archivable)))}>
+              アーカイブ
+            </button>
+            <button className="ghost small" onClick={() => setConfirmArchive(false)}>
+              やめる
+            </button>
+          </span>
+        ) : (
+          archivable.length > 0 && (
+            <button onClick={() => setConfirmArchive(true)} title="待機中（入力待ち・実行中でない）の Cloud セッションをまとめてアーカイブ">
+              待機中の Cloud をアーカイブ {archivable.length}
+            </button>
+          )
+        )}
         <button onClick={onQuick} title="todo に紐づけずにホームフォルダの claude を開く">
           <Icon name="spark" size={13} /> ちょっと Claude
         </button>
@@ -2122,6 +2164,11 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
               <button className="grow" onClick={() => api.openSession(s.session_id, "desktop").catch(report)}>
                 Desktop で開く
               </button>
+              {s.state !== "ended" && (
+                <button className="grow" title="claude.ai と同じようにアーカイブします" onClick={() => run(() => api.archiveSessions([s.session_id]))}>
+                  アーカイブ
+                </button>
+              )}
             </>
           ) : (
             <>
@@ -2980,6 +3027,17 @@ export default function App() {
   };
   const closeShownRef = useRef(closeShown);
   closeShownRef.current = closeShown;
+  /// ⌘⇧A: archives the cloud session the shown tab is on and closes the tab.
+  /// False when the tab shows no cloud session.
+  const archiveShown = () => {
+    const id = browserShown && activeTab ? cloudIdOfPage(activeTab.url) : null;
+    if (!id || !activeTab) return false;
+    if (!activeTab.pinned) closeTab(activeTab.id);
+    api.archiveSessions([id]).then(refresh, report);
+    return true;
+  };
+  const archiveShownRef = useRef(archiveShown);
+  archiveShownRef.current = archiveShown;
   // Pages report where they went and what they are called; links they open in
   // a new window arrive as new tabs.
   /// A tab moved on its own; the address bar follows without navigating it again.
@@ -3001,6 +3059,7 @@ export default function App() {
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
       listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => switchRef.current(payload)),
       listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => closeShownRef.current()),
+      listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => archiveShownRef.current()),
       // The menu bar and notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -3142,6 +3201,10 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
       // With ⇧ a JIS or US keyboard gives { and } for the bracket keys.
+      if (e.shiftKey && e.key.toLowerCase() === "a" && archiveShownRef.current()) {
+        e.preventDefault();
+        return;
+      }
       if (e.shiftKey && ["[", "{", "]", "}"].includes(e.key)) {
         e.preventDefault();
         switchRef.current(e.key === "[" || e.key === "{" ? -1 : 1);
@@ -3581,6 +3644,7 @@ export default function App() {
               report={report}
               onSelect={setActiveTabId}
               onPinned={showPinned}
+              onArchive={() => archiveShownRef.current()}
               onClose={closeTab}
               onNewTab={openNewTab}
               onHide={() => setBrowserShown(false)}

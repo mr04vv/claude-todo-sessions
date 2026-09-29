@@ -222,6 +222,8 @@ export const api = {
   removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
+  /// Archives cloud sessions (`cse_…`), as claude.ai does.
+  archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
   startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),
@@ -248,6 +250,8 @@ export const BROWSER_URL_EVENT = "browser-url";
 export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 /** `{tab}` when a page asks to close its tab (⌘W). */
 export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
+/** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
+export const BROWSER_ARCHIVE_EVENT = "browser-archive";
 /** When a page asks for a new tab (⌘T). */
 export const BROWSER_OPEN_NEW_TAB_EVENT = "browser-open-new-tab";
 /** `{tab}` when a page asks for the address bar (⌘L). */

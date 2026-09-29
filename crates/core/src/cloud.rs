@@ -271,6 +271,17 @@ fn api_post(token: &str, path: &str, org: &str, body: &Value) -> Result<Value, u
         .read_json()
 }
 
+/// `POST {path}` with no body to read back, as the archive API answers.
+fn api_post_empty(token: &str, path: &str, org: &str) -> Result<(), ureq::Error> {
+    ureq::post(format!("{API_BASE}{path}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .header("anthropic-version", ANTHROPIC_VERSION)
+        .header("anthropic-beta", CREATE_BETA)
+        .header("x-organization-uuid", org)
+        .send_json(json!({}))?;
+    Ok(())
+}
+
 fn organization_uuid() -> Result<String, String> {
     let home = std::env::var_os("HOME").ok_or("HOME is not set")?;
     let path = std::path::Path::new(&home).join(CLAUDE_JSON);
@@ -343,6 +354,20 @@ impl Client {
             }
         }
         Ok(all)
+    }
+
+    /// Archives a session; one archived already (409) counts as done.
+    fn archive(&mut self, id: &str, org: &str) -> Result<(), String> {
+        let path = format!("/v1/code/sessions/{id}/archive");
+        let mut result = api_post_empty(&access_token(&self.creds)?, &path, org);
+        if let Err(ureq::Error::StatusCode(401)) = result {
+            self.creds = refresh(&self.creds)?;
+            result = api_post_empty(&access_token(&self.creds)?, &path, org);
+        }
+        match result {
+            Ok(()) | Err(ureq::Error::StatusCode(409)) => Ok(()),
+            Err(e) => Err(format!("POST {path}: {e}")),
+        }
     }
 
     fn post(&mut self, path: &str, org: &str, body: &Value) -> Result<Value, String> {
@@ -515,6 +540,33 @@ fn sync_all(db: &Db) -> Result<(usize, usize, usize, Vec<String>), String> {
         }
     }
     Ok((sessions.len(), recorded, linked, errors))
+}
+
+/// Archives cloud sessions (`cse_…`) as the CLI does, marking them ended
+/// here right away. Returns the errors of the ones that failed.
+pub fn archive_sessions(db: &Db, ids: &[String]) -> Result<Vec<String>, String> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut client = Client::new()?;
+    let org = organization_uuid()?;
+    let mut errors = Vec::new();
+    for id in ids {
+        let archived = client.archive(id, &org).and_then(|()| match db.get_session(id).map_err(|e| e.to_string())? {
+            Some(s) => db.record_session(id, &s.cwd, SessionState::Ended).map_err(|e| e.to_string()),
+            None => Ok(()),
+        });
+        if let Err(e) = archived {
+            errors.push(e);
+        }
+    }
+    Ok(errors)
+}
+
+/// Archives the cloud sessions of Done todos (see `Db::cloud_sessions_to_archive`).
+pub fn archive_done(db: &Db) -> Result<Vec<String>, String> {
+    let ids: Vec<String> = db.cloud_sessions_to_archive().map_err(|e| e.to_string())?.into_iter().map(|s| s.session_id).collect();
+    archive_sessions(db, &ids)
 }
 
 pub struct SyncReport {

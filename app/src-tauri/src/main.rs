@@ -408,6 +408,14 @@ fn resume_run(state: &AppState, session_id: &str) -> Result<TerminalRun, String>
     })
 }
 
+/// Archives cloud sessions, as archiving them on claude.ai does.
+#[tauri::command(async)]
+fn archive_sessions(ids: Vec<String>) -> Result<(), String> {
+    let db = open_db()?;
+    let errors = cts_core::cloud::archive_sessions(&db, &ids)?;
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+}
+
 /// Asks the background syncs to run now: GitHub for one todo or all, and
 /// the cloud sessions when refreshing everything.
 #[tauri::command]
@@ -1122,6 +1130,8 @@ const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
 /// `{tab}` when a page asks to close its tab (⌘W).
 const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
+/// `{tab}` when a cloud session's page asks to archive it (⌘⇧A).
+const BROWSER_ARCHIVE_EVENT: &str = "browser-archive";
 
 #[derive(Clone, Serialize)]
 struct TabOnly {
@@ -1198,6 +1208,7 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("tab-prev") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, -1),
                 Some("tab-next") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, 1),
                 Some("close-tab") => on_focus.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: focus_tab.clone() }),
+                Some("archive") => on_focus.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
             false
@@ -1655,11 +1666,17 @@ fn sync_loop(wake: std::sync::mpsc::Receiver<()>, status: impl Fn(String)) {
         Err(e) => return status(format!("cloud sync 停止: {e}")),
     };
     loop {
-        let msg = match cts_core::cloud::sync(&db) {
+        let mut msg = match cts_core::cloud::sync(&db) {
             Ok(r) if r.errors.is_empty() => format!("cloud: {} 件記録 / {} 件紐づけ", r.recorded, r.linked),
             Ok(r) => format!("cloud: {} 件失敗 ({})", r.errors.len(), r.errors.join("; ")),
             Err(e) => format!("cloud sync 失敗: {e}"),
         };
+        // Done todos' cloud sessions leave the lists on their own.
+        match cts_core::cloud::archive_done(&db) {
+            Ok(errors) if errors.is_empty() => {}
+            Ok(errors) => msg.push_str(&format!(" / アーカイブ {} 件失敗 ({})", errors.len(), errors.join("; "))),
+            Err(e) => msg.push_str(&format!(" / アーカイブ失敗: {e}")),
+        }
         status(msg);
         // Sleep until the interval passes or someone asks for a sync now.
         if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = wake.recv_timeout(CLOUD_SYNC_INTERVAL) {
@@ -1773,6 +1790,7 @@ fn main() {
             browser_url,
             herdr_sessions,
             terminal_start,
+            archive_sessions,
             terminal_quick,
             terminal_resume,
             set_in_app_terminal,
