@@ -613,3 +613,27 @@ fn pending_works_on_databases_made_before_it() {
     let t = db.update_todo(1, TodoPatch { status: Some(Status::Pending), ..Default::default() }).unwrap();
     assert_eq!((t.title.as_str(), t.status), ("keep me", Status::Pending));
 }
+
+#[test]
+fn sessions_and_links_come_grouped_by_todo() {
+    let (_d, db) = open();
+    let a = db.create_todo(new_todo("a")).unwrap();
+    let b = db.create_todo(new_todo("b")).unwrap();
+    for (id, todo) in [("s1", a.id), ("s2", a.id), ("s3", b.id)] {
+        db.record_session(id, "/w", SessionState::Idle).unwrap();
+        db.link_session(id, todo).unwrap();
+    }
+    db.record_session("loose", "/w", SessionState::Idle).unwrap();
+    db.add_link(a.id, "https://example.com/1").unwrap();
+    db.add_link(b.id, "https://example.com/2").unwrap();
+    db.add_link(b.id, "https://example.com/3").unwrap();
+    let sessions = db.sessions_by_todo().unwrap();
+    for t in [&a, &b] {
+        assert_eq!(sessions.get(&t.id).cloned().unwrap_or_default(), db.sessions_for_todo(t.id).unwrap());
+    }
+    assert_eq!(sessions.values().map(Vec::len).sum::<usize>(), 3);
+    let links = db.links_by_todo().unwrap();
+    for t in [&a, &b] {
+        assert_eq!(links.get(&t.id).cloned().unwrap_or_default(), db.links_for(t.id).unwrap());
+    }
+}

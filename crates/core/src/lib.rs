@@ -413,6 +413,10 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
     })
 }
 
+fn link_from_row(r: &Row) -> rusqlite::Result<Link> {
+    Ok(Link { id: r.get(0)?, todo_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
+}
+
 fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
     Ok(Session {
         session_id: r.get(0)?,
@@ -629,11 +633,21 @@ impl Db {
         Ok(())
     }
 
+    /// Every link by its todo, in the order they were added.
+    pub fn links_by_todo(&self) -> Result<std::collections::HashMap<i64, Vec<Link>>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT {LINK_COLS} FROM links ORDER BY id"))?;
+        let rows = stmt.query_map([], link_from_row)?;
+        let mut by_todo: std::collections::HashMap<i64, Vec<Link>> = std::collections::HashMap::new();
+        for link in rows {
+            let link = link?;
+            by_todo.entry(link.todo_id).or_default().push(link);
+        }
+        Ok(by_todo)
+    }
+
     pub fn links_for(&self, todo_id: i64) -> Result<Vec<Link>> {
         let mut stmt = self.conn.prepare(&format!("SELECT {LINK_COLS} FROM links WHERE todo_id = ?1 ORDER BY id"))?;
-        let rows = stmt.query_map([todo_id], |r| {
-            Ok(Link { id: r.get(0)?, todo_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
-        })?;
+        let rows = stmt.query_map([todo_id], link_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -671,6 +685,18 @@ impl Db {
 
     pub fn sessions_for_todo(&self, todo_id: i64) -> Result<Vec<Session>> {
         self.query_sessions("todo_id = ?1", Some(todo_id))
+    }
+
+    /// Every linked session by its todo, newest state change first: one query
+    /// for the whole board instead of one per todo.
+    pub fn sessions_by_todo(&self) -> Result<std::collections::HashMap<i64, Vec<Session>>> {
+        let mut by_todo: std::collections::HashMap<i64, Vec<Session>> = std::collections::HashMap::new();
+        for s in self.query_sessions("todo_id IS NOT NULL", None)? {
+            if let Some(id) = s.todo_id {
+                by_todo.entry(id).or_default().push(s);
+            }
+        }
+        Ok(by_todo)
     }
 
     pub fn unlinked_sessions(&self) -> Result<Vec<Session>> {
