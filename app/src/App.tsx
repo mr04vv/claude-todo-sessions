@@ -51,6 +51,7 @@ import {
   type Status,
   type Todo,
 } from "./api";
+import { useTodoKeys } from "./todoKeys";
 import { closeTerminal, focusTerminal, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
@@ -849,6 +850,7 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
       {...drag.listeners}
       {...drag.attributes}
       className={`card${selected ? " selected" : ""}${drag.isDragging ? " dragging" : ""}${urgent === "needs_input" ? " waiting" : ""}${todo.status === "done" ? " done" : ""}`}
+      data-row={`todo:${todo.id}`}
       onClick={onSelect}
     >
       <div className="card-head">
@@ -872,7 +874,7 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
 function LaneColumn({ status, lane, children, onAdd }: { status: Status; lane: Lane; children: React.ReactNode; onAdd?: (title: string) => void }) {
   const { setNodeRef, isOver } = useDroppable({ id: `col:${status}:${lane.key}` });
   return (
-    <div ref={setNodeRef} className={`cell${isOver ? " drop-target" : ""}`}>
+    <div ref={setNodeRef} className={`cell${isOver ? " drop-target" : ""}`} data-col={status}>
       {children}
       {onAdd && <AddInline label="新規" onAdd={onAdd} />}
     </div>
@@ -1068,7 +1070,7 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
   onAdd: (status: Status, title: string) => void;
 }) {
   return (
-    <section className={`lane${collapsed ? " collapsed" : ""}`}>
+    <section className={`lane${collapsed ? " collapsed" : ""}`} data-lane={lane.key}>
       <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} onOpenTodo={onSelectTodo} report={report} />
       {!collapsed && (
         <div className="lane-grid">
@@ -1162,15 +1164,17 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
   const open = lane.todos.filter((t) => t.status !== "done").sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
   const todos = [...open, ...visibleDone(lane.todos, doneRecent)];
   return (
-    <section className="list-lane">
-      <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} onOpenTodo={onSelectTodo} report={report} />
+    <section className="list-lane" data-lane={lane.key}>
+      <div data-row={`lane:${lane.key}`}>
+        <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} onOpenTodo={onSelectTodo} report={report} />
+      </div>
       {!collapsed && (
         <ul className="rows">
           {todos.map((t) => {
             const urgent = urgentState(liveSessions(t));
             const direct = directSession(t);
             return (
-              <li key={t.id} className={`row${t.id === selectedId ? " selected" : ""}${t.status === "done" ? " done" : ""}`} onClick={() => onSelectTodo(t.id)}>
+              <li key={t.id} data-row={`todo:${t.id}`} className={`row${t.id === selectedId ? " selected" : ""}${t.status === "done" ? " done" : ""}`} onClick={() => onSelectTodo(t.id)}>
                 <StatusIcon status={t.status} />
                 <span className="mono muted ref">{todoRef(t)}</span>
                 <span className="row-title">{t.title}</span>
@@ -3662,6 +3666,14 @@ export default function App() {
   ];
 
   const covered = dialog !== null;
+  // j k / h l and the other keys of the Todo pages (todoKeys.ts).
+  const todoPage = useRef<HTMLDivElement>(null);
+  useTodoKeys(todoPage, layout, view === "todos" && !covered, selectedTodo !== null, {
+    open: openTodo,
+    close: () => setSelection(null),
+    toggleLane,
+    isCollapsed: (lane) => collapsed.has(lane),
+  });
   const draggedTodo = dragging !== null ? allTodos.find((t) => t.id === dragging) : undefined;
   const reviewCount = prs?.review.length ?? 0;
   const unreadCount = board?.notifications.filter((n) => !n.read).length ?? 0;
@@ -3908,7 +3920,7 @@ export default function App() {
               </header>
               <WaitingStrip sessions={waiting} report={report} />
               <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
-                <div className="content">
+                <div className="content" ref={todoPage}>
                   {layout === "board" && lanes.length > 0 && (
                     <div className="col-heads">
                       {COLUMNS.map((c) => (

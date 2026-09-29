@@ -2234,3 +2234,15 @@ body.resizing {
   padding-top: 8px;
   border-top: 1px solid var(--border);
 }
+
+/* The Todo pages' keyboard cursor (todoKeys.ts). */
+.card[data-cursor] {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
+
+.row[data-cursor],
+.list-lane [data-row][data-cursor] .lane-head {
+  background: var(--card-hover);
+  box-shadow: inset 2px 0 0 var(--accent-line);
+}
