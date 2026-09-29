@@ -276,17 +276,37 @@ const RESIZE_STEP = 24;
 const maxPaneWidth = (others: number) => Math.max(PANEL_MIN_W, window.innerWidth - SIDEBAR_W - MAIN_MIN_W - others);
 
 /// A strip on a pane's left edge; dragging it (or the arrow keys) sets the
-/// pane's width.
-function Resizer({ label, width, min, max, onResize }: { label: string; width: number; min: number; max: () => number; onResize: (w: number) => void }) {
+/// pane's width, the CSS variable `cssVar` on the app. While dragging only
+/// that variable moves, once a frame; `onResize` (a re-render) runs on release.
+function Resizer({ label, cssVar, width, min, max, onResize }: {
+  label: string;
+  cssVar: string;
+  width: number;
+  min: number;
+  max: () => number;
+  onResize: (w: number) => void;
+}) {
   const clamp = (w: number) => Math.round(Math.min(max(), Math.max(min, w)));
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
+    const app = (e.currentTarget as HTMLElement).closest<HTMLElement>(".app");
     const startX = e.clientX;
-    const move = (ev: PointerEvent) => onResize(clamp(width + startX - ev.clientX));
+    let next = width;
+    let frame = 0;
+    const move = (ev: PointerEvent) => {
+      next = clamp(width + startX - ev.clientX);
+      if (frame) return;
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        app?.style.setProperty(cssVar, `${next}px`);
+      });
+    };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      cancelAnimationFrame(frame);
       document.body.classList.remove("resizing");
+      onResize(next);
     };
     document.body.classList.add("resizing");
     window.addEventListener("pointermove", move);
@@ -1366,7 +1386,27 @@ function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: b
   }, [active.id, active.nav, covered]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (covered || !slot.current) return;
-    const follow = () => api.browserBounds(rect()).catch(() => {});
+    // One resize in flight at a time, then the latest size: the page lays
+    // itself out again on every resize, and a queue of them lags behind.
+    let inFlight = false;
+    let again = false;
+    const follow = () => {
+      if (inFlight) {
+        again = true;
+        return;
+      }
+      inFlight = true;
+      api
+        .browserBounds(rect())
+        .catch(() => {})
+        .finally(() => {
+          inFlight = false;
+          if (again) {
+            again = false;
+            follow();
+          }
+        });
+    };
     const ro = new ResizeObserver(follow);
     ro.observe(slot.current);
     window.addEventListener("resize", follow);
@@ -3218,7 +3258,7 @@ export default function App() {
 
         {panel && (
           <div className="side">
-            <Resizer label="パネルの幅" width={panelW} min={PANEL_MIN_W} max={() => maxPaneWidth(browserShown ? dockW : 0)} onResize={setPanelW} />
+            <Resizer label="パネルの幅" cssVar="--panel-w" width={panelW} min={PANEL_MIN_W} max={() => maxPaneWidth(browserShown ? dockW : 0)} onResize={setPanelW} />
         {panel === "todo" && selectedTodo && (
           <TodoPanel
             todo={selectedTodo}
@@ -3240,7 +3280,7 @@ export default function App() {
         )}
         {browserShown && (
           <aside className="browser-dock">
-            <Resizer label="ブラウザの幅" width={dockW} min={DOCK_MIN_W} max={() => maxPaneWidth(0)} onResize={setDockW} />
+            <Resizer label="ブラウザの幅" cssVar="--dock-w" width={dockW} min={DOCK_MIN_W} max={() => maxPaneWidth(0)} onResize={setDockW} />
             <BrowserDock
               tabs={tabs}
               active={activeTab}
