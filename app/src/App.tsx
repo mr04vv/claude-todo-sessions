@@ -56,6 +56,21 @@ const USAGE_REFRESH_MS = 5 * 60_000;
 const USAGE_RETRY_MS = 60_000;
 const PR_REFRESH_MS = 5 * 60_000;
 const DETAIL_REFRESH_MS = 10_000;
+
+/// The window is on screen. Closing it only hides it (the app stays in the
+/// menu bar), and there is no point polling for a page nobody sees.
+const pageVisible = () => document.visibilityState === "visible";
+
+/// Runs `f` whenever the window comes back on screen.
+function useOnVisible(f: () => void) {
+  const ref = useRef(f);
+  ref.current = f;
+  useEffect(() => {
+    const onChange = () => pageVisible() && ref.current();
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+}
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
 /// Done cards kept per lane while "Done は直近のみ" is on.
@@ -2856,6 +2871,7 @@ export default function App() {
     setDockWState(w);
   };
   const loadPrs = useCallback(() => {
+    prsLoadedAt.current = Date.now();
     api.ghPrs().then(
       (p) => (setPrs(p), setPrError(null)),
       (e) => setPrError(String(e)),
@@ -2865,9 +2881,10 @@ export default function App() {
   useEffect(() => {
     refresh();
     api.localRepos().then(setLocal, () => setLocal([]));
-    const t = setInterval(refresh, REFRESH_MS);
+    const t = setInterval(() => pageVisible() && refresh(), REFRESH_MS);
     return () => clearInterval(t);
   }, [refresh]);
+  useOnVisible(refresh);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -2879,16 +2896,21 @@ export default function App() {
           (l) => ((got = true), setLimits(l), setUsageError(null)),
           (e) => setUsageError(String(e)),
         )
-        .finally(() => (timer = setTimeout(load, got ? USAGE_REFRESH_MS : USAGE_RETRY_MS)));
+        .finally(() => (timer = setTimeout(tick, got ? USAGE_REFRESH_MS : USAGE_RETRY_MS)));
+    // While hidden it only waits; the next tick on screen asks again.
+    const tick = () => (pageVisible() ? load() : (timer = setTimeout(tick, USAGE_RETRY_MS)));
     load();
     return () => clearTimeout(timer);
   }, []);
 
+  const prsLoadedAt = useRef(0);
+  const loadPrsIfStale = () => Date.now() - prsLoadedAt.current >= PR_REFRESH_MS && loadPrs();
   useEffect(() => {
     loadPrs();
-    const t = setInterval(loadPrs, PR_REFRESH_MS);
+    const t = setInterval(() => pageVisible() && loadPrsIfStale(), PR_REFRESH_MS);
     return () => clearInterval(t);
-  }, [loadPrs]);
+  }, [loadPrs]); // eslint-disable-line react-hooks/exhaustive-deps
+  useOnVisible(loadPrsIfStale);
 
   // Coming back to the window is when fresh GitHub and cloud state matters.
   useEffect(() => {
