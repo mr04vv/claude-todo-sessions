@@ -2108,7 +2108,8 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
   onOpenTodo: (id: number) => void;
   run: (f: () => Promise<unknown>) => void;
 }) {
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  // Unread first: that is what the page is opened for.
+  const [unreadOnly, setUnreadOnly] = useState(true);
   const unread = board.notifications.filter((n) => !n.read).length;
   const rows = unreadOnly ? board.notifications.filter((n) => !n.read) : board.notifications;
   const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
