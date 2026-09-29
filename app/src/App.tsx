@@ -1610,6 +1610,8 @@ const SEARCH_URL = "https://www.google.com/search?q=";
 const START_PAGES: { label: string; url: string }[] = [
   { label: "GitHub", url: "https://github.com/" },
   { label: "GitHub の通知", url: "https://github.com/notifications" },
+  { label: "Notion", url: "https://www.notion.so/" },
+  { label: "O'Reilly", url: "https://learning.oreilly.com/home/" },
 ];
 /// Pages that stay in the pane as fixed tabs ahead of the others, opened
 /// from there or the sidebar and never closed, so they keep their state.
