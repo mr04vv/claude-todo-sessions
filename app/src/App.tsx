@@ -3433,6 +3433,7 @@ const SEARCH_ALIASES: Record<string, string[]> = {
   todo: ["タスク", "task"],
   input: ["インプット", "読む", "reading", "学習"],
   カンバン: ["kanban", "board", "ボード"],
+  フォーカス: ["focus", "集中"],
   リスト: ["list"],
   フィルター: ["filter", "絞り込み", "view", "ビュー"],
   ショートカット: ["shortcut", "key", "keys", "キー", "keymap"],
@@ -4301,6 +4302,9 @@ export default function App() {
         return;
       }
       if (sideZoneRef.current && !e.metaKey && !e.ctrlKey) {
+        // The sidebar's keys are its own (picking an entry re-renders at once,
+        // and the pages' keys must not take the same Enter after it).
+        e.stopImmediatePropagation();
         const step = stepOf(e);
         if (step) {
           e.preventDefault();

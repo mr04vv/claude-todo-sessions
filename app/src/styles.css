@@ -2342,7 +2342,8 @@ body.resizing {
 
 /* The focus mode (FocusMode): the pane's tab on the left, a pinned page on the right. */
 .app.focus > .sidebar,
-.app.focus > .main {
+.app.focus > .main,
+.app.focus > .side {
   display: none;
 }
 
