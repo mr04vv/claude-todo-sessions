@@ -22,8 +22,11 @@ const DESKTOP_SESSIONS_DIR: &str = "Library/Application Support/Claude/claude-co
 const CLOUD_SYNC_INTERVAL: Duration = Duration::from_secs(30);
 /// How often the tray menu and notifications look at the DB.
 const WATCH_INTERVAL: Duration = Duration::from_secs(3);
-/// `claude agents --json` runs every this many watch ticks.
-const DISCOVER_EVERY_TICKS: u32 = 3;
+/// herdr's agent states are read every this many watch ticks (they are cheap).
+const HERDR_EVERY_TICKS: u32 = 3;
+/// `claude agents --json` runs every this many watch ticks: it starts Node
+/// (about 0.4 s), and hooks and herdr already report most state changes.
+const AGENTS_EVERY_TICKS: u32 = 10;
 /// A local session missing from `claude agents` is ended only after this long
 /// without a state change, so one just started by a hook is not cut off.
 const DISCOVER_GRACE_SECS: i64 = 60;
@@ -198,21 +201,17 @@ struct TodoUpdate {
     kind: Option<cts_core::Kind>,
 }
 
-/// Sessions archived in Claude Desktop stay out of the inbox and notifications.
-fn desktop_archived() -> HashSet<String> {
-    cts_core::desktop::archived_cli_ids(&home().join(DESKTOP_SESSIONS_DIR))
-}
-
 #[tauri::command(async)]
 fn board(state: State<AppState>) -> Result<Board, String> {
     let (todos, inbox, notifications) = {
         let db = state.db.lock().map_err(err)?;
+        let (mut sessions, mut links) = (db.sessions_by_todo().map_err(err)?, db.links_by_todo().map_err(err)?);
         let todos = db
             .list_todos(None)
             .map_err(err)?
             .into_iter()
-            .map(|todo| Ok((db.sessions_for_todo(todo.id).map_err(err)?, db.links_for(todo.id).map_err(err)?, todo)))
-            .collect::<Result<Vec<_>, String>>()?;
+            .map(|todo| (sessions.remove(&todo.id).unwrap_or_default(), links.remove(&todo.id).unwrap_or_default(), todo))
+            .collect::<Vec<_>>();
         let archived = state.archived.lock().map_err(err)?.clone();
         let inbox: Vec<Session> = db
             .unlinked_sessions()
@@ -1293,7 +1292,11 @@ fn sync_github(db: &Db, only: Option<i64>) {
         .filter(|t| only.is_none_or(|id| t.id == id))
         .collect();
     let mut branch_prs = HashMap::new();
-    for t in todos.iter().filter(|t| t.status != Status::Done) {
+    // A PR is found from a session's branch (or the claude/todo-<id>- one a
+    // session pushes), so a todo that never had a session has none to find;
+    // skipping those saves a `gh pr list` per repository each minute.
+    let with_sessions = db.sessions_by_todo().unwrap_or_default();
+    for t in todos.iter().filter(|t| t.status != Status::Done && with_sessions.contains_key(&t.id)) {
         discover_pr(db, t, &mut branch_prs);
     }
     let todos: Vec<Todo> = todos.iter().filter_map(|t| db.get_todo(t.id).ok().flatten()).collect();
@@ -1387,13 +1390,18 @@ fn notify_session(app: &AppHandle, db: &Db, session: Session, kind: NoticeKind) 
 /// Records every session `claude agents` reports, so sessions started before
 /// the hooks were installed still reach the inbox, and ends local sessions
 /// that are no longer reported.
-fn discover_sessions(db: &Db) -> Result<(), String> {
-    let out = cli("claude").args(["agents", "--json"]).output().map_err(|e| format!("claude agents: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("claude agents: {}", String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("claude agents output: {e}"))?;
-    let live = cts_core::agents::parse_agents(&json);
+fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
+    // Without `claude agents` only herdr's states are read, and nothing is ended.
+    let live = if with_agents {
+        let out = cli("claude").args(["agents", "--json"]).output().map_err(|e| format!("claude agents: {e}"))?;
+        if !out.status.success() {
+            return Err(format!("claude agents: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        let json: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| format!("claude agents output: {e}"))?;
+        cts_core::agents::parse_agents(&json)
+    } else {
+        Vec::new()
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
@@ -1427,6 +1435,9 @@ fn discover_sessions(db: &Db) -> Result<(), String> {
             }
         }
     }
+    if !with_agents {
+        return Ok(());
+    }
     let listed: HashSet<&str> = live.iter().map(|s| s.session_id.as_str()).chain(in_herdr.iter().map(String::as_str)).collect();
     for k in db.live_local_sessions().map_err(err)? {
         if !listed.contains(k.session_id.as_str()) && now - k.state_at > DISCOVER_GRACE_SECS {
@@ -1448,15 +1459,19 @@ fn watch_loop(app: AppHandle) {
     let mut last_state: HashMap<String, SessionState> = HashMap::new();
     let mut first = true;
     let mut tick: u32 = 0;
+    let mut records = cts_core::desktop::RecordCache::default();
+    let desktop_dir = home().join(DESKTOP_SESSIONS_DIR);
     loop {
-        if tick % DISCOVER_EVERY_TICKS == 0 {
-            if let Err(e) = discover_sessions(&db) {
+        let with_agents = tick % AGENTS_EVERY_TICKS == 0;
+        if with_agents || tick % HERDR_EVERY_TICKS == 0 {
+            if let Err(e) = discover_sessions(&db, with_agents) {
                 eprintln!("{e}");
             }
         }
         tick = tick.wrapping_add(1);
         if let Ok(mut waiting) = db.linked_needs_input() {
-            let archived = desktop_archived();
+            // Sessions archived in Claude Desktop stay out of the inbox and notifications.
+            let archived = records.archived_cli_ids(&desktop_dir);
             if let Ok(mut shared) = app.state::<AppState>().archived.lock() {
                 shared.clone_from(&archived);
             }
