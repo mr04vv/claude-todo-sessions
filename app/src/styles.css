@@ -913,6 +913,7 @@ button.lane-toggle:hover .lane-name {
 .cell:hover .add-inline,
 .row-add .add-inline,
 .panel-body .add-inline,
+.new-tab .add-inline,
 .add-inline:focus-visible {
   opacity: 1;
 }

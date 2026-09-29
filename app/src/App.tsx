@@ -3679,7 +3679,8 @@ export default function App() {
     const settle = () => {
       clearTimeout(timer);
       timer = window.setTimeout(() => {
-        if (document.hasFocus()) return setTypingSide(document.activeElement?.closest(".xterm") ? "pane" : "app");
+        // The pane's own fields (the address bar, the new tab page's) count as the pane.
+        if (document.hasFocus()) return setTypingSide(document.activeElement?.closest(".xterm, .browser-dock") ? "pane" : "app");
         api.windowFocused().then((f) => !document.hasFocus() && setTypingSide(f ? "pane" : null), () => {});
       }, FOCUS_SETTLE_MS);
     };
