@@ -1068,7 +1068,11 @@ button.lane-toggle:hover .lane-name {
 }
 
 /* The item the keyboard is on (↑↓ / j k move it; useMenuKeys). */
-.menu [role="menuitem"]:focus {
+.menu:focus {
+  outline: none;
+}
+
+.menu [role="menuitem"][data-active] {
   background: var(--accent-soft);
   color: var(--accent);
   outline: none;

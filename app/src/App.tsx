@@ -583,25 +583,41 @@ function useOutsideClose(root: React.RefObject<HTMLElement | null>, open: boolea
 
 /// A menu that takes the keyboard when it opens: ↑↓ or j k move, Enter
 /// picks, Esc closes. Spread `menuKeys` on the element with role="menu".
+/// The menu itself holds the focus and marks its item with `data-active`
+/// (WebKit does not focus buttons, so the items cannot take it).
 function useMenuKeys(open: boolean, close: () => void) {
   const ref = useRef<HTMLSpanElement>(null);
+  const [active, setActive] = useState(0);
+  const items = () => [...(ref.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
   useEffect(() => {
-    if (open) ref.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
+    if (!open) return;
+    setActive(0);
+    ref.current?.focus();
   }, [open]);
+  useEffect(() => {
+    items().forEach((el, i) => el.toggleAttribute("data-active", i === active));
+  });
   const onKeyDown = (e: React.KeyboardEvent) => {
-    const items = [...(ref.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
-    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const n = items().length;
     const step = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
-    if (step) {
+    if (step && n > 0) {
       e.preventDefault();
-      items[(at + step + items.length) % items.length]?.focus();
+      setActive((a) => (a + step + n) % n);
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      items()[active]?.click();
     } else if (e.key === "Escape") {
       e.preventDefault();
       close();
     }
     e.stopPropagation();
   };
-  return { ref, onKeyDown };
+  // The pointer marks the item it is over, so it and the keys agree.
+  const onMouseMove = (e: React.MouseEvent) => {
+    const i = items().indexOf((e.target as HTMLElement).closest<HTMLButtonElement>("[role=menuitem]")!);
+    if (i >= 0 && i !== active) setActive(i);
+  };
+  return { ref, onKeyDown, onMouseMove, tabIndex: -1 };
 }
 
 /// A keyboard cursor over a page's rows (elements with `data-row` inside
