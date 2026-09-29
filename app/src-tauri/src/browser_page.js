@@ -16,17 +16,26 @@
   const ARCHIVE = "todo-sessions://archive";
   const PALETTE = "todo-sessions://palette";
   const FOCUS_APP = "todo-sessions://focus-app";
+  const FOCUS_PANE = "todo-sessions://focus-pane";
+  const FOCUS_EXIT = "todo-sessions://focus-exit";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
 
   window.addEventListener(
     "keydown",
     (e) => {
-      // ⌃h hands the typing back to the app's side.
-      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key === "h") {
+      // ⌃h ⌃l move the typing between the sides (the focus mode's two pages).
+      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "h" || e.key === "l")) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        location.href = FOCUS_APP;
+        location.href = e.key === "h" ? FOCUS_APP : FOCUS_PANE;
+        return;
+      }
+      // In the focus mode (the app sets the flag) Esc asks about leaving it.
+      if (window.__todoSessionsFocusMode && e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        location.href = FOCUS_EXIT;
         return;
       }
       if (!e.metaKey || e.altKey || e.ctrlKey) return;

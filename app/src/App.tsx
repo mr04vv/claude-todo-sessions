@@ -24,6 +24,8 @@ import {
   BROWSER_ARCHIVE_EVENT,
   OPEN_PALETTE_EVENT,
   FOCUS_APP_EVENT,
+  FOCUS_PANE_EVENT,
+  FOCUS_EXIT_EVENT,
   WINDOW_FOCUS_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
@@ -644,7 +646,7 @@ function useRowCursor(ids: string[], onEnter: (id: string, alt: boolean, row: HT
     const rowOf = (id: string) => list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`);
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (e.metaKey || e.ctrlKey || t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm")) return;
+      if (e.metaKey || e.ctrlKey || t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app.focus")) return;
       const { ids, cursorId, onEnter } = state.current;
       const step = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
       if (step && ids.length > 0) {
@@ -3274,7 +3276,44 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "exitFocus" | null;
+
+/// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
+const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
+
+/// Asked on Esc in the focus mode: Esc again leaves, Enter stays.
+function ExitFocusDialog({ onExit, onStay }: { onExit: () => void; onStay: () => void }) {
+  useEffect(() => {
+    // Ahead of the dialog's own Esc (which would only close it).
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" && e.key !== "Enter") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      (e.key === "Escape" ? onExit : onStay)();
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [onExit, onStay]);
+  return (
+    <Modal
+      title="フォーカスモードを終えますか？"
+      onClose={onStay}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="ghost" onClick={onStay}>
+            続ける <span className="kbd">Enter</span>
+          </button>
+          <button className="primary" onClick={onExit}>
+            終える <span className="kbd">Esc</span>
+          </button>
+        </>
+      }
+    >
+      <p className="muted">もう一度 Esc で終わります。</p>
+    </Modal>
+  );
+}
 
 /// The Todo pages' keys (todoKeys.ts), for ?.
 const TODO_KEYS: [string, string][] = [
@@ -3393,6 +3432,13 @@ export default function App() {
     ensurePinned(id);
     typeInto = id;
   };
+  const focusModeRef = useRef(focusMode);
+  focusModeRef.current = focusMode;
+  useEffect(() => void api.setFocusMode(focusMode).catch((e) => setError(String(e))), [focusMode]);
+  const exitFocus = () => {
+    setDialog(null);
+    setFocusMode(false);
+  };
   const enterFocus = () => {
     ensurePinned(focusRight);
     typeInto = focusRight;
@@ -3468,6 +3514,13 @@ export default function App() {
   /// ⌃l gives the typing to the pane's page or terminal, ⌃h back to this
   /// side (from a page, ⌃h comes back through FOCUS_APP_EVENT).
   const focusSide = (pane: boolean) => {
+    // The focus mode's two sides: its left tab and the pinned page on the right.
+    if (focusMode) {
+      const side = pane ? tabs.find((t) => t.id === focusRight) : focusLeft;
+      if (side?.term) focusTerminal(side.id);
+      else if (side) api.browserFocus(side.id).catch(report);
+      return;
+    }
     if (!pane) return void (document.activeElement as HTMLElement | null)?.blur();
     if (!browserShown || !activeTab) return;
     if (activeTab.term) focusTerminal(activeTab.id);
@@ -3535,13 +3588,16 @@ export default function App() {
       listen<{ tab: string; url: string }>(BROWSER_ADDRESS_EVENT, ({ payload }) => setTabUrl(payload.tab, payload.url)),
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
-      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
-      listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => switchRef.current(payload)),
-      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => closeShownRef.current()),
-      listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => archiveShownRef.current()),
-      listen(OPEN_PALETTE_EVENT, () => setDialog((d) => (d === "palette" ? null : "palette"))),
+      // The focus mode lets none of the app's own shortcuts through.
+      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => !focusModeRef.current && openNewTab()),
+      listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => !focusModeRef.current && switchRef.current(payload)),
+      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => !focusModeRef.current && closeShownRef.current()),
+      listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
+      listen(OPEN_PALETTE_EVENT, () => !focusModeRef.current && setDialog((d) => (d === "palette" ? null : "palette"))),
+      listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
+      listen(FOCUS_PANE_EVENT, () => focusSideRef.current(true)),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
-      listen(FOCUS_APP_EVENT, () => (document.activeElement as HTMLElement | null)?.blur()),
+      listen(FOCUS_APP_EVENT, () => (focusModeRef.current ? focusSideRef.current(false) : (document.activeElement as HTMLElement | null)?.blur())),
       // The menu bar and notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -3726,6 +3782,16 @@ export default function App() {
       if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "h" || e.key === "l")) {
         e.preventDefault();
         focusSideRef.current(e.key === "l");
+        return;
+      }
+      // The focus mode: Esc asks about leaving (a terminal keeps its Esc, and
+      // the address bar its own), and ⌘ only edits text.
+      if (focusModeRef.current) {
+        const t = e.target as HTMLElement;
+        if (e.key === "Escape" && !t.closest(".xterm, input, textarea, [role=dialog]")) {
+          e.preventDefault();
+          setDialog("exitFocus");
+        } else if (e.metaKey && !FOCUS_EDIT_KEYS.includes(e.key.toLowerCase())) e.preventDefault();
         return;
       }
       if (!e.metaKey) return;
@@ -4235,7 +4301,7 @@ export default function App() {
             onResize={setFocusRightW}
             onRight={setFocusRight}
             onAddress={setTabUrl}
-            onExit={() => setFocusMode(false)}
+            onExit={exitFocus}
           />
         )}
         {browserShown && !focusMode && (
@@ -4283,6 +4349,16 @@ export default function App() {
         )}
         {dialog === "import" && <ImportDialog run={run} onClose={() => setDialog(null)} />}
         {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
+        {dialog === "exitFocus" && (
+          <ExitFocusDialog
+            onExit={exitFocus}
+            onStay={() => {
+              setDialog(null);
+              // Back to typing on the right once its page is up again.
+              typeInto = focusRight;
+            }}
+          />
+        )}
         {dialog === "keys" && (
           <Modal title="Todo のキー操作" onClose={() => setDialog(null)}>
             <dl className="key-list">

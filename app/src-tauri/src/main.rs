@@ -69,6 +69,9 @@ struct AppState {
     herdr_session: Mutex<Option<String>>,
     /// Local sessions run in the in-app terminal pane rather than herdr.
     in_app_terminal: AtomicBool,
+    /// The focus mode is on: pages' Esc asks about leaving it, and macOS
+    /// notifications wait (the in-app list still gets them).
+    focus_mode: AtomicBool,
     /// Tabs whose page should focus its text box once it loads, and since when.
     focus_input: Mutex<HashMap<String, std::time::Instant>>,
     /// Held while a browser tab is shown or created.
@@ -417,6 +420,15 @@ fn resume_run(state: &AppState, session_id: &str) -> Result<TerminalRun, String>
 /// When the window's focus changes: another app came in front, or a browser
 /// tab or the page took the keyboard.
 const WINDOW_FOCUS_EVENT: &str = "window-focus";
+
+/// Turns the focus mode on or off for the pages (and the notifications).
+#[tauri::command]
+fn set_focus_mode(app: AppHandle, state: State<AppState>, on: bool) {
+    state.focus_mode.store(on, Ordering::Relaxed);
+    for view in browser_tabs(&app) {
+        let _ = view.eval(focus_mode_script(on));
+    }
+}
 
 /// Whether the app is in front. With the page not having the keyboard, a
 /// browser tab then has it. (The window's own focus follows the webviews, so
@@ -1169,9 +1181,17 @@ const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
 /// When ⌘W in the app menu asks to close the shown tab.
 const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
-/// When a page's ⌃h hands the typing back to the app's side (the main page
-/// already has the keyboard by then).
+/// `{tab}` when a page's ⌃h hands the typing back to the app's side (the
+/// main page already has the keyboard by then), or to the focus mode's left.
 const FOCUS_APP_EVENT: &str = "focus-app";
+/// `{tab}` when a page's ⌃l asks for the focus mode's right side.
+const FOCUS_PANE_EVENT: &str = "focus-pane";
+/// When a page's Esc, in the focus mode, asks about leaving it.
+const FOCUS_EXIT_EVENT: &str = "focus-exit";
+/// Tells every page whether the focus mode is on (their Esc then asks about leaving).
+fn focus_mode_script(on: bool) -> String {
+    format!("window.__todoSessionsFocusMode = {on}")
+}
 /// When a page's ⌘K asks for the app's commands.
 const OPEN_PALETTE_EVENT: &str = "open-palette";
 /// `{tab}` when a cloud session's page asks to archive it (⌘⇧A).
@@ -1255,7 +1275,9 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("tab-next") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, 1),
                 Some("archive") => on_focus.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("palette") => on_focus.emit(OPEN_PALETTE_EVENT, ()),
-                Some("focus-app") => on_focus.emit(FOCUS_APP_EVENT, ()),
+                Some("focus-app") => on_focus.emit(FOCUS_APP_EVENT, TabOnly { tab: focus_tab.clone() }),
+                Some("focus-pane") => on_focus.emit(FOCUS_PANE_EVENT, TabOnly { tab: focus_tab.clone() }),
+                Some("focus-exit") => on_focus.emit(FOCUS_EXIT_EVENT, ()),
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
             false
@@ -1264,6 +1286,9 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
             // A page asked to take the typing (see `browser_focus`) once it has loaded.
             if !loading {
+                if on_load.state::<AppState>().focus_mode.load(Ordering::Relaxed) {
+                    let _ = view.eval(focus_mode_script(true));
+                }
                 let asked = on_load.state::<AppState>().focus_input.lock().ok().and_then(|mut m| m.remove(&load_tab));
                 if asked.is_some_and(|at| at.elapsed() < FOCUS_INPUT_WITHIN) {
                     let _ = view.eval(FOCUS_INPUT_SCRIPT);
@@ -1788,6 +1813,7 @@ fn main() {
             herdr_session: Mutex::new(None),
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
+            focus_mode: AtomicBool::new(false),
             archived: Mutex::new(HashSet::new()),
             browser_lock: Mutex::new(()),
             github_wake: Mutex::new(github_tx),
@@ -1893,6 +1919,7 @@ fn main() {
             terminal_start,
             archive_sessions,
             window_focused,
+            set_focus_mode,
             start_review_cloud,
             start_desktop_prompt,
             terminal_quick,

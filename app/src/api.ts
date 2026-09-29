@@ -227,6 +227,7 @@ export const api = {
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
   windowFocused: () => invoke<boolean>("window_focused"),
+  setFocusMode: (on: boolean) => invoke<void>("set_focus_mode", { on }),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
@@ -260,6 +261,10 @@ export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
 /** When the window's focus changes (another app, or a browser tab, took the keyboard). */
 export const WINDOW_FOCUS_EVENT = "window-focus";
+/** `{tab}` when a page's ⌃l asks for the focus mode's right side. */
+export const FOCUS_PANE_EVENT = "focus-pane";
+/** When a page's Esc, in the focus mode, asks about leaving it. */
+export const FOCUS_EXIT_EVENT = "focus-exit";
 /** When a page's ⌃h hands the typing back to the app's side. */
 export const FOCUS_APP_EVENT = "focus-app";
 /** When a page's ⌘K asks for the app's commands. */
