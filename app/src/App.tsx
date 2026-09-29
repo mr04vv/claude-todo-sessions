@@ -1183,13 +1183,22 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
     };
   }, [covered]);
   useEffect(() => () => void api.browserHide().catch(() => {}), []);
-  // ⌘L copies the page's URL; inside the page itself a script does the same.
+  // ⌘L copies the page's URL and ⌘R reloads it; inside the page a script does the same.
   const [copied, setCopied] = useState(false);
   const url = useRef(active.url);
   url.current = active.url;
+  const tabId = useRef(active.id);
+  tabId.current = active.id;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey || e.key.toLowerCase() !== "l") return;
+      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "r") {
+        e.preventDefault();
+        api.browserGo(tabId.current, "reload").catch(report);
+        return;
+      }
+      if (key !== "l") return;
       e.preventDefault();
       api.copyText(url.current).then(() => {
         setCopied(true);

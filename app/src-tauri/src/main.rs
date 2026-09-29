@@ -947,8 +947,8 @@ struct NewTab {
     url: String,
 }
 
-/// ⌘L inside a page copies its URL.
-const COPY_LINK_SCRIPT: &str = include_str!("copy_link.js");
+/// ⌘L inside a page copies its URL, ⌘R reloads it.
+const BROWSER_KEYS_SCRIPT: &str = include_str!("browser_keys.js");
 
 /// Puts text on the clipboard, for ⌘L while the app itself has focus.
 #[tauri::command]
@@ -1002,7 +1002,7 @@ fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width:
     let (on_load, on_title, on_new) = (app.clone(), app.clone(), app.clone());
     let (load_tab, title_tab) = (tab.clone(), tab);
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
-        .initialization_script(COPY_LINK_SCRIPT)
+        .initialization_script(BROWSER_KEYS_SCRIPT)
         .on_page_load(move |_, payload| {
             let _ = on_load.emit(BROWSER_URL_EVENT, TabUrl { tab: load_tab.clone(), url: payload.url().to_string() });
         })

@@ -1,8 +1,8 @@
-// Runs in every page of the browser pane: ⌘L copies the page's URL, as the
-// pane has no address bar of its own that a page could focus.
+// Runs in every page of the browser pane, which has no browser menu of its
+// own: ⌘L copies the page's URL and ⌘R reloads it.
 (() => {
-  if (window.__todoSessionsCopyLink) return;
-  window.__todoSessionsCopyLink = true;
+  if (window.__todoSessionsKeys) return;
+  window.__todoSessionsKeys = true;
   const TOAST_MS = 1400;
   const toast = () => {
     const d = document.createElement("div");
@@ -25,7 +25,14 @@
   window.addEventListener(
     "keydown",
     (e) => {
-      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey || e.key.toLowerCase() !== "l") return;
+      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
+      const key = e.key.toLowerCase();
+      if (key === "r") {
+        e.preventDefault();
+        location.reload();
+        return;
+      }
+      if (key !== "l") return;
       e.preventDefault();
       e.stopPropagation();
       const url = location.href;
