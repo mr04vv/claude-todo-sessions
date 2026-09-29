@@ -1198,6 +1198,8 @@ interface BrowserTab {
   id: string;
   url: string;
   title: string | null;
+  /// From opening or a navigation until the page finishes loading.
+  loading: boolean;
 }
 
 /// The browser pane: tabs of web pages, each a webview laid over this one on
@@ -1265,7 +1267,8 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
       <div className="browser-tabs" role="tablist">
         {tabs.map((t) => (
           <span key={t.id} className={`browser-tab${t.id === active.id ? " on" : ""}`}>
-            <button role="tab" aria-selected={t.id === active.id} className="browser-tab-main" title={t.url} onClick={() => onSelect(t.id)}>
+            <button role="tab" aria-selected={t.id === active.id} aria-busy={t.loading} className="browser-tab-main" title={t.url} onClick={() => onSelect(t.id)}>
+              {t.loading && <span className="spinner" aria-label="読み込み中" />}
               <span className="ellipsis">{t.title || hostOf(t.url)}</span>
             </button>
             <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を閉じる`} onClick={() => onClose(t.id)}>
@@ -1299,6 +1302,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
           Dia で開く
         </button>
       </div>
+      <div className={`load-bar${active.loading ? " on" : ""}`} aria-hidden="true" />
       <div ref={slot} className="browser-slot">
         {covered && <span className="muted">ダイアログを閉じると表示に戻ります</span>}
       </div>
@@ -2461,7 +2465,7 @@ export default function App() {
     const open = tabs.find((t) => t.url === url);
     if (open) return setActiveTabId(open.id);
     const id = `t${nextTab.current++}`;
-    setTabs((prev) => [...prev, { id, url, title: null }]);
+    setTabs((prev) => [...prev, { id, url, title: null, loading: true }]);
     setActiveTabId(id);
   };
   const closeTab = (id: string) => {
@@ -2477,7 +2481,9 @@ export default function App() {
   openRef.current = openInBrowser;
   useEffect(() => {
     const offs = [
-      listen<{ tab: string; url: string }>(BROWSER_URL_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url } : t)))),
+      listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) =>
+        setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url, loading: payload.loading } : t))),
+      ),
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
     ];

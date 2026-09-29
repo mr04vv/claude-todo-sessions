@@ -968,7 +968,7 @@ async fn gh_prs() -> Result<PrLists, String> {
 
 /// The browser pane's tabs are child webviews labelled with this prefix and the tab id.
 const BROWSER_PREFIX: &str = "browser-";
-/// Tells the page what a tab shows after a navigation: `{tab, url}`.
+/// Tells the page what a tab shows as it loads: `{tab, url, loading}`.
 const BROWSER_URL_EVENT: &str = "browser-url";
 /// `{tab, title}` when a tab's page title changes.
 const BROWSER_TITLE_EVENT: &str = "browser-title";
@@ -979,6 +979,8 @@ const BROWSER_NEW_TAB_EVENT: &str = "browser-new-tab";
 struct TabUrl {
     tab: String,
     url: String,
+    /// True from the start of a load until it finishes.
+    loading: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -1049,7 +1051,8 @@ fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width:
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
         .initialization_script(BROWSER_KEYS_SCRIPT)
         .on_page_load(move |_, payload| {
-            let _ = on_load.emit(BROWSER_URL_EVENT, TabUrl { tab: load_tab.clone(), url: payload.url().to_string() });
+            let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
+            let _ = on_load.emit(BROWSER_URL_EVENT, TabUrl { tab: load_tab.clone(), url: payload.url().to_string(), loading });
         })
         .on_document_title_changed(move |_, title| {
             let _ = on_title.emit(BROWSER_TITLE_EVENT, TabTitle { tab: title_tab.clone(), title });
