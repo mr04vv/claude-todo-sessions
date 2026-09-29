@@ -34,6 +34,8 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
   - `queue_loop`: キューに入った todo の自動起動
   - アプリ内ブラウザは `tauri` の `unstable` 機能で、main ウインドウに子 WebView を重ねる。タブごとに1つ（label `browser-<tab id>`）で、表示中以外は hide。サイズ指定つきの新規ウインドウ（ログインのポップアップ）はそのまま開かせ、それ以外はタブにする。GitHub は iframe に埋め込めないため。子 WebView を足すと main は「webview window」でなくなり `get_webview_window("main")` が None を返すので、`get_window` を使う。
   - 端末ペイン（お試し）は `terminal.rs`（portable-pty で PTY を開き、出力を base64 の `term-output` イベントで送る）と `app/src/Terminal.tsx`（xterm.js。端末はビューより長生きするようにモジュールで持つ）。ブラウザペインのタブの1種類（`BrowserTab.term`）として出す。起動するコマンドは herdr と共通の `prepare_terminal` / `quick_run` / `resume_run` が組み立てる。シェルは `$SHELL -l -i -c` で、`.zshrc` の PATH や `claude` 関数がそのまま効く。外すときは、この2ファイル、`main.rs` の `mod terminal` と `terminal_*` コマンド、`App.tsx` の `TerminalContext` まわりとサイドバーの「ターミナル」を消す。
+    - 見た目とキーは Ghostty に合わせる。`ghostty_config` が Ghostty の設定とテーマを、`ghostty_keybinds` が `ghostty +list-keybinds` の `text:` / `esc:` / `csi:` を返す。WebKit はページにシステムのフォントしか使わせない（`~/Library/Fonts` のフォントを名前で指定しても別のフォントになる）ので、`user_font` がファイルを渡し、`FontFace` で読み込んでから端末を開く。
+    - xterm.js はトラックパッドの小さな移動を 0.3 倍にし、ホイールを受け取るアプリ（Claude Code・herdr）にはイベント1回で1段しか送らないので遅い。`attachCustomWheelEventHandler` で行数を出し、1行ごとに大きな `deltaY` の合成イベントを投げ直している。
 - `app/src`: React 19。UI はほぼ `App.tsx` に集約（画面は Todo・セッション・PR・通知）、`api.ts` が Tauri コマンドと型の写し。
 - `plugin/`: hooks・`.mcp.json`・skill。`.claude-plugin/marketplace.json` で手元から入れる。
 
@@ -50,6 +52,8 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 - リポジトリなしのセッション（sources / outcomes が空）も作れる。ブランチは `claude/todo-<id>-<suffix>`。
 - モデルと effort は作成時の `session_context.model` / `effort_level` に入れる（一覧では `config.model` / `config.effort_level` として見える）。既定のままなら送らない。
 - 使用量は `GET /api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`）の `limits`。頻繁に呼ぶと 429 になるので、フロントは取れたら5分おきに取り直す。
+- アーカイブは `POST /v1/code/sessions/{cse_…}/archive`（CLI と同じ。アーカイブ済みでも 200 か 409）。sync のあと、Done の todo の Cloud セッションをターンが終わっていればアーカイブする（`Db::cloud_sessions_to_archive`）。Desktop の Local セッションは外からアーカイブする手段がない（Desktop が自分のファイルをメモリに持っている）ので扱わない。
+- PR のレビューは todo を作らない。Cloud なら `create_review_session`（紐づけなし、ブランチは `claude/review-…`）、Local は `quick_run` にリポジトリのフォルダを渡す。
 - 認証情報は Keychain の "Claude Code-credentials" を `/usr/bin/security` 経由で読み書きする。Security.framework を直接使うと、再ビルドのたびに Keychain の許可ダイアログが出る。
 
 ### GitHub 連携の自動化（`issue_sync_loop`）
@@ -62,6 +66,7 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 
 - todos に列を足すときは `TODOS_TABLE`・`TODO_TABLE_COLS`・`TODO_COLS`・`todo_from_row` のインデックス・`migrate` の列リストをそろえて直す。古い DB は `ALTER TABLE` で列を足し、CHECK 制約の変更はテーブルを作り直す（`migrate` 末尾）。後から足した整数列は TEXT 型で入っている DB があるので、`TODO_COLS` で `CAST(... AS INTEGER)` している。
 - マイグレーションを足したら、古いスキーマから開くテストを `crates/core/tests/db.rs` に足す。
+- notifications の `url` はレビュー依頼の PR（そのときの `session_id` は空文字）。画面は未読だけを出すが、同じ PR を二度通知しないように既読の行も消さずに残す（`add_review_notice`）。初めての確認では、来ているレビュー依頼を既読で記録するだけにする。
 - フロントは3秒ごとに board を取り直す。その場で編集する入力欄は非制御（`defaultValue` + `key`）にしてある。制御コンポーネントにすると、IME の変換中に文字が消えることがある。
 - Enter の判定は `isEnter` を使う。WebKit では、変換確定の Enter の時点で `isComposing` がもう false になっているので、keyCode 229 も見ている。
 - Tauri の WebView では `window.confirm` が true を返さない。確認はインラインで出す。
