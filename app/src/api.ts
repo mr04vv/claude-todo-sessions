@@ -226,6 +226,7 @@ export const api = {
   removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
+  windowFocused: () => invoke<boolean>("window_focused"),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),

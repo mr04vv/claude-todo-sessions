@@ -414,6 +414,13 @@ fn resume_run(state: &AppState, session_id: &str) -> Result<TerminalRun, String>
     })
 }
 
+/// Whether the app's window has the keyboard: with the page not having it,
+/// a browser tab does.
+#[tauri::command]
+fn window_focused(app: AppHandle) -> bool {
+    app.get_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false)
+}
+
 /// Archives cloud sessions, as archiving them on claude.ai does.
 #[tauri::command(async)]
 fn archive_sessions(ids: Vec<String>) -> Result<(), String> {
@@ -1872,6 +1879,7 @@ fn main() {
             herdr_sessions,
             terminal_start,
             archive_sessions,
+            window_focused,
             start_review_cloud,
             start_desktop_prompt,
             terminal_quick,

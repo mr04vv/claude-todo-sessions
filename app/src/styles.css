@@ -2283,3 +2283,23 @@ body.resizing {
 .key-list dd {
   margin: 0;
 }
+
+/* Which side has the typing (⌃h / ⌃l move it): an accent edge on that side. */
+.app.typing-app .main {
+  box-shadow: inset 0 3px 0 var(--accent);
+}
+
+.app.typing-pane .browser-dock {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.app.typing-pane .browser-tabs {
+  background: var(--accent-soft);
+}
+
+/* The other side steps back a little. */
+.app.typing-pane .main > *,
+.app.typing-app .browser-tabs,
+.app.typing-app .browser-bar {
+  opacity: 0.6;
+}

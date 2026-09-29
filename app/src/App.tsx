@@ -1853,9 +1853,9 @@ function TabView({ tab: active, covered, report, onAddress, onArchive }: {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
       const key = e.key.toLowerCase();
-      if (key === "r" || key === "[" || key === "]") {
+      if (key === "[" || key === "]") {
         e.preventDefault();
-        api.browserGo(tabId.current, key === "r" ? "reload" : key === "[" ? "back" : "forward").catch(report);
+        api.browserGo(tabId.current, key === "[" ? "back" : "forward").catch(report);
       } else if (key === "l") {
         e.preventDefault();
         focusAddress();
@@ -3229,6 +3229,7 @@ const TODO_KEYS: [string, string][] = [
   ["/", "絞り込み欄へ"],
   ["?", "このキーの一覧"],
   ["⌃h / ⌃l", "入力先をこちら（Todo 側）/ 右のペイン（ページ・ターミナル）にする"],
+  ["⌘R", "取り直す（PR 画面は PR の一覧、ほかは同期）"],
 ];
 
 export default function App() {
@@ -3390,6 +3391,27 @@ export default function App() {
   };
   const focusSideRef = useRef(focusSide);
   focusSideRef.current = focusSide;
+  // Which side has the typing, marked on the page: this one, the pane (its
+  // terminal, or a page, when this page lost the keyboard but the window has
+  // it), or neither while another app is in front.
+  const [typingSide, setTypingSide] = useState<"app" | "pane" | null>("app");
+  useEffect(() => {
+    const update = () => {
+      if (document.hasFocus()) return setTypingSide(document.activeElement?.closest(".xterm") ? "pane" : "app");
+      // The window's own state settles a moment after the page's.
+      setTimeout(() => api.windowFocused().then((f) => setTypingSide(f && !document.hasFocus() ? "pane" : document.hasFocus() ? "app" : null), () => {}), 60);
+    };
+    window.addEventListener("focus", update);
+    window.addEventListener("blur", update);
+    document.addEventListener("focusin", update);
+    document.addEventListener("focusout", update);
+    return () => {
+      window.removeEventListener("focus", update);
+      window.removeEventListener("blur", update);
+      document.removeEventListener("focusin", update);
+      document.removeEventListener("focusout", update);
+    };
+  }, []);
   const closeShownRef = useRef(closeShown);
   closeShownRef.current = closeShown;
   /// ⌘⇧A: archives the cloud session the shown tab is on and closes the tab.
@@ -3623,6 +3645,10 @@ export default function App() {
       } else if (k === "t") {
         e.preventDefault();
         openNewTab();
+      } else if (k === "r" && !e.shiftKey) {
+        // This side's ⌘R takes the page's data again (a page's own reloads it).
+        e.preventDefault();
+        reloadRef.current();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -3704,6 +3730,10 @@ export default function App() {
     // The syncs run in the background; the board refresh shows their results.
     setTimeout(() => setSyncing(false), REFRESH_MS);
   };
+  /// ⌘R: the PR page takes the PRs again (its ↻), other pages sync everything.
+  const reload = () => (view === "prs" ? loadPrs() : syncAll());
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
 
 
   const covered = dialog !== null;
@@ -3782,7 +3812,7 @@ export default function App() {
     <BeginWebContext.Provider value={beginWeb}>
     <OpenCloudContext.Provider value={openCloud}>
     <TerminalContext.Provider value={inAppTerminal}>
-      <div className={`app${browserShown ? " with-browser" : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
+      <div className={`app${browserShown ? " with-browser" : ""}${browserShown && typingSide ? ` typing-${typingSide}` : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
         <aside className="sidebar">
           <div className="brand">
             <span className="brand-mark" />
