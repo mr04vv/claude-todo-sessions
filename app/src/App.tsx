@@ -20,6 +20,7 @@ import {
   BROWSER_FOCUS_URL_EVENT,
   BROWSER_OPEN_NEW_TAB_EVENT,
   BROWSER_SWITCH_TAB_EVENT,
+  BROWSER_CLOSE_TAB_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -2969,6 +2970,16 @@ export default function App() {
     if (!rest.some((t) => !t.pinned)) setNewTab(true);
     else if (id === activeTab?.id) setActiveTabId(rest[Math.min(i, rest.length - 1)].id);
   };
+  /// ⌘W: closes the tab shown (a pinned page stays), or leaves the new tab
+  /// page for the last tab. False when the pane is hidden and ⌘W is not ours.
+  const closeShown = () => {
+    if (!browserShown) return false;
+    if (activeTab && !activeTab.pinned) closeTab(activeTab.id);
+    else if (!activeTab && tabs.length > 0) setNewTab(false);
+    return true;
+  };
+  const closeShownRef = useRef(closeShown);
+  closeShownRef.current = closeShown;
   // Pages report where they went and what they are called; links they open in
   // a new window arrive as new tabs.
   /// A tab moved on its own; the address bar follows without navigating it again.
@@ -2989,6 +3000,7 @@ export default function App() {
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
       listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => switchRef.current(payload)),
+      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => closeShownRef.current()),
       // The menu bar and notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -3124,8 +3136,8 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // ⌘N adds a todo, ⌘K opens the commands, ⌘T a browser tab and ⌘⇧[ ⌘⇧]
-  // switch tabs, from anywhere.
+  // ⌘N adds a todo, ⌘K opens the commands, ⌘T and ⌘W open and close a
+  // browser tab and ⌘⇧[ ⌘⇧] switch tabs, from anywhere.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -3142,6 +3154,8 @@ export default function App() {
       } else if (k === "t") {
         e.preventDefault();
         openNewTab();
+      } else if (k === "w" && !e.shiftKey && closeShownRef.current()) {
+        e.preventDefault();
       }
     };
     window.addEventListener("keydown", onKey);

@@ -1120,6 +1120,8 @@ const BROWSER_FOCUS_URL_EVENT: &str = "browser-focus-url";
 const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 /// `-1` or `1` when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]).
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
+/// `{tab}` when a page asks to close its tab (⌘W).
+const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
 
 #[derive(Clone, Serialize)]
 struct TabOnly {
@@ -1195,6 +1197,7 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("new-tab") => on_focus.emit(BROWSER_OPEN_NEW_TAB_EVENT, ()),
                 Some("tab-prev") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, -1),
                 Some("tab-next") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, 1),
+                Some("close-tab") => on_focus.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: focus_tab.clone() }),
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
             false
