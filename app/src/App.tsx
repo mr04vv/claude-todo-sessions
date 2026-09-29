@@ -17,6 +17,7 @@ import {
   ago,
   api,
   BROWSER_NEW_TAB_EVENT,
+  OPEN_IN_BROWSER_EVENT,
   BROWSER_TITLE_EVENT,
   BROWSER_URL_EVENT,
   CLOUD_HOME,
@@ -2110,6 +2111,7 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
 }) {
   // Unread first: that is what the page is opened for.
   const [unreadOnly, setUnreadOnly] = useState(true);
+  const openInBrowser = useContext(BrowserContext);
   const unread = board.notifications.filter((n) => !n.read).length;
   const rows = unreadOnly ? board.notifications.filter((n) => !n.read) : board.notifications;
   const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
@@ -2151,7 +2153,8 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
                   onClick={(e) => {
                     e.stopPropagation();
                     read(n);
-                    api.openSession(n.session_id).catch(report);
+                    if (n.session_id.startsWith("cse_") && openInBrowser) openInBrowser(cloudWebUrl(n.session_id));
+                    else api.openSession(n.session_id).catch(report);
                   }}
                 >
                   開く
@@ -2548,6 +2551,8 @@ export default function App() {
       ),
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
+      // The menu bar and notifications open cloud sessions here.
+      listen<{ url: string }>(OPEN_IN_BROWSER_EVENT, ({ payload }) => openRef.current(payload.url)),
     ];
     return () => offs.forEach((off) => off.then((f) => f()));
   }, []);

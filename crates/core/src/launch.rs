@@ -8,6 +8,13 @@ pub fn is_cloud_session(id: &str) -> bool {
     id.starts_with(CLOUD_PREFIX)
 }
 
+const CLOUD_WEB: &str = "https://claude.ai/code/";
+
+/// claude.ai page of a cloud session; the web names `cse_…` as `session_…`.
+pub fn web_url(session_id: &str) -> Option<String> {
+    session_id.strip_prefix(CLOUD_PREFIX).map(|rest| format!("{CLOUD_WEB}session_{rest}"))
+}
+
 /// Deep link that opens a session in Claude Desktop. A local session Desktop
 /// already knows opens by its `local_…` id; otherwise it is imported by resume.
 pub fn jump_url(session_id: &str, desktop_local_id: Option<&str>) -> String {
@@ -230,6 +237,12 @@ mod tests {
         assert_eq!(pr_created_after(&prs, 1785852591).as_deref(), Some("https://github.com/o/r/pull/9"));
         assert_eq!(pr_created_after(&json!([prs[1].clone()]), 1785852591 + 1), None);
         assert_eq!(pr_created_after(&json!([{"url": "https://github.com/o/r/pull/2"}]), 0), None);
+    }
+
+    #[test]
+    fn cloud_sessions_have_a_web_page() {
+        assert_eq!(web_url("cse_01abc").as_deref(), Some("https://claude.ai/code/session_01abc"));
+        assert_eq!(web_url("5f0c-local"), None);
     }
 
     #[test]

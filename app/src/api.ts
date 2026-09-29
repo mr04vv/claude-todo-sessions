@@ -242,6 +242,8 @@ export const api = {
 export const BROWSER_URL_EVENT = "browser-url";
 /** `{tab, title}` when a tab's page title changes. */
 export const BROWSER_TITLE_EVENT = "browser-title";
+/** `{url}` from the menu bar or a notification: open it in the browser pane. */
+export const OPEN_IN_BROWSER_EVENT = "open-in-browser";
 /** `{url}` for a link a page opens in a new window; it becomes a new tab. */
 export const BROWSER_NEW_TAB_EVENT = "browser-new-tab";
 

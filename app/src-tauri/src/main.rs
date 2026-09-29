@@ -418,6 +418,26 @@ fn open_session(state: State<AppState>, session_id: String, target: Option<Strin
 
 /// Shows a session where it runs: its herdr pane, else Desktop (which
 /// resumes a finished or archived one). `desktop` skips the herdr lookup.
+/// Asks the page to show `url` in its browser pane (or Dia, as it is set).
+const OPEN_IN_BROWSER_EVENT: &str = "open-in-browser";
+
+#[derive(Clone, Serialize)]
+struct OpenUrl {
+    url: String,
+}
+
+/// Opens a session from the menu bar or a notification: a cloud one in the
+/// app's browser pane, a local one where it runs (see `jump_to_session`).
+fn open_from_outside(app: &AppHandle, session_id: &str) -> Result<(), String> {
+    match launch::web_url(session_id) {
+        Some(url) => {
+            show_window(app);
+            app.emit(OPEN_IN_BROWSER_EVENT, OpenUrl { url }).map_err(err)
+        }
+        None => jump_to_session(session_id, false),
+    }
+}
+
 fn jump_to_session(session_id: &str, desktop: bool) -> Result<(), String> {
     if !desktop && !launch::is_cloud_session(session_id) && focus_in_herdr(session_id) {
         return Ok(());
@@ -1291,7 +1311,8 @@ fn tray_menu(app: &AppHandle, sessions: &[Session]) -> tauri::Result<Menu<tauri:
 /// Records a notification for the in-app list, posts it, and opens the
 /// session (marking it read) when it is clicked. The thread lives until the
 /// notification is clicked or removed from Notification Center.
-fn notify_session(db: &Db, session: Session, kind: NoticeKind) {
+fn notify_session(app: &AppHandle, db: &Db, session: Session, kind: NoticeKind) {
+    let app = app.clone();
     let headline = match kind {
         NoticeKind::NeedsInput => "入力待ち",
         NoticeKind::Finished => "作業が終わりました",
@@ -1309,7 +1330,7 @@ fn notify_session(db: &Db, session: Session, kind: NoticeKind) {
                 if let (Some(id), Ok(db)) = (id, open_db()) {
                     let _ = db.mark_notification_read(id).map_err(|e| eprintln!("{e}"));
                 }
-                if let Err(e) = jump_to_session(&session.session_id, false) {
+                if let Err(e) = open_from_outside(&app, &session.session_id) {
                     eprintln!("{e}");
                 }
             }
@@ -1400,7 +1421,7 @@ fn watch_loop(app: AppHandle) {
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
             if !first {
                 for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
-                    notify_session(&db, s.clone(), NoticeKind::NeedsInput);
+                    notify_session(&app, &db, s.clone(), NoticeKind::NeedsInput);
                 }
             }
             // A linked session that stops running has finished its turn and waits for a reply.
@@ -1408,7 +1429,7 @@ fn watch_loop(app: AppHandle) {
                 for s in linked.iter().filter(|s| !archived.contains(&s.session_id)) {
                     let before = last_state.insert(s.session_id.clone(), s.state);
                     if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
-                        notify_session(&db, s.clone(), NoticeKind::Finished);
+                        notify_session(&app, &db, s.clone(), NoticeKind::Finished);
                         // A finished turn often just opened a PR: look now.
                         if let (Some(todo_id), Ok(tx)) = (s.todo_id, app.state::<AppState>().github_wake.lock()) {
                             let _ = tx.send(Some(todo_id));
@@ -1486,7 +1507,7 @@ fn main() {
                     } else if id == MENU_QUIT {
                         app.exit(0);
                     } else if let Some(session_id) = id.strip_prefix(MENU_SESSION_PREFIX) {
-                        if let Err(e) = jump_to_session(session_id, false) {
+                        if let Err(e) = open_from_outside(app, session_id) {
                             eprintln!("{e}");
                         }
                     }
