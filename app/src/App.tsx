@@ -2414,6 +2414,51 @@ function ReviewButton({ accent, busy, onStart }: { accent: boolean; busy: boolea
   );
 }
 
+/// The PR a review is for.
+interface ReviewTarget {
+  url: string;
+  repo: string;
+  title: string;
+}
+
+/// Starts reviews where the PR page's "/review は …" says, and tells which
+/// PRs' reviews are starting.
+function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) => void) {
+  const beginWeb = useContext(BeginWebContext);
+  const terminal = useContext(TerminalContext);
+  const [starting, setStarting] = useState<Set<string>>(new Set());
+  const mark = (url: string, on: boolean) =>
+    setStarting((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(url);
+      else next.delete(url);
+      return next;
+    });
+  const startReview = (p: ReviewTarget, submit: ReviewSubmit) => {
+    if (starting.has(p.url)) return;
+    mark(p.url, true);
+    const runner = load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal"] as const, "web");
+    const cwd = local.find((r) => r.key === p.repo)?.path;
+    run(async () => {
+      const finish = runner === "web" ? beginWeb?.() : undefined;
+      // A review is its own session, not a todo; the PR list is where it is followed.
+      const title = `${REVIEW_TITLE_PREFIX}${p.title}`;
+      const prompt = reviewPrompt(p.url, submit);
+      try {
+        if (runner === "desktop") await api.startDesktopPrompt(cwd, prompt);
+        else if (runner === "terminal") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title)) : await api.quickClaude(prompt, cwd, title);
+        else finish?.(await api.startReviewCloud(p.repo, title, prompt, runner === "cloud"));
+      } catch (e) {
+        finish?.(null);
+        throw e;
+      } finally {
+        mark(p.url, false);
+      }
+    });
+  };
+  return { startReview, starting };
+}
+
 type PrFilter = "all" | "review" | "mine";
 type PrRow = Pr & { kind: "review" | "mine" };
 
@@ -2445,37 +2490,9 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   // A PR becomes a todo that ships as it, so its state keeps the todo current.
   const makeTodo = (p: Pr, title: string) =>
     api.createTodo({ title, repos: [p.repo], cwd: cwdOf(p) }).then((t) => api.updateTodo(t.id, { pr_url: p.url }));
-  const beginWeb = useContext(BeginWebContext);
   const terminal = useContext(TerminalContext);
   // PRs whose review session is being started, so their button shows it.
-  const [starting, setStarting] = useState<Set<string>>(new Set());
-  const mark = (url: string, on: boolean) =>
-    setStarting((prev) => {
-      const next = new Set(prev);
-      if (on) next.add(url);
-      else next.delete(url);
-      return next;
-    });
-  const startReview = (p: Pr, submit: ReviewSubmit) => {
-    if (starting.has(p.url)) return;
-    mark(p.url, true);
-    run(async () => {
-      const finish = reviewRunner === "web" ? beginWeb?.() : undefined;
-      // A review is its own session, not a todo; the PR list is where it is followed.
-      const title = `${REVIEW_TITLE_PREFIX}${p.title}`;
-      const prompt = reviewPrompt(p.url, submit);
-      try {
-        if (reviewRunner === "desktop") await api.startDesktopPrompt(cwdOf(p), prompt);
-        else if (reviewRunner === "terminal") terminal ? terminal.open(await terminalApi.quick(prompt, cwdOf(p), title)) : await api.quickClaude(prompt, cwdOf(p), title);
-        else finish?.(await api.startReviewCloud(p.repo, title, prompt, reviewRunner === "cloud"));
-      } catch (e) {
-        finish?.(null);
-        throw e;
-      } finally {
-        mark(p.url, false);
-      }
-    });
-  };
+  const { startReview, starting } = useReviewStarter(local, run);
   const sections: { key: "review" | "mine"; title: string; hint: string; rows: PrRow[] }[] = [
     { key: "review", title: "レビュー依頼", hint: "自分にレビューが来ている PR", rows: review },
     { key: "mine", title: "自分の PR", hint: "自分が出している open の PR", rows: mine },
@@ -2581,8 +2598,16 @@ const NOTICE_STATE: Record<Notice["kind"], string> = {
 };
 
 /// The notifications not dealt with yet; opening or dismissing one takes it off.
-function NoticesPage({ board, report, onOpenTodo, run }: {
+/// The PR of a review request's notice: its URL, and the title it was posted with (`owner/repo#n title`).
+function reviewTargetOf(n: Notice): ReviewTarget | null {
+  const m = n.url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
+  if (!n.url || !m) return null;
+  return { url: n.url, repo: m[1], title: n.title.replace(`${m[1]}#${m[2]} `, "") };
+}
+
+function NoticesPage({ board, local, report, onOpenTodo, run }: {
   board: Board;
+  local: LocalRepo[];
   report: (e: unknown) => void;
   onOpenTodo: (id: number) => void;
   run: (f: () => Promise<unknown>) => void;
@@ -2593,6 +2618,19 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
   const rows = board.notifications.filter((n) => !n.read);
   const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
   const read = (n: Notice) => !n.read && run(() => api.readNotifications(n.id));
+  const { startReview } = useReviewStarter(local, run);
+  // ↑↓ or j k pick a notice, Enter does its button (open, or start the review), ⌥Enter its row.
+  const { cursorId, setCursor, list } = useRowCursor(rows.map((n) => String(n.id)), (_, alt, row) =>
+    (alt ? row : (row.querySelector<HTMLButtonElement>(".notice-open") ?? row)).click(),
+  );
+  /// A review request starts the review; anything else opens its session.
+  const act = (n: Notice) => {
+    read(n);
+    const review = reviewTargetOf(n);
+    if (review) startReview(review, "ask");
+    else if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
+    else openLocal(terminal, n.session_id, report, true);
+  };
   return (
     <>
       <header className="toolbar">
@@ -2603,13 +2641,24 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
           <Icon name="check" size={13} /> すべて消す
         </button>
       </header>
-      <div className="content">
+      <div className="content" ref={list}>
         {rows.length === 0 && <p className="muted empty">通知はありません。セッションの作業が終わる、入力待ちになる、レビューを頼まれると、ここに出ます。</p>}
         <ul className="rows">
           {rows.map((n) => {
             const todo = todoOf(n);
             return (
-              <li key={n.id} className="row notice-row" onClick={() => (read(n), todo && onOpenTodo(todo.id))}>
+              <li
+                key={n.id}
+                data-row={n.id}
+                className={`row notice-row${String(n.id) === cursorId ? " cursor" : ""}`}
+                onClick={() => {
+                  setCursor(String(n.id));
+                  read(n);
+                  // A review request's row shows its PR; others open their todo.
+                  if (n.url) openInBrowser?.(n.url);
+                  else if (todo) onOpenTodo(todo.id);
+                }}
+              >
                 <span className="unread-dot on" aria-hidden="true" />
                 <span className={`state ${NOTICE_STATE[n.kind]}`}>
                   <i />
@@ -2618,17 +2667,8 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
                 <span className="row-title">{n.title}</span>
                 {todo && <span className="tag ellipsis notice-todo">#{todo.id} {todo.title}</span>}
                 <span className="muted when">{ago(n.created_at)}</span>
-                <button
-                  className="small"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    read(n);
-                    if (n.url) openInBrowser?.(n.url);
-                    else if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
-                    else openLocal(terminal, n.session_id, report, true);
-                  }}
-                >
-                  開く
+                <button className="small notice-open" title={n.url ? "レビューを始める（提出する前に確認）" : "セッションを開く"} onClick={(e) => (e.stopPropagation(), act(n))}>
+                  {n.url ? "レビュー" : "開く"}
                 </button>
                 <button className="ghost icon" aria-label="この通知を消す" title="消す" onClick={(e) => (e.stopPropagation(), read(n))}>
                   <Icon name="close" size={12} />
@@ -3734,7 +3774,7 @@ export default function App() {
               onQuick={() => setDialog("quick")}
             />
           )}
-          {view === "notices" && board && <NoticesPage board={board} report={report} onOpenTodo={goTodo} run={run} />}
+          {view === "notices" && board && <NoticesPage board={board} local={local} report={report} onOpenTodo={goTodo} run={run} />}
           {view === "prs" && (
             <PrsPage prs={prs} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} />
           )}
