@@ -2308,3 +2308,30 @@ body.resizing {
 .app.typing-app .browser-bar {
   opacity: 0.6;
 }
+
+/* The focus mode (FocusMode): the pane's tab on the left, a pinned page on the right. */
+.app.focus > .sidebar,
+.app.focus > .main {
+  display: none;
+}
+
+.focus-mode {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+
+.focus-left {
+  flex: 1;
+  min-width: 0;
+  background: var(--sidebar);
+}
+
+.browser-dock.focus-right {
+  width: var(--focus-right-w);
+}
+
+.focus-head {
+  align-items: center;
+  padding: 4px 8px;
+}

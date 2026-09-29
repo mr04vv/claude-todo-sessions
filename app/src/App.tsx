@@ -335,6 +335,12 @@ const PANEL_MIN_W = 320;
 const DOCK_MIN_W = 360;
 /// The browser pane starts at this share of the window.
 const DOCK_DEFAULT_SHARE = 0.44;
+/// The focus mode: the page it keeps on the right (a pinned one), and that side's width.
+const FOCUS_RIGHT_KEY = "focusRight";
+const FOCUS_RIGHT_W_KEY = "focusRightWidth";
+const FOCUS_RIGHT_SHARE = 0.45;
+/// The focus mode's left side keeps at least this.
+const FOCUS_LEFT_MIN_W = 360;
 const SIDEBAR_W = 232;
 /// Room always left for the screen in the middle.
 const MAIN_MIN_W = 320;
@@ -1749,6 +1755,54 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
         ))}
       </div>
     </>
+  );
+}
+
+/// The focus mode: the tab the pane showed (a page or a terminal) on the
+/// left and a pinned page (ChatGPT or Claude Code) on the right, nothing else.
+function FocusMode({ left, right, covered, report, width, onResize, onRight, onAddress, onExit }: {
+  left: BrowserTab | null;
+  right: BrowserTab | undefined;
+  covered: boolean;
+  report: (e: unknown) => void;
+  width: number;
+  onResize: (w: number) => void;
+  onRight: (pinnedId: string) => void;
+  onAddress: (tab: string, url: string) => void;
+  onExit: () => void;
+}) {
+  const leftWeb = left && !left.term ? left.id : undefined;
+  return (
+    <div className="focus-mode">
+      <section className="browser focus-left" aria-label="フォーカスモードの左側">
+        {left?.term ? (
+          <TerminalView key={left.id} id={left.id} run={left.term} report={report} />
+        ) : left ? (
+          <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} />
+        ) : (
+          <p className="muted empty">ブラウザのタブかターミナルを開いてから入ると、ここに出ます。</p>
+        )}
+      </section>
+      <aside className="browser-dock focus-right">
+        <Resizer label="右側の幅" cssVar="--focus-right-w" width={width} min={DOCK_MIN_W} max={() => window.innerWidth - FOCUS_LEFT_MIN_W} onResize={onResize} />
+        <section className="browser">
+          <div className="browser-tabs focus-head">
+            <div className="segmented" role="group" aria-label="右側のページ">
+              {PINNED_PAGES.map((p) => (
+                <button key={p.id} className={right?.id === p.id ? "on" : ""} aria-pressed={right?.id === p.id} onClick={() => onRight(p.id)}>
+                  <Icon name={p.icon} size={12} /> {p.label}
+                </button>
+              ))}
+            </div>
+            <span className="grow" />
+            <button className="ghost small" title="フォーカスモードを終える（Esc）" onClick={onExit}>
+              終える <span className="kbd">Esc</span>
+            </button>
+          </div>
+          {right && <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} />}
+        </section>
+      </aside>
+    </div>
   );
 }
 
@@ -3323,6 +3377,27 @@ export default function App() {
     remember(TERMINAL_TARGET_KEY, t);
     setTerminalTargetState(t);
   };
+  // The focus mode (FocusMode), and the pinned page it keeps on the right.
+  const [focusMode, setFocusMode] = useState(false);
+  const [focusRight, setFocusRightState] = useState<string>(() => load(FOCUS_RIGHT_KEY, ["pinchatgpt", "pinclaude"] as const, "pinchatgpt"));
+  /// A pinned page's tab, opened (not shown) if it is not yet.
+  const ensurePinned = (id: string) => {
+    const page = PINNED_PAGES.find((p) => p.id === id);
+    if (page && !tabs.some((t) => t.id === id)) setTabs((prev) => [{ id, url: page.url, title: page.label, loading: true, nav: 0, pinned: true }, ...prev]);
+  };
+  const setFocusRight = (id: string) => {
+    remember(FOCUS_RIGHT_KEY, id);
+    setFocusRightState(id);
+    ensurePinned(id);
+    typeInto = id;
+  };
+  const enterFocus = () => {
+    ensurePinned(focusRight);
+    typeInto = focusRight;
+    setFocusMode(true);
+  };
+  // The left side: the tab the pane shows, or else the latest other one.
+  const focusLeft = activeTab && activeTab.id !== focusRight ? activeTab : ([...tabs].reverse().find((t) => t.id !== focusRight) ?? null);
   /// Brings up a pinned page, opening its tab the first time, with its text
   /// box ready for typing.
   const showPinned = (id: string) => {
@@ -3581,6 +3656,11 @@ export default function App() {
     remember(DOCK_W_KEY, String(w));
     setDockWState(w);
   };
+  const [focusRightW, setFocusRightWState] = useState(() => loadJson<number>(FOCUS_RIGHT_W_KEY, Math.max(DOCK_MIN_W, Math.round(window.innerWidth * FOCUS_RIGHT_SHARE))));
+  const setFocusRightW = (w: number) => {
+    remember(FOCUS_RIGHT_W_KEY, String(w));
+    setFocusRightWState(w);
+  };
   const [prsLoading, setPrsLoading] = useState(false);
   const loadPrs = useCallback(() => {
     prsLoadedAt.current = Date.now();
@@ -3761,7 +3841,7 @@ export default function App() {
   const todoPage = useRef<HTMLDivElement>(null);
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
   const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
-  useTodoKeys(todoPage, layout, view === "todos" && !covered, selectedTodo !== null, {
+  useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode, selectedTodo !== null, {
     open: openTodo,
     status: setStatusMenuFor,
     link: (id) => {
@@ -3814,6 +3894,7 @@ export default function App() {
     { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザ", run: toggleBrowser },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
+    { key: "focus", label: "フォーカスモード（左に今のタブ、右に ChatGPT）", run: enterFocus },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
@@ -3832,7 +3913,10 @@ export default function App() {
     <BeginWebContext.Provider value={beginWeb}>
     <OpenCloudContext.Provider value={openCloud}>
     <TerminalContext.Provider value={inAppTerminal}>
-      <div className={`app${browserShown ? " with-browser" : ""}${browserShown && typingSide ? ` typing-${typingSide}` : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
+      <div
+        className={`app${browserShown ? " with-browser" : ""}${browserShown && !focusMode && typingSide ? ` typing-${typingSide}` : ""}${focusMode ? " focus" : ""}`}
+        style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px`, "--focus-right-w": `${focusRightW}px` } as React.CSSProperties}
+      >
         <aside className="sidebar">
           <div className="brand">
             <span className="brand-mark" />
@@ -4139,7 +4223,20 @@ export default function App() {
         )}
           </div>
         )}
-        {browserShown && (
+        {focusMode && (
+          <FocusMode
+            left={focusLeft}
+            right={tabs.find((t) => t.id === focusRight)}
+            covered={covered}
+            report={report}
+            width={focusRightW}
+            onResize={setFocusRightW}
+            onRight={setFocusRight}
+            onAddress={setTabUrl}
+            onExit={() => setFocusMode(false)}
+          />
+        )}
+        {browserShown && !focusMode && (
           <aside className="browser-dock">
             <Resizer label="ブラウザの幅" cssVar="--dock-w" width={dockW} min={DOCK_MIN_W} max={() => maxPaneWidth(0)} onResize={setDockW} />
             <BrowserDock
