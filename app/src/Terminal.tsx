@@ -57,7 +57,17 @@ const GHOSTTY_COLORS: Record<string, keyof ITheme> = {
   "selection-foreground": "selectionForeground",
 };
 const SCROLLBACK_LINES = 5000;
-const NEWLINE = "\n";
+/// Ghostty's key names that differ from a key event's `key`.
+const GHOSTTY_KEYS: Record<string, string> = {
+  arrow_left: "ArrowLeft", arrow_right: "ArrowRight", arrow_up: "ArrowUp", arrow_down: "ArrowDown",
+  backspace: "Backspace", delete: "Delete", enter: "Enter", tab: "Tab", escape: "Escape", space: " ",
+  home: "Home", end: "End", page_up: "PageUp", page_down: "PageDown",
+};
+const MODS = { meta: ["super", "cmd", "command"], alt: ["alt", "opt", "option"], ctrl: ["ctrl", "control"], shift: ["shift"] };
+/// Ghostty sends ⌥ + an arrow with no keybind as xterm's modified arrow.
+const ALT_ARROWS: Record<string, string> = { ArrowUp: "\x1b[1;3A", ArrowDown: "\x1b[1;3B", ArrowRight: "\x1b[1;3C", ArrowLeft: "\x1b[1;3D" };
+/// Ghostty scrolls a trackpad by its pixels; the terminal does the same.
+const WHEEL_LINE_PX = 16;
 const EXITED_NOTE = "\r\n\x1b[2m[終了しました]\x1b[0m\r\n";
 
 /// Each terminal outlives its view, so switching tabs or hiding the pane
@@ -83,6 +93,37 @@ interface Look {
   padding: { x: number; y: number };
   /// Ghostty's font families, first choice first.
   fonts: string[];
+  /// Ghostty's keybinds that type something, like ⌘← sending ^A.
+  keys: Keybind[];
+}
+
+interface Keybind {
+  meta: boolean;
+  alt: boolean;
+  ctrl: boolean;
+  shift: boolean;
+  key: string;
+  sends: string;
+}
+/// `super+arrow_left` and what it sends; null for a trigger it cannot read.
+function keybindFrom([trigger, sends]: [string, string]): Keybind | null {
+  const parts = trigger.split("+");
+  const name = parts.pop() ?? "";
+  if (!name || parts.some((m) => !Object.values(MODS).flat().includes(m))) return null;
+  const has = (names: string[]) => parts.some((m) => names.includes(m));
+  return { meta: has(MODS.meta), alt: has(MODS.alt), ctrl: has(MODS.ctrl), shift: has(MODS.shift), key: GHOSTTY_KEYS[name] ?? name, sends };
+}
+/// What Ghostty would send for the key, when that differs from xterm.js.
+function sendsFor(keys: Keybind[], ev: KeyboardEvent): string | null {
+  const bound = keys.find(
+    (b) =>
+      b.meta === ev.metaKey && b.alt === ev.altKey && b.ctrl === ev.ctrlKey && b.shift === ev.shiftKey &&
+      // A letter by its key cap, which ⌥ turns into another character.
+      (b.key.length === 1 && /[a-z]/.test(b.key) ? ev.code === `Key${b.key.toUpperCase()}` : ev.key === b.key),
+  );
+  if (bound) return bound.sends;
+  const altOnly = ev.altKey && !ev.metaKey && !ev.ctrlKey && !ev.shiftKey;
+  return altOnly ? (ALT_ARROWS[ev.key] ?? null) : null;
 }
 function lookFrom(config: [string, string][]): Look {
   const theme: ITheme = { background: cssVar("--surface"), foreground: cssVar("--text"), cursor: cssVar("--accent"), selectionBackground: cssVar("--accent-soft") };
@@ -104,7 +145,7 @@ function lookFrom(config: [string, string][]): Look {
   }
   options.fontFamily = [...fonts.map((f) => `"${f}"`), FALLBACK_FONTS].join(", ");
   options.theme = theme;
-  return { options, padding, fonts };
+  return { options, padding, fonts, keys: [] };
 }
 /// WebKit gives pages only the system's fonts, so fonts the user installed
 /// are loaded from their files; a system font simply has no file to load.
@@ -123,7 +164,10 @@ async function loadFonts(families: string[]) {
 /// Ghostty's config the app's own colors are used.
 const look: Promise<Look> = invoke<[string, string][]>("ghostty_config")
   .then(lookFrom, () => lookFrom([]))
-  .then(async (l) => (await loadFonts(l.fonts), l));
+  .then(async (l) => {
+    const [keys] = await Promise.all([invoke<[string, string][]>("ghostty_keybinds").catch(() => []), loadFonts(l.fonts)]);
+    return { ...l, keys: keys.map(keybindFrom).filter((k): k is Keybind => k !== null) };
+  });
 
 function entryFor(id: string, look: Look): Entry {
   let e = entries.get(id);
@@ -133,11 +177,25 @@ function entryFor(id: string, look: Look): Entry {
     term.loadAddon(fit);
     const write = (data: string) => void invoke("term_write", { id, data }).catch(() => {});
     term.onData(write);
-    // ⇧Enter sends a newline, as Ghostty's `keybind = shift+enter=text:\n`
-    // does, which Claude Code takes as a new line in the prompt.
+    // Keys type what they do in Ghostty: ⌘← ⌘→ to the line's ends, ⌘⌫
+    // clears the line, ⇧Enter a new line (from the user's keybind), ...
     term.attachCustomKeyEventHandler((ev) => {
-      if (ev.key !== "Enter" || !ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey || ev.isComposing) return true;
-      if (ev.type === "keydown") write(NEWLINE);
+      const sends = ev.isComposing ? null : sendsFor(look.keys, ev);
+      if (sends === null) return true;
+      if (ev.type === "keydown") write(sends);
+      return false;
+    });
+    // Outside full-screen apps (which get the wheel themselves), a trackpad
+    // scrolls by its pixels as in Ghostty rather than xterm.js's slower steps.
+    let partial = 0;
+    term.attachCustomWheelEventHandler((ev) => {
+      if (term.modes.mouseTrackingMode !== "none" || term.buffer.active.type !== "normal") return true;
+      const rowPx = (term.element?.querySelector(".xterm-screen")?.clientHeight ?? 0) / term.rows || WHEEL_LINE_PX;
+      partial += ev.deltaMode === WheelEvent.DOM_DELTA_LINE ? ev.deltaY : ev.deltaY / rowPx;
+      const lines = Math.trunc(partial);
+      partial -= lines;
+      if (lines) term.scrollLines(lines);
+      ev.preventDefault();
       return false;
     });
     term.onResize(({ cols, rows }) => void invoke("term_resize", { id, cols, rows }).catch(() => {}));

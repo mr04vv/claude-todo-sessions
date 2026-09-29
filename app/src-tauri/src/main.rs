@@ -1801,6 +1801,7 @@ fn main() {
             terminal::term_focus,
             terminal::ghostty_config,
             terminal::user_font,
+            terminal::ghostty_keybinds,
             set_herdr_session,
             browser_go
         ])

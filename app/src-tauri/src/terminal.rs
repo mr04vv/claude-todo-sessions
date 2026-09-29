@@ -185,6 +185,68 @@ pub fn user_font(family: String, bold: bool) -> Result<tauri::ipc::Response, Str
     Ok(tauri::ipc::Response::new(std::fs::read(path).map_err(err)?))
 }
 
+const GHOSTTY_CLI: &str = "/Applications/Ghostty.app/Contents/MacOS/ghostty";
+
+/// Ghostty's escapes in a keybind's text (`\x01`, `\n`, ...), as its
+/// `+list-keybinds` prints them with the backslash doubled.
+fn unescape(text: &str) -> String {
+    let text = text.replace("\\\\", "\\");
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('x') => {
+                let hex: String = chars.by_ref().take(2).collect();
+                if let Some(b) = u8::from_str_radix(&hex, 16).ok().map(char::from) {
+                    out.push(b);
+                }
+            }
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('e') => out.push('\x1b'),
+            Some(other) => out.push(other),
+            None => out.push('\\'),
+        }
+    }
+    out
+}
+
+/// The keybinds that type something (`text:`, `esc:`, `csi:`), as trigger
+/// and what they send. Ones for other actions, global ones and sequences
+/// are left to the app.
+fn parse_keybinds(out: &str) -> Vec<(String, String)> {
+    out.lines()
+        .filter_map(|l| l.trim().strip_prefix("keybind = "))
+        .filter_map(|b| {
+            let (trigger, action) = ["=text:", "=esc:", "=csi:"].iter().find_map(|sep| b.split_once(sep).map(|(t, a)| (t, (*sep, a))))?;
+            if trigger.contains(':') || trigger.contains('>') {
+                return None;
+            }
+            let sent = match action {
+                ("=text:", a) => unescape(a),
+                ("=esc:", a) => format!("\x1b{a}"),
+                (_, a) => format!("\x1b[{a}"),
+            };
+            Some((trigger.to_string(), sent))
+        })
+        .collect()
+}
+
+/// What Ghostty's keybinds type (its defaults and the user's), for the
+/// terminal to send the same; none without Ghostty.
+#[tauri::command(async)]
+pub fn ghostty_keybinds() -> Vec<(String, String)> {
+    match std::process::Command::new(GHOSTTY_CLI).arg("+list-keybinds").output() {
+        Ok(out) => parse_keybinds(&String::from_utf8_lossy(&out.stdout)),
+        Err(_) => Vec::new(),
+    }
+}
+
 /// Gives the app's own page the keyboard, which a browser tab may hold, so
 /// the terminal is focused (and its cursor blinks).
 #[tauri::command(async)]
@@ -220,6 +282,20 @@ mod tests {
         assert!(!is_font_file("JetBrainsMono-Bold.ttf", "JetBrains Mono", false));
         assert!(!is_font_file("JetBrainsMonoNL-Regular.ttf", "JetBrains Mono", false));
         assert!(!is_font_file("JetBrainsMono-Regular.txt", "JetBrains Mono", false));
+    }
+
+    #[test]
+    fn reads_the_keybinds_that_type_text() {
+        let out = "keybind = super+arrow_left=text:\\\\x01\nkeybind = shift+enter=text:\\\\n\nkeybind = alt+arrow_right=esc:f\nkeybind = ctrl+up=csi:1;5A\nkeybind = super+c=copy_to_clipboard:mixed\nkeybind = global:super+x=text:a\nkeybind = ctrl+a>n=text:b\n";
+        assert_eq!(
+            parse_keybinds(out),
+            vec![
+                ("super+arrow_left".to_string(), "\x01".to_string()),
+                ("shift+enter".to_string(), "\n".to_string()),
+                ("alt+arrow_right".to_string(), "\x1bf".to_string()),
+                ("ctrl+up".to_string(), "\x1b[1;5A".to_string()),
+            ]
+        );
     }
 
     #[test]
