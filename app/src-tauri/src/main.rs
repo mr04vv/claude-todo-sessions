@@ -1609,6 +1609,10 @@ fn notify_session(app: &AppHandle, db: &Db, session: Session, kind: NoticeKind) 
 
 /// Posts a macOS notification; clicking it reads notice `id` and runs `open`.
 fn post_banner(app: &AppHandle, headline: &'static str, label: String, id: Option<i64>, open: impl FnOnce(&AppHandle) -> Result<(), String> + Send + 'static) {
+    // The focus mode holds them; the in-app list has them, and the page tells of them after.
+    if app.state::<AppState>().focus_mode.load(Ordering::Relaxed) {
+        return;
+    }
     let app = app.clone();
     std::thread::spawn(move || {
         let response = Notification::new().title(headline).message(&label).wait_for_click(true).send();

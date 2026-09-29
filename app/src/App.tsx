@@ -3435,11 +3435,18 @@ export default function App() {
   const focusModeRef = useRef(focusMode);
   focusModeRef.current = focusMode;
   useEffect(() => void api.setFocusMode(focusMode).catch((e) => setError(String(e))), [focusMode]);
+  // Notifications during the focus mode wait (the backend posts none); on
+  // leaving, the page tells how many came.
+  const unreadAtFocus = useRef(0);
+  const [heldNotices, setHeldNotices] = useState(0);
+  const unreadNow = () => board?.notifications.filter((n) => !n.read).length ?? 0;
   const exitFocus = () => {
     setDialog(null);
     setFocusMode(false);
+    setHeldNotices(Math.max(0, unreadNow() - unreadAtFocus.current));
   };
   const enterFocus = () => {
+    unreadAtFocus.current = unreadNow();
     ensurePinned(focusRight);
     typeInto = focusRight;
     setFocusMode(true);
@@ -4128,8 +4135,19 @@ export default function App() {
         </aside>
 
         <main className="main">
-          {(closePrompt || error) && (
+          {(closePrompt || error || heldNotices > 0) && (
             <div className="banners">
+              {heldNotices > 0 && (
+                <div className="notice" role="status">
+                  <span className="grow">フォーカスモードのあいだに通知が {heldNotices} 件ありました。</span>
+                  <button className="primary small" onClick={() => (setHeldNotices(0), setView("notices"))}>
+                    通知を見る
+                  </button>
+                  <button className="ghost icon" onClick={() => setHeldNotices(0)} aria-label="閉じる">
+                    <Icon name="close" size={12} />
+                  </button>
+                </div>
+              )}
               {closePrompt && (
                 <div className="notice" role="status">
                   <span>
