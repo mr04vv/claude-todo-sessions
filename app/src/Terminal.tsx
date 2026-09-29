@@ -8,6 +8,7 @@ import { listen } from "@tauri-apps/api/event";
 import { Terminal, type ITerminalOptions, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import { matches } from "./keymap";
 
 /// A command to run, where, and what to call its tab (`TerminalRun` in main.rs).
 export interface TerminalRun {
@@ -206,8 +207,8 @@ function entryFor(id: string, look: Look): Entry {
     // Keys type what they do in Ghostty: ⌘← ⌘→ to the line's ends, ⌘⌫
     // clears the line, ⇧Enter a new line (from the user's keybind), ...
     term.attachCustomKeyEventHandler((ev) => {
-      // ⌃h ⌃l move the typing between the app's sides (App.tsx), not to the program.
-      if (ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey && (ev.key === "h" || ev.key === "l")) return false;
+      // The keys moving the typing between the app's sides (App.tsx) stay out of the program.
+      if (matches(ev, "sideApp") || matches(ev, "sidePane")) return false;
       const sends = ev.isComposing ? null : sendsFor(look.keys, ev);
       if (sends === null) return true;
       if (ev.type === "keydown") write(sends);

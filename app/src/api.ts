@@ -228,6 +228,8 @@ export const api = {
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
   windowFocused: () => invoke<boolean>("window_focused"),
   setFocusMode: (on: boolean) => invoke<void>("set_focus_mode", { on }),
+  /// The app's keys (keymap.ts), as JSON, for the pages' script.
+  setPageKeys: (keys: string) => invoke<void>("set_page_keys", { keys }),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),

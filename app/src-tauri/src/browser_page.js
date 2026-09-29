@@ -1,9 +1,8 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
-// own: ⌘L moves to the app's address bar, ⌘T opens a new tab (⌘W, the app
-// menu's, closes it), ⌘⇧A archives the cloud session it shows, ⌘K opens the
-// app's commands, ⌃h goes back to the app's side, ⌘R reloads,
-// ⌘[ ⌘] go back and forward, ⌘⇧[ ⌘⇧] switch tabs, and right-click offers
-// translation (WKWebView has no translate item). X shows its bookmarks only.
+// own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
+// commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, as the user set
+// them), right-click offers translation (WKWebView has no translate item),
+// and X shows its bookmarks only.
 (() => {
   if (window.__todoSessionsPage) return;
   window.__todoSessionsPage = true;
@@ -38,19 +37,51 @@
   const FOCUS_APP = "todo-sessions://focus-app";
   const FOCUS_PANE = "todo-sessions://focus-pane";
   const FOCUS_EXIT = "todo-sessions://focus-exit";
+  const CLOSE_TAB = "todo-sessions://close-tab";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
+
+  // The app's keys (keymap.ts), which the app sets on the page as
+  // __todoSessionsKeys: action → "cmd+shift+[" and the like.
+  const SHIFTED = { "{": "[", "}": "]" };
+  const normal = (key) => {
+    const k = key.length === 1 ? key.toLowerCase() : key;
+    return SHIFTED[k] ?? k;
+  };
+  const is = (e, action) => {
+    const combo = (window.__todoSessionsKeys ?? {})[action];
+    if (!combo) return false;
+    const parts = combo.split("+");
+    const key = parts.pop();
+    const symbol = key.length === 1 && !/[a-z0-9]/.test(key);
+    return (
+      normal(e.key) === key &&
+      e.metaKey === parts.includes("cmd") &&
+      e.ctrlKey === parts.includes("ctrl") &&
+      e.altKey === parts.includes("alt") &&
+      (e.shiftKey === parts.includes("shift") || (symbol && !parts.includes("shift")))
+    );
+  };
+  // What each key does here: the app's actions go to the app as navigations
+  // it cancels; the page's own (back, forward, reload) happen here.
+  const KEY_ACTIONS = [
+    ["sideApp", () => (location.href = FOCUS_APP)],
+    ["sidePane", () => (location.href = FOCUS_PANE)],
+    ["palette", () => (location.href = PALETTE)],
+    ["focusUrl", () => (location.href = FOCUS_URL)],
+    ["newTab", () => (location.href = NEW_TAB)],
+    ["closeTab", () => (location.href = CLOSE_TAB)],
+    ["prevTab", () => (location.href = PREV_TAB)],
+    ["nextTab", () => (location.href = NEXT_TAB)],
+    ["archive", () => (location.href = ARCHIVE)],
+    ["back", () => history.back()],
+    ["forward", () => history.forward()],
+    ["reload", () => location.reload()],
+  ];
 
   window.addEventListener(
     "keydown",
     (e) => {
-      // ⌃h ⌃l move the typing between the sides (the focus mode's two pages).
-      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "h" || e.key === "l")) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        location.href = e.key === "h" ? FOCUS_APP : FOCUS_PANE;
-        return;
-      }
       // In the focus mode (the app sets the flag) Esc asks about leaving it.
       if (window.__todoSessionsFocusMode && e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
@@ -58,41 +89,12 @@
         location.href = FOCUS_EXIT;
         return;
       }
-      if (!e.metaKey || e.altKey || e.ctrlKey) return;
-      // With ⇧ a JIS or US keyboard gives { and } for the bracket keys.
-      const back = e.key === "[" || e.key === "{";
-      const forward = e.key === "]" || e.key === "}";
-      if (back || forward) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (e.shiftKey) location.href = back ? PREV_TAB : NEXT_TAB;
-        else if (back) history.back();
-        else history.forward();
-        return;
-      }
-      const key = e.key.toLowerCase();
-      if (e.shiftKey && key === "a") {
-        e.preventDefault();
-        e.stopPropagation();
-        location.href = ARCHIVE;
-        return;
-      }
-      if (e.shiftKey) return;
-      // The app's commands win over the page's own ⌘K (ChatGPT's search).
-      if (key === "k") {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        location.href = PALETTE;
-        return;
-      }
-      if (key === "r") {
-        e.preventDefault();
-        location.reload();
-      } else if (key === "l" || key === "t") {
-        e.preventDefault();
-        e.stopPropagation();
-        location.href = key === "l" ? FOCUS_URL : NEW_TAB;
-      }
+      // Ahead of the page's own keys (ChatGPT's ⌘K search, say).
+      const hit = KEY_ACTIONS.find(([action]) => is(e, action));
+      if (!hit) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      hit[1]();
     },
     true,
   );

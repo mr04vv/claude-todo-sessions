@@ -1,5 +1,6 @@
 // Keyboard for the Todo kanban and list: a cursor over the cards (or rows),
-// moved with j k / h l (or the arrows), and keys acting on the todo under it:
+// moved with j k / h l (or the arrows; the keys are keymap.ts's, which the
+// user may change), and keys acting on the todo under it:
 // Enter its panel, s its status, ⇧h ⇧l (kanban) the column it is in, o and
 // ⌥Enter its session, p its PR, u its parent; c adds a todo there, / searches,
 // ? lists the keys.
@@ -9,6 +10,7 @@
 //   kanban cell. The cursor is marked with data-cursor.
 // To drop it, remove this file, its use in App.tsx and those attributes.
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { matches } from "./keymap";
 
 export interface TodoKeyActions {
   /// Enter: the todo's panel.
@@ -66,19 +68,21 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
     };
     const onKey = (e: KeyboardEvent) => {
       const { cursor, layout, enabled, actions } = state.current;
-      if (!enabled || e.metaKey || e.ctrlKey || (e.target as HTMLElement).closest(TYPING)) return;
-      const key = e.key;
-      // Page-wide: / the search box, ? these keys.
-      if (key === "/" || key === "?") {
+      if (!enabled || (e.target as HTMLElement).closest(TYPING)) return;
+      const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
+      const arrow = (name: string, shift = false) => plain && e.shiftKey === shift && e.key === name;
+      // Page-wide: the search box, and the list of keys.
+      if (matches(e, "search") || matches(e, "help")) {
         e.preventDefault();
-        if (key === "?") actions.help();
+        if (matches(e, "help")) actions.help();
         else document.querySelector<HTMLInputElement>(".filter-search")?.focus();
         return;
       }
       const rows = [...(root.current?.querySelectorAll<HTMLElement>(ROW) ?? [])];
       const at = rows.find((el) => el.dataset.row === cursor);
-      // c adds a todo where the cursor is (its column on the kanban), else in the first lane.
-      if (key === "c" && !e.altKey && !e.shiftKey) {
+      const id = at ? todoId(at.dataset.row!) : null;
+      // Adds a todo where the cursor is (its column on the kanban), else in the first lane.
+      if (matches(e, "add")) {
         const place = at ? (colOf(at) ?? at.closest("[data-lane]")) : root.current;
         const add = place?.querySelector<HTMLButtonElement>(".add-inline") ?? at?.closest("[data-lane]")?.querySelector<HTMLButtonElement>(".add-inline");
         if (add) {
@@ -88,49 +92,40 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
         return;
       }
       if (rows.length === 0) return;
-      // o and ⌥Enter open the todo's session as its "開く" and its menu do; p its PR.
-      const id = at ? todoId(at.dataset.row!) : null;
-      if (id !== null && (key === "o" || key === "p" || key === "u" || (key === "Enter" && e.altKey))) {
-        e.preventDefault();
-        if (key === "p") actions.link(id);
-        else if (key === "u") actions.parent(id);
-        else at!.querySelector<HTMLButtonElement>(key === "o" ? ".open-main" : ".open-caret")?.click();
+      // The session opens as its "開く" does (⌥Enter: its menu); the PR, the parent.
+      const onTodo: [boolean, () => void][] = [
+        [matches(e, "session"), () => at!.querySelector<HTMLButtonElement>(".open-main")?.click()],
+        [e.key === "Enter" && e.altKey && !e.metaKey && !e.ctrlKey, () => at!.querySelector<HTMLButtonElement>(".open-caret")?.click()],
+        [matches(e, "link"), () => actions.link(id!)],
+        [matches(e, "parent"), () => actions.parent(id!)],
+        [matches(e, "status"), () => actions.status(id!)],
+        // Moves the card as dragging it to the next column does.
+        [layout === "board" && (matches(e, "moveLeft") || arrow("ArrowLeft", true)), () => actions.shift(id!, -1)],
+        [layout === "board" && (matches(e, "moveRight") || arrow("ArrowRight", true)), () => actions.shift(id!, 1)],
+      ];
+      const hit = onTodo.find(([yes]) => yes);
+      if (hit) {
+        if (id !== null) {
+          e.preventDefault();
+          hit[1]();
+        }
         return;
       }
-      if (e.altKey) return;
-      const down = key === "j" || key === "ArrowDown";
-      const up = key === "k" || key === "ArrowUp";
-      const left = key === "h" || key === "ArrowLeft";
-      const right = key === "l" || key === "ArrowRight";
-      if (key === "Escape") {
+      if (e.key === "Escape" && plain) {
         actions.close();
         return;
       }
-      // ⇧h ⇧l move the card as dragging it to the next column does.
-      if (layout === "board" && e.shiftKey && ["H", "L", "ArrowLeft", "ArrowRight"].includes(key)) {
-        const id = at && todoId(at.dataset.row!);
-        if (id != null) {
-          e.preventDefault();
-          actions.shift(id, key === "H" || key === "ArrowLeft" ? -1 : 1);
-        }
-        return;
-      }
-      if (e.shiftKey) return;
-      if (key === "s") {
-        const id = at && todoId(at.dataset.row!);
-        if (id != null) {
-          e.preventDefault();
-          actions.status(id);
-        }
-        return;
-      }
-      if (!(down || up || left || right || key === "Enter")) return;
+      const down = matches(e, "down") || arrow("ArrowDown");
+      const up = matches(e, "up") || arrow("ArrowUp");
+      const left = matches(e, "left") || arrow("ArrowLeft");
+      const right = matches(e, "right") || arrow("ArrowRight");
+      const enter = e.key === "Enter" && plain && !e.shiftKey;
+      if (!(down || up || left || right || enter)) return;
       e.preventDefault();
       // The first key only puts the cursor on the first card.
       if (!at) return move(rows[0]);
       const row = at.dataset.row!;
-      if (key === "Enter") {
-        const id = todoId(row);
+      if (enter) {
         if (id !== null) actions.open(id);
         else {
           // A parent's lane opens the parent; other lanes fold and open.

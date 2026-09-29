@@ -72,6 +72,8 @@ struct AppState {
     /// The focus mode is on: pages' Esc asks about leaving it, and macOS
     /// notifications wait (the in-app list still gets them).
     focus_mode: AtomicBool,
+    /// The app's keys for the pages, as JSON (see `set_page_keys`).
+    page_keys: Mutex<String>,
     /// Tabs whose page should focus its text box once it loads, and since when.
     focus_input: Mutex<HashMap<String, std::time::Instant>>,
     /// Held while a browser tab is shown or created.
@@ -420,6 +422,22 @@ fn resume_run(state: &AppState, session_id: &str) -> Result<TerminalRun, String>
 /// When the window's focus changes: another app came in front, or a browser
 /// tab or the page took the keyboard.
 const WINDOW_FOCUS_EVENT: &str = "window-focus";
+
+/// The app's keys for the pages (keymap.ts, as JSON), which their script reads.
+fn page_keys_script(keys: &str) -> String {
+    format!("window.__todoSessionsKeys = {keys};")
+}
+
+/// Sets the keys the pages take (keymap.ts's, as JSON), on every page now.
+#[tauri::command]
+fn set_page_keys(app: AppHandle, state: State<AppState>, keys: String) -> Result<(), String> {
+    serde_json::from_str::<HashMap<String, String>>(&keys).map_err(err)?;
+    *state.page_keys.lock().map_err(err)? = keys.clone();
+    for view in browser_tabs(&app) {
+        let _ = view.eval(page_keys_script(&keys));
+    }
+    Ok(())
+}
 
 /// Turns the focus mode on or off for the pages (and the notifications).
 #[tauri::command]
@@ -1259,8 +1277,9 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
     let window = app.get_window("main").ok_or("main window not found")?;
     let (on_load, on_title, on_new, on_focus) = (app.clone(), app.clone(), app.clone(), app.clone());
     let (load_tab, title_tab, focus_tab) = (tab.clone(), tab.clone(), tab);
+    let keys = state.page_keys.lock().map_err(err)?.clone();
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
-        .initialization_script(BROWSER_PAGE_SCRIPT)
+        .initialization_script(format!("{}\n{BROWSER_PAGE_SCRIPT}", page_keys_script(&keys)))
         .on_navigation(move |url| {
             if url.scheme() != APP_SCHEME {
                 return true;
@@ -1278,6 +1297,7 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("focus-app") => on_focus.emit(FOCUS_APP_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("focus-pane") => on_focus.emit(FOCUS_PANE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("focus-exit") => on_focus.emit(FOCUS_EXIT_EVENT, ()),
+                Some("close-tab") => on_focus.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: focus_tab.clone() }),
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
             false
@@ -1286,8 +1306,13 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
             // A page asked to take the typing (see `browser_focus`) once it has loaded.
             if !loading {
-                if on_load.state::<AppState>().focus_mode.load(Ordering::Relaxed) {
+                let state = on_load.state::<AppState>();
+                if state.focus_mode.load(Ordering::Relaxed) {
                     let _ = view.eval(focus_mode_script(true));
+                }
+                // The keys as they are now; the page began with the ones set when its tab opened.
+                if let Ok(keys) = state.page_keys.lock() {
+                    let _ = view.eval(page_keys_script(&keys));
                 }
                 let asked = on_load.state::<AppState>().focus_input.lock().ok().and_then(|mut m| m.remove(&load_tab));
                 if asked.is_some_and(|at| at.elapsed() < FOCUS_INPUT_WITHIN) {
@@ -1543,8 +1568,8 @@ fn show_window(app: &AppHandle) {
     }
 }
 
-/// The app menu, as macOS's default one but for ⌘W: that closes the shown
-/// browser tab (the page decides), since the menu takes the key before the page.
+/// The app menu, as macOS's default one but without Close Window, whose ⌘W
+/// would take the key before the page: closing a tab is the app's shortcut.
 fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     use tauri::menu::Submenu;
     let sep = || PredefinedMenuItem::separator(app);
@@ -1558,7 +1583,8 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &PredefinedMenuItem::quit(app, None)?,
     ])?;
     let file = Submenu::with_items(app, "ファイル", true, &[
-        &MenuItem::with_id(app, MENU_CLOSE_TAB, "タブを閉じる", true, Some("CmdOrCtrl+W"))?,
+        // Its key is the user's (keymap.ts), taken by the page, so the item has none.
+        &MenuItem::with_id(app, MENU_CLOSE_TAB, "タブを閉じる", true, None::<&str>)?,
     ])?;
     let edit = Submenu::with_items(app, "編集", true, &[
         &PredefinedMenuItem::undo(app, None)?,
@@ -1818,6 +1844,7 @@ fn main() {
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
             focus_mode: AtomicBool::new(false),
+            page_keys: Mutex::new("{}".into()),
             archived: Mutex::new(HashSet::new()),
             browser_lock: Mutex::new(()),
             github_wake: Mutex::new(github_tx),
@@ -1924,6 +1951,7 @@ fn main() {
             archive_sessions,
             window_focused,
             set_focus_mode,
+            set_page_keys,
             start_review_cloud,
             start_desktop_prompt,
             terminal_quick,

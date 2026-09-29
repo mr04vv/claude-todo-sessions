@@ -56,6 +56,7 @@ import {
   type Todo,
 } from "./api";
 import { useTodoKeys } from "./todoKeys";
+import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
 import { closeTerminal, focusTerminal, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
@@ -594,6 +595,12 @@ function useOutsideClose(root: React.RefObject<HTMLElement | null>, open: boolea
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
+/// ↓ (or the down key, j) is 1, ↑ (or k) -1, else 0.
+const stepOf = (e: KeyboardEvent) => {
+  const arrow = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
+  return (arrow && e.key === "ArrowDown") || matches(e, "down") ? 1 : (arrow && e.key === "ArrowUp") || matches(e, "up") ? -1 : 0;
+};
+
 /// A menu that takes the keyboard when it opens: ↑↓ or j k move, Enter
 /// picks, Esc closes. Spread `menuKeys` on the element with role="menu".
 /// The menu itself holds the focus and marks its item with `data-active`
@@ -612,7 +619,7 @@ function useMenuKeys(open: boolean, close: () => void, first = 0) {
   });
   const onKeyDown = (e: React.KeyboardEvent) => {
     const n = items().length;
-    const step = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
+    const step = stepOf(e.nativeEvent);
     if (step && n > 0) {
       e.preventDefault();
       setActive((a) => (a + step + n) % n);
@@ -646,16 +653,16 @@ function useRowCursor(ids: string[], onEnter: (id: string, alt: boolean, row: HT
     const rowOf = (id: string) => list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`);
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (e.metaKey || e.ctrlKey || t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app.focus")) return;
+      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app.focus")) return;
       const { ids, cursorId, onEnter } = state.current;
-      const step = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
+      const step = stepOf(e);
       if (step && ids.length > 0) {
         e.preventDefault();
         const next = ids[Math.min(Math.max(ids.indexOf(cursorId ?? "") + step, 0), ids.length - 1)];
         state.current.cursorId = next;
         setCursor(next);
         rowOf(next)?.scrollIntoView({ block: "nearest" });
-      } else if (e.key === "Enter" && cursorId) {
+      } else if (e.key === "Enter" && !e.metaKey && !e.ctrlKey && cursorId) {
         const row = rowOf(cursorId);
         if (!row) return;
         e.preventDefault();
@@ -1952,12 +1959,10 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep }: {
       address.current?.select();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
-      const key = e.key.toLowerCase();
-      if (key === "[" || key === "]") {
+      if (matches(e, "back") || matches(e, "forward")) {
         e.preventDefault();
-        api.browserGo(tabId.current, key === "[" ? "back" : "forward").catch(report);
-      } else if (key === "l") {
+        api.browserGo(tabId.current, matches(e, "back") ? "back" : "forward").catch(report);
+      } else if (matches(e, "focusUrl")) {
         e.preventDefault();
         focusAddress();
       }
@@ -3185,6 +3190,7 @@ const SEARCH_ALIASES: Record<string, string[]> = {
   カンバン: ["kanban", "board", "ボード"],
   リスト: ["list"],
   フィルター: ["filter", "絞り込み", "view", "ビュー"],
+  ショートカット: ["shortcut", "key", "keys", "キー", "keymap"],
   通知: ["notification", "notice", "お知らせ", "bell"],
   ブラウザ: ["browser", "web", "タブ", "tab"],
   タブ: ["tab"],
@@ -3238,9 +3244,9 @@ function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Co
           aria-label="操作を選ぶ、または todo を検索"
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            // ⌃J ⌃K move too, as in fzf.
-            const down = e.key === "ArrowDown" || (e.ctrlKey && e.key === "j");
-            const up = e.key === "ArrowUp" || (e.ctrlKey && e.key === "k");
+            // ⌃J ⌃K (as set) move too, as in fzf.
+            const down = e.key === "ArrowDown" || matches(e.nativeEvent, "paletteDown");
+            const up = e.key === "ArrowUp" || matches(e.nativeEvent, "paletteUp");
             if (down) {
               e.preventDefault();
               setActive((a) => Math.min(a + 1, items.length - 1));
@@ -3353,24 +3359,86 @@ function ExitFocusDialog({ onExit, onStay }: { onExit: () => void; onStay: () =>
   );
 }
 
-/// The Todo pages' keys (todoKeys.ts), for ?.
-const TODO_KEYS: [string, string][] = [
-  ["j k / ↑↓", "カード・行を移動（カンバンは列の中をレーンをまたいで）"],
-  ["h l / ←→", "カンバン：左右の列へ　リスト：レーンを折りたたむ / 開く"],
-  ["⇧h ⇧l", "カンバン：カードを左右の列へ動かす"],
-  ["Enter", "todo のパネルを開く（開いている間はカーソルに付いてくる）"],
-  ["Esc", "パネルを閉じる"],
-  ["s", "ステータスを変える"],
-  ["o", "紐づいたセッションを開く"],
-  ["⌥Enter", "セッションの開き方を選ぶ"],
-  ["p", "PR（なければ issue）を開く"],
-  ["u", "親の todo を開く（リストの親のレーンでは見出しで Enter でも）"],
-  ["c", "その場所に todo を追加"],
-  ["/", "絞り込み欄へ"],
-  ["?", "このキーの一覧"],
-  ["⌃h / ⌃l", "入力先をこちら（Todo 側）/ 右のペイン（ページ・ターミナル）にする"],
-  ["⌘R", "取り直す（PR 画面は PR の一覧、ほかは同期）"],
+/// Keys that stay as they are, shown under the ones that can change.
+const FIXED_KEYS: [string, string][] = [
+  ["↑↓←→", "一覧・カンバンの移動（変えたキーと一緒に使えます）"],
+  ["Enter", "開く（Todo のパネル、セッション、メニューの項目）"],
+  ["⌥Enter", "開き方を選ぶ（セッション）/ PR を開く（PR・通知）"],
+  ["Esc", "パネルやメニューを閉じる（フォーカスモードでは終えるか聞く）"],
 ];
+
+/// Every shortcut, and changing one: its key's button, then the new key
+/// (Esc keeps the old one). ? and ⌘K's "ショートカット" open it.
+function ShortcutsDialog({ onClose }: { onClose: () => void }) {
+  const keys = useKeymap();
+  const [recording, setRecording] = useState<Action | null>(null);
+  useEffect(() => {
+    if (!recording) return;
+    // Ahead of everything else, the app's own shortcuts too.
+    const onKey = (e: KeyboardEvent) => {
+      const combo = comboOf(e);
+      if (!combo) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      if (e.key !== "Escape") setKeys({ [recording]: combo });
+      setRecording(null);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recording]);
+  const labelOf = new Map(ACTIONS.flatMap((g) => g.items));
+  return (
+    <Modal
+      title="ショートカット"
+      wide
+      onClose={() => !recording && onClose()}
+      footer={
+        <>
+          <span className="muted">キーのボタンを押してから、新しいキーを押します（Esc でやめる）。⌘Q ⌘H ⌘. など macOS が使うキーは効きません</span>
+          <span className="grow" />
+          <button className="ghost" onClick={resetKeys}>
+            すべて既定に戻す
+          </button>
+        </>
+      }
+    >
+      <div className="shortcuts">
+        {ACTIONS.map((g) => (
+          <section key={g.group}>
+            <h3>{g.group}</h3>
+            {g.items.map(([action, what]) => {
+              // Another action on the same key in this list (the lists' keys are one set).
+              const same = (Object.keys(keys) as Action[]).find((a) => a !== action && keys[a] === keys[action]);
+              return (
+                <div key={action} className="shortcut-row">
+                  <span className="grow">{what}</span>
+                  {same && <span className="error-text small">「{labelOf.get(same)}」と同じ</span>}
+                  {keys[action] !== DEFAULT_KEYS[action] && (
+                    <button className="ghost small" title={`既定（${keyLabel(DEFAULT_KEYS[action])}）に戻す`} onClick={() => setKeys({ [action]: DEFAULT_KEYS[action] })}>
+                      既定に
+                    </button>
+                  )}
+                  <button className={`kbd shortcut-key${recording === action ? " recording" : ""}`} onClick={() => setRecording(action)}>
+                    {recording === action ? "キーを押す…" : keyLabel(keys[action])}
+                  </button>
+                </div>
+              );
+            })}
+          </section>
+        ))}
+        <section>
+          <h3>変えられないキー</h3>
+          {FIXED_KEYS.map(([k, what]) => (
+            <div key={k} className="shortcut-row">
+              <span className="grow">{what}</span>
+              <span className="kbd">{k}</span>
+            </div>
+          ))}
+        </section>
+      </div>
+    </Modal>
+  );
+}
 
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
@@ -3470,6 +3538,9 @@ export default function App() {
     ensurePinned(id);
     typeInto = id;
   };
+  // The pages take the keys as they are set (their script reads them).
+  const keymap = useKeymap();
+  useEffect(() => void api.setPageKeys(JSON.stringify(keymap)).catch((e) => setError(String(e))), [keymap]);
   const focusModeRef = useRef(focusMode);
   focusModeRef.current = focusMode;
   useEffect(() => void api.setFocusMode(focusMode).catch((e) => setError(String(e))), [focusMode]);
@@ -3818,15 +3889,15 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // ⌘N adds a todo, ⌘K opens the commands, ⌘T opens a browser tab, ⌘⇧[ ⌘⇧]
-  // switch tabs, and ⌃h ⌃l give the typing to this side and to the pane, from
-  // anywhere. (⌘W is the app menu's; a page's ⌃h comes as FOCUS_APP_EVENT,
-  // and the terminal leaves ⌃h ⌃l to this.)
+  // The app's shortcuts from anywhere (keymap.ts: ⌘N a todo, ⌘K the commands,
+  // ⌘T ⌘W a browser tab, ⌘⇧[ ⌘⇧] switch tabs, ⌃h ⌃l the typing's side, …).
+  // A page's come through its script's events; the terminal leaves the
+  // sides' keys to this.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && (e.key === "h" || e.key === "l")) {
+      if (matches(e, "sideApp") || matches(e, "sidePane")) {
         e.preventDefault();
-        focusSideRef.current(e.key === "l");
+        focusSideRef.current(matches(e, "sidePane"));
         return;
       }
       // The focus mode: Esc asks about leaving (a terminal keeps its Esc, and
@@ -3839,29 +3910,22 @@ export default function App() {
         } else if (e.metaKey && !FOCUS_EDIT_KEYS.includes(e.key.toLowerCase())) e.preventDefault();
         return;
       }
-      if (!e.metaKey) return;
-      // With ⇧ a JIS or US keyboard gives { and } for the bracket keys.
-      if (e.shiftKey && e.key.toLowerCase() === "a" && archiveShownRef.current()) {
+      const run: [Action, () => unknown][] = [
+        ["archive", () => archiveShownRef.current()],
+        ["prevTab", () => switchRef.current(-1)],
+        ["nextTab", () => switchRef.current(1)],
+        ["newTodo", () => setDialog("add")],
+        // Again closes the commands.
+        ["palette", () => setDialog((d) => (d === "palette" ? null : "palette"))],
+        ["newTab", () => openNewTab()],
+        ["closeTab", () => closeShownRef.current()],
+        // This side's reload takes the page's data again (a page's own reloads the page).
+        ["reload", () => reloadRef.current()],
+      ];
+      const hit = run.find(([action]) => matches(e, action));
+      if (hit) {
         e.preventDefault();
-        return;
-      }
-      if (e.shiftKey && ["[", "{", "]", "}"].includes(e.key)) {
-        e.preventDefault();
-        switchRef.current(e.key === "[" || e.key === "{" ? -1 : 1);
-        return;
-      }
-      const k = e.key.toLowerCase();
-      if (k === "n" || k === "k") {
-        e.preventDefault();
-        // ⌘K again closes the commands.
-        setDialog((d) => (k === "n" ? "add" : d === "palette" ? null : "palette"));
-      } else if (k === "t") {
-        e.preventDefault();
-        openNewTab();
-      } else if (k === "r" && !e.shiftKey) {
-        // This side's ⌘R takes the page's data again (a page's own reloads it).
-        e.preventDefault();
-        reloadRef.current();
+        hit[1]();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -4008,6 +4072,7 @@ export default function App() {
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "focus", label: "フォーカスモード（左に今のタブ、右に ChatGPT）", run: enterFocus },
+    { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
@@ -4415,18 +4480,7 @@ export default function App() {
             }}
           />
         )}
-        {dialog === "keys" && (
-          <Modal title="Todo のキー操作" onClose={() => setDialog(null)}>
-            <dl className="key-list">
-              {TODO_KEYS.map(([k, what]) => (
-                <div key={k}>
-                  <dt className="kbd">{k}</dt>
-                  <dd>{what}</dd>
-                </div>
-              ))}
-            </dl>
-          </Modal>
-        )}
+        {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
         {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
       </div>
     </TerminalContext.Provider>
