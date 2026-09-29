@@ -1609,12 +1609,12 @@ interface BrowserTab {
 /// is up, since a native webview draws above everything in the page.
 const SEARCH_URL = "https://www.google.com/search?q=";
 /// Pages offered on a new tab.
-const START_PAGES: { label: string; url: string }[] = [
-  { label: "GitHub", url: "https://github.com/" },
-  { label: "GitHub の通知", url: "https://github.com/notifications" },
-  { label: "Notion", url: "https://www.notion.so/" },
-  { label: "O'Reilly", url: "https://learning.oreilly.com/home/" },
-];
+/// Pages the new tab page offers, which the user sets there (none at first).
+interface StartPage {
+  label: string;
+  url: string;
+}
+const START_PAGES_KEY = "startPages";
 /// Pages that stay in the pane as fixed tabs ahead of the others, opened
 /// from there or the sidebar and never closed, so they keep their state.
 /// Ids are letters and digits only, as the backend takes tab ids.
@@ -1736,6 +1736,21 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
 
 /// A new tab: type an address or a search, or pick a start page.
 function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
+  const [pages, setPagesState] = useState<StartPage[]>(() => loadJson<StartPage[]>(START_PAGES_KEY, []));
+  const setPages = (list: StartPage[]) => {
+    remember(START_PAGES_KEY, JSON.stringify(list));
+    setPagesState(list);
+  };
+  const [adding, setAdding] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const add = (address: string) => {
+    const url = addressToUrl(address);
+    // A page, not a search for the words.
+    if (!url || url.startsWith(SEARCH_URL)) return;
+    const label = nameRef.current?.value.trim() || hostOf(url);
+    setPages([...pages.filter((p) => p.url !== url), { label, url }]);
+    setAdding(false);
+  };
   return (
     <>
       <div className="browser-bar">
@@ -1751,12 +1766,35 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
         />
       </div>
       <div className="new-tab">
-        {START_PAGES.map((p) => (
-          <button key={p.url} onClick={() => onOpen(p.url)}>
-            {p.label}
-            <span className="muted mono">{hostOf(p.url)}</span>
-          </button>
+        {pages.map((p) => (
+          <div key={p.url} className="start-page">
+            <button onClick={() => onOpen(p.url)}>
+              {p.label}
+              <span className="muted mono">{hostOf(p.url)}</span>
+            </button>
+            <button className="ghost icon" aria-label={`${p.label} を候補から外す`} title="候補から外す" onClick={() => setPages(pages.filter((x) => x.url !== p.url))}>
+              <Icon name="close" size={12} />
+            </button>
+          </div>
         ))}
+        {adding ? (
+          <div className="start-page-add">
+            <input ref={nameRef} autoFocus placeholder="名前（なくてもよい）" aria-label="名前" onKeyDown={(e) => e.key === "Escape" && setAdding(false)} />
+            <input
+              className="mono"
+              placeholder="URL を入力して Enter"
+              aria-label="URL"
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setAdding(false);
+                else if (isEnter(e)) add(e.currentTarget.value);
+              }}
+            />
+          </div>
+        ) : (
+          <button className="ghost add-inline" onClick={() => setAdding(true)}>
+            <Icon name="plus" size={12} /> よく開くページを追加
+          </button>
+        )}
       </div>
     </>
   );

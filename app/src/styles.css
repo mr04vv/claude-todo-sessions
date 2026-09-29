@@ -2180,11 +2180,31 @@ body.resizing {
   overflow-y: auto;
 }
 
-.new-tab button {
+.start-page {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.start-page > button:first-child {
+  flex: 1;
   justify-content: space-between;
   height: 40px;
   padding: 0 14px;
   font-size: 13px;
+}
+
+.start-page-add {
+  display: flex;
+  gap: 6px;
+}
+
+.start-page-add input:first-child {
+  width: 160px;
+}
+
+.start-page-add input:last-child {
+  flex: 1;
 }
 
 .browser-tab.dragging {
