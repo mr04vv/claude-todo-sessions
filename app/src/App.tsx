@@ -2868,6 +2868,11 @@ function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Co
       : []),
   ];
   useEffect(() => setActive(0), [query]);
+  // Keep the picked row in sight as the keys move it.
+  const list = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [active]);
   const pick = (c: Command) => {
     onClose();
     c.run();
@@ -2899,7 +2904,7 @@ function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Co
             }
           }}
         />
-        <ul role="listbox" className="palette-list">
+        <ul role="listbox" className="palette-list" ref={list}>
           {items.length === 0 && <li className="muted palette-empty">見つかりません</li>}
           {items.map((c, i) => (
             <li
