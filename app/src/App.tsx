@@ -918,6 +918,125 @@ function visibleDone(todos: Todo[], doneRecent: boolean) {
   return doneRecent ? done.slice(0, DONE_RECENT) : done;
 }
 
+/// What the Todo kanban and list show: words in the title or memo, some
+/// statuses, some places (lanes by repository), only ones waiting for input.
+/// Empty parts do not narrow anything.
+interface TodoFilter {
+  text: string;
+  statuses: Status[];
+  places: string[];
+  waiting: boolean;
+}
+const NO_FILTER: TodoFilter = { text: "", statuses: [], places: [], waiting: false };
+const TODO_FILTER_KEY = "todoFilter";
+/// Filters kept under a name, listed in the sidebar and ⌘K.
+interface SavedFilter {
+  id: string;
+  name: string;
+  filter: TodoFilter;
+}
+const SAVED_FILTERS_KEY = "savedFilters";
+const filterCount = (f: TodoFilter) => (f.text.trim() ? 1 : 0) + f.statuses.length + f.places.length + (f.waiting ? 1 : 0);
+const sameFilter = (a: TodoFilter, b: TodoFilter) => JSON.stringify(a) === JSON.stringify(b);
+function matchesFilter(t: Todo, f: TodoFilter) {
+  const words = f.text.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const hay = `${t.title} ${t.memo ?? ""} #${t.id}`.toLowerCase();
+  return (
+    words.every((w) => hay.includes(w)) &&
+    (f.statuses.length === 0 || f.statuses.includes(t.status)) &&
+    (f.places.length === 0 || f.places.includes(laneKey(t.repos))) &&
+    (!f.waiting || liveSessions(t).some((s) => s.state === "needs_input"))
+  );
+}
+
+/// The toolbar's filter: a search box, and a menu of statuses and places
+/// with saving the filter under a name.
+function TodoFilterBar({ filter, version, places, onChange, onSave }: {
+  filter: TodoFilter;
+  /// Bumped when the filter is set from outside (a saved one, cleared), so the search box shows it.
+  version: number;
+  places: string[];
+  onChange: (f: TodoFilter) => void;
+  onSave: (name: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [naming, setNaming] = useState(false);
+  const root = useRef<HTMLSpanElement>(null);
+  useOutsideClose(root, open, () => setOpen(false));
+  const toggle = <T,>(list: T[], v: T) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+  const count = filterCount(filter);
+  return (
+    <>
+      {/* Uncontrolled, so typing through the IME is not disturbed by re-renders. */}
+      <input
+        key={version}
+        className="filter-search"
+        type="search"
+        placeholder="絞り込み（タイトル・メモ）"
+        aria-label="タイトルとメモで絞り込む"
+        defaultValue={filter.text}
+        onInput={(e) => onChange({ ...filter, text: e.currentTarget.value })}
+      />
+      <span ref={root} className="filter-menu">
+        <button className={`filter${count > 0 ? " on" : ""}`} aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          フィルター{count > 0 ? ` ${count}` : ""}
+        </button>
+        {open && (
+          <div className="menu filter-panel" role="dialog" aria-label="フィルター">
+            <div className="filter-group">
+              <span className="muted">ステータス</span>
+              {COLUMNS.map((c) => (
+                <label key={c.status} className="toggle">
+                  <input type="checkbox" checked={filter.statuses.includes(c.status)} onChange={() => onChange({ ...filter, statuses: toggle(filter.statuses, c.status) })} />
+                  {c.label}
+                </label>
+              ))}
+            </div>
+            <div className="filter-group">
+              <span className="muted">場所</span>
+              {places.map((p) => (
+                <label key={p} className="toggle">
+                  <input type="checkbox" checked={filter.places.includes(p)} onChange={() => onChange({ ...filter, places: toggle(filter.places, p) })} />
+                  <RepoDot repo={p} />
+                  <span className="ellipsis">{isGithubRepo(p) ? repoName(p) : p}</span>
+                </label>
+              ))}
+            </div>
+            <label className="toggle">
+              <input type="checkbox" checked={filter.waiting} onChange={() => onChange({ ...filter, waiting: !filter.waiting })} />
+              入力待ちだけ
+            </label>
+            <div className="filter-actions">
+              {naming ? (
+                <SubmitInput
+                  autoFocus
+                  placeholder="名前を入力して Enter"
+                  onSubmit={(name) => {
+                    onSave(name);
+                    setNaming(false);
+                    setOpen(false);
+                  }}
+                  onClose={() => setNaming(false)}
+                />
+              ) : (
+                <>
+                  <button className="ghost small" disabled={count === 0} onClick={() => onChange(NO_FILTER)}>
+                    クリア
+                  </button>
+                  <span className="grow" />
+                  <button className="small" disabled={count === 0} onClick={() => setNaming(true)}>
+                    保存…
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </span>
+    </>
+  );
+}
+
 function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report, allTodos, doneRecent, onAdd }: {
   lane: Lane;
   collapsed: boolean;
@@ -2912,6 +3031,7 @@ const SEARCH_ALIASES: Record<string, string[]> = {
   todo: ["タスク", "task"],
   カンバン: ["kanban", "board", "ボード"],
   リスト: ["list"],
+  フィルター: ["filter", "絞り込み", "view", "ビュー"],
   通知: ["notification", "notice", "お知らせ", "bell"],
   ブラウザ: ["browser", "web", "タブ", "tab"],
   タブ: ["tab"],
@@ -3235,7 +3355,24 @@ export default function App() {
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
   const [groupBy, setGroupByState] = useState<GroupBy>(() => load(GROUP_KEY, ["repo", "parent"] as const, "repo"));
   const [doneRecent, setDoneRecentState] = useState<boolean>(() => load(DONE_RECENT_KEY, ["1", "0"] as const, "1") === "1");
-  const [waitingOnly, setWaitingOnly] = useState(false);
+  // The Todo pages' filter, kept across launches, and the saved ones.
+  const [todoFilter, setTodoFilterState] = useState<TodoFilter>(() => ({ ...NO_FILTER, ...loadJson<Partial<TodoFilter>>(TODO_FILTER_KEY, {}) }));
+  const [filterVersion, setFilterVersion] = useState(0);
+  const setTodoFilter = (f: TodoFilter, fromOutside = false) => {
+    remember(TODO_FILTER_KEY, JSON.stringify(f));
+    setTodoFilterState(f);
+    if (fromOutside) setFilterVersion((v) => v + 1);
+  };
+  const [savedFilters, setSavedFiltersState] = useState<SavedFilter[]>(() => loadJson<SavedFilter[]>(SAVED_FILTERS_KEY, []));
+  const setSavedFilters = (list: SavedFilter[]) => {
+    remember(SAVED_FILTERS_KEY, JSON.stringify(list));
+    setSavedFiltersState(list);
+  };
+  const saveFilter = (name: string) => setSavedFilters([...savedFilters.filter((f) => f.name !== name), { id: `f${Date.now()}`, name, filter: todoFilter }]);
+  const applyFilter = (f: SavedFilter) => {
+    setTodoFilter(f.filter, true);
+    setView("todos");
+  };
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [local, setLocal] = useState<LocalRepo[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
@@ -3437,7 +3574,7 @@ export default function App() {
   // Subtasks of a Done parent are finished business; the parent stands for them.
   const doneParents = new Set(allTodos.filter((t) => t.status === "done").map((t) => t.id));
   const shownTodos = allTodos.filter((t) => t.parent_id === null || !doneParents.has(t.parent_id));
-  const visibleTodos = shownTodos.filter((t) => inRepo(t.repos) && (!waitingOnly || liveSessions(t).some((s) => s.state === "needs_input")));
+  const visibleTodos = shownTodos.filter((t) => inRepo(t.repos) && matchesFilter(t, todoFilter));
   // A Done parent without shown subtasks is a card like any other.
   const lanes = buildLanes(visibleTodos, groupBy, shownTodos);
   const repoLanes = buildLanes(shownTodos, "repo", shownTodos);
@@ -3479,6 +3616,8 @@ export default function App() {
     { key: "prs", label: "PR を表示", run: () => setView("prs") },
     { key: "notices", label: "通知を表示", run: () => setView("notices") },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: `${p.label} を開く`, run: () => showPinned(p.id) })),
+    ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
+    ...(filterCount(todoFilter) > 0 ? [{ key: "clearFilter", label: "フィルターを外す", run: () => setTodoFilter(NO_FILTER, true) }] : []),
     { key: "newTab", label: "ブラウザで新しいタブを開く", hint: "⌘T", run: openNewTab },
     { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザを表示", run: toggleBrowser },
     linkTarget === "app"
@@ -3551,6 +3690,22 @@ export default function App() {
               </button>
             ))}
           </nav>
+          {savedFilters.length > 0 && (
+            <div className="sidebar-section">
+              <div className="section-title">フィルター</div>
+              {savedFilters.map((f) => (
+                <div key={f.id} className={`repo${view === "todos" && sameFilter(todoFilter, f.filter) ? " on" : ""}`}>
+                  <button className="repo-main" title={`${f.name} で絞り込む`} onClick={() => applyFilter(f)}>
+                    <Icon name="search" size={12} />
+                    <span className="ellipsis grow">{f.name}</span>
+                  </button>
+                  <button className="ghost icon repo-gh" aria-label={`フィルター ${f.name} を消す`} title="消す" onClick={() => setSavedFilters(savedFilters.filter((x) => x.id !== f.id))}>
+                    <Icon name="close" size={11} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="sidebar-section">
             <div className="section-title">場所</div>
             {repoLanes.map((lane) => {
@@ -3697,7 +3852,14 @@ export default function App() {
                     {repoFilter} <Icon name="close" size={11} />
                   </button>
                 )}
-                <button className={`filter${waitingOnly ? " on" : ""}`} aria-pressed={waitingOnly} onClick={() => setWaitingOnly((v) => !v)}>
+                <TodoFilterBar
+                  filter={todoFilter}
+                  version={filterVersion}
+                  places={repoLanes.map((l) => l.key)}
+                  onChange={(f) => setTodoFilter(f, f === NO_FILTER)}
+                  onSave={saveFilter}
+                />
+                <button className={`filter${todoFilter.waiting ? " on" : ""}`} aria-pressed={todoFilter.waiting} onClick={() => setTodoFilter({ ...todoFilter, waiting: !todoFilter.waiting })}>
                   入力待ちだけ
                 </button>
                 <button className={`filter${doneRecent ? " on" : ""}`} aria-pressed={doneRecent} onClick={() => setDoneRecent(!doneRecent)}>
@@ -3754,7 +3916,7 @@ export default function App() {
                   )}
                   {board && lanes.length === 0 && (
                     <p className="muted empty">
-                      {waitingOnly ? "入力待ちの todo はありません。" : "表示できる todo がありません。⌘N で追加するか、⌘K から issue を取り込めます。"}
+                      {filterCount(todoFilter) > 0 ? "フィルターに合う todo はありません。" : "表示できる todo がありません。⌘N で追加するか、⌘K から issue を取り込めます。"}
                     </p>
                   )}
                 </div>

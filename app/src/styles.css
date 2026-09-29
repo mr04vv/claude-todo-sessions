@@ -2181,3 +2181,44 @@ body.resizing {
   color: var(--text-2);
   font-size: 12px;
 }
+
+/* The Todo pages' filter (TodoFilterBar). */
+.filter-search {
+  width: 200px;
+  height: 28px;
+}
+
+.filter-menu {
+  position: relative;
+}
+
+.filter-panel {
+  left: 0;
+  right: auto;
+  min-width: 260px;
+  max-height: 70vh;
+  overflow-y: auto;
+  gap: 10px;
+  padding: 10px;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.filter-group .toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
