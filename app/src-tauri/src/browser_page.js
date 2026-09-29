@@ -1,6 +1,7 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: ⌘L moves to the app's address bar, ⌘T opens a new tab, ⌘R reloads,
-// and right-click offers translation (WKWebView has no translate item).
+// ⌘[ ⌘] go back and forward, ⌘⇧[ ⌘⇧] switch tabs, and right-click offers
+// translation (WKWebView has no translate item).
 (() => {
   if (window.__todoSessionsPage) return;
   window.__todoSessionsPage = true;
@@ -8,13 +9,27 @@
   // The app cancels these navigations and acts on them instead.
   const FOCUS_URL = "todo-sessions://focus-url";
   const NEW_TAB = "todo-sessions://new-tab";
+  const PREV_TAB = "todo-sessions://tab-prev";
+  const NEXT_TAB = "todo-sessions://tab-next";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
 
   window.addEventListener(
     "keydown",
     (e) => {
-      if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
+      if (!e.metaKey || e.altKey || e.ctrlKey) return;
+      // With ⇧ a JIS or US keyboard gives { and } for the bracket keys.
+      const back = e.key === "[" || e.key === "{";
+      const forward = e.key === "]" || e.key === "}";
+      if (back || forward) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.shiftKey) location.href = back ? PREV_TAB : NEXT_TAB;
+        else if (back) history.back();
+        else history.forward();
+        return;
+      }
+      if (e.shiftKey) return;
       const key = e.key.toLowerCase();
       if (key === "r") {
         e.preventDefault();

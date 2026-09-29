@@ -242,6 +242,8 @@ export const api = {
 
 /** `{tab, url}` after a tab navigates. */
 export const BROWSER_URL_EVENT = "browser-url";
+/** `-1` or `1` when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]). */
+export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 /** When a page asks for a new tab (⌘T). */
 export const BROWSER_OPEN_NEW_TAB_EVENT = "browser-open-new-tab";
 /** `{tab}` when a page asks for the address bar (⌘L). */

@@ -18,6 +18,7 @@ import {
   api,
   BROWSER_FOCUS_URL_EVENT,
   BROWSER_OPEN_NEW_TAB_EVENT,
+  BROWSER_SWITCH_TAB_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -1416,8 +1417,8 @@ function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: b
     };
   }, [covered]);
   useEffect(() => () => void api.browserHide().catch(() => {}), []);
-  // ⌘L edits the address and ⌘R reloads, as in a browser; a script in the
-  // page sends ⌘L here too when the page has focus.
+  // ⌘L edits the address, ⌘R reloads and ⌘[ ⌘] go back and forward, as in a
+  // browser; a script in the page does the same when the page has focus.
   const address = useRef<HTMLInputElement>(null);
   const tabId = useRef(active.id);
   tabId.current = active.id;
@@ -1429,9 +1430,9 @@ function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: b
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey || e.shiftKey || e.altKey || e.ctrlKey) return;
       const key = e.key.toLowerCase();
-      if (key === "r") {
+      if (key === "r" || key === "[" || key === "]") {
         e.preventDefault();
-        api.browserGo(tabId.current, "reload").catch(report);
+        api.browserGo(tabId.current, key === "r" ? "reload" : key === "[" ? "back" : "forward").catch(report);
       } else if (key === "l") {
         e.preventDefault();
         focusAddress();
@@ -2669,6 +2670,14 @@ export default function App() {
   const nextTab = useRef(1);
   const activeTab = newTab ? null : (tabs.find((t) => t.id === activeTabId) ?? tabs[tabs.length - 1] ?? null);
   const browserUrl = browserShown ? (activeTab?.url ?? null) : null;
+  /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]).
+  const switchTab = (delta: number) => {
+    if (!browserShown || tabs.length === 0) return;
+    const i = activeTab ? tabs.findIndex((t) => t.id === activeTab.id) : delta > 0 ? -1 : tabs.length;
+    setActiveTabId(tabs[(i + delta + tabs.length) % tabs.length].id);
+  };
+  const switchRef = useRef(switchTab);
+  switchRef.current = switchTab;
   /// Shows the pane on a new tab page (⌘T).
   const openNewTab = () => {
     setBrowserShown(true);
@@ -2743,6 +2752,7 @@ export default function App() {
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => openRef.current(payload.url)),
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
+      listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => switchRef.current(payload)),
       // The menu bar and notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -2872,10 +2882,17 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // ⌘N adds a todo, ⌘K opens the commands and ⌘T a browser tab, from anywhere.
+  // ⌘N adds a todo, ⌘K opens the commands, ⌘T a browser tab and ⌘⇧[ ⌘⇧]
+  // switch tabs, from anywhere.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
+      // With ⇧ a JIS or US keyboard gives { and } for the bracket keys.
+      if (e.shiftKey && ["[", "{", "]", "}"].includes(e.key)) {
+        e.preventDefault();
+        switchRef.current(e.key === "[" || e.key === "{" ? -1 : 1);
+        return;
+      }
       const k = e.key.toLowerCase();
       if (k === "n" || k === "k") {
         e.preventDefault();
