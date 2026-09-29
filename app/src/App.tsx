@@ -3290,7 +3290,8 @@ export default function App() {
       const k = e.key.toLowerCase();
       if (k === "n" || k === "k") {
         e.preventDefault();
-        setDialog(k === "n" ? "add" : "palette");
+        // ⌘K again closes the commands.
+        setDialog((d) => (k === "n" ? "add" : d === "palette" ? null : "palette"));
       } else if (k === "t") {
         e.preventDefault();
         openNewTab();
