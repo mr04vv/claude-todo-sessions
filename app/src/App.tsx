@@ -273,6 +273,11 @@ const MAIN_MIN_W = 320;
 /// Arrow keys on a resizer move it this far.
 const RESIZE_STEP = 24;
 
+/// Sent on the window when a drag on a Resizer ends.
+const PANE_RESIZED_EVENT = "pane-resized";
+/// On the body while a Resizer is dragged.
+const RESIZING_CLASS = "resizing";
+
 /// Widest a side pane may get, leaving the sidebar, `others` and the middle.
 const maxPaneWidth = (others: number) => Math.max(PANEL_MIN_W, window.innerWidth - SIDEBAR_W - MAIN_MIN_W - others);
 
@@ -306,10 +311,12 @@ function Resizer({ label, cssVar, width, min, max, onResize }: {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       cancelAnimationFrame(frame);
-      document.body.classList.remove("resizing");
+      document.body.classList.remove(RESIZING_CLASS);
       onResize(next);
+      // The browser pane kept its page's size while dragging; now it may change.
+      requestAnimationFrame(() => window.dispatchEvent(new Event(PANE_RESIZED_EVENT)));
     };
-    document.body.classList.add("resizing");
+    document.body.classList.add(RESIZING_CLASS);
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
@@ -1389,16 +1396,22 @@ function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: b
     if (covered || !slot.current) return;
     // One resize in flight at a time, then the latest size: the page lays
     // itself out again on every resize, and a queue of them lags behind.
+    // While a pane edge is dragged the page only moves and keeps its size;
+    // it takes the new size once, on release.
     let inFlight = false;
     let again = false;
+    let size: { width: number; height: number } | null = null;
     const follow = () => {
       if (inFlight) {
         again = true;
         return;
       }
       inFlight = true;
+      const r = rect();
+      if (document.body.classList.contains(RESIZING_CLASS) && size) Object.assign(r, size);
+      else size = { width: r.width, height: r.height };
       api
-        .browserBounds(rect())
+        .browserBounds(r)
         .catch(() => {})
         .finally(() => {
           inFlight = false;
@@ -1411,9 +1424,11 @@ function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: b
     const ro = new ResizeObserver(follow);
     ro.observe(slot.current);
     window.addEventListener("resize", follow);
+    window.addEventListener(PANE_RESIZED_EVENT, follow);
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", follow);
+      window.removeEventListener(PANE_RESIZED_EVENT, follow);
     };
   }, [covered]);
   useEffect(() => () => void api.browserHide().catch(() => {}), []);
