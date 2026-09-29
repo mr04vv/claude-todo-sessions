@@ -169,12 +169,31 @@ const PR_LABEL: Record<PrState, string> = {
 const NO_REPO_LANE = "リポジトリなし";
 /// Grouped by parent, top-level todos without subtasks share this lane.
 const ORPHAN_LANE = "親なし";
-/// Grouped by parent, top-level review todos (started from a PR's /review) gather here.
+/// Grouped by parent, top-level review todos (started from a PR's /review) gather here, last and folded.
 const REVIEW_LANE = "レビュー依頼";
 const REVIEW_TITLE_PREFIX = "レビュー: ";
 
 /// A todo made to review someone's PR: its title or its /review prompt says so.
 const isReviewTodo = (t: Todo) => t.title.startsWith(REVIEW_TITLE_PREFIX) || (t.prompt ?? "").startsWith("/review ");
+
+/// Lanes that start folded, and the ones already folded once on this machine
+/// (so a lane added to the list later folds too, and stays open once opened).
+const FOLDED_BY_DEFAULT = [NO_REPO_LANE, REVIEW_LANE];
+const FOLDED_ONCE_KEY = "lanesFoldedOnce";
+
+function loadCollapsed(): Set<string> {
+  const collapsed = new Set(loadJson<string[]>(COLLAPSED_KEY, []));
+  // Saved lanes from before this list existed already had the no-repository lane's default.
+  const saved = loadJson<string[] | null>(COLLAPSED_KEY, null) !== null;
+  const once = new Set(loadJson<string[]>(FOLDED_ONCE_KEY, saved ? [NO_REPO_LANE] : []));
+  for (const lane of FOLDED_BY_DEFAULT.filter((l) => !once.has(l))) {
+    collapsed.add(lane);
+    once.add(lane);
+  }
+  remember(COLLAPSED_KEY, JSON.stringify([...collapsed]));
+  remember(FOLDED_ONCE_KEY, JSON.stringify([...once]));
+  return collapsed;
+}
 
 const GITHUB = "https://github.com/";
 
@@ -377,8 +396,8 @@ interface Lane {
 
 /// Grouped by repository: one lane per first repository, groups ("調査")
 /// first, the no-repository lane last. Grouped by parent: one lane per
-/// parent with its subtasks, then the review todos, then the other
-/// top-level todos without subtasks;
+/// parent with its subtasks, then the other top-level todos without
+/// subtasks, then the review todos;
 /// `allTodos` finds parents the filters hid.
 function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
   const lanes = new Map<string, Lane>();
@@ -394,8 +413,8 @@ function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
       if (parent) add(`parent:${parent.id}`, t, { parent });
       else if (!hasChildren.has(t.id)) add(isReviewTodo(t) ? REVIEW_LANE : ORPHAN_LANE, t, {});
     }
-    // Parents in id order, then the reviews, then the rest.
-    const rank = (l: Lane) => (l.parent ? l.parent.id : l.key === REVIEW_LANE ? Number.MAX_SAFE_INTEGER - 1 : Number.MAX_SAFE_INTEGER);
+    // Parents in id order, then the rest, the reviews last.
+    const rank = (l: Lane) => (l.parent ? l.parent.id : l.key === ORPHAN_LANE ? Number.MAX_SAFE_INTEGER - 1 : Number.MAX_SAFE_INTEGER);
     return [...lanes.values()].sort((a, b) => rank(a) - rank(b));
   }
   for (const t of todos) {
@@ -2809,8 +2828,7 @@ export default function App() {
   const [waitingOnly, setWaitingOnly] = useState(false);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [local, setLocal] = useState<LocalRepo[]>([]);
-  // The no-repository lane starts folded; it held the old backlog page.
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(loadJson<string[]>(COLLAPSED_KEY, [NO_REPO_LANE])));
+  const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const [limits, setLimits] = useState<Limit[] | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
   const [prs, setPrs] = useState<PrLists | null>(null);
