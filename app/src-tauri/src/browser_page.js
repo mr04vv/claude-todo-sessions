@@ -3,10 +3,30 @@
 // menu's, closes it), ⌘⇧A archives the cloud session it shows, ⌘K opens the
 // app's commands, ⌃h goes back to the app's side, ⌘R reloads,
 // ⌘[ ⌘] go back and forward, ⌘⇧[ ⌘⇧] switch tabs, and right-click offers
-// translation (WKWebView has no translate item).
+// translation (WKWebView has no translate item). X shows its bookmarks only.
 (() => {
   if (window.__todoSessionsPage) return;
   window.__todoSessionsPage = true;
+
+  // X (Twitter) opens its bookmarks only, with the posts they lead to and
+  // signing in; anything else (the timeline) goes back to the bookmarks.
+  // Its pages move without loading, so the history calls are watched too.
+  const X_HOSTS = /(^|\.)(x|twitter)\.com$/;
+  const X_ALLOWED = /^\/(i\/bookmarks|i\/flow\/|login|logout|[^/]+\/status\/)/;
+  const X_HOME = "https://x.com/i/bookmarks";
+  if (X_HOSTS.test(location.hostname)) {
+    const guard = () => X_ALLOWED.test(location.pathname) || location.replace(X_HOME);
+    for (const name of ["pushState", "replaceState"]) {
+      const original = history[name];
+      history[name] = function (...args) {
+        const result = original.apply(this, args);
+        guard();
+        return result;
+      };
+    }
+    window.addEventListener("popstate", guard);
+    guard();
+  }
 
   // The app cancels these navigations and acts on them instead.
   const FOCUS_URL = "todo-sessions://focus-url";
