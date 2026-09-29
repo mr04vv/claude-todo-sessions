@@ -40,6 +40,9 @@ const MENU_OPEN: &str = "open";
 const MENU_QUIT: &str = "quit";
 /// The app menu's ⌘W, which closes a browser tab rather than the window.
 const MENU_CLOSE_TAB: &str = "close-tab";
+/// The app menu's ⌘., which gives the typing to the pane (the page never sees ⌘.).
+const MENU_FOCUS_PANE: &str = "focus-pane";
+const FOCUS_PANE_EVENT: &str = "focus-pane";
 const MENU_SESSION_PREFIX: &str = "session:";
 const GH_ISSUE_LIMIT: &str = "100";
 /// How often linked issues are checked for open/closed.
@@ -1156,7 +1159,7 @@ const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
 /// When ⌘W in the app menu asks to close the shown tab.
 const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
-/// When a page's ⌘1 hands the typing back to the app's side (the main page
+/// When a page's ⌘, hands the typing back to the app's side (the main page
 /// already has the keyboard by then).
 const FOCUS_APP_EVENT: &str = "focus-app";
 /// When a page's ⌘K asks for the app's commands.
@@ -1516,7 +1519,10 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         &sep()?,
         &PredefinedMenuItem::quit(app, None)?,
     ])?;
-    let file = Submenu::with_items(app, "ファイル", true, &[&MenuItem::with_id(app, MENU_CLOSE_TAB, "タブを閉じる", true, Some("CmdOrCtrl+W"))?])?;
+    let file = Submenu::with_items(app, "ファイル", true, &[
+        &MenuItem::with_id(app, MENU_CLOSE_TAB, "タブを閉じる", true, Some("CmdOrCtrl+W"))?,
+        &MenuItem::with_id(app, MENU_FOCUS_PANE, "右のペインへ移る", true, Some("CmdOrCtrl+."))?,
+    ])?;
     let edit = Submenu::with_items(app, "編集", true, &[
         &PredefinedMenuItem::undo(app, None)?,
         &PredefinedMenuItem::redo(app, None)?,
@@ -1820,6 +1826,8 @@ fn main() {
         .on_menu_event(|app, event| {
             if event.id() == MENU_CLOSE_TAB {
                 let _ = app.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: String::new() });
+            } else if event.id() == MENU_FOCUS_PANE {
+                let _ = app.emit(FOCUS_PANE_EVENT, ());
             }
         })
         .on_window_event(|window, event| {

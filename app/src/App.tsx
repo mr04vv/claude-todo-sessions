@@ -24,6 +24,7 @@ import {
   BROWSER_ARCHIVE_EVENT,
   OPEN_PALETTE_EVENT,
   FOCUS_APP_EVENT,
+  FOCUS_PANE_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -3228,7 +3229,7 @@ const TODO_KEYS: [string, string][] = [
   ["c", "その場所に todo を追加"],
   ["/", "絞り込み欄へ"],
   ["?", "このキーの一覧"],
-  ["⌘1 / ⌘2", "入力先をこちら（Todo 側）/ 右のペイン（ページ・ターミナル）にする"],
+  ["⌘, / ⌘.", "入力先をこちら（Todo 側）/ 右のペイン（ページ・ターミナル）にする"],
 ];
 
 export default function App() {
@@ -3380,8 +3381,8 @@ export default function App() {
     else if (!activeTab && tabs.length > 0) setNewTab(false);
     return true;
   };
-  /// ⌘2 gives the typing to the pane's page or terminal, ⌘1 back to this
-  /// side (from a page, ⌘1 comes back through FOCUS_APP_EVENT).
+  /// ⌘. gives the typing to the pane's page or terminal, ⌘, back to this
+  /// side (from a page, ⌘, comes back through FOCUS_APP_EVENT).
   const focusSide = (pane: boolean) => {
     if (!pane) return void (document.activeElement as HTMLElement | null)?.blur();
     if (!browserShown || !activeTab) return;
@@ -3428,6 +3429,7 @@ export default function App() {
       listen(OPEN_PALETTE_EVENT, () => setDialog((d) => (d === "palette" ? null : "palette"))),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
       listen(FOCUS_APP_EVENT, () => (document.activeElement as HTMLElement | null)?.blur()),
+      listen(FOCUS_PANE_EVENT, () => focusSideRef.current(true)),
       // The menu bar and notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -3594,8 +3596,9 @@ export default function App() {
   }, []);
 
   // ⌘N adds a todo, ⌘K opens the commands, ⌘T opens a browser tab, ⌘⇧[ ⌘⇧]
-  // switch tabs, and ⌘1 ⌘2 give the typing to this side and to the pane, from
-  // anywhere. (⌘W is the app menu's; a page's ⌘1 comes as FOCUS_APP_EVENT.)
+  // switch tabs, and ⌘, gives the typing back to this side, from anywhere.
+  // (⌘W and ⌘. are the app menu's, as macOS keeps ⌘. from the page; a
+  // page's ⌘, comes as FOCUS_APP_EVENT.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -3617,9 +3620,9 @@ export default function App() {
       } else if (k === "t") {
         e.preventDefault();
         openNewTab();
-      } else if (k === "1" || k === "2") {
+      } else if (k === ",") {
         e.preventDefault();
-        focusSideRef.current(k === "2");
+        focusSideRef.current(false);
       }
     };
     window.addEventListener("keydown", onKey);
