@@ -148,6 +148,43 @@ pub fn ghostty_config() -> Vec<(String, String)> {
     theme_text.map(|t| parse_config(&t)).unwrap_or_default().into_iter().chain(config.into_iter().filter(|(k, _)| k != "theme")).collect()
 }
 
+/// Fonts the user installed, which the page cannot use by name: WebKit
+/// shows pages only the system's fonts, so these are handed over as files.
+const USER_FONT_DIRS: &[&str] = &["Library/Fonts"];
+const SHARED_FONT_DIR: &str = "/Library/Fonts";
+const FONT_EXTENSIONS: &[&str] = &["woff2", "otf", "ttf"];
+
+/// Whether `file` is the regular (or bold) face of `family`, going by the
+/// usual `FamilyName-Style.ext` file names.
+/// ponytail: by file name only; ask Core Text for the font's file if names vary.
+fn is_font_file(file: &str, family: &str, bold: bool) -> bool {
+    let Some((stem, ext)) = file.rsplit_once('.') else { return false };
+    if !FONT_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
+        return false;
+    }
+    let (name, style) = stem.split_once('-').unwrap_or((stem, "Regular"));
+    let wanted = if bold { "bold" } else { "regular" };
+    name.to_lowercase() == family.replace(' ', "").to_lowercase() && style.to_lowercase() == wanted
+}
+
+/// The file of an installed font, for the terminal to load as the page cannot.
+#[tauri::command(async)]
+pub fn user_font(family: String, bold: bool) -> Result<tauri::ipc::Response, String> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let dirs = USER_FONT_DIRS.iter().map(|d| home.join(d)).chain([std::path::PathBuf::from(SHARED_FONT_DIR)]);
+    let mut files: Vec<_> = dirs
+        .filter_map(|d| std::fs::read_dir(d).ok())
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| is_font_file(&e.file_name().to_string_lossy(), &family, bold))
+        .map(|e| e.path())
+        .collect();
+    // The smallest format first.
+    files.sort_by_key(|p| FONT_EXTENSIONS.iter().position(|x| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(x))));
+    let path = files.first().ok_or_else(|| format!("{family} のファイルが見つかりません"))?;
+    Ok(tauri::ipc::Response::new(std::fs::read(path).map_err(err)?))
+}
+
 /// Gives the app's own page the keyboard, which a browser tab may hold, so
 /// the terminal is focused (and its cursor blinks).
 #[tauri::command(async)]
@@ -173,6 +210,16 @@ mod tests {
                 ("palette".to_string(), "0=#4d4d4d".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn matches_font_files_by_family_and_weight() {
+        assert!(is_font_file("JetBrainsMono-Regular.ttf", "Jetbrains Mono", false));
+        assert!(is_font_file("JetBrainsMono-Bold.woff2", "JetBrains Mono", true));
+        assert!(is_font_file("NotoColorEmoji.ttf", "Noto Color Emoji", false));
+        assert!(!is_font_file("JetBrainsMono-Bold.ttf", "JetBrains Mono", false));
+        assert!(!is_font_file("JetBrainsMonoNL-Regular.ttf", "JetBrains Mono", false));
+        assert!(!is_font_file("JetBrainsMono-Regular.txt", "JetBrains Mono", false));
     }
 
     #[test]

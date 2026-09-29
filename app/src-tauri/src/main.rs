@@ -1779,6 +1779,7 @@ fn main() {
             terminal::term_close,
             terminal::term_focus,
             terminal::ghostty_config,
+            terminal::user_font,
             set_herdr_session,
             browser_go
         ])

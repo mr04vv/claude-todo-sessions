@@ -81,6 +81,8 @@ const cssVar = (name: string) => getComputedStyle(document.documentElement).getP
 interface Look {
   options: ITerminalOptions;
   padding: { x: number; y: number };
+  /// Ghostty's font families, first choice first.
+  fonts: string[];
 }
 function lookFrom(config: [string, string][]): Look {
   const theme: ITheme = { background: cssVar("--surface"), foreground: cssVar("--text"), cursor: cssVar("--accent"), selectionBackground: cssVar("--accent-soft") };
@@ -88,7 +90,7 @@ function lookFrom(config: [string, string][]): Look {
   const options: ITerminalOptions = { fontSize: FONT_SIZE, cursorBlink: true, cursorStyle: "block", cursorInactiveStyle: "outline" };
   const padding = { x: 0, y: 0 };
   for (const [key, value] of config) {
-    if (key === "font-family") fonts = value ? [...fonts, `"${value}"`] : [];
+    if (key === "font-family") fonts = value ? [...fonts, value] : [];
     else if (key === "font-size" && Number(value) > 0) options.fontSize = Number(value);
     else if (key === "window-padding-x") padding.x = Number(value.split(",")[0]) || 0;
     else if (key === "window-padding-y") padding.y = Number(value.split(",")[0]) || 0;
@@ -100,17 +102,33 @@ function lookFrom(config: [string, string][]): Look {
       if (name && color) Object.assign(theme, { [name]: color.trim() });
     } else if (key in GHOSTTY_COLORS) Object.assign(theme, { [GHOSTTY_COLORS[key]]: value.startsWith("#") ? value : `#${value}` });
   }
-  options.fontFamily = [...fonts, FALLBACK_FONTS].join(", ");
+  options.fontFamily = [...fonts.map((f) => `"${f}"`), FALLBACK_FONTS].join(", ");
   options.theme = theme;
-  return { options, padding };
+  return { options, padding, fonts };
 }
-/// Read once; without Ghostty's config the app's own colors are used.
-const look: Promise<Look> = invoke<[string, string][]>("ghostty_config").then(lookFrom, () => lookFrom([]));
+/// WebKit gives pages only the system's fonts, so fonts the user installed
+/// are loaded from their files; a system font simply has no file to load.
+async function loadFonts(families: string[]) {
+  const faces = families.flatMap((family) =>
+    [false, true].map((bold) =>
+      invoke<ArrayBuffer>("user_font", { family, bold })
+        .then((data) => new FontFace(family, data, { weight: bold ? "bold" : "normal" }).load())
+        .then((face) => void document.fonts.add(face))
+        .catch(() => {}),
+    ),
+  );
+  await Promise.all(faces);
+}
+/// Read once, fonts loaded before a terminal measures them; without
+/// Ghostty's config the app's own colors are used.
+const look: Promise<Look> = invoke<[string, string][]>("ghostty_config")
+  .then(lookFrom, () => lookFrom([]))
+  .then(async (l) => (await loadFonts(l.fonts), l));
 
-function entryFor(id: string, { options, padding }: Look): Entry {
+function entryFor(id: string, look: Look): Entry {
   let e = entries.get(id);
   if (!e) {
-    const term = new Terminal({ ...options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true });
+    const term = new Terminal({ ...look.options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true });
     const fit = new FitAddon();
     term.loadAddon(fit);
     const write = (data: string) => void invoke("term_write", { id, data }).catch(() => {});
@@ -125,7 +143,7 @@ function entryFor(id: string, { options, padding }: Look): Entry {
     term.onResize(({ cols, rows }) => void invoke("term_resize", { id, cols, rows }).catch(() => {}));
     const host = document.createElement("div");
     host.className = "terminal-host";
-    e = { term, fit, host, started: false, look: { options, padding } };
+    e = { term, fit, host, started: false, look };
     entries.set(id, e);
   }
   return e;
