@@ -1,6 +1,7 @@
 // Keyboard for the Todo kanban and list: a cursor over the cards (or rows),
 // moved with j k / h l (or the arrows), and keys acting on the todo under it:
-// Enter its panel, s its status, ⇧h ⇧l (kanban) the column it is in.
+// Enter its panel, s its status, ⇧h ⇧l (kanban) the column it is in, o and
+// ⌥Enter its session, p its PR; c adds a todo there, / searches, ? lists the keys.
 // It reads the page's elements, so the pages only mark them:
 //   data-row="todo:<id>" on a card or row, data-row="lane:<key>" on a list
 //   lane's head, data-lane="<key>" on a lane, data-col="<status>" on a
@@ -15,6 +16,10 @@ export interface TodoKeyActions {
   status: (todoId: number) => void;
   /// The kanban's ⇧h ⇧l (⇧← ⇧→): to the column before (-1) or after (1).
   shift: (todoId: number, delta: -1 | 1) => void;
+  /// p: the todo's PR (or issue).
+  link: (todoId: number) => void;
+  /// ?: the list of these keys.
+  help: () => void;
   /// Esc: closes the panel.
   close: () => void;
   /// The list's h / l, and Enter on a lane's head.
@@ -56,11 +61,37 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
     };
     const onKey = (e: KeyboardEvent) => {
       const { cursor, layout, enabled, actions } = state.current;
-      if (!enabled || e.metaKey || e.ctrlKey || e.altKey || (e.target as HTMLElement).closest(TYPING)) return;
-      const rows = [...(root.current?.querySelectorAll<HTMLElement>(ROW) ?? [])];
-      if (rows.length === 0) return;
-      const at = rows.find((el) => el.dataset.row === cursor);
+      if (!enabled || e.metaKey || e.ctrlKey || (e.target as HTMLElement).closest(TYPING)) return;
       const key = e.key;
+      // Page-wide: / the search box, ? these keys.
+      if (key === "/" || key === "?") {
+        e.preventDefault();
+        if (key === "?") actions.help();
+        else document.querySelector<HTMLInputElement>(".filter-search")?.focus();
+        return;
+      }
+      const rows = [...(root.current?.querySelectorAll<HTMLElement>(ROW) ?? [])];
+      const at = rows.find((el) => el.dataset.row === cursor);
+      // c adds a todo where the cursor is (its column on the kanban), else in the first lane.
+      if (key === "c" && !e.altKey && !e.shiftKey) {
+        const place = at ? (colOf(at) ?? at.closest("[data-lane]")) : root.current;
+        const add = place?.querySelector<HTMLButtonElement>(".add-inline") ?? at?.closest("[data-lane]")?.querySelector<HTMLButtonElement>(".add-inline");
+        if (add) {
+          e.preventDefault();
+          add.click();
+        }
+        return;
+      }
+      if (rows.length === 0) return;
+      // o and ⌥Enter open the todo's session as its "開く" and its menu do; p its PR.
+      const id = at ? todoId(at.dataset.row!) : null;
+      if (id !== null && (key === "o" || key === "p" || (key === "Enter" && e.altKey))) {
+        e.preventDefault();
+        if (key === "p") actions.link(id);
+        else at!.querySelector<HTMLButtonElement>(key === "o" ? ".open-main" : ".open-caret")?.click();
+        return;
+      }
+      if (e.altKey) return;
       const down = key === "j" || key === "ArrowDown";
       const up = key === "k" || key === "ArrowUp";
       const left = key === "h" || key === "ArrowLeft";

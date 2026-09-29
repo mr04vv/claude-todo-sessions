@@ -3210,7 +3210,23 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "import" | "quick" | "palette" | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | null;
+
+/// The Todo pages' keys (todoKeys.ts), for ?.
+const TODO_KEYS: [string, string][] = [
+  ["j k / ↑↓", "カード・行を移動（カンバンは列の中をレーンをまたいで）"],
+  ["h l / ←→", "カンバン：左右の列へ　リスト：レーンを折りたたむ / 開く"],
+  ["⇧h ⇧l", "カンバン：カードを左右の列へ動かす"],
+  ["Enter", "todo のパネルを開く（開いている間はカーソルに付いてくる）"],
+  ["Esc", "パネルを閉じる"],
+  ["s", "ステータスを変える"],
+  ["o", "紐づいたセッションを開く"],
+  ["⌥Enter", "セッションの開き方を選ぶ"],
+  ["p", "PR（なければ issue）を開く"],
+  ["c", "その場所に todo を追加"],
+  ["/", "絞り込み欄へ"],
+  ["?", "このキーの一覧"],
+];
 
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
@@ -3676,6 +3692,12 @@ export default function App() {
   useTodoKeys(todoPage, layout, view === "todos" && !covered, selectedTodo !== null, {
     open: openTodo,
     status: setStatusMenuFor,
+    link: (id) => {
+      const todo = allTodos.find((t) => t.id === id);
+      const url = todo?.pr_url ?? todo?.issue_url;
+      if (url) openInBrowser(url);
+    },
+    help: () => setDialog("keys"),
     shift: (id, delta) => {
       const todo = allTodos.find((t) => t.id === id);
       const next = todo && COLUMNS[COLUMNS.findIndex((c) => c.status === todo.status) + delta];
@@ -4086,6 +4108,18 @@ export default function App() {
         )}
         {dialog === "import" && <ImportDialog run={run} onClose={() => setDialog(null)} />}
         {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
+        {dialog === "keys" && (
+          <Modal title="Todo のキー操作" onClose={() => setDialog(null)}>
+            <dl className="key-list">
+              {TODO_KEYS.map(([k, what]) => (
+                <div key={k}>
+                  <dt className="kbd">{k}</dt>
+                  <dd>{what}</dd>
+                </div>
+              ))}
+            </dl>
+          </Modal>
+        )}
         {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
       </div>
     </TerminalContext.Provider>

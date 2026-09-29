@@ -2260,3 +2260,26 @@ body.resizing {
 .status-menu .menu button {
   gap: 6px;
 }
+
+/* ? on the Todo pages. */
+.key-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+
+.key-list div {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.key-list dt {
+  min-width: 96px;
+  text-align: center;
+}
+
+.key-list dd {
+  margin: 0;
+}
