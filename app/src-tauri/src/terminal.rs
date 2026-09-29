@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// `{id, data}` (base64 of what the program wrote) as output arrives.
 const OUTPUT_EVENT: &str = "term-output";
@@ -20,6 +20,7 @@ const EXIT_EVENT: &str = "term-exit";
 const READ_CHUNK: usize = 16 * 1024;
 /// Used when $SHELL is not set.
 const FALLBACK_SHELL: &str = "/bin/zsh";
+const MAIN_WEBVIEW: &str = "main";
 /// herdr marks its panes with these, and refuses to start inside one.
 const HERDR_ENV_PREFIX: &str = "HERDR_";
 
@@ -110,4 +111,74 @@ pub fn term_close(terms: State<'_, Terminals>, id: String) -> Result<(), String>
         let _ = term.child.kill();
     }
     Ok(())
+}
+
+/// Ghostty's config, where the app keeps it and where XDG does; later wins.
+const GHOSTTY_CONFIGS: &[&str] = &[".config/ghostty/config", "Library/Application Support/com.mitchellh.ghostty/config"];
+/// Where Ghostty looks for a theme by name: the user's own, then its built-in ones.
+const GHOSTTY_THEME_DIRS: &[&str] = &[".config/ghostty/themes", "Library/Application Support/com.mitchellh.ghostty/themes"];
+const GHOSTTY_BUILTIN_THEMES: &str = "/Applications/Ghostty.app/Contents/Resources/ghostty/themes";
+
+/// `key = value` lines of a Ghostty config, in order, quotes dropped.
+fn parse_config(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().trim_matches('"').to_string()))
+        .collect()
+}
+
+/// A theme set as `light:A,dark:B` gives B; the app is dark by default.
+fn theme_name(value: &str) -> &str {
+    value.split(',').map(str::trim).find_map(|p| p.strip_prefix("dark:")).unwrap_or(value).trim()
+}
+
+/// The user's Ghostty settings, the theme's first so the config's own
+/// colors override it as in Ghostty. The page reads what it can use.
+#[tauri::command(async)]
+pub fn ghostty_config() -> Vec<(String, String)> {
+    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let config: Vec<_> = GHOSTTY_CONFIGS.iter().filter_map(|p| std::fs::read_to_string(home.join(p)).ok()).flat_map(|t| parse_config(&t)).collect();
+    let theme = config.iter().rev().find(|(k, _)| k == "theme").map(|(_, v)| theme_name(v).to_string());
+    let theme_text = theme.and_then(|name| {
+        let dirs = GHOSTTY_THEME_DIRS.iter().map(|d| home.join(d)).chain([std::path::PathBuf::from(GHOSTTY_BUILTIN_THEMES)]);
+        dirs.map(|d| d.join(&name)).find_map(|p| std::fs::read_to_string(p).ok())
+    });
+    theme_text.map(|t| parse_config(&t)).unwrap_or_default().into_iter().chain(config.into_iter().filter(|(k, _)| k != "theme")).collect()
+}
+
+/// Gives the app's own page the keyboard, which a browser tab may hold, so
+/// the terminal is focused (and its cursor blinks).
+#[tauri::command(async)]
+pub fn term_focus(app: AppHandle) -> Result<(), String> {
+    match app.get_webview(MAIN_WEBVIEW) {
+        Some(view) => view.set_focus().map_err(err),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_key_values_skipping_comments_and_quotes() {
+        let text = "# comment\nfont-family = \"Jetbrains Mono\"\n\nfont-size = 14\npalette = 0=#4d4d4d\nbad line\n";
+        assert_eq!(
+            parse_config(text),
+            vec![
+                ("font-family".to_string(), "Jetbrains Mono".to_string()),
+                ("font-size".to_string(), "14".to_string()),
+                ("palette".to_string(), "0=#4d4d4d".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn picks_the_dark_theme_of_a_pair() {
+        assert_eq!(theme_name("Desert"), "Desert");
+        assert_eq!(theme_name("light:Builtin Light,dark:Desert"), "Desert");
+        assert_eq!(theme_name("dark:Desert, light:X"), "Desert");
+    }
 }

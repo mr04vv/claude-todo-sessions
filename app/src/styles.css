@@ -1750,9 +1750,10 @@ input.panel-title:focus-visible {
 }
 
 .terminal-slot {
+  /* Padding and background come from Ghostty's settings (Terminal.tsx). */
   flex-grow: 1;
   min-height: 0;
-  padding: 6px 0 0 8px;
+  box-sizing: border-box;
   background: var(--surface);
 }
 

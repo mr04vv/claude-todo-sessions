@@ -5,7 +5,7 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Terminal } from "@xterm/xterm";
+import { Terminal, type ITerminalOptions, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
@@ -41,7 +41,21 @@ export const TERMINAL_TARGET_KEY = "terminalTarget";
 
 const OUTPUT_EVENT = "term-output";
 const EXIT_EVENT = "term-exit";
-const FONT_SIZE = 12;
+const FONT_SIZE = 14;
+const FALLBACK_FONTS = "ui-monospace, Menlo, monospace";
+/// Ghostty's palette numbers 0–15 as xterm.js names them.
+const PALETTE: (keyof ITheme)[] = [
+  "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+  "brightBlack", "brightRed", "brightGreen", "brightYellow", "brightBlue", "brightMagenta", "brightCyan", "brightWhite",
+];
+const GHOSTTY_COLORS: Record<string, keyof ITheme> = {
+  background: "background",
+  foreground: "foreground",
+  "cursor-color": "cursor",
+  "cursor-text": "cursorAccent",
+  "selection-background": "selectionBackground",
+  "selection-foreground": "selectionForeground",
+};
 const SCROLLBACK_LINES = 5000;
 const EXITED_NOTE = "\r\n\x1b[2m[終了しました]\x1b[0m\r\n";
 
@@ -52,6 +66,7 @@ interface Entry {
   fit: FitAddon;
   host: HTMLDivElement;
   started: boolean;
+  look: Look;
 }
 const entries = new Map<string, Entry>();
 
@@ -61,24 +76,47 @@ void listen<{ id: string }>(EXIT_EVENT, ({ payload }) => entries.get(payload.id)
 
 const cssVar = (name: string) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
-function entryFor(id: string): Entry {
+/// Looks like the user's Ghostty: its fonts, size, padding, theme and cursor.
+interface Look {
+  options: ITerminalOptions;
+  padding: { x: number; y: number };
+}
+function lookFrom(config: [string, string][]): Look {
+  const theme: ITheme = { background: cssVar("--surface"), foreground: cssVar("--text"), cursor: cssVar("--accent"), selectionBackground: cssVar("--accent-soft") };
+  let fonts: string[] = [];
+  const options: ITerminalOptions = { fontSize: FONT_SIZE, cursorBlink: true, cursorStyle: "block", cursorInactiveStyle: "outline" };
+  const padding = { x: 0, y: 0 };
+  for (const [key, value] of config) {
+    if (key === "font-family") fonts = value ? [...fonts, `"${value}"`] : [];
+    else if (key === "font-size" && Number(value) > 0) options.fontSize = Number(value);
+    else if (key === "window-padding-x") padding.x = Number(value.split(",")[0]) || 0;
+    else if (key === "window-padding-y") padding.y = Number(value.split(",")[0]) || 0;
+    else if (key === "cursor-style-blink") options.cursorBlink = value !== "false";
+    else if (key === "cursor-style" && ["block", "underline", "bar"].includes(value)) options.cursorStyle = value as ITerminalOptions["cursorStyle"];
+    else if (key === "palette") {
+      const [n, color] = value.split("=");
+      const name = PALETTE[Number(n)];
+      if (name && color) Object.assign(theme, { [name]: color.trim() });
+    } else if (key in GHOSTTY_COLORS) Object.assign(theme, { [GHOSTTY_COLORS[key]]: value.startsWith("#") ? value : `#${value}` });
+  }
+  options.fontFamily = [...fonts, FALLBACK_FONTS].join(", ");
+  options.theme = theme;
+  return { options, padding };
+}
+/// Read once; without Ghostty's config the app's own colors are used.
+const look: Promise<Look> = invoke<[string, string][]>("ghostty_config").then(lookFrom, () => lookFrom([]));
+
+function entryFor(id: string, { options, padding }: Look): Entry {
   let e = entries.get(id);
   if (!e) {
-    const term = new Terminal({
-      fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
-      fontSize: FONT_SIZE,
-      scrollback: SCROLLBACK_LINES,
-      cursorBlink: true,
-      macOptionIsMeta: true,
-      theme: { background: cssVar("--surface"), foreground: cssVar("--text"), cursor: cssVar("--accent"), selectionBackground: cssVar("--accent-soft") },
-    });
+    const term = new Terminal({ ...options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true });
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.onData((data) => void invoke("term_write", { id, data }).catch(() => {}));
     term.onResize(({ cols, rows }) => void invoke("term_resize", { id, cols, rows }).catch(() => {}));
     const host = document.createElement("div");
     host.className = "terminal-host";
-    e = { term, fit, host, started: false };
+    e = { term, fit, host, started: false, look: { options, padding } };
     entries.set(id, e);
   }
   return e;
@@ -96,11 +134,32 @@ export function closeTerminal(id: string) {
 export function TerminalView({ id, run, report }: { id: string; run: TerminalRun; report: (e: unknown) => void }) {
   const slot = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const e = entryFor(id);
-    slot.current!.appendChild(e.host);
+    let e: Entry | null = null;
+    let ro: ResizeObserver | null = null;
+    let gone = false;
+    look.then((l) => {
+      if (gone || !slot.current) return;
+      e = show(entryFor(id, l), slot.current);
+      const fit = e.fit;
+      ro = new ResizeObserver(() => fit.fit());
+      ro.observe(slot.current);
+    });
+    return () => {
+      gone = true;
+      ro?.disconnect();
+      e?.host.remove();
+    };
+  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+  /// Puts the terminal in the slot, starting its program the first time.
+  const show = (e: Entry, into: HTMLElement) => {
+    // Padded outside the terminal, which the fit addon sizes to its parent.
+    into.style.padding = `${e.look.padding.y}px ${e.look.padding.x}px`;
+    into.style.background = e.look.options.theme?.background ?? "";
+    into.appendChild(e.host);
     if (!e.term.element) e.term.open(e.host);
     e.fit.fit();
-    e.term.focus();
+    // The page may not have the keyboard when a browser tab had it.
+    invoke("term_focus").catch(() => {}).finally(() => e.term.focus());
     if (!e.started) {
       e.started = true;
       invoke("term_open", { id, command: run.command, cwd: run.cwd, cols: e.term.cols, rows: e.term.rows }).catch((err) => {
@@ -108,13 +167,8 @@ export function TerminalView({ id, run, report }: { id: string; run: TerminalRun
         report(err);
       });
     }
-    const ro = new ResizeObserver(() => e.fit.fit());
-    ro.observe(slot.current!);
-    return () => {
-      ro.disconnect();
-      e.host.remove();
-    };
-  }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
+    return e;
+  };
   return (
     <>
       <div className="browser-bar">
