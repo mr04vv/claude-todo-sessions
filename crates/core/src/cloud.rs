@@ -363,21 +363,31 @@ impl Client {
 pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prompt_body: &str, opts: &StartOptions) -> Result<String, String> {
     let repo_url = repos.first().map(|main| format!("https://github.com/{main}")).unwrap_or_default();
     let mut client = Client::new()?;
-    let recent = client.get(&format!("/v1/code/sessions?limit={RECENT_SESSIONS_FOR_ENV}"))?;
-    let env_id = recent["data"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .find(|s| is_cloud(s))
-        .and_then(|s| s["environment_id"].as_str())
-        .ok_or("no cloud session to take an environment from; start one on claude.ai/code first")?
-        .to_string();
     let prompt = crate::launch::start_prompt(todo_id, prompt_body);
     let uuid = uuid::Uuid::new_v4().to_string();
     let branch = format!("{BRANCH_PREFIX}todo-{todo_id}-{}", &uuid[..BRANCH_SUFFIX_LEN]);
-    let mut body = create_body(&env_id, repos, &branch, &prompt, title, &uuid);
-    apply_options(&mut body, opts);
-    let created = client.post("/v1/sessions", &organization_uuid()?, &body)?;
+    let org = organization_uuid()?;
+    let post = |client: &mut Client, env_id: &str| {
+        let mut body = create_body(env_id, repos, &branch, &prompt, title, &uuid);
+        apply_options(&mut body, opts);
+        client.post("/v1/sessions", &org, &body)
+    };
+    let created = match remembered_environment() {
+        // A remembered environment may have gone away: when the API rejects
+        // the request (4xx, so nothing was created), look it up again once.
+        Some(env) => match post(&mut client, &env) {
+            Ok(created) => created,
+            Err(e) if !e.contains(CLIENT_ERROR) => return Err(e),
+            Err(_) => {
+                let env = fetch_environment(&mut client)?;
+                post(&mut client, &env)?
+            }
+        },
+        None => {
+            let env = fetch_environment(&mut client)?;
+            post(&mut client, &env)?
+        }
+    };
     let id = created["id"]
         .as_str()
         .and_then(code_session_id)
@@ -388,6 +398,37 @@ pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prom
     db.link_session(&id, todo_id).map_err(|e| e.to_string())?;
     db.mark_marker_checked(&id).map_err(|e| e.to_string())?;
     Ok(id)
+}
+
+/// Environment of the newest cloud session (the list API gives newest
+/// first), which new sessions reuse.
+pub fn latest_environment(sessions: &[Value]) -> Option<String> {
+    sessions.iter().find(|s| is_cloud(s)).and_then(|s| s["environment_id"].as_str()).map(Into::into)
+}
+
+/// How ureq words a 4xx answer in the errors `Client` returns.
+const CLIENT_ERROR: &str = "http status: 4";
+
+/// The environment the last sync saw, so starting a session skips listing
+/// sessions again (about half a second).
+static ENVIRONMENT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+fn remember_environment(env: Option<String>) {
+    if let (Some(env), Ok(mut slot)) = (env, ENVIRONMENT.lock()) {
+        *slot = Some(env);
+    }
+}
+
+fn remembered_environment() -> Option<String> {
+    ENVIRONMENT.lock().ok()?.clone()
+}
+
+fn fetch_environment(client: &mut Client) -> Result<String, String> {
+    let recent = client.get(&format!("/v1/code/sessions?limit={RECENT_SESSIONS_FOR_ENV}"))?;
+    let env = latest_environment(recent["data"].as_array().map(Vec::as_slice).unwrap_or_default())
+        .ok_or("no cloud session to take an environment from; start one on claude.ai/code first")?;
+    remember_environment(Some(env.clone()));
+    Ok(env)
 }
 
 /// The plan's usage limits (session, weekly, per model).
@@ -439,6 +480,7 @@ fn sync_one(db: &Db, client: &mut Client, s: &Value) -> Result<Outcome, String> 
 fn sync_all(db: &Db) -> Result<(usize, usize, usize, Vec<String>), String> {
     let mut client = Client::new()?;
     let sessions: Vec<Value> = client.list_sessions()?.into_iter().filter(|s| is_cloud(s)).collect();
+    remember_environment(latest_environment(&sessions));
     let (mut recorded, mut linked, mut errors) = (0, 0, Vec::new());
     for s in &sessions {
         match sync_one(db, &mut client, s) {
@@ -491,6 +533,17 @@ pub fn sync(db: &Db) -> Result<SyncReport, String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn latest_environment_is_the_newest_cloud_sessions() {
+        let sessions = vec![
+            json!({"environment_kind": "bridge", "environment_id": "env_local"}),
+            json!({"environment_kind": "anthropic_cloud", "environment_id": "env_new"}),
+            json!({"environment_kind": "anthropic_cloud", "environment_id": "env_old"}),
+        ];
+        assert_eq!(latest_environment(&sessions).as_deref(), Some("env_new"));
+        assert_eq!(latest_environment(&[]), None);
+    }
 
     #[test]
     fn current_branches_skip_default_branches() {
