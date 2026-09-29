@@ -19,6 +19,7 @@ import {
   BROWSER_NEW_TAB_EVENT,
   BROWSER_TITLE_EVENT,
   BROWSER_URL_EVENT,
+  CLOUD_HOME,
   cloudWebUrl,
   EFFORTS,
   isCloud,
@@ -103,6 +104,12 @@ const isCloudTarget = (t: Target) => t === "web" || t === "cloud";
 /// screens until closed, so opening a page never leaves the current one.
 type OpenInBrowser = (url: string) => void;
 const BrowserContext = createContext<OpenInBrowser | null>(null);
+
+/// Creating a cloud session takes seconds, so its tab opens at once on
+/// claude.ai (loading alongside) and moves to the session once it exists.
+/// Call the returned function with the session id, or null if it failed.
+type BeginWeb = () => (sessionId: string | null) => void;
+const BeginWebContext = createContext<BeginWeb | null>(null);
 
 const COLUMNS: { status: Status; label: string }[] = [
   { status: "todo", label: "Todo" },
@@ -1071,7 +1078,6 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
   const cloudOk = !todo.is_orchestrator;
   const [choice, setChoiceState] = useState<StartChoice>(() => loadJson(START_KEY, DEFAULT_START));
   const target = !cloudOk && isCloudTarget(choice.target) ? "terminal" : choice.target;
-  const openInBrowser = useContext(BrowserContext);
   const setChoice = (c: Partial<StartChoice>) => {
     const next = { ...choice, ...c };
     remember(START_KEY, JSON.stringify(next));
@@ -1092,17 +1098,28 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
   };
   const cliOptions = target === "terminal" || isCloudTarget(target);
   const options: StartOptions = cliOptions ? { model: choice.model || undefined, effort: choice.effort || undefined } : {};
-  const start = () =>
+  const beginWeb = useContext(BeginWebContext);
+  const [starting, setStarting] = useState(false);
+  const start = () => {
+    if (starting) return;
+    setStarting(true);
     run(async () => {
-      // The prompt lives on the todo, so the next start (and the queue) reuse it.
-      if (prompt !== (todo.prompt ?? "")) await api.updateTodo(todo.id, { prompt });
-      if (isCloudTarget(target)) {
-        const id = await api.startCloud(todo.id, options, target === "cloud");
-        if (target === "web") openInBrowser?.(cloudWebUrl(id));
-      } else if (target === "desktop") await api.startDesktop(todo.id);
-      else if (target === "terminal") await api.startTerminal(todo.id, options);
-      else await api.enqueue(todo.id, choice.runner);
+      const finish = target === "web" ? beginWeb?.() : undefined;
+      try {
+        // The prompt lives on the todo, so the next start (and the queue) reuse it.
+        if (prompt !== (todo.prompt ?? "")) await api.updateTodo(todo.id, { prompt });
+        if (isCloudTarget(target)) finish?.(await api.startCloud(todo.id, options, target === "cloud"));
+        else if (target === "desktop") await api.startDesktop(todo.id);
+        else if (target === "terminal") await api.startTerminal(todo.id, options);
+        else await api.enqueue(todo.id, choice.runner);
+      } catch (e) {
+        finish?.(null);
+        throw e;
+      } finally {
+        setStarting(false);
+      }
     });
+  };
   return (
     <div className="composer">
       <textarea
@@ -1181,8 +1198,9 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
           </>
         )}
         <span className="grow" />
-        <button className="primary" onClick={start}>
-          {target === "queue" ? "キューに入れる" : "開始"} <span className="kbd">⌘↵</span>
+        <button className="primary" onClick={start} disabled={starting} aria-busy={starting}>
+          {starting && <span className="spinner" />}
+          {starting ? "開始しています…" : target === "queue" ? "キューに入れる" : "開始"} {!starting && <span className="kbd">⌘↵</span>}
         </button>
       </div>
       <p className="muted hint">
@@ -1200,6 +1218,8 @@ interface BrowserTab {
   title: string | null;
   /// From opening or a navigation until the page finishes loading.
   loading: boolean;
+  /// Bumped when the app sends the tab to `url` (not when the page moves).
+  nav: number;
 }
 
 /// The browser pane: tabs of web pages, each a webview laid over this one on
@@ -1224,7 +1244,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose }: {
   useEffect(() => {
     if (covered) api.browserHide().catch(report);
     else navigate(active.url);
-  }, [active.id, covered]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [active.id, active.nav, covered]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (covered || !slot.current) return;
     const follow = () => api.browserBounds(rect()).catch(() => {});
@@ -1894,7 +1914,7 @@ const reviewPrompt = (url: string, submit: ReviewSubmit) =>
 
 /// "/review で開始" asks before submitting the review; the caret picks, per
 /// PR, whether the session may submit on its own.
-function ReviewButton({ accent, onStart }: { accent: boolean; onStart: (submit: ReviewSubmit) => void }) {
+function ReviewButton({ accent, busy, onStart }: { accent: boolean; busy: boolean; onStart: (submit: ReviewSubmit) => void }) {
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
   useOutsideClose(root, open, () => setOpen(false));
@@ -1904,10 +1924,19 @@ function ReviewButton({ accent, onStart }: { accent: boolean; onStart: (submit: 
   };
   return (
     <span ref={root} className={`open-menu${accent ? " accent" : ""}`} onClick={stop}>
-      <button className="open-main" title="レビューして、提出する前に確認する" onClick={() => start("ask")}>
-        <span className="mono">/review</span> で開始
+      <button className="open-main" title="レビューして、提出する前に確認する" disabled={busy} aria-busy={busy} onClick={() => start("ask")}>
+        {busy ? (
+          <>
+            <span className="spinner" />
+            開始しています…
+          </>
+        ) : (
+          <>
+            <span className="mono">/review</span> で開始
+          </>
+        )}
       </button>
-      <button className="open-caret" aria-label="提出のしかたを選んで開始" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+      <button className="open-caret" aria-label="提出のしかたを選んで開始" aria-expanded={open} disabled={busy} onClick={() => setOpen((o) => !o)}>
         <Icon name="chevron" size={10} />
       </button>
       {open && (
@@ -1954,17 +1983,35 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
   // A PR becomes a todo that ships as it, so its state keeps the todo current.
   const makeTodo = (p: Pr, title: string) =>
     api.createTodo({ title, repos: [p.repo], cwd: cwdOf(p) }).then((t) => api.updateTodo(t.id, { pr_url: p.url }));
-  const startReview = (p: Pr, submit: ReviewSubmit) =>
+  const beginWeb = useContext(BeginWebContext);
+  // PRs whose review session is being started, so their button shows it.
+  const [starting, setStarting] = useState<Set<string>>(new Set());
+  const mark = (url: string, on: boolean) =>
+    setStarting((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(url);
+      else next.delete(url);
+      return next;
+    });
+  const startReview = (p: Pr, submit: ReviewSubmit) => {
+    if (starting.has(p.url)) return;
+    mark(p.url, true);
     run(async () => {
-      const todo = todoOf(p) ?? (await makeTodo(p, `レビュー: ${p.title}`));
-      await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url, submit) });
-      if (reviewRunner === "desktop") await api.startDesktop(todo.id);
-      else if (reviewRunner === "terminal") await api.startTerminal(todo.id);
-      else {
-        const id = await api.startCloud(todo.id, undefined, reviewRunner === "cloud");
-        if (reviewRunner === "web") openInBrowser?.(cloudWebUrl(id));
+      const finish = reviewRunner === "web" ? beginWeb?.() : undefined;
+      try {
+        const todo = todoOf(p) ?? (await makeTodo(p, `レビュー: ${p.title}`));
+        await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url, submit) });
+        if (reviewRunner === "desktop") await api.startDesktop(todo.id);
+        else if (reviewRunner === "terminal") await api.startTerminal(todo.id);
+        else finish?.(await api.startCloud(todo.id, undefined, reviewRunner === "cloud"));
+      } catch (e) {
+        finish?.(null);
+        throw e;
+      } finally {
+        mark(p.url, false);
       }
     });
+  };
   const sections: { key: "review" | "mine"; title: string; hint: string; rows: PrRow[] }[] = [
     { key: "review", title: "レビュー依頼", hint: "自分にレビューが来ている PR", rows: review },
     { key: "mine", title: "自分の PR", hint: "自分が出している open の PR", rows: mine },
@@ -2037,7 +2084,7 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
                           </button>
                         )
                       )}
-                      {p.kind === "review" && <ReviewButton accent={browserUrl === p.url} onStart={(submit) => startReview(p, submit)} />}
+                      {p.kind === "review" && <ReviewButton accent={browserUrl === p.url} busy={starting.has(p.url)} onStart={(submit) => startReview(p, submit)} />}
                     </li>
                   );
                 })}
@@ -2465,8 +2512,22 @@ export default function App() {
     const open = tabs.find((t) => t.url === url);
     if (open) return setActiveTabId(open.id);
     const id = `t${nextTab.current++}`;
-    setTabs((prev) => [...prev, { id, url, title: null, loading: true }]);
+    setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
     setActiveTabId(id);
+  };
+  const beginWeb: BeginWeb = () => {
+    if (linkTarget === "dia") return (sessionId) => sessionId && api.openInDia(cloudWebUrl(sessionId)).catch(report);
+    const id = `t${nextTab.current++}`;
+    setTabs((prev) => [...prev, { id, url: CLOUD_HOME, title: "セッションを作成中…", loading: true, nav: 0 }]);
+    setActiveTabId(id);
+    return (sessionId) => {
+      if (sessionId) {
+        setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, url: cloudWebUrl(sessionId), title: null, loading: true, nav: t.nav + 1 } : t)));
+      } else {
+        api.browserClose(id).catch(report);
+        setTabs((prev) => prev.filter((t) => t.id !== id));
+      }
+    };
   };
   const closeTab = (id: string) => {
     api.browserClose(id).catch(report);
@@ -2740,6 +2801,7 @@ export default function App() {
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
+    <BeginWebContext.Provider value={beginWeb}>
       <div className={`app${browserUrl ? " with-browser" : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
         <aside className="sidebar">
           <div className="brand">
@@ -3020,6 +3082,7 @@ export default function App() {
         {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
         {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
       </div>
+    </BeginWebContext.Provider>
     </BrowserContext.Provider>
   );
 }

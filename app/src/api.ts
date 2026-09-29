@@ -248,6 +248,8 @@ export const BROWSER_NEW_TAB_EVENT = "browser-new-tab";
 export const isCloud = (s: Session) => s.session_id.startsWith("cse_");
 
 const CLOUD_WEB = "https://claude.ai/code/";
+/** claude.ai's Claude Code page, shown while a new cloud session is created. */
+export const CLOUD_HOME = "https://claude.ai/code";
 
 /** claude.ai page of a cloud session; the web names `cse_…` as `session_…`. */
 export const cloudWebUrl = (sessionId: string) => CLOUD_WEB + sessionId.replace(/^cse_/, "session_");
