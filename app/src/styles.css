@@ -1107,6 +1107,12 @@ button.lane-toggle:hover .lane-name {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
+/* The row the keyboard is on (sessions page). */
+.row.cursor {
+  box-shadow: inset 2px 0 0 var(--accent-line);
+  background: var(--card-hover);
+}
+
 .row.done .row-title {
   color: var(--text-3);
 }
@@ -1200,7 +1206,7 @@ button.lane-toggle:hover .lane-name {
 
 .sessions-grid {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1.4fr) minmax(0, 1fr) 120px 96px;
+  grid-template-columns: 84px minmax(0, 1.4fr) minmax(0, 1fr) 120px 96px 28px;
   column-gap: 12px;
 }
 

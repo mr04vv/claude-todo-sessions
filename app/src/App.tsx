@@ -605,6 +605,24 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
       openLocal(terminal, session.session_id, report, true);
     }
   };
+  // The menu takes the keyboard when it opens: ↑↓ or j k move, Enter picks, Esc closes.
+  const menu = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (open) menu.current?.querySelector<HTMLButtonElement>("[role=menuitem]")?.focus();
+  }, [open]);
+  const onMenuKey = (e: React.KeyboardEvent) => {
+    const items = [...(menu.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const step = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
+    if (step) {
+      e.preventDefault();
+      items[(at + step + items.length) % items.length]?.focus();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setOpen(false);
+    }
+    e.stopPropagation();
+  };
   return (
     <span ref={root} className={`open-menu${primary ? " primary" : ""}`} onPointerDown={stop} onClick={stop}>
       <button className="open-main" title={`${sessionLabel(session)} を開く`} onClick={openMain}>
@@ -614,7 +632,7 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
         <Icon name="chevron" size={10} />
       </button>
       {open && (
-        <span className="menu" role="menu">
+        <span className="menu" role="menu" ref={menu} onKeyDown={onMenuKey}>
           {cloud && openInBrowser && (
             <button role="menuitem" onClick={() => go("web")}>
               Web で開く（アプリ内）
@@ -1970,6 +1988,38 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   // Cloud sessions done with their turn, which the bulk archive takes.
   const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
   const [confirmArchive, setConfirmArchive] = useState(false);
+  // The row the keyboard is on: ↑↓ or j k move, Enter opens it, ⌥Enter picks how.
+  const [cursor, setCursor] = useState<string | null>(null);
+  const cursorId = rows.some((i) => i.session.session_id === cursor) ? cursor : (rows[0]?.session.session_id ?? null);
+  const rowsRef = useRef(rows);
+  rowsRef.current = rows;
+  const cursorRef = useRef(cursorId);
+  cursorRef.current = cursorId;
+  const listRef = useRef<HTMLUListElement>(null);
+  /// Presses the row's "開く" (or, with `choose`, its caret).
+  const pressOpen = (id: string, choose: boolean) =>
+    listRef.current?.querySelector<HTMLButtonElement>(`[data-session="${CSS.escape(id)}"] ${choose ? ".open-caret" : ".open-main"}`)?.click();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (e.metaKey || e.ctrlKey || t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm")) return;
+      const ids = rowsRef.current.map((i) => i.session.session_id);
+      const at = ids.indexOf(cursorRef.current ?? "");
+      const step = e.key === "ArrowDown" || e.key === "j" ? 1 : e.key === "ArrowUp" || e.key === "k" ? -1 : 0;
+      if (step && ids.length > 0) {
+        e.preventDefault();
+        const next = ids[Math.min(Math.max(at + step, 0), ids.length - 1)];
+        cursorRef.current = next;
+        setCursor(next);
+        listRef.current?.querySelector(`[data-session="${CSS.escape(next)}"]`)?.scrollIntoView({ block: "nearest" });
+      } else if (e.key === "Enter" && cursorRef.current) {
+        e.preventDefault();
+        pressOpen(cursorRef.current, e.altKey);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const queued = board.todos.filter((t) => t.queue_runner).sort((a, b) => (a.queue_pos ?? 0) - (b.queue_pos ?? 0) || a.id - b.id);
   return (
     <>
@@ -2061,11 +2111,17 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
             <span>todo</span>
             <span>場所</span>
             <span />
+            <span />
           </div>
           {rows.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
-          <ul className="rows">
+          <ul className="rows" ref={listRef}>
             {rows.map(({ session: s, todo }) => (
-              <li key={s.session_id} className={`row sessions-grid${s.session_id === selectedId ? " selected" : ""}${s.state === "ended" ? " done" : ""}`} onClick={() => onSelect(s.session_id)}>
+              <li
+                key={s.session_id}
+                data-session={s.session_id}
+                className={`row sessions-grid${s.session_id === selectedId ? " selected" : ""}${s.session_id === cursorId ? " cursor" : ""}${s.state === "ended" ? " done" : ""}`}
+                onClick={() => (setCursor(s.session_id), pressOpen(s.session_id, false))}
+              >
                 <StateBadge state={s.state} />
                 <span className="ellipsis">{sessionLabel(s)}</span>
                 {todo ? (
@@ -2079,6 +2135,9 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                   {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
                 </span>
                 <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
+                <button className="ghost icon" aria-label={`${sessionLabel(s)} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onSelect(s.session_id))}>
+                  <Icon name="more" size={14} />
+                </button>
               </li>
             ))}
           </ul>
