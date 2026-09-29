@@ -2495,8 +2495,15 @@ export default function App() {
     }
     api.setHerdrSession(saved || null).then(loadHerdr, report);
   }, [loadHerdr, report]);
+  // The board comes back every few seconds, mostly unchanged; re-render only on a change.
+  const lastBoard = useRef("");
   const refresh = useCallback(() => {
-    api.board().then(setBoard, report);
+    api.board().then((b) => {
+      const json = JSON.stringify(b);
+      if (json === lastBoard.current) return;
+      lastBoard.current = json;
+      setBoard(b);
+    }, report);
   }, [report]);
   const loadPrs = useCallback(() => {
     api.ghPrs().then(

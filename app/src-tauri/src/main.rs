@@ -59,6 +59,9 @@ struct AppState {
     cloud_wake: Mutex<std::sync::mpsc::Sender<()>>,
     /// herdr session the user picked for new workspaces, if any.
     herdr_session: Mutex<Option<String>>,
+    /// CLI session ids archived in Desktop. Reading every Desktop record is
+    /// slow, so the watch loop refreshes this and the board only reads it.
+    archived: Mutex<HashSet<String>>,
 }
 
 fn home() -> PathBuf {
@@ -198,7 +201,7 @@ fn desktop_archived() -> HashSet<String> {
     cts_core::desktop::archived_cli_ids(&home().join(DESKTOP_SESSIONS_DIR))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn board(state: State<AppState>) -> Result<Board, String> {
     let (todos, inbox, notifications) = {
         let db = state.db.lock().map_err(err)?;
@@ -208,7 +211,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             .into_iter()
             .map(|todo| Ok((db.sessions_for_todo(todo.id).map_err(err)?, db.links_for(todo.id).map_err(err)?, todo)))
             .collect::<Result<Vec<_>, String>>()?;
-        let archived = desktop_archived();
+        let archived = state.archived.lock().map_err(err)?.clone();
         let inbox: Vec<Session> = db
             .unlinked_sessions()
             .map_err(err)?
@@ -238,7 +241,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
     Ok(Board { todos, inbox, notifications, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_todo(state: State<AppState>, input: TodoInput) -> Result<Todo, String> {
     let blank = |s: Option<String>| s.filter(|v| !v.trim().is_empty());
     let db = state.db.lock().map_err(err)?;
@@ -254,7 +257,7 @@ fn create_todo(state: State<AppState>, input: TodoInput) -> Result<Todo, String>
     .map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<Todo, String> {
     let patch = TodoPatch {
         title: update.title,
@@ -270,17 +273,17 @@ fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<To
     state.db.lock().map_err(err)?.update_todo(id, patch).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_todo(state: State<AppState>, id: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.delete_todo(id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn link_session(state: State<AppState>, session_id: String, todo_id: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.link_session(&session_id, todo_id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn unlink_session(state: State<AppState>, session_id: String) -> Result<(), String> {
     state.db.lock().map_err(err)?.unlink_session(&session_id).map_err(err)
 }
@@ -313,7 +316,7 @@ fn focus_in_herdr(session_id: &str) -> bool {
 /// Claude Desktop, and none tries herdr first for local sessions.
 /// Opens a new herdr workspace in the home folder running a plain `claude`,
 /// for a quick question outside any todo.
-#[tauri::command]
+#[tauri::command(async)]
 fn quick_claude(state: State<AppState>, prompt: Option<String>) -> Result<(), String> {
     let cwd = home().to_string_lossy().to_string();
     let command = match prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
@@ -343,7 +346,7 @@ fn sync_now(state: State<AppState>, todo_id: Option<i64>) {
 }
 
 /// Opens a GitHub issue or PR in the browser.
-#[tauri::command]
+#[tauri::command(async)]
 fn open_github(url: String) -> Result<(), String> {
     if !url.starts_with("https://github.com/") {
         return Err(format!("GitHub の URL ではありません: {url}"));
@@ -359,7 +362,7 @@ fn is_web_url(url: &str) -> bool {
 const DIA_BUNDLE_ID: &str = "company.thebrowser.dia";
 
 /// Opens a page in Dia, with the user's own sign-ins there.
-#[tauri::command]
+#[tauri::command(async)]
 fn open_in_dia(url: String) -> Result<(), String> {
     if !is_web_url(&url) {
         return Err(format!("開けない URL です: {url}"));
@@ -368,7 +371,7 @@ fn open_in_dia(url: String) -> Result<(), String> {
     status.success().then_some(()).ok_or_else(|| format!("Dia で開けませんでした（{status}）。Dia が入っているか確認してください"))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_link(url: String) -> Result<(), String> {
     if !is_web_url(&url) {
         return Err(format!("開けない URL です: {url}"));
@@ -378,7 +381,7 @@ fn open_link(url: String) -> Result<(), String> {
 
 /// Attaches a URL to a todo. The page's title and image are fetched in the
 /// background, so the link shows up at once and fills in on the next refresh.
-#[tauri::command]
+#[tauri::command(async)]
 fn add_link(app: AppHandle, todo_id: i64, url: String) -> Result<cts_core::Link, String> {
     let url = url.trim().to_string();
     if !is_web_url(&url) {
@@ -397,12 +400,12 @@ fn add_link(app: AppHandle, todo_id: i64, url: String) -> Result<cts_core::Link,
     Ok(link)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn remove_link(state: State<AppState>, id: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.remove_link(id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn open_session(state: State<AppState>, session_id: String, target: Option<String>) -> Result<(), String> {
     if target.as_deref() == Some("herdr") {
         if launch::is_cloud_session(&session_id) {
@@ -444,7 +447,7 @@ fn terminal_cwd(todo: &Todo) -> String {
     todo.cwd.clone().unwrap_or_else(|| home().to_string_lossy().into())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_desktop(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
     let prompt = launch::start_prompt(todo.id, &todo.prompt_body());
@@ -497,7 +500,7 @@ struct HerdrSessions {
     target: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn herdr_sessions(state: State<AppState>) -> Result<HerdrSessions, String> {
     let running = running_herdr_sessions();
     let picked = state.herdr_session.lock().map_err(err)?.clone();
@@ -506,7 +509,7 @@ fn herdr_sessions(state: State<AppState>) -> Result<HerdrSessions, String> {
 }
 
 /// Picks the herdr session for new workspaces; None goes back to the default rule.
-#[tauri::command]
+#[tauri::command(async)]
 fn set_herdr_session(state: State<AppState>, name: Option<String>) -> Result<(), String> {
     *state.herdr_session.lock().map_err(err)? = name.filter(|n| !n.is_empty());
     Ok(())
@@ -560,7 +563,7 @@ fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions) -> Result<S
     cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &todo.prompt_body(), opts)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_terminal(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<(), String> {
     launch_terminal(&state, todo_id, true, &options.unwrap_or_default())?;
     // herdr has switched to the new workspace; show it.
@@ -569,7 +572,7 @@ fn start_terminal(state: State<AppState>, todo_id: i64, options: Option<StartOpt
 
 /// Starts a cloud session and returns its id. `desktop` also opens it in
 /// Claude Desktop; otherwise the page shows it on the web.
-#[tauri::command]
+#[tauri::command(async)]
 fn start_cloud(state: State<AppState>, todo_id: i64, options: Option<StartOptions>, desktop: bool) -> Result<String, String> {
     let id = launch_cloud(&state, todo_id, &options.unwrap_or_default())?;
     if desktop {
@@ -584,7 +587,7 @@ const RUNNER_AUTO: &str = "auto";
 /// How often the queue runner looks for todos to start.
 const QUEUE_INTERVAL: Duration = Duration::from_secs(10);
 
-#[tauri::command]
+#[tauri::command(async)]
 fn enqueue(state: State<AppState>, todo_id: i64, runner: String) -> Result<(), String> {
     if ![RUNNER_CLOUD, RUNNER_LOCAL, RUNNER_AUTO].contains(&runner.as_str()) {
         return Err(format!("unknown runner {runner}"));
@@ -592,12 +595,12 @@ fn enqueue(state: State<AppState>, todo_id: i64, runner: String) -> Result<(), S
     state.db.lock().map_err(err)?.enqueue(todo_id, &runner).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn dequeue(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.dequeue(todo_id).map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn move_in_queue(state: State<AppState>, todo_id: i64, delta: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.move_in_queue(todo_id, delta).map_err(err)
 }
@@ -670,7 +673,7 @@ fn ghq_root() -> Option<PathBuf> {
 }
 
 /// Open issues assigned to the user that are not todos yet.
-#[tauri::command]
+#[tauri::command(async)]
 fn gh_issues(state: State<AppState>) -> Result<Vec<IssueView>, String> {
     let out = cli("gh")
         .args(["search", "issues", "--assignee", "@me", "--state", "open", "--limit", GH_ISSUE_LIMIT,
@@ -704,7 +707,7 @@ struct IssueImport {
     cwd: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn import_issues(state: State<AppState>, issues: Vec<IssueImport>) -> Result<usize, String> {
     let db = state.db.lock().map_err(err)?;
     for i in &issues {
@@ -741,7 +744,7 @@ fn git_dirs(root: &std::path::Path) -> Vec<PathBuf> {
 
 /// Checkouts on this machine: `<ghq root>/github.com/<owner>/<repo>` and the
 /// children of EXTRA_REPO_ROOTS, keyed by `owner/repo`.
-#[tauri::command]
+#[tauri::command(async)]
 fn local_repos(state: State<AppState>) -> Result<Vec<LocalRepo>, String> {
     let mut dirs = Vec::new();
     if let Some(ghq) = ghq_root() {
@@ -774,7 +777,7 @@ fn gh(args: &[&str]) -> Result<String, String> {
 }
 
 /// Opens a GitHub issue for the todo in its first repository and links it.
-#[tauri::command]
+#[tauri::command(async)]
 fn create_issue(state: State<AppState>, todo_id: i64) -> Result<Todo, String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
     let repo = launch::github_repos(&repos_of_todo(&state, &todo))
@@ -793,7 +796,7 @@ fn create_issue(state: State<AppState>, todo_id: i64) -> Result<Todo, String> {
     todo_or_err(&db, todo_id)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn close_issue(state: State<AppState>, todo_id: i64) -> Result<(), String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
     let url = todo.issue_url.ok_or("issue が紐づいていません")?;
@@ -861,7 +864,7 @@ const USER_SKILLS_DIR: &str = ".claude/skills";
 
 /// Skills a session in `cwd` can use (the user's, the project's, installed
 /// plugins' and the built-in commands), the ones past prompts used most first.
-#[tauri::command]
+#[tauri::command(async)]
 fn skills(state: State<AppState>, cwd: Option<String>) -> Result<Vec<cts_core::skills::Skill>, String> {
     use cts_core::skills;
     let mut all = skills::read_dir(&home().join(USER_SKILLS_DIR), None);
@@ -884,7 +887,7 @@ fn skills(state: State<AppState>, cwd: Option<String>) -> Result<Vec<cts_core::s
 }
 
 /// Marks one notification read, or all of them with None.
-#[tauri::command]
+#[tauri::command(async)]
 fn read_notifications(state: State<AppState>, id: Option<i64>) -> Result<(), String> {
     let db = state.db.lock().map_err(err)?;
     match id {
@@ -894,7 +897,7 @@ fn read_notifications(state: State<AppState>, id: Option<i64>) -> Result<(), Str
     .map_err(err)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn set_parent(state: State<AppState>, todo_id: i64, parent_id: Option<i64>) -> Result<Todo, String> {
     state.db.lock().map_err(err)?.set_parent(todo_id, parent_id).map_err(err)
 }
@@ -993,7 +996,7 @@ struct NewTab {
 const BROWSER_KEYS_SCRIPT: &str = include_str!("browser_keys.js");
 
 /// Puts text on the clipboard, for ⌘L while the app itself has focus.
-#[tauri::command]
+#[tauri::command(async)]
 fn copy_text(text: String) -> Result<(), String> {
     use std::io::Write;
     let mut child = cli("pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(|e| format!("pbcopy: {e}"))?;
@@ -1022,7 +1025,7 @@ fn browser_tabs(app: &AppHandle) -> Vec<tauri::Webview> {
 /// main one at the given rectangle (logical pixels), created on first use,
 /// with the other tabs hidden behind it. GitHub refuses to be framed, so the
 /// pane cannot be an iframe.
-#[tauri::command]
+#[tauri::command(async)]
 fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
     if !is_web_url(&url) {
         return Err(format!("開けない URL です: {url}"));
@@ -1067,7 +1070,7 @@ fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width:
 }
 
 /// Follows the pane's placeholder when the layout changes.
-#[tauri::command]
+#[tauri::command(async)]
 fn browser_bounds(app: AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
     for view in browser_tabs(&app) {
         view.set_bounds(browser_rect(x, y, width, height)).map_err(err)?;
@@ -1076,7 +1079,7 @@ fn browser_bounds(app: AppHandle, x: f64, y: f64, width: f64, height: f64) -> Re
 }
 
 /// Hides every tab; they keep their pages for the next open.
-#[tauri::command]
+#[tauri::command(async)]
 fn browser_hide(app: AppHandle) -> Result<(), String> {
     for view in browser_tabs(&app) {
         view.hide().map_err(err)?;
@@ -1084,7 +1087,7 @@ fn browser_hide(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
     match app.get_webview(&tab_label(&tab)?) {
         Some(view) => view.close().map_err(err),
@@ -1093,7 +1096,7 @@ fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
 }
 
 /// "back", "forward" or "reload" in a tab.
-#[tauri::command]
+#[tauri::command(async)]
 fn browser_go(app: AppHandle, tab: String, action: String) -> Result<(), String> {
     let view = app.get_webview(&tab_label(&tab)?).ok_or("このタブは開いていません")?;
     match action.as_str() {
@@ -1386,6 +1389,9 @@ fn watch_loop(app: AppHandle) {
         tick = tick.wrapping_add(1);
         if let Ok(mut waiting) = db.linked_needs_input() {
             let archived = desktop_archived();
+            if let Ok(mut shared) = app.state::<AppState>().archived.lock() {
+                shared.clone_from(&archived);
+            }
             waiting.retain(|s| !archived.contains(&s.session_id));
             let now: HashSet<String> = waiting.iter().map(|s| s.session_id.clone()).collect();
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
@@ -1454,6 +1460,7 @@ fn main() {
             origin_cache: Mutex::new(HashMap::new()),
             loop_enabled: AtomicBool::new(true),
             herdr_session: Mutex::new(None),
+            archived: Mutex::new(HashSet::new()),
             github_wake: Mutex::new(github_tx),
             cloud_wake: Mutex::new(cloud_tx),
         })
