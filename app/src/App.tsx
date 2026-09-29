@@ -2798,10 +2798,13 @@ function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Co
           aria-label="操作を選ぶ、または todo を検索"
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "ArrowDown") {
+            // ⌃J ⌃K move too, as in fzf.
+            const down = e.key === "ArrowDown" || (e.ctrlKey && e.key === "j");
+            const up = e.key === "ArrowUp" || (e.ctrlKey && e.key === "k");
+            if (down) {
               e.preventDefault();
               setActive((a) => Math.min(a + 1, items.length - 1));
-            } else if (e.key === "ArrowUp") {
+            } else if (up) {
               e.preventDefault();
               setActive((a) => Math.max(a - 1, 0));
             } else if (isEnter(e)) {
