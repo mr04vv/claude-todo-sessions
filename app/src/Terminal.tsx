@@ -68,6 +68,30 @@ const MODS = { meta: ["super", "cmd", "command"], alt: ["alt", "opt", "option"],
 const ALT_ARROWS: Record<string, string> = { ArrowUp: "\x1b[1;3A", ArrowDown: "\x1b[1;3B", ArrowRight: "\x1b[1;3C", ArrowLeft: "\x1b[1;3D" };
 /// Ghostty scrolls a trackpad by its pixels; the terminal does the same.
 const WHEEL_LINE_PX = 16;
+/// Characters a terminal draws two cells wide (East Asian wide and full-width, and emoji).
+const WIDE = /[\u1100-\u115f\u2e80-\u303e\u3041-\u33ff\u3400-\u4dbf\u4e00-\u9fff\ua000-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]|[\u{1f300}-\u{1faff}\u{20000}-\u{3fffd}]/u;
+
+/// Lays out text being converted (IME) on the terminal's cells, a wide
+/// character over two, as Ghostty does; xterm.js sets it in the font's own
+/// spacing, which packs Japanese tight.
+function gridComposition(term: Terminal) {
+  const view = term.element?.querySelector<HTMLElement>(".composition-view");
+  const screen = term.element?.querySelector<HTMLElement>(".xterm-screen");
+  if (!view || !screen) return;
+  new MutationObserver(() => {
+    // xterm.js writes plain text; the cells laid out here are elements.
+    if (![...view.childNodes].some((n) => n.nodeType === Node.TEXT_NODE)) return;
+    const cell = screen.clientWidth / term.cols;
+    const cells = [...(view.textContent ?? "")].map((ch) => {
+      const span = document.createElement("span");
+      span.textContent = ch;
+      span.style.width = `${(WIDE.test(ch) ? 2 : 1) * cell}px`;
+      return span;
+    });
+    view.replaceChildren(...cells);
+  }).observe(view, { childList: true, characterData: true, subtree: true });
+}
+
 /// Big enough for xterm.js to take a replayed step as one whole row.
 const WHEEL_STEP_PX = 1000;
 const EXITED_NOTE = "\r\n\x1b[2m[終了しました]\x1b[0m\r\n";
@@ -255,7 +279,13 @@ export function TerminalView({ id, run, report }: { id: string; run: TerminalRun
     into.style.padding = `${e.look.padding.y}px ${e.look.padding.x}px`;
     into.style.background = e.look.options.theme?.background ?? "";
     into.appendChild(e.host);
-    if (!e.term.element) e.term.open(e.host);
+    if (!e.term.element) {
+      e.term.open(e.host);
+      gridComposition(e.term);
+      const theme = e.look.options.theme;
+      e.host.style.setProperty("--term-bg", theme?.background ?? "");
+      e.host.style.setProperty("--term-fg", theme?.foreground ?? "");
+    }
     e.fit.fit();
     // The page may not have the keyboard when a browser tab had it.
     invoke("term_focus").catch(() => {}).finally(() => e.term.focus());

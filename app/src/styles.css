@@ -1785,6 +1785,18 @@ input.panel-title:focus-visible {
   background: var(--surface);
 }
 
+/* Text being converted, in the terminal's colors and on its cells (Terminal.tsx). */
+.terminal-host .xterm .composition-view {
+  background: var(--term-bg);
+  color: var(--term-fg);
+}
+
+.terminal-host .xterm .composition-view span {
+  display: inline-block;
+  text-align: center;
+  text-decoration: underline;
+}
+
 .terminal-host {
   width: 100%;
   height: 100%;
