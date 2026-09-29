@@ -586,13 +586,13 @@ function useOutsideClose(root: React.RefObject<HTMLElement | null>, open: boolea
 /// picks, Esc closes. Spread `menuKeys` on the element with role="menu".
 /// The menu itself holds the focus and marks its item with `data-active`
 /// (WebKit does not focus buttons, so the items cannot take it).
-function useMenuKeys(open: boolean, close: () => void) {
+function useMenuKeys(open: boolean, close: () => void, first = 0) {
   const ref = useRef<HTMLSpanElement>(null);
-  const [active, setActive] = useState(0);
+  const [active, setActive] = useState(first);
   const items = () => [...(ref.current?.querySelectorAll<HTMLButtonElement>("[role=menuitem]") ?? [])];
   useEffect(() => {
     if (!open) return;
-    setActive(0);
+    setActive(first);
     ref.current?.focus();
   }, [open]);
   useEffect(() => {
@@ -654,6 +654,28 @@ function useRowCursor(ids: string[], onEnter: (id: string, alt: boolean, row: HT
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   return { cursorId, setCursor, list };
+}
+
+/// The Todo pages' `s`: the statuses, next to the todo's card, the current
+/// one picked first.
+function StatusMenu({ todo, onPick, onClose }: { todo: Todo; onPick: (s: Status) => void; onClose: () => void }) {
+  const menuKeys = useMenuKeys(true, onClose, COLUMNS.findIndex((c) => c.status === todo.status));
+  const root = useRef<HTMLSpanElement>(null);
+  useOutsideClose(root, true, onClose);
+  const at = document.querySelector(`[data-row="todo:${todo.id}"]`)?.getBoundingClientRect();
+  return (
+    <span ref={root} className="status-menu" style={{ top: (at?.bottom ?? 120) + 4, left: at?.left ?? 240 }}>
+      <span className="menu" role="menu" aria-label={`${todo.title} のステータス`} {...menuKeys}>
+        {COLUMNS.map((c) => (
+          <button key={c.status} role="menuitem" onClick={() => (onPick(c.status), onClose())}>
+            <StatusIcon status={c.status} />
+            {c.label}
+            {c.status === todo.status && <span className="muted">（今）</span>}
+          </button>
+        ))}
+      </span>
+    </span>
+  );
 }
 
 /// "開く" jumps to the session where it runs (its herdr pane, else Desktop);
@@ -3649,8 +3671,11 @@ export default function App() {
   const covered = dialog !== null;
   // j k / h l and the other keys of the Todo pages (todoKeys.ts).
   const todoPage = useRef<HTMLDivElement>(null);
+  const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
+  const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
   useTodoKeys(todoPage, layout, view === "todos" && !covered, selectedTodo !== null, {
     open: openTodo,
+    status: setStatusMenuFor,
     close: () => setSelection(null),
     toggleLane,
     isCollapsed: (lane) => collapsed.has(lane),
@@ -3966,6 +3991,7 @@ export default function App() {
                     </p>
                   )}
                 </div>
+                {statusMenuTodo && <StatusMenu todo={statusMenuTodo} onPick={(st) => setStatus(statusMenuTodo, st)} onClose={() => setStatusMenuFor(null)} />}
                 <DragOverlay dropAnimation={null}>{draggedTodo && <div className="card overlay">{draggedTodo.title}</div>}</DragOverlay>
               </DndContext>
             </>

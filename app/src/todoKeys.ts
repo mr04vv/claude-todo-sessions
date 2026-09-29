@@ -1,5 +1,6 @@
 // Keyboard for the Todo kanban and list: a cursor over the cards (or rows),
-// moved with j k / h l (or the arrows), and keys acting on the todo under it.
+// moved with j k / h l (or the arrows), and keys acting on the todo under it:
+// Enter its panel, s its status.
 // It reads the page's elements, so the pages only mark them:
 //   data-row="todo:<id>" on a card or row, data-row="lane:<key>" on a list
 //   lane's head, data-lane="<key>" on a lane, data-col="<status>" on a
@@ -10,6 +11,8 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 export interface TodoKeyActions {
   /// Enter: the todo's panel.
   open: (todoId: number) => void;
+  /// s: the status menu.
+  status: (todoId: number) => void;
   /// Esc: closes the panel.
   close: () => void;
   /// The list's h / l, and Enter on a lane's head.
@@ -62,6 +65,14 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
       const right = key === "l" || key === "ArrowRight";
       if (key === "Escape") {
         actions.close();
+        return;
+      }
+      if (key === "s") {
+        const id = at && todoId(at.dataset.row!);
+        if (id != null) {
+          e.preventDefault();
+          actions.status(id);
+        }
         return;
       }
       if (!(down || up || left || right || key === "Enter")) return;

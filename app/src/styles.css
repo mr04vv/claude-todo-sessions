@@ -2246,3 +2246,17 @@ body.resizing {
   background: var(--card-hover);
   box-shadow: inset 2px 0 0 var(--accent-line);
 }
+
+/* The Todo pages' status menu (s), next to the card. */
+.status-menu {
+  position: fixed;
+  z-index: 40;
+}
+
+.status-menu .menu {
+  position: static;
+}
+
+.status-menu .menu button {
+  gap: 6px;
+}
