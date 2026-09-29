@@ -24,7 +24,7 @@ export const terminalApi = {
   /// Registers a session for the todo and returns the command that starts it.
   start: (todoId: number, options?: { model?: string; effort?: string }) =>
     invoke<TerminalRun>("terminal_start", { todoId, options: options ?? null }),
-  quick: (prompt: string) => invoke<TerminalRun>("terminal_quick", { prompt }),
+  quick: (prompt: string, cwd?: string, title?: string) => invoke<TerminalRun>("terminal_quick", { prompt, cwd: cwd ?? null, title: title ?? null }),
   /// A session running in herdr comes back as attaching herdr (its pane
   /// focused); null when (with `desktop`) Claude Desktop knows it and opens it.
   resume: (sessionId: string, desktop: boolean) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop }),

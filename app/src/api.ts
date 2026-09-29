@@ -212,7 +212,11 @@ export const api = {
   deleteTodo: (id: number) => invoke<void>("delete_todo", { id }),
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
-  quickClaude: (prompt: string) => invoke<void>("quick_claude", { prompt }),
+  /// A plain claude in herdr, at home unless `cwd` is given.
+  quickClaude: (prompt: string, cwd?: string, title?: string) => invoke<void>("quick_claude", { prompt, cwd: cwd ?? null, title: title ?? null }),
+  /// A PR review in a cloud session linked to no todo; returns its id.
+  startReviewCloud: (repo: string, title: string, prompt: string, desktop: boolean) => invoke<string>("start_review_cloud", { repo, title, prompt, desktop }),
+  startDesktopPrompt: (cwd: string | undefined, prompt: string) => invoke<void>("start_desktop_prompt", { cwd: cwd ?? null, prompt }),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openLink: (url: string) => invoke<void>("open_link", { url }),
   openInDia: (url: string) => invoke<void>("open_in_dia", { url }),

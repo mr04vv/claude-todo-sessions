@@ -324,11 +324,11 @@ fn focus_herdr_pane(session_id: &str) -> Option<String> {
 
 /// Opens a session in `target`: "herdr" focuses its pane, "desktop" opens
 /// Claude Desktop, and none tries herdr first for local sessions.
-/// Opens a new herdr workspace in the home folder running a plain `claude`,
-/// for a quick question outside any todo.
+/// Opens a new herdr workspace running a plain `claude`, outside any todo:
+/// a quick question at home, or a PR review in its repository's folder.
 #[tauri::command(async)]
-fn quick_claude(state: State<AppState>, prompt: Option<String>) -> Result<(), String> {
-    let TerminalRun { cwd, title: label, command, .. } = quick_run(prompt.as_deref());
+fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>) -> Result<(), String> {
+    let TerminalRun { cwd, title: label, command, .. } = quick_run(prompt.as_deref(), cwd, title);
     match start_in_herdr(&state, &cwd, &label, &command, true) {
         // The new workspace is focused inside herdr; bring its terminal forward too.
         Ok(()) => cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err),
@@ -336,15 +336,16 @@ fn quick_claude(state: State<AppState>, prompt: Option<String>) -> Result<(), St
     }
 }
 
-/// A plain `claude` at home, with the prompt if one is given. Its session id
-/// is picked here so the in-app terminal can find its tab again.
-fn quick_run(prompt: Option<&str>) -> TerminalRun {
+/// A plain `claude` (at home unless `cwd` is given), with the prompt if one
+/// is given. Its session id is picked here so the in-app terminal can find
+/// its tab again.
+fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -> TerminalRun {
     let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
     let session = uuid::Uuid::new_v4().to_string();
     let first = prompt.map(|p| format!(" {}", shell_quote(p))).unwrap_or_default();
     TerminalRun {
-        cwd: home().to_string_lossy().to_string(),
-        title: prompt.map(|p| p.chars().take(24).collect()).unwrap_or_else(|| "claude".into()),
+        cwd: cwd.filter(|c| std::path::Path::new(c).is_dir()).unwrap_or_else(|| home().to_string_lossy().to_string()),
+        title: title.or_else(|| prompt.map(|p| p.chars().take(24).collect())).unwrap_or_else(|| "claude".into()),
         command: format!("claude --session-id {session}{first}"),
         session: Some(session),
         herdr: None,
@@ -359,8 +360,8 @@ fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOpt
 }
 
 #[tauri::command(async)]
-fn terminal_quick(prompt: Option<String>) -> TerminalRun {
-    quick_run(prompt.as_deref())
+fn terminal_quick(prompt: Option<String>, cwd: Option<String>, title: Option<String>) -> TerminalRun {
+    quick_run(prompt.as_deref(), cwd, title)
 }
 
 /// What the in-app terminal runs to show a session: a session running in
@@ -541,6 +542,23 @@ fn todo_or_err(db: &Db, id: i64) -> Result<Todo, String> {
 /// A terminal session needs some folder; a todo without one starts at home.
 fn terminal_cwd(todo: &Todo) -> String {
     todo.cwd.clone().unwrap_or_else(|| home().to_string_lossy().into())
+}
+
+/// Reviews a PR in a cloud session linked to no todo; `desktop` opens it in
+/// Claude Desktop, else the page shows it.
+#[tauri::command(async)]
+fn start_review_cloud(repo: String, title: String, prompt: String, desktop: bool) -> Result<String, String> {
+    let id = cts_core::cloud::create_review_session(&open_db()?, &repo, &title, &prompt)?;
+    if desktop {
+        open_url(&launch::jump_url(&id, None))?;
+    }
+    Ok(id)
+}
+
+/// A new Claude Desktop session with `prompt`, in `cwd` when given.
+#[tauri::command(async)]
+fn start_desktop_prompt(cwd: Option<String>, prompt: String) -> Result<(), String> {
+    open_url(&launch::desktop_new_url(cwd.as_deref(), &prompt))
 }
 
 #[tauri::command(async)]
@@ -1791,6 +1809,8 @@ fn main() {
             herdr_sessions,
             terminal_start,
             archive_sessions,
+            start_review_cloud,
+            start_desktop_prompt,
             terminal_quick,
             terminal_resume,
             set_in_app_terminal,

@@ -386,14 +386,27 @@ impl Client {
 // ponytail: reuses the environment of the latest cloud session; add an
 // environment picker if more than one environment is in use.
 pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prompt_body: &str, opts: &StartOptions) -> Result<String, String> {
+    let prompt = crate::launch::start_prompt(todo_id, prompt_body);
+    let id = create_unlinked(db, repos, title, &prompt, &format!("todo-{todo_id}"), opts)?;
+    db.link_session(&id, todo_id).map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+/// Creates a cloud session reviewing a PR of `repo`, linked to no todo.
+pub fn create_review_session(db: &Db, repo: &str, title: &str, prompt: &str) -> Result<String, String> {
+    create_unlinked(db, &[repo.to_string()], title, prompt, "review", &StartOptions::default())
+}
+
+/// Creates a cloud session with `prompt` first, pushing to a
+/// `claude/<branch_stem>-<suffix>` branch, and records it here.
+fn create_unlinked(db: &Db, repos: &[String], title: &str, prompt: &str, branch_stem: &str, opts: &StartOptions) -> Result<String, String> {
     let repo_url = repos.first().map(|main| format!("https://github.com/{main}")).unwrap_or_default();
     let mut client = Client::new()?;
-    let prompt = crate::launch::start_prompt(todo_id, prompt_body);
     let uuid = uuid::Uuid::new_v4().to_string();
-    let branch = format!("{BRANCH_PREFIX}todo-{todo_id}-{}", &uuid[..BRANCH_SUFFIX_LEN]);
+    let branch = format!("{BRANCH_PREFIX}{branch_stem}-{}", &uuid[..BRANCH_SUFFIX_LEN]);
     let org = organization_uuid()?;
     let post = |client: &mut Client, env_id: &str| {
-        let mut body = create_body(env_id, repos, &branch, &prompt, title, &uuid);
+        let mut body = create_body(env_id, repos, &branch, prompt, title, &uuid);
         apply_options(&mut body, opts);
         client.post("/v1/sessions", &org, &body)
     };
@@ -420,7 +433,6 @@ pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prom
     db.record_session(&id, &repo_url, SessionState::Idle).map_err(|e| e.to_string())?;
     db.set_session_repos(&id, repos).map_err(|e| e.to_string())?;
     db.set_session_title(&id, title).map_err(|e| e.to_string())?;
-    db.link_session(&id, todo_id).map_err(|e| e.to_string())?;
     db.mark_marker_checked(&id).map_err(|e| e.to_string())?;
     Ok(id)
 }

@@ -2379,12 +2379,13 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
     mark(p.url, true);
     run(async () => {
       const finish = reviewRunner === "web" ? beginWeb?.() : undefined;
+      // A review is its own session, not a todo; the PR list is where it is followed.
+      const title = `${REVIEW_TITLE_PREFIX}${p.title}`;
+      const prompt = reviewPrompt(p.url, submit);
       try {
-        const todo = todoOf(p) ?? (await makeTodo(p, `${REVIEW_TITLE_PREFIX}${p.title}`));
-        await api.updateTodo(todo.id, { prompt: reviewPrompt(p.url, submit) });
-        if (reviewRunner === "desktop") await api.startDesktop(todo.id);
-        else if (reviewRunner === "terminal") terminal ? terminal.open(await terminalApi.start(todo.id)) : await api.startTerminal(todo.id);
-        else finish?.(await api.startCloud(todo.id, undefined, reviewRunner === "cloud"));
+        if (reviewRunner === "desktop") await api.startDesktopPrompt(cwdOf(p), prompt);
+        else if (reviewRunner === "terminal") terminal ? terminal.open(await terminalApi.quick(prompt, cwdOf(p), title)) : await api.quickClaude(prompt, cwdOf(p), title);
+        else finish?.(await api.startReviewCloud(p.repo, title, prompt, reviewRunner === "cloud"));
       } catch (e) {
         finish?.(null);
         throw e;
