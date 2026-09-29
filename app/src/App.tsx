@@ -3223,6 +3223,7 @@ const TODO_KEYS: [string, string][] = [
   ["o", "紐づいたセッションを開く"],
   ["⌥Enter", "セッションの開き方を選ぶ"],
   ["p", "PR（なければ issue）を開く"],
+  ["u", "親の todo を開く（リストの親のレーンでは見出しで Enter でも）"],
   ["c", "その場所に todo を追加"],
   ["/", "絞り込み欄へ"],
   ["?", "このキーの一覧"],
@@ -3698,6 +3699,10 @@ export default function App() {
       if (url) openInBrowser(url);
     },
     help: () => setDialog("keys"),
+    parent: (id) => {
+      const parent = allTodos.find((t) => t.id === id)?.parent_id;
+      if (parent != null) openTodo(parent);
+    },
     shift: (id, delta) => {
       const todo = allTodos.find((t) => t.id === id);
       const next = todo && COLUMNS[COLUMNS.findIndex((c) => c.status === todo.status) + delta];

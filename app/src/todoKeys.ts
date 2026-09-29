@@ -1,7 +1,8 @@
 // Keyboard for the Todo kanban and list: a cursor over the cards (or rows),
 // moved with j k / h l (or the arrows), and keys acting on the todo under it:
 // Enter its panel, s its status, ⇧h ⇧l (kanban) the column it is in, o and
-// ⌥Enter its session, p its PR; c adds a todo there, / searches, ? lists the keys.
+// ⌥Enter its session, p its PR, u its parent; c adds a todo there, / searches,
+// ? lists the keys.
 // It reads the page's elements, so the pages only mark them:
 //   data-row="todo:<id>" on a card or row, data-row="lane:<key>" on a list
 //   lane's head, data-lane="<key>" on a lane, data-col="<status>" on a
@@ -16,6 +17,8 @@ export interface TodoKeyActions {
   status: (todoId: number) => void;
   /// The kanban's ⇧h ⇧l (⇧← ⇧→): to the column before (-1) or after (1).
   shift: (todoId: number, delta: -1 | 1) => void;
+  /// u: the todo's parent's panel.
+  parent: (todoId: number) => void;
   /// p: the todo's PR (or issue).
   link: (todoId: number) => void;
   /// ?: the list of these keys.
@@ -30,6 +33,8 @@ export interface TodoKeyActions {
 const ROW = "[data-row]";
 const LANE_ROW = "lane:";
 const TODO_ROW = "todo:";
+/// Lanes of a parent todo when grouped by parent (App.tsx's buildLanes).
+const PARENT_LANE = "parent:";
 /// Keys typed here are text, not commands.
 const TYPING = "input, textarea, select, [contenteditable], [role=menu], [role=dialog], .xterm";
 
@@ -85,9 +90,10 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
       if (rows.length === 0) return;
       // o and ⌥Enter open the todo's session as its "開く" and its menu do; p its PR.
       const id = at ? todoId(at.dataset.row!) : null;
-      if (id !== null && (key === "o" || key === "p" || (key === "Enter" && e.altKey))) {
+      if (id !== null && (key === "o" || key === "p" || key === "u" || (key === "Enter" && e.altKey))) {
         e.preventDefault();
         if (key === "p") actions.link(id);
+        else if (key === "u") actions.parent(id);
         else at!.querySelector<HTMLButtonElement>(key === "o" ? ".open-main" : ".open-caret")?.click();
         return;
       }
@@ -126,7 +132,12 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
       if (key === "Enter") {
         const id = todoId(row);
         if (id !== null) actions.open(id);
-        else actions.toggleLane(row.slice(LANE_ROW.length));
+        else {
+          // A parent's lane opens the parent; other lanes fold and open.
+          const lane = row.slice(LANE_ROW.length);
+          if (lane.startsWith(PARENT_LANE)) actions.open(Number(lane.slice(PARENT_LANE.length)));
+          else actions.toggleLane(lane);
+        }
         return;
       }
       if (layout === "list") {
