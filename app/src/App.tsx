@@ -1586,6 +1586,9 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
 /// One tab's page: its webview laid over a placeholder that follows the
 /// layout. `covered` hides it while a dialog is up, since a native webview
 /// draws above everything in the page.
+/// A tab to give the typing to (its page's text box) once it is shown.
+let typeInto: string | null = null;
+
 function TabView({ tab: active, covered, report, onAddress, onArchive }: {
   tab: BrowserTab;
   covered: boolean;
@@ -1599,7 +1602,15 @@ function TabView({ tab: active, covered, report, onAddress, onArchive }: {
     const r = slot.current!.getBoundingClientRect();
     return { x: r.left, y: r.top, width: r.width, height: r.height, viewport: window.innerHeight };
   };
-  const navigate = (to: string) => api.browserOpen(active.id, to, rect()).catch(report);
+  const navigate = (to: string) =>
+    api
+      .browserOpen(active.id, to, rect())
+      .then(() => {
+        if (typeInto !== active.id) return;
+        typeInto = null;
+        return api.browserFocus(active.id, true);
+      })
+      .catch(report);
   // Switching tabs or coming back from under a dialog shows the page the tab
   // is on; the backend leaves a tab alone when it already shows that URL.
   useEffect(() => {
@@ -3075,10 +3086,12 @@ export default function App() {
     remember(TERMINAL_TARGET_KEY, t);
     setTerminalTargetState(t);
   };
-  /// Brings up a pinned page, opening its tab the first time.
+  /// Brings up a pinned page, opening its tab the first time, with its text
+  /// box ready for typing.
   const showPinned = (id: string) => {
     const page = PINNED_PAGES.find((p) => p.id === id);
     if (!page) return;
+    typeInto = id;
     if (!tabs.some((t) => t.id === id)) setTabs((prev) => [{ id, url: page.url, title: page.label, loading: true, nav: 0, pinned: true }, ...prev]);
     setBrowserShown(true);
     setActiveTabId(id);

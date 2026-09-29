@@ -51,6 +51,21 @@
     true,
   );
 
+  // The app asks a page (ChatGPT's) to take the typing: its prompt box, once
+  // the page has drawn it.
+  const INPUT = '#prompt-textarea, [contenteditable="true"], textarea, input[type="text"], input:not([type])';
+  const INPUT_WAIT_MS = 10000;
+  const INPUT_RETRY_MS = 200;
+  window.__todoSessionsFocusInput = () => {
+    const until = Date.now() + INPUT_WAIT_MS;
+    const tryFocus = () => {
+      const el = document.querySelector(INPUT);
+      if (el) el.focus();
+      else if (Date.now() < until) setTimeout(tryFocus, INPUT_RETRY_MS);
+    };
+    tryFocus();
+  };
+
   let menu = null;
   const close = () => {
     menu?.remove();

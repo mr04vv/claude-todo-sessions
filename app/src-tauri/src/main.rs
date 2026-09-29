@@ -68,6 +68,8 @@ struct AppState {
     herdr_session: Mutex<Option<String>>,
     /// Local sessions run in the in-app terminal pane rather than herdr.
     in_app_terminal: AtomicBool,
+    /// Tabs whose page should focus its text box once it loads, and since when.
+    focus_input: Mutex<HashMap<String, std::time::Instant>>,
     /// Held while a browser tab is shown or created.
     browser_lock: Mutex<()>,
     /// CLI session ids archived in Desktop. Reading every Desktop record is
@@ -1137,6 +1139,10 @@ struct NewTab {
     url: String,
 }
 
+/// Focuses the page's text box (see `focusInput` in browser_page.js).
+const FOCUS_INPUT_SCRIPT: &str = "window.__todoSessionsFocusInput?.()";
+/// How long after asking a page still gets its text box focused when it loads.
+const FOCUS_INPUT_WITHIN: Duration = Duration::from_secs(15);
 /// Keys and the right-click menu inside every page (see the file).
 const BROWSER_PAGE_SCRIPT: &str = include_str!("browser_page.js");
 /// A page sends ⌘L as a navigation to this scheme; it is cancelled and the
@@ -1232,8 +1238,15 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             };
             false
         })
-        .on_page_load(move |_, payload| {
+        .on_page_load(move |view, payload| {
             let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
+            // A page asked to take the typing (see `browser_focus`) once it has loaded.
+            if !loading {
+                let asked = on_load.state::<AppState>().focus_input.lock().ok().and_then(|mut m| m.remove(&load_tab));
+                if asked.is_some_and(|at| at.elapsed() < FOCUS_INPUT_WITHIN) {
+                    let _ = view.eval(FOCUS_INPUT_SCRIPT);
+                }
+            }
             let _ = on_load.emit(BROWSER_URL_EVENT, TabUrl { tab: load_tab.clone(), url: payload.url().to_string(), loading });
         })
         .on_document_title_changed(move |view, title| {
@@ -1285,13 +1298,17 @@ fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
     }
 }
 
-/// Gives a tab's page the keyboard, as leaving the address bar with Esc does.
+/// Gives a tab's page the keyboard, as leaving the address bar with Esc does;
+/// with `input`, its text box too (ChatGPT's prompt), now or once it loads.
 #[tauri::command(async)]
-fn browser_focus(app: AppHandle, tab: String) -> Result<(), String> {
-    match app.get_webview(&tab_label(&tab)?) {
-        Some(view) => view.set_focus().map_err(err),
-        None => Ok(()),
+fn browser_focus(app: AppHandle, state: State<AppState>, tab: String, input: Option<bool>) -> Result<(), String> {
+    let Some(view) = app.get_webview(&tab_label(&tab)?) else { return Ok(()) };
+    view.set_focus().map_err(err)?;
+    if input == Some(true) {
+        state.focus_input.lock().map_err(err)?.insert(tab, std::time::Instant::now());
+        view.eval(FOCUS_INPUT_SCRIPT).map_err(err)?;
     }
+    Ok(())
 }
 
 /// A tab's address right now, which a page moving without a load (history
@@ -1745,6 +1762,7 @@ fn main() {
             loop_enabled: AtomicBool::new(true),
             herdr_session: Mutex::new(None),
             in_app_terminal: AtomicBool::new(false),
+            focus_input: Mutex::new(HashMap::new()),
             archived: Mutex::new(HashSet::new()),
             browser_lock: Mutex::new(()),
             github_wake: Mutex::new(github_tx),
