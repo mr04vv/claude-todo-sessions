@@ -928,12 +928,15 @@ interface TodoFilter {
   waiting: boolean;
 }
 const NO_FILTER: TodoFilter = { text: "", statuses: [], places: [], waiting: false };
-const TODO_FILTER_KEY = "todoFilter";
-/// Filters kept under a name, listed in the sidebar and ⌘K.
+/// The kanban's and the list's filters, each its own.
+const TODO_FILTERS_KEY = "todoFilters";
+/// Filters kept under a name, listed in the sidebar and ⌘K; each opens the
+/// page (kanban or list) it was saved on.
 interface SavedFilter {
   id: string;
   name: string;
   filter: TodoFilter;
+  layout: Layout;
 }
 const SAVED_FILTERS_KEY = "savedFilters";
 const filterCount = (f: TodoFilter) => (f.text.trim() ? 1 : 0) + f.statuses.length + f.places.length + (f.waiting ? 1 : 0);
@@ -953,8 +956,8 @@ function matchesFilter(t: Todo, f: TodoFilter) {
 /// with saving the filter under a name.
 function TodoFilterBar({ filter, version, places, onChange, onSave }: {
   filter: TodoFilter;
-  /// Bumped when the filter is set from outside (a saved one, cleared), so the search box shows it.
-  version: number;
+  /// Changes when the filter is set from outside (another page's, a saved one, cleared), so the search box shows it.
+  version: string;
   places: string[];
   onChange: (f: TodoFilter) => void;
   onSave: (name: string) => void;
@@ -3364,23 +3367,31 @@ export default function App() {
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
   const [groupBy, setGroupByState] = useState<GroupBy>(() => load(GROUP_KEY, ["repo", "parent"] as const, "repo"));
   const [doneRecent, setDoneRecentState] = useState<boolean>(() => load(DONE_RECENT_KEY, ["1", "0"] as const, "1") === "1");
-  // The Todo pages' filter, kept across launches, and the saved ones.
-  const [todoFilter, setTodoFilterState] = useState<TodoFilter>(() => ({ ...NO_FILTER, ...loadJson<Partial<TodoFilter>>(TODO_FILTER_KEY, {}) }));
+  // The kanban's and the list's filters, kept across launches, and the saved ones.
+  const [todoFilters, setTodoFiltersState] = useState<Record<Layout, TodoFilter>>(() => {
+    const saved = loadJson<Partial<Record<Layout, Partial<TodoFilter>>>>(TODO_FILTERS_KEY, {});
+    return { board: { ...NO_FILTER, ...saved.board }, list: { ...NO_FILTER, ...saved.list } };
+  });
+  const todoFilter = todoFilters[layout];
   const [filterVersion, setFilterVersion] = useState(0);
-  const setTodoFilter = (f: TodoFilter, fromOutside = false) => {
-    remember(TODO_FILTER_KEY, JSON.stringify(f));
-    setTodoFilterState(f);
+  const setTodoFilter = (f: TodoFilter, fromOutside = false, on: Layout = layout) => {
+    const next = { ...todoFilters, [on]: f };
+    remember(TODO_FILTERS_KEY, JSON.stringify(next));
+    setTodoFiltersState(next);
     if (fromOutside) setFilterVersion((v) => v + 1);
   };
-  const [savedFilters, setSavedFiltersState] = useState<SavedFilter[]>(() => loadJson<SavedFilter[]>(SAVED_FILTERS_KEY, []));
+  const [savedFilters, setSavedFiltersState] = useState<SavedFilter[]>(() =>
+    // Ones saved before filters had a page open on the kanban.
+    loadJson<SavedFilter[]>(SAVED_FILTERS_KEY, []).map((f) => ({ ...f, layout: f.layout ?? "board" })),
+  );
   const setSavedFilters = (list: SavedFilter[]) => {
     remember(SAVED_FILTERS_KEY, JSON.stringify(list));
     setSavedFiltersState(list);
   };
-  const saveFilter = (name: string) => setSavedFilters([...savedFilters.filter((f) => f.name !== name), { id: `f${Date.now()}`, name, filter: todoFilter }]);
+  const saveFilter = (name: string) => setSavedFilters([...savedFilters.filter((f) => f.name !== name), { id: `f${Date.now()}`, name, filter: todoFilter, layout }]);
   const applyFilter = (f: SavedFilter) => {
-    setTodoFilter(f.filter, true);
-    setView("todos");
+    setTodoFilter(f.filter, true, f.layout);
+    showTodos(f.layout);
   };
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [local, setLocal] = useState<LocalRepo[]>([]);
@@ -3703,9 +3714,9 @@ export default function App() {
             <div className="sidebar-section">
               <div className="section-title">フィルター</div>
               {savedFilters.map((f) => (
-                <div key={f.id} className={`repo${view === "todos" && sameFilter(todoFilter, f.filter) ? " on" : ""}`}>
+                <div key={f.id} className={`repo${view === "todos" && layout === f.layout && sameFilter(todoFilter, f.filter) ? " on" : ""}`}>
                   <button className="repo-main" title={`${f.name} で絞り込む`} onClick={() => applyFilter(f)}>
-                    <Icon name="search" size={12} />
+                    <Icon name={f.layout === "board" ? "board" : "list"} size={12} />
                     <span className="ellipsis grow">{f.name}</span>
                   </button>
                   <button className="ghost icon repo-gh" aria-label={`フィルター ${f.name} を消す`} title="消す" onClick={() => setSavedFilters(savedFilters.filter((x) => x.id !== f.id))}>
@@ -3863,7 +3874,7 @@ export default function App() {
                 )}
                 <TodoFilterBar
                   filter={todoFilter}
-                  version={filterVersion}
+                  version={`${layout}:${filterVersion}`}
                   places={repoLanes.map((l) => l.key)}
                   onChange={(f) => setTodoFilter(f, f === NO_FILTER)}
                   onSave={saveFilter}
