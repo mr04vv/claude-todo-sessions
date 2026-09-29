@@ -2034,13 +2034,8 @@ input.panel-title:focus-visible {
   flex-shrink: 0;
 }
 
-.notice-row:not(.read) .row-title {
+.notice-row .row-title {
   font-weight: 600;
-}
-
-.notice-row.read .row-title,
-.notice-row.read .state {
-  color: var(--text-3);
 }
 
 .notice-todo {

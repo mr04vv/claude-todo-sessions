@@ -2488,47 +2488,37 @@ const NOTICE_STATE: Record<Notice["kind"], string> = {
   review_requested: "state-review",
 };
 
-/// Every notification the app posted, unread ones marked; opening one reads it.
+/// The notifications not dealt with yet; opening or dismissing one takes it off.
 function NoticesPage({ board, report, onOpenTodo, run }: {
   board: Board;
   report: (e: unknown) => void;
   onOpenTodo: (id: number) => void;
   run: (f: () => Promise<unknown>) => void;
 }) {
-  // Unread first: that is what the page is opened for.
-  const [unreadOnly, setUnreadOnly] = useState(true);
   const openCloud = useContext(OpenCloudContext);
   const terminal = useContext(TerminalContext);
   const openInBrowser = useContext(BrowserContext);
-  const unread = board.notifications.filter((n) => !n.read).length;
-  const rows = unreadOnly ? board.notifications.filter((n) => !n.read) : board.notifications;
+  const rows = board.notifications.filter((n) => !n.read);
   const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
   const read = (n: Notice) => !n.read && run(() => api.readNotifications(n.id));
   return (
     <>
       <header className="toolbar">
         <h1>通知</h1>
-        <div className="segmented" role="group" aria-label="絞り込み">
-          <button className={unreadOnly ? "" : "on"} aria-pressed={!unreadOnly} onClick={() => setUnreadOnly(false)}>
-            すべて
-          </button>
-          <button className={unreadOnly ? "on" : ""} aria-pressed={unreadOnly} onClick={() => setUnreadOnly(true)}>
-            未読 {unread}
-          </button>
-        </div>
+        <span className="muted">{rows.length}</span>
         <span className="grow" />
-        <button disabled={unread === 0} onClick={() => run(() => api.readNotifications())}>
-          <Icon name="check" size={13} /> すべて既読にする
+        <button disabled={rows.length === 0} onClick={() => run(() => api.readNotifications())}>
+          <Icon name="check" size={13} /> すべて消す
         </button>
       </header>
       <div className="content">
-        {rows.length === 0 && <p className="muted empty">{unreadOnly ? "未読の通知はありません。" : "まだ通知はありません。セッションの作業が終わるか入力待ちになると、ここに残ります。"}</p>}
+        {rows.length === 0 && <p className="muted empty">通知はありません。セッションの作業が終わる、入力待ちになる、レビューを頼まれると、ここに出ます。</p>}
         <ul className="rows">
           {rows.map((n) => {
             const todo = todoOf(n);
             return (
-              <li key={n.id} className={`row notice-row${n.read ? " read" : ""}`} onClick={() => (read(n), todo && onOpenTodo(todo.id))}>
-                <span className={`unread-dot${n.read ? "" : " on"}`} aria-label={n.read ? "既読" : "未読"} />
+              <li key={n.id} className="row notice-row" onClick={() => (read(n), todo && onOpenTodo(todo.id))}>
+                <span className="unread-dot on" aria-hidden="true" />
                 <span className={`state ${NOTICE_STATE[n.kind]}`}>
                   <i />
                   {NOTICE_LABEL[n.kind]}
@@ -2547,6 +2537,9 @@ function NoticesPage({ board, report, onOpenTodo, run }: {
                   }}
                 >
                   開く
+                </button>
+                <button className="ghost icon" aria-label="この通知を消す" title="消す" onClick={(e) => (e.stopPropagation(), read(n))}>
+                  <Icon name="close" size={12} />
                 </button>
               </li>
             );
@@ -3333,7 +3326,7 @@ export default function App() {
       ),
     },
     { key: "prs", label: "PR", icon: "pr", badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
-    { key: "notices", label: "通知", icon: "bell", badge: unreadCount > 0 && <span className="pill accent">未読 {unreadCount}</span> },
+    { key: "notices", label: "通知", icon: "bell", badge: unreadCount > 0 && <span className="pill accent">{unreadCount}</span> },
   ];
 
   const panel = view === "todos" && selectedTodo ? "todo" : view === "sessions" && selectedSession ? "session" : null;
