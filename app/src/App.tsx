@@ -24,6 +24,7 @@ import {
   BROWSER_ARCHIVE_EVENT,
   OPEN_PALETTE_EVENT,
   FOCUS_APP_EVENT,
+  WINDOW_FOCUS_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -62,6 +63,8 @@ const USAGE_REFRESH_MS = 5 * 60_000;
 /// Until the first numbers arrive, asked again this soon.
 const USAGE_RETRY_MS = 60_000;
 const PR_REFRESH_MS = 5 * 60_000;
+/// How long the focus events are let settle before marking the typing's side.
+const FOCUS_SETTLE_MS = 120;
 const DETAIL_REFRESH_MS = 10_000;
 /// The shown tab's address is checked this often, for pages that move
 /// without loading or changing their title.
@@ -2627,8 +2630,10 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
 type PrFilter = "all" | "review" | "mine";
 type PrRow = Pr & { kind: "review" | "mine" };
 
-function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRefresh, onOpenTodo }: {
+function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUrl, run, onRefresh, onOpenTodo }: {
   prs: PrLists | null;
+  /// While the PRs are being taken again, so ↻ turns.
+  prsLoading: boolean;
   prError: string | null;
   todos: Todo[];
   local: LocalRepo[];
@@ -2691,7 +2696,7 @@ function PrsPage({ prs, prError, todos, local, repoFilter, browserUrl, run, onRe
           <option value="desktop">/review は Local・Desktop</option>
           <option value="terminal">/review は {terminal ? "ターミナル" : "herdr"}</option>
         </select>
-        <button className="ghost icon" aria-label="PR を取り直す" title="PR を取り直す" onClick={onRefresh}>
+        <button className={`ghost icon${prsLoading ? " turning" : ""}`} aria-label="PR を取り直す（⌘R）" title="PR を取り直す（⌘R）" aria-busy={prsLoading} onClick={onRefresh}>
           <Icon name="sync" size={14} />
         </button>
       </header>
@@ -3394,22 +3399,30 @@ export default function App() {
   // Which side has the typing, marked on the page: this one, the pane (its
   // terminal, or a page, when this page lost the keyboard but the window has
   // it), or neither while another app is in front.
+  // The page's focus comes from the DOM and whether the app is in front from
+  // the backend, asked once the focus events stop. The window's own events
+  // (which also fire as a browser tab takes the keyboard) only prompt a look.
   const [typingSide, setTypingSide] = useState<"app" | "pane" | null>("app");
   useEffect(() => {
-    const update = () => {
-      if (document.hasFocus()) return setTypingSide(document.activeElement?.closest(".xterm") ? "pane" : "app");
-      // The window's own state settles a moment after the page's.
-      setTimeout(() => api.windowFocused().then((f) => setTypingSide(f && !document.hasFocus() ? "pane" : document.hasFocus() ? "app" : null), () => {}), 60);
+    let timer = 0;
+    const settle = () => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (document.hasFocus()) return setTypingSide(document.activeElement?.closest(".xterm") ? "pane" : "app");
+        api.windowFocused().then((f) => !document.hasFocus() && setTypingSide(f ? "pane" : null), () => {});
+      }, FOCUS_SETTLE_MS);
     };
-    window.addEventListener("focus", update);
-    window.addEventListener("blur", update);
-    document.addEventListener("focusin", update);
-    document.addEventListener("focusout", update);
+    const events = ["focus", "blur"] as const;
+    events.forEach((ev) => window.addEventListener(ev, settle));
+    document.addEventListener("focusin", settle);
+    document.addEventListener("focusout", settle);
+    const off = listen(WINDOW_FOCUS_EVENT, settle);
     return () => {
-      window.removeEventListener("focus", update);
-      window.removeEventListener("blur", update);
-      document.removeEventListener("focusin", update);
-      document.removeEventListener("focusout", update);
+      clearTimeout(timer);
+      void off.then((f) => f());
+      events.forEach((ev) => window.removeEventListener(ev, settle));
+      document.removeEventListener("focusin", settle);
+      document.removeEventListener("focusout", settle);
     };
   }, []);
   const closeShownRef = useRef(closeShown);
@@ -3566,12 +3579,17 @@ export default function App() {
     remember(DOCK_W_KEY, String(w));
     setDockWState(w);
   };
+  const [prsLoading, setPrsLoading] = useState(false);
   const loadPrs = useCallback(() => {
     prsLoadedAt.current = Date.now();
-    api.ghPrs().then(
-      (p) => (setPrs(p), setPrError(null)),
-      (e) => setPrError(String(e)),
-    );
+    setPrsLoading(true);
+    api
+      .ghPrs()
+      .then(
+        (p) => (setPrs(p), setPrError(null)),
+        (e) => setPrError(String(e)),
+      )
+      .finally(() => setPrsLoading(false));
   }, []);
 
   useEffect(() => {
@@ -4093,7 +4111,7 @@ export default function App() {
           )}
           {view === "notices" && board && <NoticesPage board={board} local={local} report={report} onOpenTodo={goTodo} run={run} />}
           {view === "prs" && (
-            <PrsPage prs={prs} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} />
+            <PrsPage prs={prs} prsLoading={prsLoading} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} />
           )}
         </main>
 

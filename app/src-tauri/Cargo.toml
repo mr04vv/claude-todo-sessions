@@ -14,6 +14,8 @@ serde_json = "1"
 tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
 mac-notification-sys = "0.6"
 uuid = { version = "1", features = ["v4"] }
+# Whether the app is in front, which the window's focus cannot tell once a browser tab has the keyboard.
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication"] }
 # The in-app terminal pane (terminal.rs).
 portable-pty = "0.9"
 base64 = "0.22"

@@ -256,6 +256,8 @@ export const BROWSER_URL_EVENT = "browser-url";
 export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 /** When ⌘W in the app menu asks to close the shown tab. */
 export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
+/** When the window's focus changes (another app, or a browser tab, took the keyboard). */
+export const WINDOW_FOCUS_EVENT = "window-focus";
 /** When a page's ⌃h hands the typing back to the app's side. */
 export const FOCUS_APP_EVENT = "focus-app";
 /** When a page's ⌘K asks for the app's commands. */

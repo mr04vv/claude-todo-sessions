@@ -2131,6 +2131,11 @@ body.resizing {
   animation: slide 1.1s ease-in-out infinite;
 }
 
+/* An icon button whose work is under way (↻ taking the PRs again). */
+.turning svg {
+  animation: spin 0.9s linear infinite;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);

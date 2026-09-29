@@ -414,11 +414,16 @@ fn resume_run(state: &AppState, session_id: &str) -> Result<TerminalRun, String>
     })
 }
 
-/// Whether the app's window has the keyboard: with the page not having it,
-/// a browser tab does.
+/// When the window's focus changes: another app came in front, or a browser
+/// tab or the page took the keyboard.
+const WINDOW_FOCUS_EVENT: &str = "window-focus";
+
+/// Whether the app is in front. With the page not having the keyboard, a
+/// browser tab then has it. (The window's own focus follows the webviews, so
+/// it cannot tell a browser tab from another app.)
 #[tauri::command]
-fn window_focused(app: AppHandle) -> bool {
-    app.get_window("main").and_then(|w| w.is_focused().ok()).unwrap_or(false)
+fn window_focused() -> bool {
+    objc2_app_kit::NSRunningApplication::currentApplication().isActive()
 }
 
 /// Archives cloud sessions, as archiving them on claude.ai does.
@@ -1832,11 +1837,16 @@ fn main() {
                 let _ = app.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: String::new() });
             }
         })
-        .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // A cue for the page to look again at who has the typing (see `window_focused`).
+            WindowEvent::Focused(_) => {
+                let _ = window.emit(WINDOW_FOCUS_EVENT, ());
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             board,

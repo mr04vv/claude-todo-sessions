@@ -3833,6 +3833,7 @@ dependencies = [
  "base64 0.22.1",
  "cts-core",
  "mac-notification-sys",
+ "objc2-app-kit",
  "portable-pty",
  "serde",
  "serde_json",
