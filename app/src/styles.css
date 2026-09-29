@@ -1067,6 +1067,14 @@ button.lane-toggle:hover .lane-name {
   background: var(--card-hover);
 }
 
+/* The item the keyboard is on (↑↓ / j k move it; useMenuKeys). */
+.menu [role="menuitem"]:focus {
+  background: var(--accent-soft);
+  color: var(--accent);
+  outline: none;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
 /* Lists */
 
 .list-lane {

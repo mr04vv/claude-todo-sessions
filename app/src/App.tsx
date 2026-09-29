@@ -51,7 +51,7 @@ import {
   type Status,
   type Todo,
 } from "./api";
-import { closeTerminal, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
+import { closeTerminal, focusTerminal, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
 /// The usage API answers 429 when asked often (status lines poll it too), so
@@ -3272,7 +3272,10 @@ export default function App() {
           open: (run) => {
             // herdr is attached once per herdr session; its pane is already focused.
             const attached = run.herdr ? tabs.find((t) => t.term?.herdr === run.herdr) : undefined;
-            if (attached) return showTab(attached.id);
+            if (attached) {
+              showTab(attached.id);
+              return void requestAnimationFrame(() => focusTerminal(attached.id));
+            }
             const id = `t${nextTab.current++}`;
             setBrowserShown(true);
             setTabs((prev) => [...prev, { id, url: "", title: run.title, loading: false, nav: 0, term: run }]);
@@ -3282,6 +3285,8 @@ export default function App() {
             const tab = terminalTab(sessionId);
             if (!tab) return false;
             showTab(tab.id);
+            // After the tab is shown, so its terminal is in the page.
+            requestAnimationFrame(() => focusTerminal(tab.id));
             return true;
           },
         }

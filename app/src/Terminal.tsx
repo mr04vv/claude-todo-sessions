@@ -245,6 +245,14 @@ function entryFor(id: string, look: Look): Entry {
   return e;
 }
 
+/// Gives terminal `id` the keyboard, as when its tab is brought up again
+/// (a new one takes it as it is first shown).
+export function focusTerminal(id: string) {
+  const term = entries.get(id)?.term;
+  if (!term?.element) return;
+  invoke("term_focus").catch(() => {}).finally(() => term.focus());
+}
+
 /// Ends the program and forgets the terminal (closing its tab).
 export function closeTerminal(id: string) {
   entries.get(id)?.term.dispose();
