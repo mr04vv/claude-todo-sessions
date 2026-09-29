@@ -1629,6 +1629,9 @@ const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[]
   { id: "pinchatgpt", label: "ChatGPT", url: "https://chatgpt.com/", icon: "chat" },
   { id: "pinclaude", label: "Claude Code", url: CLOUD_HOME, icon: "spark" },
 ];
+/// What the focus mode's right side can keep: the pinned pages, and Notion,
+/// which is pinned (kept open) only there.
+const FOCUS_PAGES: typeof PINNED_PAGES = [...PINNED_PAGES, { id: "pinnotion", label: "Notion", url: "https://www.notion.so/", icon: "list" }];
 
 /// What the address bar opens: a URL as typed, a bare host over https, and
 /// anything else as a search.
@@ -1837,7 +1840,7 @@ function FocusMode({ left, right, covered, report, width, onResize, onRight, onA
         <section className="browser">
           <div className="browser-tabs focus-head">
             <div className="segmented" role="group" aria-label="右側のページ">
-              {PINNED_PAGES.map((p) => (
+              {FOCUS_PAGES.map((p) => (
                 <button key={p.id} className={right?.id === p.id ? "on" : ""} aria-pressed={right?.id === p.id} onClick={() => onRight(p.id)}>
                   <Icon name={p.icon} size={12} /> {p.label}
                 </button>
@@ -3462,9 +3465,11 @@ export default function App() {
   const browserUrl = browserShown ? (activeTab?.url ?? null) : null;
   /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]).
   const switchTab = (delta: number) => {
-    if (!browserShown || tabs.length === 0) return;
-    const i = activeTab ? tabs.findIndex((t) => t.id === activeTab.id) : delta > 0 ? -1 : tabs.length;
-    setActiveTabId(tabs[(i + delta + tabs.length) % tabs.length].id);
+    // The tabs the strip shows (the focus mode's own page, Notion, is not one).
+    const shown = tabs.filter((t) => !t.pinned || PINNED_PAGES.some((p) => p.id === t.id));
+    if (!browserShown || shown.length === 0) return;
+    const i = activeTab ? shown.findIndex((t) => t.id === activeTab.id) : delta > 0 ? -1 : shown.length;
+    setActiveTabId(shown[(i + delta + shown.length) % shown.length].id);
   };
   const switchRef = useRef(switchTab);
   switchRef.current = switchTab;
@@ -3526,10 +3531,10 @@ export default function App() {
   };
   // The focus mode (FocusMode), and the pinned page it keeps on the right.
   const [focusMode, setFocusMode] = useState(false);
-  const [focusRight, setFocusRightState] = useState<string>(() => load(FOCUS_RIGHT_KEY, ["pinchatgpt", "pinclaude"] as const, "pinchatgpt"));
+  const [focusRight, setFocusRightState] = useState<string>(() => load(FOCUS_RIGHT_KEY, ["pinchatgpt", "pinclaude", "pinnotion"] as const, "pinchatgpt"));
   /// A pinned page's tab, opened (not shown) if it is not yet.
   const ensurePinned = (id: string) => {
-    const page = PINNED_PAGES.find((p) => p.id === id);
+    const page = FOCUS_PAGES.find((p) => p.id === id);
     if (page && !tabs.some((t) => t.id === id)) setTabs((prev) => [{ id, url: page.url, title: page.label, loading: true, nav: 0, pinned: true }, ...prev]);
   };
   const setFocusRight = (id: string) => {
