@@ -57,6 +57,7 @@ const GHOSTTY_COLORS: Record<string, keyof ITheme> = {
   "selection-foreground": "selectionForeground",
 };
 const SCROLLBACK_LINES = 5000;
+const NEWLINE = "\n";
 const EXITED_NOTE = "\r\n\x1b[2m[終了しました]\x1b[0m\r\n";
 
 /// Each terminal outlives its view, so switching tabs or hiding the pane
@@ -112,7 +113,15 @@ function entryFor(id: string, { options, padding }: Look): Entry {
     const term = new Terminal({ ...options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true });
     const fit = new FitAddon();
     term.loadAddon(fit);
-    term.onData((data) => void invoke("term_write", { id, data }).catch(() => {}));
+    const write = (data: string) => void invoke("term_write", { id, data }).catch(() => {});
+    term.onData(write);
+    // ⇧Enter sends a newline, as Ghostty's `keybind = shift+enter=text:\n`
+    // does, which Claude Code takes as a new line in the prompt.
+    term.attachCustomKeyEventHandler((ev) => {
+      if (ev.key !== "Enter" || !ev.shiftKey || ev.metaKey || ev.ctrlKey || ev.altKey || ev.isComposing) return true;
+      if (ev.type === "keydown") write(NEWLINE);
+      return false;
+    });
     term.onResize(({ cols, rows }) => void invoke("term_resize", { id, cols, rows }).catch(() => {}));
     const host = document.createElement("div");
     host.className = "terminal-host";
