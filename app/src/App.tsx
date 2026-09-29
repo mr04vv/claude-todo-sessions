@@ -3261,9 +3261,13 @@ export default function App() {
   };
 
   const inRepo = (repos: string[] | undefined) => repoFilter === null || laneKey(repos) === repoFilter;
-  const visibleTodos = allTodos.filter((t) => inRepo(t.repos) && (!waitingOnly || liveSessions(t).some((s) => s.state === "needs_input")));
-  const lanes = buildLanes(visibleTodos, groupBy, allTodos);
-  const repoLanes = buildLanes(allTodos, "repo", allTodos);
+  // Subtasks of a Done parent are finished business; the parent stands for them.
+  const doneParents = new Set(allTodos.filter((t) => t.status === "done").map((t) => t.id));
+  const shownTodos = allTodos.filter((t) => t.parent_id === null || !doneParents.has(t.parent_id));
+  const visibleTodos = shownTodos.filter((t) => inRepo(t.repos) && (!waitingOnly || liveSessions(t).some((s) => s.state === "needs_input")));
+  // A Done parent without shown subtasks is a card like any other.
+  const lanes = buildLanes(visibleTodos, groupBy, shownTodos);
+  const repoLanes = buildLanes(shownTodos, "repo", shownTodos);
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
   const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? [])];
