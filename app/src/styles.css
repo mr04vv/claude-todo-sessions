@@ -321,7 +321,12 @@ a:hover {
 
 /* With the browser docked, the side panel floats over the screen beside it
    instead of squeezing it further. */
-.app.with-browser .panel {
+.side {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.app.with-browser .side {
   position: absolute;
   top: 0;
   bottom: 0;
@@ -1673,7 +1678,6 @@ input.panel-title:focus-visible {
   width: var(--dock-w);
   flex-shrink: 0;
   display: flex;
-  flex-direction: column;
   background: var(--sidebar);
   border-left: 1px solid var(--border);
 }
@@ -1990,4 +1994,32 @@ input.panel-title:focus-visible {
   max-width: 220px;
   display: block;
   line-height: 20px;
+}
+
+/* Drag handles on the left edge of the side panel and the browser pane. */
+
+.resizer {
+  width: 5px;
+  flex-shrink: 0;
+  margin-right: -1px;
+  cursor: col-resize;
+  background: transparent;
+  z-index: 1;
+}
+
+.resizer:hover,
+.resizer:focus-visible,
+body.resizing .resizer {
+  background: var(--accent-line);
+  outline: none;
+}
+
+body.resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+.browser-dock > .browser {
+  flex-grow: 1;
+  min-width: 0;
 }

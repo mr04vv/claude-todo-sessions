@@ -245,6 +245,56 @@ function remember(key: string, value: string) {
   }
 }
 
+const PANEL_W_KEY = "panelWidth";
+const DOCK_W_KEY = "dockWidth";
+const PANEL_DEFAULT_W = 440;
+const PANEL_MIN_W = 320;
+const DOCK_MIN_W = 360;
+/// The browser pane starts at this share of the window.
+const DOCK_DEFAULT_SHARE = 0.44;
+const SIDEBAR_W = 232;
+/// Room always left for the screen in the middle.
+const MAIN_MIN_W = 320;
+/// Arrow keys on a resizer move it this far.
+const RESIZE_STEP = 24;
+
+/// Widest a side pane may get, leaving the sidebar, `others` and the middle.
+const maxPaneWidth = (others: number) => Math.max(PANEL_MIN_W, window.innerWidth - SIDEBAR_W - MAIN_MIN_W - others);
+
+/// A strip on a pane's left edge; dragging it (or the arrow keys) sets the
+/// pane's width.
+function Resizer({ label, width, min, max, onResize }: { label: string; width: number; min: number; max: () => number; onResize: (w: number) => void }) {
+  const clamp = (w: number) => Math.round(Math.min(max(), Math.max(min, w)));
+  const onPointerDown = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const move = (ev: PointerEvent) => onResize(clamp(width + startX - ev.clientX));
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      document.body.classList.remove("resizing");
+    };
+    document.body.classList.add("resizing");
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  return (
+    <div
+      className="resizer"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuenow={width}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onKeyDown={(e) => {
+        if (e.key === "ArrowLeft") onResize(clamp(width + RESIZE_STEP));
+        if (e.key === "ArrowRight") onResize(clamp(width - RESIZE_STEP));
+      }}
+    />
+  );
+}
+
 /// keyCode of a key the IME handles.
 const IME_KEY_CODE = 229;
 
@@ -2505,6 +2555,16 @@ export default function App() {
       setBoard(b);
     }, report);
   }, [report]);
+  const [panelW, setPanelWState] = useState(() => loadJson<number>(PANEL_W_KEY, PANEL_DEFAULT_W));
+  const [dockW, setDockWState] = useState(() => loadJson<number>(DOCK_W_KEY, Math.max(DOCK_MIN_W, Math.round(window.innerWidth * DOCK_DEFAULT_SHARE))));
+  const setPanelW = (w: number) => {
+    remember(PANEL_W_KEY, String(w));
+    setPanelWState(w);
+  };
+  const setDockW = (w: number) => {
+    remember(DOCK_W_KEY, String(w));
+    setDockWState(w);
+  };
   const loadPrs = useCallback(() => {
     api.ghPrs().then(
       (p) => (setPrs(p), setPrError(null)),
@@ -2674,7 +2734,7 @@ export default function App() {
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
-      <div className={`app${browserUrl ? " with-browser" : ""}`}>
+      <div className={`app${browserUrl ? " with-browser" : ""}`} style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px` } as React.CSSProperties}>
         <aside className="sidebar">
           <div className="brand">
             <span className="brand-mark" />
@@ -2908,6 +2968,9 @@ export default function App() {
           )}
         </main>
 
+        {panel && (
+          <div className="side">
+            <Resizer label="パネルの幅" width={panelW} min={PANEL_MIN_W} max={() => maxPaneWidth(activeTab ? dockW : 0)} onResize={setPanelW} />
         {panel === "todo" && selectedTodo && (
           <TodoPanel
             todo={selectedTodo}
@@ -2925,8 +2988,11 @@ export default function App() {
         {panel === "session" && selectedSession && (
           <SessionPanel item={selectedSession} todos={allTodos} run={run} report={report} onClose={() => setSelection(null)} onOpenTodo={goTodo} />
         )}
+          </div>
+        )}
         {activeTab && (
           <aside className="browser-dock">
+            <Resizer label="ブラウザの幅" width={dockW} min={DOCK_MIN_W} max={() => maxPaneWidth(0)} onResize={setDockW} />
             <BrowserDock tabs={tabs} active={activeTab} covered={covered} report={report} onSelect={setActiveTabId} onClose={closeTab} />
           </aside>
         )}
