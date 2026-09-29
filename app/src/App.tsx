@@ -23,6 +23,7 @@ import {
   BROWSER_CLOSE_TAB_EVENT,
   BROWSER_ARCHIVE_EVENT,
   OPEN_PALETTE_EVENT,
+  FOCUS_APP_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
@@ -3227,6 +3228,7 @@ const TODO_KEYS: [string, string][] = [
   ["c", "その場所に todo を追加"],
   ["/", "絞り込み欄へ"],
   ["?", "このキーの一覧"],
+  ["⌘J", "入力先を右のペイン（ページ・ターミナル）と切り替える"],
 ];
 
 export default function App() {
@@ -3378,6 +3380,17 @@ export default function App() {
     else if (!activeTab && tabs.length > 0) setNewTab(false);
     return true;
   };
+  /// ⌘J: from this side to the pane's page or terminal, and from the
+  /// terminal back (a page's ⌘J comes back through FOCUS_APP_EVENT).
+  const focusSwap = () => {
+    const inTerminal = (document.activeElement as HTMLElement | null)?.closest(".xterm");
+    if (inTerminal) return void (document.activeElement as HTMLElement).blur();
+    if (!browserShown || !activeTab) return;
+    if (activeTab.term) focusTerminal(activeTab.id);
+    else api.browserFocus(activeTab.id).catch(report);
+  };
+  const focusSwapRef = useRef(focusSwap);
+  focusSwapRef.current = focusSwap;
   const closeShownRef = useRef(closeShown);
   closeShownRef.current = closeShown;
   /// ⌘⇧A: archives the cloud session the shown tab is on and closes the tab.
@@ -3414,6 +3427,8 @@ export default function App() {
       listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => closeShownRef.current()),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => archiveShownRef.current()),
       listen(OPEN_PALETTE_EVENT, () => setDialog((d) => (d === "palette" ? null : "palette"))),
+      // Back from the pane: nothing on this side keeps the typing, so j k work.
+      listen(FOCUS_APP_EVENT, () => (document.activeElement as HTMLElement | null)?.blur()),
       // The menu bar and notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -3579,8 +3594,9 @@ export default function App() {
     return () => window.removeEventListener("focus", onFocus);
   }, []);
 
-  // ⌘N adds a todo, ⌘K opens the commands, ⌘T opens a browser tab and
-  // ⌘⇧[ ⌘⇧] switch tabs, from anywhere. (⌘W is the app menu's.)
+  // ⌘N adds a todo, ⌘K opens the commands, ⌘T opens a browser tab, ⌘⇧[ ⌘⇧]
+  // switch tabs and ⌘J moves the typing between this side and the pane, from
+  // anywhere. (⌘W is the app menu's; a page's ⌘J comes as FOCUS_APP_EVENT.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -3602,6 +3618,9 @@ export default function App() {
       } else if (k === "t") {
         e.preventDefault();
         openNewTab();
+      } else if (k === "j") {
+        e.preventDefault();
+        focusSwapRef.current();
       }
     };
     window.addEventListener("keydown", onKey);

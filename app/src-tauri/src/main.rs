@@ -1156,6 +1156,9 @@ const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
 /// When ⌘W in the app menu asks to close the shown tab.
 const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
+/// When a page's ⌘J hands the typing back to the app's side (the main page
+/// already has the keyboard by then).
+const FOCUS_APP_EVENT: &str = "focus-app";
 /// When a page's ⌘K asks for the app's commands.
 const OPEN_PALETTE_EVENT: &str = "open-palette";
 /// `{tab}` when a cloud session's page asks to archive it (⌘⇧A).
@@ -1237,6 +1240,7 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("tab-next") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, 1),
                 Some("archive") => on_focus.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("palette") => on_focus.emit(OPEN_PALETTE_EVENT, ()),
+                Some("focus-app") => on_focus.emit(FOCUS_APP_EVENT, ()),
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
             false

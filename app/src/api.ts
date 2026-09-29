@@ -255,6 +255,8 @@ export const BROWSER_URL_EVENT = "browser-url";
 export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 /** When ⌘W in the app menu asks to close the shown tab. */
 export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
+/** When a page's ⌘J hands the typing back to the app's side. */
+export const FOCUS_APP_EVENT = "focus-app";
 /** When a page's ⌘K asks for the app's commands. */
 export const OPEN_PALETTE_EVENT = "open-palette";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
