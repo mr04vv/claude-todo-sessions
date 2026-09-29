@@ -1,7 +1,7 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: ⌘L moves to the app's address bar, ⌘T opens a new tab (⌘W, the app
 // menu's, closes it), ⌘⇧A archives the cloud session it shows, ⌘K opens the
-// app's commands, ⌘J goes back to the app's side, ⌘R reloads,
+// app's commands, ⌘1 goes back to the app's side, ⌘R reloads,
 // ⌘[ ⌘] go back and forward, ⌘⇧[ ⌘⇧] switch tabs, and right-click offers
 // translation (WKWebView has no translate item).
 (() => {
@@ -43,8 +43,8 @@
       }
       if (e.shiftKey) return;
       // The app's commands win over the page's own ⌘K (ChatGPT's search);
-      // ⌘J hands the typing back to the app's side.
-      if (key === "k" || key === "j") {
+      // ⌘1 hands the typing back to the app's side.
+      if (key === "k" || key === "1") {
         e.preventDefault();
         e.stopImmediatePropagation();
         location.href = key === "k" ? PALETTE : FOCUS_APP;

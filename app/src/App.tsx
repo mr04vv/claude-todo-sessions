@@ -3228,7 +3228,7 @@ const TODO_KEYS: [string, string][] = [
   ["c", "その場所に todo を追加"],
   ["/", "絞り込み欄へ"],
   ["?", "このキーの一覧"],
-  ["⌘J", "入力先を右のペイン（ページ・ターミナル）と切り替える"],
+  ["⌘1 / ⌘2", "入力先をこちら（Todo 側）/ 右のペイン（ページ・ターミナル）にする"],
 ];
 
 export default function App() {
@@ -3380,17 +3380,16 @@ export default function App() {
     else if (!activeTab && tabs.length > 0) setNewTab(false);
     return true;
   };
-  /// ⌘J: from this side to the pane's page or terminal, and from the
-  /// terminal back (a page's ⌘J comes back through FOCUS_APP_EVENT).
-  const focusSwap = () => {
-    const inTerminal = (document.activeElement as HTMLElement | null)?.closest(".xterm");
-    if (inTerminal) return void (document.activeElement as HTMLElement).blur();
+  /// ⌘2 gives the typing to the pane's page or terminal, ⌘1 back to this
+  /// side (from a page, ⌘1 comes back through FOCUS_APP_EVENT).
+  const focusSide = (pane: boolean) => {
+    if (!pane) return void (document.activeElement as HTMLElement | null)?.blur();
     if (!browserShown || !activeTab) return;
     if (activeTab.term) focusTerminal(activeTab.id);
     else api.browserFocus(activeTab.id).catch(report);
   };
-  const focusSwapRef = useRef(focusSwap);
-  focusSwapRef.current = focusSwap;
+  const focusSideRef = useRef(focusSide);
+  focusSideRef.current = focusSide;
   const closeShownRef = useRef(closeShown);
   closeShownRef.current = closeShown;
   /// ⌘⇧A: archives the cloud session the shown tab is on and closes the tab.
@@ -3595,8 +3594,8 @@ export default function App() {
   }, []);
 
   // ⌘N adds a todo, ⌘K opens the commands, ⌘T opens a browser tab, ⌘⇧[ ⌘⇧]
-  // switch tabs and ⌘J moves the typing between this side and the pane, from
-  // anywhere. (⌘W is the app menu's; a page's ⌘J comes as FOCUS_APP_EVENT.)
+  // switch tabs, and ⌘1 ⌘2 give the typing to this side and to the pane, from
+  // anywhere. (⌘W is the app menu's; a page's ⌘1 comes as FOCUS_APP_EVENT.)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.metaKey) return;
@@ -3618,9 +3617,9 @@ export default function App() {
       } else if (k === "t") {
         e.preventDefault();
         openNewTab();
-      } else if (k === "j") {
+      } else if (k === "1" || k === "2") {
         e.preventDefault();
-        focusSwapRef.current();
+        focusSideRef.current(k === "2");
       }
     };
     window.addEventListener("keydown", onKey);
