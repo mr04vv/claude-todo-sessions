@@ -1260,6 +1260,7 @@ const START_PAGES: { label: string; url: string }[] = [
   { label: "GitHub", url: "https://github.com/" },
   { label: "GitHub の通知", url: "https://github.com/notifications" },
   { label: "Claude Code", url: CLOUD_HOME },
+  { label: "ChatGPT", url: "https://chatgpt.com/" },
 ];
 
 /// What the address bar opens: a URL as typed, a bare host over https, and
