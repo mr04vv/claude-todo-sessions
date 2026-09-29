@@ -1381,8 +1381,8 @@ const START_PAGES: { label: string; url: string }[] = [
 /// from there or the sidebar and never closed, so they keep their state.
 /// Ids are letters and digits only, as the backend takes tab ids.
 const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[] = [
-  { id: "pinclaude", label: "Claude Code", url: CLOUD_HOME, icon: "spark" },
   { id: "pinchatgpt", label: "ChatGPT", url: "https://chatgpt.com/", icon: "chat" },
+  { id: "pinclaude", label: "Claude Code", url: CLOUD_HOME, icon: "spark" },
 ];
 
 /// What the address bar opens: a URL as typed, a bare host over https, and
@@ -3300,6 +3300,7 @@ export default function App() {
     { key: "sessions", label: "セッションを表示", run: () => setView("sessions") },
     { key: "prs", label: "PR を表示", run: () => setView("prs") },
     { key: "notices", label: "通知を表示", run: () => setView("notices") },
+    ...PINNED_PAGES.map((p) => ({ key: p.id, label: `${p.label} を開く`, run: () => showPinned(p.id) })),
     { key: "newTab", label: "ブラウザで新しいタブを開く", hint: "⌘T", run: openNewTab },
     { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザを表示", run: toggleBrowser },
     linkTarget === "app"
