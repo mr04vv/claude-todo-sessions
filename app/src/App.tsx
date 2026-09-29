@@ -1306,6 +1306,8 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
 function sameTarget(tabUrl: string, url: string): boolean {
   try {
     const a = new URL(tabUrl);
+const CLOUD_SESSION_PAGE = /^https:\/\/claude\.ai\/code\/session_/;
+
     const b = new URL(url);
     const path = (p: string) => p.replace(/\/+$/, "");
     return a.origin === b.origin && (path(a.pathname) === path(b.pathname) || (path(b.pathname) !== "" && path(a.pathname).startsWith(`${path(b.pathname)}/`)));
@@ -2766,7 +2768,9 @@ export default function App() {
       return;
     }
     setBrowserShown(true);
-    const open = tabs.find((t) => sameTarget(t.url, url));
+    // Only a Claude session's page comes back to its tab; anything else, the
+    // claude.ai home included, may be open in as many tabs as asked.
+    const open = CLOUD_SESSION_PAGE.test(url) ? tabs.find((t) => sameTarget(t.url, url)) : undefined;
     if (open) return setActiveTabId(open.id);
     const id = `t${nextTab.current++}`;
     setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
