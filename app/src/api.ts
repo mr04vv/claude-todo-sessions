@@ -161,6 +161,13 @@ export interface PrLists {
   mine: Pr[];
 }
 
+export interface HerdrSessions {
+  running: string[];
+  picked: string | null;
+  /** Where a new workspace would go now. */
+  target: string | null;
+}
+
 /** Model and effort for a new session; unset keeps the default. */
 export interface StartOptions {
   model?: string;
@@ -207,6 +214,8 @@ export const api = {
   openLink: (url: string) => invoke<void>("open_link", { url }),
   openInDia: (url: string) => invoke<void>("open_in_dia", { url }),
   copyText: (text: string) => invoke<void>("copy_text", { text }),
+  herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
+  setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
   addLink: (todoId: number, url: string) => invoke<Link>("add_link", { todoId, url }),
   removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),

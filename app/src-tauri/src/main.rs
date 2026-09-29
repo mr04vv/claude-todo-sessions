@@ -57,6 +57,8 @@ struct AppState {
     github_wake: Mutex<std::sync::mpsc::Sender<Option<i64>>>,
     /// Wakes the cloud session sync.
     cloud_wake: Mutex<std::sync::mpsc::Sender<()>>,
+    /// herdr session the user picked for new workspaces, if any.
+    herdr_session: Mutex<Option<String>>,
 }
 
 fn home() -> PathBuf {
@@ -312,14 +314,14 @@ fn focus_in_herdr(session_id: &str) -> bool {
 /// Opens a new herdr workspace in the home folder running a plain `claude`,
 /// for a quick question outside any todo.
 #[tauri::command]
-fn quick_claude(prompt: Option<String>) -> Result<(), String> {
+fn quick_claude(state: State<AppState>, prompt: Option<String>) -> Result<(), String> {
     let cwd = home().to_string_lossy().to_string();
     let command = match prompt.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => format!("claude {}", shell_quote(p)),
         None => "claude".into(),
     };
     let label = prompt.as_deref().map(|p| p.chars().take(24).collect::<String>()).filter(|l| !l.trim().is_empty()).unwrap_or_else(|| "claude".into());
-    match start_in_herdr(&cwd, &label, &command, true) {
+    match start_in_herdr(&state, &cwd, &label, &command, true) {
         // The new workspace is focused inside herdr; bring its terminal forward too.
         Ok(()) => cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err),
         Err(herdr_err) => start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")),
@@ -429,7 +431,7 @@ fn resume_in_herdr(state: &AppState, session_id: &str) -> Result<(), String> {
         return Err(format!("作業フォルダ {} がもうないので再開できません", session.cwd));
     }
     let label = session.title.clone().unwrap_or_else(|| session_id.chars().take(8).collect());
-    start_in_herdr(&session.cwd, &label, &format!("claude --resume {session_id}"), true)?;
+    start_in_herdr(state, &session.cwd, &label, &format!("claude --resume {session_id}"), true)?;
     cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
 }
 
@@ -462,12 +464,52 @@ fn herdr(args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into())
 }
 
-fn start_in_herdr(cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
+fn running_herdr_sessions() -> Vec<String> {
+    cli("herdr")
+        .args(["session", "list"])
+        .output()
+        .map(|out| cts_core::herdr::running_sessions(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or_default()
+}
+
+/// The herdr session new workspaces go to (see `herdr::pick_session`).
+fn herdr_target(state: &AppState) -> Option<String> {
+    let picked = state.herdr_session.lock().ok()?.clone();
+    cts_core::herdr::pick_session(&running_herdr_sessions(), picked.as_deref())
+}
+
+/// Opens a workspace in the picked herdr session and runs `command` in it.
+/// Without `--session` herdr talks to its default session, which may not run.
+fn start_in_herdr(state: &AppState, cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
+    let session = herdr_target(state).ok_or("herdr のセッションが動いていません")?;
     let focus_flag = if focus { "--focus" } else { "--no-focus" };
-    let created = herdr(&["workspace", "create", "--cwd", cwd, "--label", label, focus_flag])?;
+    let created = herdr(&["--session", &session, "workspace", "create", "--cwd", cwd, "--label", label, focus_flag])?;
     let v: serde_json::Value = serde_json::from_str(&created).map_err(|e| format!("herdr output: {e}"))?;
     let pane = launch::herdr_pane_id(&v).ok_or("herdr output has no pane id")?;
-    herdr(&["pane", "run", &pane, command]).map(|_| ())
+    herdr(&["--session", &session, "pane", "run", &pane, command]).map(|_| ())
+}
+
+#[derive(Serialize)]
+struct HerdrSessions {
+    running: Vec<String>,
+    picked: Option<String>,
+    /// Where a new workspace would go now.
+    target: Option<String>,
+}
+
+#[tauri::command]
+fn herdr_sessions(state: State<AppState>) -> Result<HerdrSessions, String> {
+    let running = running_herdr_sessions();
+    let picked = state.herdr_session.lock().map_err(err)?.clone();
+    let target = cts_core::herdr::pick_session(&running, picked.as_deref());
+    Ok(HerdrSessions { running, picked, target })
+}
+
+/// Picks the herdr session for new workspaces; None goes back to the default rule.
+#[tauri::command]
+fn set_herdr_session(state: State<AppState>, name: Option<String>) -> Result<(), String> {
+    *state.herdr_session.lock().map_err(err)? = name.filter(|n| !n.is_empty());
+    Ok(())
 }
 
 // ponytail: Ghostty fallback is unverified; replace the flags if Ghostty rejects them.
@@ -499,7 +541,7 @@ fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOpti
         "claude --session-id {session_id}{flags} {}",
         shell_quote(&launch::start_prompt(todo.id, &todo.prompt_body()))
     );
-    start_in_herdr(&cwd, &todo.title, &command, focus).or_else(|herdr_err| {
+    start_in_herdr(state, &cwd, &todo.title, &command, focus).or_else(|herdr_err| {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", shell_quote(&cwd)))
             .map_err(|e| format!("{herdr_err} / {e}"))
     })
@@ -1411,6 +1453,7 @@ fn main() {
             sync_status: Mutex::new("cloud: 同期待ち".into()),
             origin_cache: Mutex::new(HashMap::new()),
             loop_enabled: AtomicBool::new(true),
+            herdr_session: Mutex::new(None),
             github_wake: Mutex::new(github_tx),
             cloud_wake: Mutex::new(cloud_tx),
         })
@@ -1498,6 +1541,8 @@ fn main() {
             browser_hide,
             browser_close,
             copy_text,
+            herdr_sessions,
+            set_herdr_session,
             browser_go
         ])
         .run(tauri::generate_context!())

@@ -26,6 +26,7 @@ import {
   MODELS,
   type Board,
   type Issue,
+  type HerdrSessions,
   type Limit,
   type LocalRepo,
   type Notice,
@@ -66,6 +67,7 @@ const GROUP_KEY = "groupBy";
 const START_KEY = "startChoice";
 const REVIEW_RUNNER_KEY = "reviewRunner";
 const LINK_TARGET_KEY = "linkTarget";
+const HERDR_SESSION_KEY = "herdrSession";
 
 /// Where pages open: the app's browser pane, or Dia with its own sign-ins.
 type LinkTarget = "app" | "dia";
@@ -2475,6 +2477,24 @@ export default function App() {
     });
 
   const report = useCallback((e: unknown) => setError(String(e)), []);
+  // herdr session for new workspaces; the backend keeps it while the app runs.
+  const [herdr, setHerdr] = useState<HerdrSessions | null>(null);
+  const loadHerdr = useCallback(() => {
+    api.herdrSessions().then(setHerdr, report);
+  }, [report]);
+  const pickHerdr = (name: string) => {
+    remember(HERDR_SESSION_KEY, name);
+    api.setHerdrSession(name || null).then(loadHerdr, report);
+  };
+  useEffect(() => {
+    let saved = "";
+    try {
+      saved = localStorage.getItem(HERDR_SESSION_KEY) ?? "";
+    } catch {
+      // ignore
+    }
+    api.setHerdrSession(saved || null).then(loadHerdr, report);
+  }, [loadHerdr, report]);
   const refresh = useCallback(() => {
     api.board().then(setBoard, report);
   }, [report]);
@@ -2701,6 +2721,30 @@ export default function App() {
                   Dia
                 </button>
               </div>
+            </div>
+            <div className="link-target">
+              <span className="muted">herdr</span>
+              {herdr && herdr.running.length > 0 ? (
+                <select
+                  className="select compact"
+                  value={herdr.picked && herdr.running.includes(herdr.picked) ? herdr.picked : ""}
+                  aria-label="新しいワークスペースを開く herdr のセッション"
+                  title="新しいワークスペースを開く herdr のセッション"
+                  onMouseDown={loadHerdr}
+                  onChange={(e) => pickHerdr(e.target.value)}
+                >
+                  <option value="">自動（{herdr.target}）</option>
+                  {herdr.running.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <button className="ghost small" title="herdr のセッションを探し直す" onClick={loadHerdr}>
+                  停止中
+                </button>
+              )}
             </div>
             <UsageBox limits={limits} error={usageError} />
             <div className="sync-line">

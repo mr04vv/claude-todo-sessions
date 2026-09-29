@@ -16,6 +16,20 @@ pub fn running_sessions(table: &str) -> Vec<String> {
         .collect()
 }
 
+/// herdr's unnamed session, which `herdr` without `--session` talks to.
+pub const DEFAULT_SESSION: &str = "default";
+
+/// The running session new workspaces go to: the one picked, else the
+/// default one, else the first running one. None when herdr is not running.
+pub fn pick_session(running: &[String], picked: Option<&str>) -> Option<String> {
+    let is_running = |name: &str| running.iter().any(|r| r == name);
+    picked
+        .filter(|p| is_running(p))
+        .or_else(|| is_running(DEFAULT_SESSION).then_some(DEFAULT_SESSION))
+        .map(Into::into)
+        .or_else(|| running.first().cloned())
+}
+
 /// Pane id of the agent whose Claude session id matches, from
 /// `herdr agent list` JSON.
 pub fn find_pane(agents: &Value, session_id: &str) -> Option<String> {
@@ -53,6 +67,17 @@ pub fn agent_states(agents: &Value) -> Vec<(String, String, crate::SessionState)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn picks_the_chosen_running_session_else_default_else_first() {
+        let running: Vec<String> = ["implement", "review"].map(String::from).to_vec();
+        assert_eq!(pick_session(&running, Some("review")).as_deref(), Some("review"));
+        // A pick that is no longer running falls back.
+        assert_eq!(pick_session(&running, Some("gone")).as_deref(), Some("implement"));
+        let with_default: Vec<String> = ["implement", "default"].map(String::from).to_vec();
+        assert_eq!(pick_session(&with_default, None).as_deref(), Some("default"));
+        assert_eq!(pick_session(&[], Some("review")), None);
+    }
     use serde_json::json;
 
     #[test]
