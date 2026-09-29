@@ -184,12 +184,14 @@ export const MODELS: { id: string; label: string }[] = [
 
 export const EFFORTS: string[] = ["", "low", "medium", "high", "xhigh", "max"];
 
-/** Where the browser pane sits, in CSS pixels of the window. */
+/** Where the browser pane sits, in CSS pixels of the page. */
 export interface Rect {
   x: number;
   y: number;
   width: number;
   height: number;
+  /** The page's innerHeight, which tells how much of the window's top the title bar covers. */
+  viewport: number;
 }
 
 export const api = {
@@ -234,6 +236,7 @@ export const api = {
   browserBounds: (r: Rect) => invoke<void>("browser_bounds", { ...r }),
   browserHide: () => invoke<void>("browser_hide"),
   browserClose: (tab: string) => invoke<void>("browser_close", { tab }),
+  browserFocus: (tab: string) => invoke<void>("browser_focus", { tab }),
   browserGo: (tab: string, action: "back" | "forward" | "reload") => invoke<void>("browser_go", { tab, action }),
 };
 

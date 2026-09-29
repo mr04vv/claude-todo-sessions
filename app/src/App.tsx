@@ -1355,7 +1355,7 @@ function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: b
   const slot = useRef<HTMLDivElement>(null);
   const rect = () => {
     const r = slot.current!.getBoundingClientRect();
-    return { x: r.left, y: r.top, width: r.width, height: r.height };
+    return { x: r.left, y: r.top, width: r.width, height: r.height, viewport: window.innerHeight };
   };
   const navigate = (to: string) => api.browserOpen(active.id, to, rect()).catch(report);
   // Switching tabs or coming back from under a dialog shows the page the tab
@@ -1422,8 +1422,15 @@ function TabView({ tab: active, covered, report }: { tab: BrowserTab; covered: b
           className="url mono"
           defaultValue={active.url}
           aria-label="URL（⌘L で編集）"
-          title="⌘L で編集、Enter で移動"
+          title="⌘L で編集、Enter で移動、Esc でやめる"
           onKeyDown={(e) => {
+            // Esc puts the address back and returns to the page, as in a browser.
+            if (e.key === "Escape") {
+              e.currentTarget.value = active.url;
+              e.currentTarget.blur();
+              api.browserFocus(active.id).catch(report);
+              return;
+            }
             const url = isEnter(e) ? addressToUrl(e.currentTarget.value) : null;
             if (url) navigate(url);
           }}

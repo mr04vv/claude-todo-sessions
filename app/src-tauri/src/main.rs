@@ -59,6 +59,8 @@ struct AppState {
     cloud_wake: Mutex<std::sync::mpsc::Sender<()>>,
     /// herdr session the user picked for new workspaces, if any.
     herdr_session: Mutex<Option<String>>,
+    /// Held while a browser tab is shown or created.
+    browser_lock: Mutex<()>,
     /// CLI session ids archived in Desktop. Reading every Desktop record is
     /// slow, so the watch loop refreshes this and the board only reads it.
     archived: Mutex<HashSet<String>>,
@@ -1028,7 +1030,19 @@ struct TabOnly {
     tab: String,
 }
 
-fn browser_rect(x: f64, y: f64, width: f64, height: f64) -> tauri::Rect {
+/// How far below the main webview's top the page starts. The main webview
+/// runs under the title bar and the page's viewport begins below it
+/// (`viewport` is the page's innerHeight), while a child webview is placed
+/// from the webview's top, so the page's coordinates are shifted by this.
+fn page_top(app: &AppHandle, viewport: f64) -> f64 {
+    let Some(main) = app.get_webview("main") else { return 0.0 };
+    let scale = main.window().scale_factor().unwrap_or(1.0);
+    main.bounds().map(|b| (b.size.to_logical::<f64>(scale).height - viewport).max(0.0)).unwrap_or(0.0)
+}
+
+/// Where a tab goes, from the placeholder's rectangle in the page.
+fn browser_rect(app: &AppHandle, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> tauri::Rect {
+    let y = y + page_top(app, viewport);
     tauri::Rect { position: LogicalPosition::new(x, y).into(), size: LogicalSize::new(width, height).into() }
 }
 
@@ -1049,12 +1063,14 @@ fn browser_tabs(app: &AppHandle) -> Vec<tauri::Webview> {
 /// with the other tabs hidden behind it. GitHub refuses to be framed, so the
 /// pane cannot be an iframe.
 #[tauri::command(async)]
-fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
     if !is_web_url(&url) {
         return Err(format!("開けない URL です: {url}"));
     }
     let label = tab_label(&tab)?;
     let parsed: tauri::Url = url.parse().map_err(err)?;
+    // Two opens of a new tab at once (a re-render) would both create it.
+    let _one_at_a_time = state.browser_lock.lock().map_err(err)?;
     for other in browser_tabs(&app).iter().filter(|v| v.label() != label) {
         other.hide().map_err(err)?;
     }
@@ -1063,7 +1079,7 @@ fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width:
         if view.url().ok().as_ref() != Some(&parsed) {
             view.navigate(parsed).map_err(err)?;
         }
-        view.set_bounds(browser_rect(x, y, width, height)).map_err(err)?;
+        view.set_bounds(browser_rect(&app, x, y, width, height, viewport)).map_err(err)?;
         return view.show().map_err(err);
     }
     let window = app.get_window("main").ok_or("main window not found")?;
@@ -1102,16 +1118,16 @@ fn browser_open(app: AppHandle, tab: String, url: String, x: f64, y: f64, width:
             tauri::webview::NewWindowResponse::Deny
         });
     window
-        .add_child(builder, LogicalPosition::new(x, y), LogicalSize::new(width, height))
+        .add_child(builder, LogicalPosition::new(x, y + page_top(&app, viewport)), LogicalSize::new(width, height))
         .map(|_| ())
         .map_err(err)
 }
 
 /// Follows the pane's placeholder when the layout changes.
 #[tauri::command(async)]
-fn browser_bounds(app: AppHandle, x: f64, y: f64, width: f64, height: f64) -> Result<(), String> {
+fn browser_bounds(app: AppHandle, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
     for view in browser_tabs(&app) {
-        view.set_bounds(browser_rect(x, y, width, height)).map_err(err)?;
+        view.set_bounds(browser_rect(&app, x, y, width, height, viewport)).map_err(err)?;
     }
     Ok(())
 }
@@ -1129,6 +1145,15 @@ fn browser_hide(app: AppHandle) -> Result<(), String> {
 fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
     match app.get_webview(&tab_label(&tab)?) {
         Some(view) => view.close().map_err(err),
+        None => Ok(()),
+    }
+}
+
+/// Gives a tab's page the keyboard, as leaving the address bar with Esc does.
+#[tauri::command(async)]
+fn browser_focus(app: AppHandle, tab: String) -> Result<(), String> {
+    match app.get_webview(&tab_label(&tab)?) {
+        Some(view) => view.set_focus().map_err(err),
         None => Ok(()),
     }
 }
@@ -1500,6 +1525,7 @@ fn main() {
             loop_enabled: AtomicBool::new(true),
             herdr_session: Mutex::new(None),
             archived: Mutex::new(HashSet::new()),
+            browser_lock: Mutex::new(()),
             github_wake: Mutex::new(github_tx),
             cloud_wake: Mutex::new(cloud_tx),
         })
@@ -1586,6 +1612,7 @@ fn main() {
             browser_bounds,
             browser_hide,
             browser_close,
+            browser_focus,
             herdr_sessions,
             set_herdr_session,
             browser_go
