@@ -1716,6 +1716,26 @@ input.panel-title:focus-visible {
   color: var(--text-2);
 }
 
+.browser-tab.pinned {
+  min-width: 0;
+}
+
+.browser-tab.pinned .browser-tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 10px;
+}
+
+.browser-tabs-sep {
+  align-self: center;
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background: var(--border-2);
+  flex-shrink: 0;
+}
+
 .browser-tab.on {
   background: var(--card-hover);
   color: var(--text);

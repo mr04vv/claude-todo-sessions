@@ -451,7 +451,8 @@ function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
 
 type IconName =
   | "board" | "list" | "spark" | "pr" | "search" | "sync" | "check" | "plus" | "import" | "close" | "open"
-  | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "bell" | "globe";
+  | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "bell" | "chat"
+  | "globe";
 
 const ICON_PATHS: Record<IconName, string> = {
   board: "M4 4h6v16H4zM14 4h6v9h-6z",
@@ -474,6 +475,7 @@ const ICON_PATHS: Record<IconName, string> = {
   forward: "M9 6l6 6-6 6",
   reload: "M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6",
   bell: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 21h4",
+  chat: "M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z",
   globe: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18",
 };
 
@@ -1357,6 +1359,8 @@ interface BrowserTab {
   nav: number;
   /// Set on an in-app terminal tab, which shows no web page.
   term?: TerminalRun;
+  /// One of PINNED_PAGES.
+  pinned?: boolean;
 }
 
 /// The browser pane: tabs of web pages, each a webview laid over this one on
@@ -1367,8 +1371,12 @@ const SEARCH_URL = "https://www.google.com/search?q=";
 const START_PAGES: { label: string; url: string }[] = [
   { label: "GitHub", url: "https://github.com/" },
   { label: "GitHub の通知", url: "https://github.com/notifications" },
-  { label: "Claude Code", url: CLOUD_HOME },
-  { label: "ChatGPT", url: "https://chatgpt.com/" },
+];
+/// Pages that stay in the pane as fixed tabs ahead of the others, opened
+/// from there or the sidebar and never closed, so they keep their state.
+const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[] = [
+  { id: "pin-claude", label: "Claude Code", url: CLOUD_HOME, icon: "spark" },
+  { id: "pin-chatgpt", label: "ChatGPT", url: "https://chatgpt.com/", icon: "chat" },
 ];
 
 /// What the address bar opens: a URL as typed, a bare host over https, and
@@ -1383,12 +1391,14 @@ function addressToUrl(text: string): string | null {
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
-function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTab, onHide, onOpen, onAddress, onMove }: {
+function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove }: {
   tabs: BrowserTab[];
   active: BrowserTab | null;
   covered: boolean;
   report: (e: unknown) => void;
   onSelect: (id: string) => void;
+  /// Shows a pinned page, opening it the first time.
+  onPinned: (id: string) => void;
   onClose: (id: string) => void;
   onNewTab: () => void;
   onHide: () => void;
@@ -1423,7 +1433,19 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onClose, onNewTa
   return (
     <section className="browser" aria-label="ブラウザ">
       <div className="browser-tabs" role="tablist">
-        {tabs.map((t) => (
+        {PINNED_PAGES.map((p) => {
+          const t = tabs.find((x) => x.id === p.id);
+          return (
+            <span key={p.id} className={`browser-tab pinned${p.id === active?.id ? " on" : ""}`}>
+              <button role="tab" aria-selected={p.id === active?.id} aria-busy={t?.loading} className="browser-tab-main" title={t?.url ?? p.url} onClick={() => onPinned(p.id)}>
+                {t?.loading ? <span className="spinner" aria-label="読み込み中" /> : <Icon name={p.icon} size={13} />}
+                <span className="ellipsis">{p.label}</span>
+              </button>
+            </span>
+          );
+        })}
+        <span className="browser-tabs-sep" />
+        {tabs.filter((t) => !t.pinned).map((t) => (
           <span
             key={t.id}
             data-tab={t.id}
@@ -2896,6 +2918,14 @@ export default function App() {
     remember(TERMINAL_TARGET_KEY, t);
     setTerminalTargetState(t);
   };
+  /// Brings up a pinned page, opening its tab the first time.
+  const showPinned = (id: string) => {
+    const page = PINNED_PAGES.find((p) => p.id === id);
+    if (!page) return;
+    if (!tabs.some((t) => t.id === id)) setTabs((prev) => [{ id, url: page.url, title: page.label, loading: true, nav: 0, pinned: true }, ...prev]);
+    setBrowserShown(true);
+    setActiveTabId(id);
+  };
   const terminalTab = (sessionId: string) => tabs.find((t) => t.term?.session === sessionId);
   const showTab = (id: string) => {
     setBrowserShown(true);
@@ -2934,8 +2964,8 @@ export default function App() {
     const i = tabs.findIndex((t) => t.id === id);
     const rest = tabs.filter((t) => t.id !== id);
     setTabs(rest);
-    // Closing the last tab leaves the pane open on a new tab.
-    if (rest.length === 0) setNewTab(true);
+    // Closing the last tab leaves the pane open on a new tab (pinned pages aside).
+    if (!rest.some((t) => !t.pinned)) setNewTab(true);
     else if (id === activeTab?.id) setActiveTabId(rest[Math.min(i, rest.length - 1)].id);
   };
   // Pages report where they went and what they are called; links they open in
@@ -3258,8 +3288,14 @@ export default function App() {
             <button className={browserShown ? "on" : ""} aria-pressed={browserShown} title="ブラウザを表示・隠す（⌘T で新しいタブ）" onClick={toggleBrowser}>
               <Icon name="globe" />
               <span className="grow">ブラウザ</span>
-              {tabs.length > 0 && <span className="muted">{tabs.length}</span>}
+              {tabs.some((t) => !t.pinned) && <span className="muted">{tabs.filter((t) => !t.pinned).length}</span>}
             </button>
+            {PINNED_PAGES.map((p) => (
+              <button key={p.id} className={browserShown && activeTab?.id === p.id ? "on" : ""} title={`${p.label} を右のペインで開く（開いたままになります）`} onClick={() => showPinned(p.id)}>
+                <Icon name={p.icon} />
+                <span className="grow">{p.label}</span>
+              </button>
+            ))}
           </nav>
           <div className="sidebar-section">
             <div className="section-title">場所</div>
@@ -3529,6 +3565,7 @@ export default function App() {
               covered={covered}
               report={report}
               onSelect={setActiveTabId}
+              onPinned={showPinned}
               onClose={closeTab}
               onNewTab={openNewTab}
               onHide={() => setBrowserShown(false)}
