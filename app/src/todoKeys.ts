@@ -13,8 +13,10 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { matches } from "./keymap";
 
 export interface TodoKeyActions {
-  /// Enter: the todo's panel.
+  /// Enter: the todo's panel (an input todo: the focus mode).
   open: (todoId: number) => void;
+  /// The panel following the cursor, while it is open.
+  select: (todoId: number) => void;
   /// s: the status menu.
   status: (todoId: number) => void;
   /// f: the focus mode with the todo's page.
@@ -66,7 +68,7 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
       setCursor(el.dataset.row);
       el.scrollIntoView({ block: "nearest", inline: "nearest" });
       const id = todoId(el.dataset.row);
-      if (state.current.panelOpen && id !== null) state.current.actions.open(id);
+      if (state.current.panelOpen && id !== null) state.current.actions.select(id);
     };
     const onKey = (e: KeyboardEvent) => {
       const { cursor, layout, enabled, actions } = state.current;

@@ -27,6 +27,7 @@ import {
   FOCUS_PANE_EVENT,
   FOCUS_EXIT_EVENT,
   FOCUS_LINK_EVENT,
+  ADD_INPUT_EVENT,
   WINDOW_FOCUS_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
@@ -110,7 +111,7 @@ const HERDR_SESSION_KEY = "herdrSession";
 /// Where pages open: the app's browser pane, or Dia with its own sign-ins.
 type LinkTarget = "app" | "dia";
 
-type View = "todos" | "sessions" | "prs" | "notices";
+type View = "todos" | "inputs" | "sessions" | "prs" | "notices";
 type Layout = "board" | "list";
 type GroupBy = "repo" | "parent";
 
@@ -368,6 +369,8 @@ const sitePrefix = (url: string) => {
     return url;
   }
 };
+/// How long "input に追加しました" stays.
+const ADDED_INPUT_MS = 3000;
 /// The focus mode's left side keeps at least this.
 const FOCUS_LEFT_MIN_W = 360;
 const SIDEBAR_W = 232;
@@ -925,8 +928,9 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
         {urgent && <StateBadge state={urgent} />}
       </div>
       <div className="card-title">{todo.title}</div>
-      {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner) && (
+      {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner || todo.kind === "input") && (
         <div className="card-foot">
+          {todo.kind === "input" && <span className="tag">input</span>}
           <GhChip todo={todo} report={report} />
           {rel && <span className="tag">{rel}</span>}
           {todo.queue_runner && <span className={`tag${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "起動待ち"}</span>}
@@ -1011,8 +1015,10 @@ interface TodoFilter {
   statuses: Status[];
   places: string[];
   waiting: boolean;
+  /// Leaves the input todos (reading material) to their own page.
+  hideInput: boolean;
 }
-const NO_FILTER: TodoFilter = { text: "", statuses: [], places: [], waiting: false };
+const NO_FILTER: TodoFilter = { text: "", statuses: [], places: [], waiting: false, hideInput: false };
 /// The kanban's and the list's filters, each its own.
 const TODO_FILTERS_KEY = "todoFilters";
 /// Filters kept under a name, listed in the sidebar and ⌘K; each opens the
@@ -1024,7 +1030,7 @@ interface SavedFilter {
   layout: Layout;
 }
 const SAVED_FILTERS_KEY = "savedFilters";
-const filterCount = (f: TodoFilter) => (f.text.trim() ? 1 : 0) + f.statuses.length + f.places.length + (f.waiting ? 1 : 0);
+const filterCount = (f: TodoFilter) => (f.text.trim() ? 1 : 0) + f.statuses.length + f.places.length + (f.waiting ? 1 : 0) + (f.hideInput ? 1 : 0);
 const sameFilter = (a: TodoFilter, b: TodoFilter) => JSON.stringify(a) === JSON.stringify(b);
 function matchesFilter(t: Todo, f: TodoFilter) {
   const words = f.text.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -1033,7 +1039,8 @@ function matchesFilter(t: Todo, f: TodoFilter) {
     words.every((w) => hay.includes(w)) &&
     (f.statuses.length === 0 || f.statuses.includes(t.status)) &&
     (f.places.length === 0 || f.places.includes(laneKey(t.repos))) &&
-    (!f.waiting || liveSessions(t).some((s) => s.state === "needs_input"))
+    (!f.waiting || liveSessions(t).some((s) => s.state === "needs_input")) &&
+    (!f.hideInput || t.kind !== "input")
   );
 }
 
@@ -1093,6 +1100,10 @@ function TodoFilterBar({ filter, version, places, onChange, onSave }: {
             <label className="toggle">
               <input type="checkbox" checked={filter.waiting} onChange={() => onChange({ ...filter, waiting: !filter.waiting })} />
               入力待ちだけ
+            </label>
+            <label className="toggle">
+              <input type="checkbox" checked={filter.hideInput} onChange={() => onChange({ ...filter, hideInput: !filter.hideInput })} />
+              input を隠す
             </label>
             <div className="filter-actions">
               {naming ? (
@@ -1245,6 +1256,7 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
                 <StatusIcon status={t.status} />
                 <span className="mono muted ref">{todoRef(t)}</span>
                 <span className="row-title">{t.title}</span>
+                {t.kind === "input" && <span className="tag">input</span>}
                 {urgent && <StateBadge state={urgent} />}
                 <GhChip todo={t} report={report} />
                 {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
@@ -3027,6 +3039,80 @@ const NOTICE_STATE: Record<Notice["kind"], string> = {
 };
 
 /// The notifications not dealt with yet; opening or dismissing one takes it off.
+/// The input todos: reading material, each opening in the focus mode with its
+/// page on the left. A URL here, or ⌥-clicking a link in the browser, adds one.
+function InputsPage({ todos, run, onFocus, onDetail }: {
+  todos: Todo[];
+  run: (f: () => Promise<unknown>) => void;
+  onFocus: (todo: Todo) => void;
+  onDetail: (id: number) => void;
+}) {
+  const [showDone, setShowDone] = useState(false);
+  const inputs = todos.filter((t) => t.kind === "input").sort((a, b) => b.updated_at - a.updated_at);
+  const rows = inputs.filter((t) => showDone || t.status !== "done");
+  const done = inputs.length - inputs.filter((t) => t.status !== "done").length;
+  const pageOf = (t: Todo) => t.links[0]?.url ?? t.pr_url ?? t.issue_url;
+  // ↑↓ or j k pick one, Enter opens it in the focus mode, ⌥Enter its panel.
+  const { cursorId, setCursor, list } = useRowCursor(
+    rows.map((t) => String(t.id)),
+    (id, alt) => {
+      const todo = rows.find((t) => String(t.id) === id);
+      if (todo) (alt ? onDetail(todo.id) : onFocus(todo));
+    },
+  );
+  const add = (address: string) => {
+    const url = addressToUrl(address);
+    if (!url || url.startsWith(SEARCH_URL)) return;
+    run(() => addInput(url, hostOf(url)));
+  };
+  return (
+    <>
+      <header className="toolbar">
+        <h1>Input</h1>
+        <span className="muted">{inputs.length - done}</span>
+        <input className="filter-search" placeholder="URL を入力して Enter で追加" aria-label="input に追加する URL" onKeyDown={(e) => isEnter(e) && (add(e.currentTarget.value), (e.currentTarget.value = ""))} />
+        <span className="grow" />
+        {done > 0 && (
+          <button className={`filter${showDone ? " on" : ""}`} aria-pressed={showDone} onClick={() => setShowDone((v) => !v)}>
+            Done も表示 {done}
+          </button>
+        )}
+      </header>
+      <div className="content" ref={list}>
+        {rows.length === 0 && <p className="muted empty">まだありません。ブラウザでリンクを ⌥ + クリックするか、上に URL を入れると追加されます。</p>}
+        <ul className="rows">
+          {rows.map((t) => {
+            const page = pageOf(t);
+            return (
+              <li
+                key={t.id}
+                data-row={t.id}
+                className={`row${String(t.id) === cursorId ? " cursor" : ""}${t.status === "done" ? " done" : ""}`}
+                onClick={() => (setCursor(String(t.id)), onFocus(t))}
+              >
+                <StatusIcon status={t.status} />
+                <span className="row-title">{t.title}</span>
+                {page && <span className="muted mono ellipsis">{hostOf(page)}</span>}
+                <span className="muted when">{ago(t.updated_at)}</span>
+                <button className="ghost icon" aria-label={`${t.title} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onDetail(t.id))}>
+                  <Icon name="more" size={14} />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      </div>
+    </>
+  );
+}
+
+/// Adds an input todo for `url`, the page kept as its link.
+async function addInput(url: string, title: string) {
+  const todo = await api.createTodo({ title, kind: "input" });
+  await api.addLink(todo.id, url);
+  return todo;
+}
+
 /// The PR of a review request's notice: its URL, and the title it was posted with (`owner/repo#n title`).
 function reviewTargetOf(n: Notice): ReviewTarget | null {
   const m = n.url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
@@ -3342,6 +3428,7 @@ const SEARCH_ALIASES: Record<string, string[]> = {
   pr: ["pull request", "プルリク", "プルリクエスト", "レビュー", "review"],
   セッション: ["session", "claude"],
   todo: ["タスク", "task"],
+  input: ["インプット", "読む", "reading", "学習"],
   カンバン: ["kanban", "board", "ボード"],
   リスト: ["list"],
   フィルター: ["filter", "絞り込み", "view", "ビュー"],
@@ -3803,6 +3890,16 @@ export default function App() {
     setFocusLink(url);
     setDialog("focusLink");
   };
+  // A link ⌥-clicked in a page becomes an input todo; the page says so.
+  const [addedInput, setAddedInput] = useState<string | null>(null);
+  const addInputFrom = (url: string, title: string) =>
+    run(async () => {
+      await addInput(url, title);
+      setAddedInput(title);
+      setTimeout(() => setAddedInput(null), ADDED_INPUT_MS);
+    });
+  const addInputRef = useRef(addInputFrom);
+  addInputRef.current = addInputFrom;
   const askFocusLinkRef = useRef(askFocusLink);
   askFocusLinkRef.current = askFocusLink;
   const [focusPicking, setFocusPicking] = useState<"start" | "add">("start");
@@ -3969,6 +4066,7 @@ export default function App() {
       // In the focus mode a page's new window goes to the left, if it may.
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => (focusModeRef.current ? askFocusLinkRef.current(payload.url) : openRef.current(payload.url))),
       listen<{ tab: string; url: string }>(FOCUS_LINK_EVENT, ({ payload }) => askFocusLinkRef.current(payload.url)),
+      listen<{ url: string; title: string }>(ADD_INPUT_EVENT, ({ payload }) => addInputRef.current(payload.url, payload.title)),
       // The focus mode lets none of the app's own shortcuts through.
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => !focusModeRef.current && openNewTab()),
       listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => !focusModeRef.current && switchRef.current(payload)),
@@ -3987,7 +4085,7 @@ export default function App() {
   const [dragging, setDragging] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
-  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "sessions", "prs", "notices"] as const, "todos"));
+  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "notices"] as const, "todos"));
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
   const [groupBy, setGroupByState] = useState<GroupBy>(() => load(GROUP_KEY, ["repo", "parent"] as const, "repo"));
   const [doneRecent, setDoneRecentState] = useState<boolean>(() => load(DONE_RECENT_KEY, ["1", "0"] as const, "1") === "1");
@@ -4260,6 +4358,12 @@ export default function App() {
     // The panel shows issue and PR state; fetch this todo's now.
     api.syncNow(id).catch(() => {});
   };
+  /// An input todo opens in the focus mode (its page on the left); others their panel.
+  const openOrFocus = (id: number) => {
+    const todo = allTodos.find((t) => t.id === id);
+    if (todo?.kind === "input") focusTodo(todo);
+    else openTodo(id);
+  };
   const goTodo = (id: number) => {
     setView("todos");
     openTodo(id);
@@ -4284,7 +4388,8 @@ export default function App() {
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
   const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
   useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode, selectedTodo !== null, {
-    open: openTodo,
+    open: (id) => openOrFocus(id),
+    select: openTodo,
     status: setStatusMenuFor,
     focus: (id) => {
       const todo = allTodos.find((t) => t.id === id);
@@ -4330,6 +4435,7 @@ export default function App() {
         </span>
       ),
     },
+    { key: "inputs", label: "Input", icon: "import", count: allTodos.filter((t) => t.kind === "input" && t.status !== "done").length, on: view === "inputs", go: () => setView("inputs") },
     { key: "prs", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
     { key: "notices", label: "通知", icon: "bell", on: view === "notices", go: () => setView("notices"), badge: unreadCount > 0 && <span className="pill accent">{unreadCount}</span> },
   ];
@@ -4353,7 +4459,7 @@ export default function App() {
       : { key: "linkApp", label: "リンクをアプリ内のブラウザで開くようにする", run: () => setLinkTarget("app") },
   ];
 
-  const panel = view === "todos" && selectedTodo ? "todo" : view === "sessions" && selectedSession ? "session" : null;
+  const panel = (view === "todos" || view === "inputs") && selectedTodo ? "todo" : view === "sessions" && selectedSession ? "session" : null;
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
@@ -4607,7 +4713,7 @@ export default function App() {
                         collapsed={collapsed.has(lane.key)}
                         onToggle={() => toggleLane(lane.key)}
                         selectedId={selectedTodo?.id ?? null}
-                        onSelectTodo={openTodo}
+                        onSelectTodo={openOrFocus}
                         report={report}
                         allTodos={allTodos}
                         doneRecent={doneRecent}
@@ -4620,7 +4726,7 @@ export default function App() {
                         collapsed={collapsed.has(lane.key)}
                         onToggle={() => toggleLane(lane.key)}
                         selectedId={selectedTodo?.id ?? null}
-                        onSelectTodo={openTodo}
+                        onSelectTodo={openOrFocus}
                         report={report}
                         run={run}
                         setStatus={setStatus}
@@ -4653,6 +4759,7 @@ export default function App() {
               onQuick={() => setDialog("quick")}
             />
           )}
+          {view === "inputs" && board && <InputsPage todos={allTodos} run={run} onFocus={focusTodo} onDetail={openTodo} />}
           {view === "notices" && board && <NoticesPage board={board} local={local} report={report} onOpenTodo={goTodo} run={run} />}
           {view === "prs" && (
             <PrsPage prs={prs} prsLoading={prsLoading} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} />
@@ -4753,6 +4860,11 @@ export default function App() {
               typeInto = focusRight;
             }}
           />
+        )}
+        {addedInput && (
+          <div className="toast" role="status">
+            input に追加しました：{addedInput}
+          </div>
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
         {dialog === "focusLink" && focusLink && (

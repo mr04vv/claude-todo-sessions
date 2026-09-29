@@ -65,6 +65,8 @@ pub enum Kind {
     #[default]
     Implementation,
     Research,
+    /// Material to take in (an article, a book's chapter), read in the focus mode.
+    Input,
 }
 
 /// Skill that drills into the details before implementing.
@@ -76,11 +78,13 @@ impl Kind {
         match self {
             Kind::Implementation => "implementation",
             Kind::Research => "research",
+            Kind::Input => "input",
         }
     }
     fn parse(s: Option<String>) -> Kind {
         match s.as_deref() {
             Some("research") => Kind::Research,
+            Some("input") => Kind::Input,
             _ => Kind::Implementation,
         }
     }
@@ -169,6 +173,7 @@ impl Todo {
         let head = match self.kind {
             Kind::Implementation => format!("{GRILLING_COMMAND} {}", self.title),
             Kind::Research => format!("調査: {}", self.title),
+            Kind::Input => format!("インプット: {}", self.title),
         };
         let mut body = head;
         if let Some(m) = memo {

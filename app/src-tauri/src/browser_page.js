@@ -2,7 +2,7 @@
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
 // commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, as the user set
 // them), right-click offers translation (WKWebView has no translate item),
-// and X shows its bookmarks only.
+// ⌥ + click keeps a link as an input todo, and X shows its bookmarks only.
 (() => {
   if (window.__todoSessionsPage) return;
   window.__todoSessionsPage = true;
@@ -39,6 +39,7 @@
   const FOCUS_EXIT = "todo-sessions://focus-exit";
   const CLOSE_TAB = "todo-sessions://close-tab";
   const FOCUS_LINK = "todo-sessions://focus-link?u=";
+  const ADD_INPUT = "todo-sessions://add-input";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
 
@@ -118,8 +119,17 @@
   // In the focus mode the app sets __todoSessionsAllow, the addresses this
   // page may go to (as prefixes); a link to anything else asks the app first.
   const guardLink = (e) => {
+    const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    // ⌥ + click keeps the link as an input todo instead of following it.
+    if (e.type === "click" && e.altKey && !e.metaKey && !e.ctrlKey && link && /^https?:/.test(link.href)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      const title = (link.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120) || link.href;
+      location.href = `${ADD_INPUT}?u=${encodeURIComponent(link.href)}&t=${encodeURIComponent(title)}`;
+      return;
+    }
     const allow = window.__todoSessionsAllow;
-    const a = allow && e.target instanceof Element ? e.target.closest("a[href]") : null;
+    const a = allow ? link : null;
     if (!a || !/^https?:/.test(a.href) || allow.some((p) => a.href.startsWith(p))) return;
     e.preventDefault();
     e.stopImmediatePropagation();

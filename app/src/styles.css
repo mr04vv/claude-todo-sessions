@@ -2383,3 +2383,18 @@ body.resizing {
 .focus-picker .add-inline {
   opacity: 1;
 }
+
+/* A short word that something happened (an input todo added from a page). */
+.toast {
+  /* Over the Todo side: the pane's pages draw above the page. */
+  position: fixed;
+  left: calc(var(--sidebar-w) + 20px);
+  bottom: 20px;
+  z-index: 60;
+  padding: 8px 14px;
+  background: var(--card);
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  font-size: 12px;
+}

@@ -368,6 +368,16 @@ fn kind_picks_the_default_prompt() {
 }
 
 #[test]
+fn input_todos_keep_their_kind() {
+    let (_d, db) = open();
+    let t = db.create_todo(NewTodo { title: "Rust の所有権".into(), kind: cts_core::Kind::Input, ..Default::default() }).unwrap();
+    let t = db.get_todo(t.id).unwrap().unwrap();
+    assert_eq!(t.kind, cts_core::Kind::Input);
+    // A session on it reads the material with the user.
+    assert!(t.prompt_body().starts_with("インプット: Rust の所有権"), "{}", t.prompt_body());
+}
+
+#[test]
 fn session_branch_is_stored() {
     let (_d, db) = open();
     db.record_session("cse_1", "https://github.com/o/r", SessionState::Idle).unwrap();

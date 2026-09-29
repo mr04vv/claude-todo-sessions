@@ -1206,6 +1206,15 @@ const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
 const FOCUS_APP_EVENT: &str = "focus-app";
 /// `{tab}` when a page's ⌃l asks for the focus mode's right side.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
+/// `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo.
+const ADD_INPUT_EVENT: &str = "add-input";
+
+#[derive(Clone, Serialize)]
+struct InputLink {
+    url: String,
+    title: String,
+}
+
 /// `{tab, url}` when a page, in the focus mode, is asked to go where it may not.
 const FOCUS_LINK_EVENT: &str = "focus-link";
 
@@ -1333,6 +1342,10 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("focus-pane") => on_focus.emit(FOCUS_PANE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("focus-exit") => on_focus.emit(FOCUS_EXIT_EVENT, ()),
                 Some("close-tab") => on_focus.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: focus_tab.clone() }),
+                Some("add-input") => {
+                    let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
+                    on_focus.emit(ADD_INPUT_EVENT, InputLink { url: param("u"), title: param("t") })
+                }
                 Some("focus-link") => {
                     let link = url.query_pairs().find(|(k, _)| k == "u").map(|(_, v)| v.into_owned()).unwrap_or_default();
                     on_focus.emit(FOCUS_LINK_EVENT, TabUrlOnly { tab: focus_tab.clone(), url: link })

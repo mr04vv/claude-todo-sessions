@@ -55,7 +55,7 @@ export interface Link {
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
 export type Runner = "auto" | "cloud" | "local";
-export type Kind = "implementation" | "research";
+export type Kind = "implementation" | "research" | "input";
 
 /** A notification the app posted, kept for the in-app list. */
 export interface Notice {
@@ -267,6 +267,8 @@ export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
 export const WINDOW_FOCUS_EVENT = "window-focus";
 /** `{tab}` when a page's ⌃l asks for the focus mode's right side. */
 export const FOCUS_PANE_EVENT = "focus-pane";
+/** `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo. */
+export const ADD_INPUT_EVENT = "add-input";
 /** `{tab, url}` when a page, in the focus mode, is asked to go where it may not. */
 export const FOCUS_LINK_EVENT = "focus-link";
 /** When a page's Esc, in the focus mode, asks about leaving it. */
