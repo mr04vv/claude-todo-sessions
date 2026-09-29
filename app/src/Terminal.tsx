@@ -206,6 +206,8 @@ function entryFor(id: string, look: Look): Entry {
     // Keys type what they do in Ghostty: ⌘← ⌘→ to the line's ends, ⌘⌫
     // clears the line, ⇧Enter a new line (from the user's keybind), ...
     term.attachCustomKeyEventHandler((ev) => {
+      // ⌃h ⌃l move the typing between the app's sides (App.tsx), not to the program.
+      if (ev.ctrlKey && !ev.metaKey && !ev.altKey && !ev.shiftKey && (ev.key === "h" || ev.key === "l")) return false;
       const sends = ev.isComposing ? null : sendsFor(look.keys, ev);
       if (sends === null) return true;
       if (ev.type === "keydown") write(sends);

@@ -1,7 +1,7 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: ⌘L moves to the app's address bar, ⌘T opens a new tab (⌘W, the app
 // menu's, closes it), ⌘⇧A archives the cloud session it shows, ⌘K opens the
-// app's commands, ⌘, goes back to the app's side, ⌘R reloads,
+// app's commands, ⌃h goes back to the app's side, ⌘R reloads,
 // ⌘[ ⌘] go back and forward, ⌘⇧[ ⌘⇧] switch tabs, and right-click offers
 // translation (WKWebView has no translate item).
 (() => {
@@ -22,6 +22,13 @@
   window.addEventListener(
     "keydown",
     (e) => {
+      // ⌃h hands the typing back to the app's side.
+      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key === "h") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        location.href = FOCUS_APP;
+        return;
+      }
       if (!e.metaKey || e.altKey || e.ctrlKey) return;
       // With ⇧ a JIS or US keyboard gives { and } for the bracket keys.
       const back = e.key === "[" || e.key === "{";
@@ -42,12 +49,11 @@
         return;
       }
       if (e.shiftKey) return;
-      // The app's commands win over the page's own ⌘K (ChatGPT's search);
-      // ⌘, hands the typing back to the app's side.
-      if (key === "k" || key === ",") {
+      // The app's commands win over the page's own ⌘K (ChatGPT's search).
+      if (key === "k") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        location.href = key === "k" ? PALETTE : FOCUS_APP;
+        location.href = PALETTE;
         return;
       }
       if (key === "r") {
