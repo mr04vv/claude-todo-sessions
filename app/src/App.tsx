@@ -2889,10 +2889,17 @@ export default function App() {
     setTerminalTargetState(t);
   };
   const terminalTab = (sessionId: string) => tabs.find((t) => t.term?.session === sessionId);
+  const showTab = (id: string) => {
+    setBrowserShown(true);
+    setActiveTabId(id);
+  };
   const inAppTerminal: InAppTerminal | null =
     terminalTarget === "app"
       ? {
           open: (run) => {
+            // herdr is attached once per herdr session; its pane is already focused.
+            const attached = run.herdr ? tabs.find((t) => t.term?.herdr === run.herdr) : undefined;
+            if (attached) return showTab(attached.id);
             const id = `t${nextTab.current++}`;
             setBrowserShown(true);
             setTabs((prev) => [...prev, { id, url: "", title: run.title, loading: false, nav: 0, term: run }]);
@@ -2901,8 +2908,7 @@ export default function App() {
           focus: (sessionId) => {
             const tab = terminalTab(sessionId);
             if (!tab) return false;
-            setBrowserShown(true);
-            setActiveTabId(tab.id);
+            showTab(tab.id);
             return true;
           },
         }

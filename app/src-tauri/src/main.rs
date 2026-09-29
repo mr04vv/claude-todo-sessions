@@ -301,20 +301,25 @@ fn open_url(url: &str) -> Result<(), String> {
 /// Focuses the herdr pane running this session, if any, and brings the
 /// terminal forward. Returns false when herdr does not host it.
 fn focus_in_herdr(session_id: &str) -> bool {
-    let Ok(table) = cli("herdr").args(["session", "list"]).output() else { return false };
-    for name in cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)) {
-        let Ok(out) = cli("herdr").args(["--session", &name, "agent", "list"]).output() else { continue };
-        let Ok(agents) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
-        if let Some(pane) = cts_core::herdr::find_pane(&agents, session_id) {
-            let focused = cli("herdr").args(["--session", &name, "agent", "focus", &pane]).status().map(|s| s.success()).unwrap_or(false);
-            if focused {
-                // ponytail: assumes herdr runs in Ghostty; make the terminal app a setting if it varies.
-                let _ = cli("open").args(["-a", TERMINAL_APP]).status();
-                return true;
-            }
-        }
+    if focus_herdr_pane(session_id).is_none() {
+        return false;
     }
-    false
+    // ponytail: assumes herdr runs in Ghostty; make the terminal app a setting if it varies.
+    let _ = cli("open").args(["-a", TERMINAL_APP]).status();
+    true
+}
+
+/// Focuses the herdr pane running the session, inside herdr only, and
+/// returns the herdr session it is in.
+fn focus_herdr_pane(session_id: &str) -> Option<String> {
+    let table = cli("herdr").args(["session", "list"]).output().ok()?;
+    cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)).into_iter().find(|name| {
+        let Ok(out) = cli("herdr").args(["--session", name, "agent", "list"]).output() else { return false };
+        let Ok(agents) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return false };
+        cts_core::herdr::find_pane(&agents, session_id).is_some_and(|pane| {
+            cli("herdr").args(["--session", name, "agent", "focus", &pane]).status().is_ok_and(|s| s.success())
+        })
+    })
 }
 
 /// Opens a session in `target`: "herdr" focuses its pane, "desktop" opens
@@ -342,6 +347,7 @@ fn quick_run(prompt: Option<&str>) -> TerminalRun {
         title: prompt.map(|p| p.chars().take(24).collect()).unwrap_or_else(|| "claude".into()),
         command: format!("claude --session-id {session}{first}"),
         session: Some(session),
+        herdr: None,
     }
 }
 
@@ -357,15 +363,24 @@ fn terminal_quick(prompt: Option<String>) -> TerminalRun {
     quick_run(prompt.as_deref())
 }
 
-/// A session still running in herdr is focused there (None), and with
-/// `desktop` one Claude Desktop knows opens there (None); any other comes back
-/// as a `claude --resume` to run in the app.
+/// What the in-app terminal runs to show a session: a session running in
+/// herdr gets its pane focused and the herdr session attached in the app;
+/// with `desktop`, one still running in Claude Desktop opens there (None);
+/// any other is resumed with `claude --resume`.
 #[tauri::command(async)]
 fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) -> Result<Option<TerminalRun>, String> {
-    if focus_in_herdr(&session_id) {
-        return Ok(None);
+    if let Some(name) = focus_herdr_pane(&session_id) {
+        return Ok(Some(TerminalRun {
+            cwd: home().to_string_lossy().into(),
+            title: format!("herdr: {name}"),
+            command: format!("herdr session attach {}", shell_quote(&name)),
+            session: None,
+            herdr: Some(name),
+        }));
     }
-    if desktop {
+    // One still going in Desktop stays there; a finished one resumes here.
+    let running = state.db.lock().map_err(err)?.get_session(&session_id).map_err(err)?.is_some_and(|s| s.state != SessionState::Ended);
+    if desktop && running {
         if let Some(local) = cts_core::desktop::find_local_id(&home().join(DESKTOP_SESSIONS_DIR), &session_id) {
             return open_url(&launch::jump_url(&session_id, Some(&local))).map(|_| None);
         }
@@ -389,6 +404,7 @@ fn resume_run(state: &AppState, session_id: &str) -> Result<TerminalRun, String>
         command: format!("claude --resume {session_id}"),
         cwd: session.cwd,
         session: Some(session_id.to_string()),
+        herdr: None,
     })
 }
 
@@ -604,6 +620,8 @@ struct TerminalRun {
     command: String,
     /// The Claude session it runs, when known.
     session: Option<String>,
+    /// The herdr session it attaches to, for a session running in herdr.
+    herdr: Option<String>,
 }
 
 /// Registers a session for the todo (so it is linked before it starts) and
@@ -625,7 +643,7 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions) -> Resu
         "claude --session-id {session_id}{flags} {}",
         shell_quote(&launch::start_prompt(todo.id, &todo.prompt_body()))
     );
-    Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: Some(session_id) })
+    Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: Some(session_id), herdr: None })
 }
 
 /// Starts `claude --session-id` for the todo in herdr (Ghostty if herdr is

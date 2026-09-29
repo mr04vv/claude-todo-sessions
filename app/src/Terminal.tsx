@@ -16,6 +16,8 @@ export interface TerminalRun {
   command: string;
   /// The Claude session it runs, when known.
   session: string | null;
+  /// The herdr session it attaches to, for a session running in herdr.
+  herdr: string | null;
 }
 
 export const terminalApi = {
@@ -23,8 +25,8 @@ export const terminalApi = {
   start: (todoId: number, options?: { model?: string; effort?: string }) =>
     invoke<TerminalRun>("terminal_start", { todoId, options: options ?? null }),
   quick: (prompt: string) => invoke<TerminalRun>("terminal_quick", { prompt }),
-  /// Null when the session still runs in herdr, which then has the focus, or
-  /// (with `desktop`) when Claude Desktop knows it and opens it.
+  /// A session running in herdr comes back as attaching herdr (its pane
+  /// focused); null when (with `desktop`) Claude Desktop knows it and opens it.
   resume: (sessionId: string, desktop: boolean) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop }),
   /// Lets the menu bar and notifications open local sessions through the page.
   setInApp: (on: boolean) => invoke<void>("set_in_app_terminal", { on }),

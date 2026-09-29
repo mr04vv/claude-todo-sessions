@@ -40,7 +40,7 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 ### セッションと todo の紐づけ
 
 - 最初のプロンプトに `[todo:N]` を入れて起動し、hook（ローカル）か cloud sync（クラウド）が拾って紐づける。プロンプトが `/` で始まる場合（`/grilling` など）はマーカーを末尾に置く（`launch::start_prompt`）。
-- ターミナル起動は `claude --session-id <uuid>` で先に DB に登録してから herdr の新しいワークスペースで動かす。閉じたセッションの herdr ボタンは `claude --resume` で再開する。サイドバーの「ターミナル」がアプリ内なら、同じコマンドを端末ペインのタブで動かす（`terminal_start` / `terminal_quick` / `terminal_resume`。herdr で動いているセッションは herdr を前に出す）。「開く」も従い、タブ → herdr → Desktop が知っているセッションなら Desktop → `claude --resume` の順。メニューバーと macOS 通知からは、設定を `set_in_app_terminal` でバックエンドに伝えておき、`open-local` イベントでフロントに開かせる。ちょっと Claude も `--session-id` をこちらで決めて、タブを見つけられるようにしている。
+- ターミナル起動は `claude --session-id <uuid>` で先に DB に登録してから herdr の新しいワークスペースで動かす。閉じたセッションの herdr ボタンは `claude --resume` で再開する。サイドバーの「ターミナル」がアプリ内なら、同じコマンドを端末ペインのタブで動かす（`terminal_start` / `terminal_quick` / `terminal_resume`。herdr で動いているセッションは herdr を前に出す）。「開く」も従い、タブ → herdr（pane を focus して `herdr session attach <name>` をタブで動かす。herdr のセッションごとに1タブ。herdr は入れ子の起動を拒むので、PTY では `HERDR_*` の環境変数を消している）→ Desktop で動いているなら Desktop → `claude --resume` の順。メニューバーと macOS 通知からは、設定を `set_in_app_terminal` でバックエンドに伝えておき、`open-local` イベントでフロントに開かせる。ちょっと Claude も `--session-id` をこちらで決めて、タブを見つけられるようにしている。
 - Desktop への遷移: アーカイブされていなければ `claude://code/continue?session=local_…`、アーカイブ済みなら `claude://resume?session=<uuid>`（アーカイブも解除される）。クラウドは `claude://code/cse_…`。
 - クラウドの Web は `https://claude.ai/code/session_…`（`cse_` を `session_` に置き換える。フロントは `api.ts` の `cloudWebUrl`、Rust は `launch::web_url`）。「開く」はサイドバーの「Cloud を開く」（Web / Desktop）に従う。メニューバーと macOS 通知からは `open-cloud` イベントでフロントに開かせる。
 

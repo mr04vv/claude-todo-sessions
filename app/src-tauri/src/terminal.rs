@@ -20,6 +20,8 @@ const EXIT_EVENT: &str = "term-exit";
 const READ_CHUNK: usize = 16 * 1024;
 /// Used when $SHELL is not set.
 const FALLBACK_SHELL: &str = "/bin/zsh";
+/// herdr marks its panes with these, and refuses to start inside one.
+const HERDR_ENV_PREFIX: &str = "HERDR_";
 
 struct Term {
     master: Box<dyn MasterPty + Send>,
@@ -55,6 +57,12 @@ pub fn term_open(app: AppHandle, terms: State<'_, Terminals>, id: String, comman
     // An interactive login shell, so PATH and the rest match the user's terminal.
     cmd.args(["-l", "-i", "-c", &command]);
     cmd.cwd(cwd);
+    // Not a herdr pane, even when the app was started from one.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with(HERDR_ENV_PREFIX) {
+            cmd.env_remove(key);
+        }
+    }
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     let child = pair.slave.spawn_command(cmd).map_err(err)?;
