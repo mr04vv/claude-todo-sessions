@@ -2398,3 +2398,17 @@ body.resizing {
   box-shadow: var(--shadow);
   font-size: 12px;
 }
+
+/* The sidebar with the keyboard (⌃h from the Todo side): its entry under the cursor. */
+.app[data-zone="sidebar"] .sidebar {
+  box-shadow: inset -3px 0 0 var(--accent);
+}
+
+.app[data-zone="sidebar"] .main {
+  box-shadow: none;
+}
+
+.sidebar [data-cursor] {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}

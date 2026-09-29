@@ -682,7 +682,7 @@ function useRowCursor(ids: string[], onEnter: (id: string, alt: boolean, row: HT
     const rowOf = (id: string) => list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`);
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app.focus")) return;
+      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app.focus, .app[data-zone=sidebar]")) return;
       const { ids, cursorId, onEnter } = state.current;
       const step = stepOf(e);
       if (step && ids.length > 0) {
@@ -3988,6 +3988,24 @@ export default function App() {
   };
   /// ⌃l gives the typing to the pane's page or terminal, ⌃h back to this
   /// side (from a page, ⌃h comes back through FOCUS_APP_EVENT).
+  // The sidebar as a place for the keyboard (⌃h from the Todo side): j k
+  // move over its entries, Enter picks one (and goes to it), ⌃l or Esc go back.
+  const [sideZone, setSideZoneState] = useState(false);
+  const sideZoneRef = useRef(sideZone);
+  sideZoneRef.current = sideZone;
+  const [sideCursor, setSideCursor] = useState(0);
+  const sideCursorRef = useRef(sideCursor);
+  sideCursorRef.current = sideCursor;
+  const sideItems = () => [...document.querySelectorAll<HTMLElement>(".sidebar nav button, .sidebar .repo-main")];
+  const setSideZone = (on: boolean) => {
+    sideZoneRef.current = on;
+    setSideZoneState(on);
+    // It starts on the page shown.
+    if (on) setSideCursor(Math.max(0, sideItems().findIndex((el) => el.classList.contains("on"))));
+  };
+  useEffect(() => {
+    sideItems().forEach((el, i) => el.toggleAttribute("data-cursor", sideZone && i === sideCursor));
+  });
   const focusSide = (pane: boolean) => {
     // The focus mode's two sides: its left tab and the pinned page on the right.
     if (focusMode) {
@@ -3996,7 +4014,12 @@ export default function App() {
       else if (side) api.browserFocus(side.id).catch(report);
       return;
     }
-    if (!pane) return void (document.activeElement as HTMLElement | null)?.blur();
+    // Left from the Todo side is the sidebar; right from the sidebar, the Todo side.
+    if (!pane) {
+      if (typingSideRef.current === "app" && !sideZoneRef.current) setSideZone(true);
+      return void (document.activeElement as HTMLElement | null)?.blur();
+    }
+    if (sideZoneRef.current) return setSideZone(false);
     if (!browserShown || !activeTab) return;
     if (activeTab.term) focusTerminal(activeTab.id);
     else api.browserFocus(activeTab.id).catch(report);
@@ -4010,6 +4033,8 @@ export default function App() {
   // the backend, asked once the focus events stop. The window's own events
   // (which also fire as a browser tab takes the keyboard) only prompt a look.
   const [typingSide, setTypingSide] = useState<"app" | "pane" | null>("app");
+  const typingSideRef = useRef(typingSide);
+  typingSideRef.current = typingSide;
   useEffect(() => {
     let timer = 0;
     const settle = () => {
@@ -4263,6 +4288,19 @@ export default function App() {
         focusSideRef.current(matches(e, "sidePane"));
         return;
       }
+      if (sideZoneRef.current && !e.metaKey && !e.ctrlKey) {
+        const step = stepOf(e);
+        if (step) {
+          e.preventDefault();
+          setSideCursor((i) => Math.min(Math.max(i + step, 0), sideItems().length - 1));
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          // Picks the entry and goes over to what it shows.
+          sideItems()[sideCursorRef.current]?.click();
+          setSideZone(false);
+        } else if (e.key === "Escape") setSideZone(false);
+        return;
+      }
       // The focus mode: Esc asks about leaving (a terminal keeps its Esc, and
       // the address bar its own), and ⌘ only edits text.
       if (focusModeRef.current) {
@@ -4387,7 +4425,7 @@ export default function App() {
   const todoPage = useRef<HTMLDivElement>(null);
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
   const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
-  useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode, selectedTodo !== null, {
+  useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode && !sideZone, selectedTodo !== null, {
     open: (id) => openOrFocus(id),
     select: openTodo,
     status: setStatusMenuFor,
@@ -4468,9 +4506,10 @@ export default function App() {
     <TerminalContext.Provider value={inAppTerminal}>
       <div
         className={`app${browserShown ? " with-browser" : ""}${browserShown && !focusMode && typingSide ? ` typing-${typingSide}` : ""}${focusMode ? " focus" : ""}`}
+        data-zone={sideZone ? "sidebar" : undefined}
         style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px`, "--focus-right-w": `${focusRightW}px` } as React.CSSProperties}
       >
-        <aside className="sidebar">
+        <aside className="sidebar" onPointerDown={() => sideZoneRef.current && setSideZone(false)}>
           <div className="brand">
             <span className="brand-mark" />
             <span>Todo Sessions</span>
