@@ -346,15 +346,6 @@ fn sync_now(state: State<AppState>, todo_id: Option<i64>) {
     }
 }
 
-/// Opens a GitHub issue or PR in the browser.
-#[tauri::command(async)]
-fn open_github(url: String) -> Result<(), String> {
-    if !url.starts_with("https://github.com/") {
-        return Err(format!("GitHub の URL ではありません: {url}"));
-    }
-    open_url(&url)
-}
-
 fn is_web_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
@@ -1606,7 +1597,6 @@ fn main() {
             link_session,
             unlink_session,
             open_session,
-            open_github,
             sync_now,
             quick_claude,
             start_desktop,

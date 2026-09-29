@@ -212,7 +212,6 @@ export const api = {
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
   quickClaude: (prompt: string) => invoke<void>("quick_claude", { prompt }),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
-  openGithub: (url: string) => invoke<void>("open_github", { url }),
   openLink: (url: string) => invoke<void>("open_link", { url }),
   openInDia: (url: string) => invoke<void>("open_in_dia", { url }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),

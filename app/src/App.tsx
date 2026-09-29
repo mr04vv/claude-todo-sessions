@@ -487,14 +487,16 @@ function RepoDot({ repo }: { repo: string }) {
 /// Clicks inside cards and rows must not also select them or start a drag.
 const stop = (e: React.SyntheticEvent) => e.stopPropagation();
 
-/// Opens `url` on GitHub in the default browser.
-function openGithub(url: string, report: (e: unknown) => void) {
-  api.openGithub(url).catch(report);
+/// Opens a link where the sidebar's "リンクを開く" says: the browser pane or
+/// Dia (the default browser outside the app's tree of providers).
+function useOpenLink(report: (e: unknown) => void) {
+  const openInBrowser = useContext(BrowserContext);
+  return (url: string) => (openInBrowser ? openInBrowser(url) : api.openLink(url).catch(report));
 }
 
 /// Issue or PR chip; the PR wins when there is one. Opens it in the browser pane.
 function GhChip({ todo, report }: { todo: Todo; report: (e: unknown) => void }) {
-  const openInBrowser = useContext(BrowserContext);
+  const openLink = useOpenLink(report);
   const [url, label, cls] = todo.pr_url
     ? [todo.pr_url, todo.pr_state ? PR_LABEL[todo.pr_state] : "PR", `gh-pr-${todo.pr_state ?? "open"}`]
     : todo.issue_url
@@ -508,8 +510,7 @@ function GhChip({ todo, report }: { todo: Todo; report: (e: unknown) => void }) 
       onPointerDown={stop}
       onClick={(e) => {
         e.stopPropagation();
-        if (openInBrowser) openInBrowser(url);
-        else openGithub(url, report);
+        openLink(url);
       }}
     >
       {label}
@@ -756,6 +757,7 @@ function LaneHeader({ lane, collapsed, onToggle, onOpenTodo, report }: {
   onOpenTodo: (id: number) => void;
   report: (e: unknown) => void;
 }) {
+  const openLink = useOpenLink(report);
   const waiting = lane.todos.flatMap(liveSessions).filter((s) => s.state === "needs_input").length;
   const open = lane.todos.filter((t) => t.status !== "done").length;
   const [owner, name] = lane.repo && isGithubRepo(lane.repo) ? lane.repo.split(/\/(.*)/s) : [null, lane.parent?.title ?? lane.key];
@@ -788,7 +790,7 @@ function LaneHeader({ lane, collapsed, onToggle, onOpenTodo, report }: {
         </button>
       )}
       {lane.repo && isGithubRepo(lane.repo) && (
-        <button className="link-button" onClick={() => openGithub(GITHUB + lane.repo, report)}>
+        <button className="link-button" onClick={() => openLink(GITHUB + lane.repo)}>
           GitHub <Icon name="open" size={11} />
         </button>
       )}
@@ -1024,6 +1026,7 @@ const URL_RE = /https?:\/\/[^\s<>"'）)]+/g;
 
 /// Text with its URLs as links that open in the browser.
 function Linkify({ text, report }: { text: string; report: (e: unknown) => void }) {
+  const openLink = useOpenLink(report);
   const parts: React.ReactNode[] = [];
   let last = 0;
   for (const m of text.matchAll(URL_RE)) {
@@ -1036,7 +1039,7 @@ function Linkify({ text, report }: { text: string; report: (e: unknown) => void 
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          api.openLink(url).catch(report);
+          openLink(url);
         }}
       >
         {url}
@@ -1539,8 +1542,7 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
   onOpenTodo: (id: number) => void;
   onClose: () => void;
 }) {
-  const openInBrowser = useContext(BrowserContext);
-  const browse = (url: string) => (openInBrowser ? openInBrowser(url) : openGithub(url, report));
+  const browse = useOpenLink(report);
   // Every field saves as soon as it is left.
   const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
   const children = allTodos.filter((c) => c.parent_id === todo.id);
@@ -1569,7 +1571,7 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
         <span className="mono">#{todo.id}</span>
         <span className="grow" />
         {gh && (
-          <button className="ghost icon" aria-label="GitHub で開く" title={gh} onClick={() => openGithub(gh, report)}>
+          <button className="ghost icon" aria-label="GitHub で開く" title={gh} onClick={() => browse(gh)}>
             <Icon name="open" size={14} />
           </button>
         )}
@@ -1739,7 +1741,7 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
           <h3>リンク {todo.links.length > 0 && <span className="muted">{todo.links.length}</span>}</h3>
           <ul className="attachments">
             {todo.links.map((l) => (
-              <li key={l.id} className="attachment" title={l.url} onClick={() => api.openLink(l.url).catch(report)}>
+              <li key={l.id} className="attachment" title={l.url} onClick={() => browse(l.url)}>
                 {l.image ? (
                   <img src={l.image} alt="" />
                 ) : (
@@ -3108,7 +3110,7 @@ export default function App() {
                     <span className="muted">{lane.todos.filter((t) => t.status !== "done").length}</span>
                   </button>
                   {isGithubRepo(lane.key) && (
-                    <button className="ghost icon repo-gh" aria-label={`${lane.key} を GitHub で開く`} title="GitHub で開く" onClick={() => openGithub(GITHUB + lane.key, report)}>
+                    <button className="ghost icon repo-gh" aria-label={`${lane.key} を GitHub で開く`} title="GitHub で開く" onClick={() => openInBrowser(GITHUB + lane.key)}>
                       <Icon name="open" size={12} />
                     </button>
                   )}
