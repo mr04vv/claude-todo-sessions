@@ -2,17 +2,11 @@
 
 todo や GitHub issue を Claude Code のセッション（CLI・Desktop の Code タブ・クラウド）に紐づけて、1つの画面で進み具合を追うための macOS アプリです。画像と動画はすべて架空のデモデータで撮っています。
 
-## デモ動画
+## 紹介動画
 
-[![デモ動画](images/demo-poster.png)](demo.mp4)
+[![紹介動画](images/promo-poster.png)](promo.mp4)
 
-[demo.mp4](demo.mp4)（約50秒）では、次の操作をキーボードだけで行っています。
-
-1. カンバンを j / l で移動し、s でステータスを変え、Enter でパネルを開く
-2. ⌃h でサイドバーに移って Todo リスト、続けて Input を開く
-3. Input の todo を Enter で開き、フォーカスモードで Rust の本を読む
-4. 本文を選んで ⌃l を押し、右の ChatGPT の入力欄に貼る
-5. Esc を2回押してフォーカスモードを終え、⌘K で「session」と打ってセッション画面へ
+[promo.mp4](promo.mp4)（約1分・音声なし）
 
 ## Todo
 
