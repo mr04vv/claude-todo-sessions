@@ -15,7 +15,12 @@ pub struct Meta {
 
 /// Open Graph title and image of the page at `url`.
 pub fn fetch(url: &str) -> Result<Meta, String> {
-    let config = ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).user_agent(USER_AGENT).build();
+    fetch_within(url, TIMEOUT)
+}
+
+/// `fetch`, given up on after `timeout`.
+pub fn fetch_within(url: &str, timeout: Duration) -> Result<Meta, String> {
+    let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).user_agent(USER_AGENT).build();
     let agent = ureq::Agent::new_with_config(config);
     let mut resp = agent.get(url).header("Accept", "text/html").call().map_err(|e| e.to_string())?;
     let mut buf = Vec::new();

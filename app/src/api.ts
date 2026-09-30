@@ -52,6 +52,27 @@ export interface Link {
   created_at: number;
 }
 
+/** What a page asked onto the focus mode's left is judged against. */
+export interface FocusAsk {
+  /** The todo the focus mode was opened for, and its memo. */
+  subject: string | null;
+  memo: string | null;
+  /** The left's pages. */
+  pages: { title: string | null; url: string }[];
+  url: string;
+  /** The text of the link that asked. */
+  text: string | null;
+}
+
+/** How likely the page is the focus mode's work (Jev's, in percent), and its title. */
+export interface Verdict {
+  score: number;
+  title: string | null;
+}
+
+/** judgeFocusLink's error when Jev has no API key (crates/core relevance::NO_KEY). */
+export const JEV_NO_KEY = "Jev の API キーが設定されていません";
+
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
 export type Runner = "auto" | "cloud" | "local";
@@ -232,6 +253,10 @@ export const api = {
   setPageKeys: (keys: string) => invoke<void>("set_page_keys", { keys }),
   /// Where tab `tab`'s page may go in the focus mode (address prefixes); null lifts it.
   setFocusAllow: (tab: string, allow: string[] | null) => invoke<void>("set_focus_allow", { tab, allow }),
+  judgeFocusLink: (ask: FocusAsk) => invoke<Verdict>("judge_focus_link", { ask }),
+  /// Jev's API key, kept in the Keychain; an empty one takes it out.
+  jevKeyExists: () => invoke<boolean>("jev_key_exists"),
+  setJevKey: (key: string) => invoke<void>("set_jev_key", { key }),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
@@ -269,7 +294,7 @@ export const WINDOW_FOCUS_EVENT = "window-focus";
 export const FOCUS_PANE_EVENT = "focus-pane";
 /** `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo. */
 export const ADD_INPUT_EVENT = "add-input";
-/** `{tab, url}` when a page, in the focus mode, is asked to go where it may not. */
+/** `{tab, url, text}` when a page, in the focus mode, is asked to go where it may not (`text` the link's). */
 export const FOCUS_LINK_EVENT = "focus-link";
 /** When a page's Esc, in the focus mode, asks about leaving it. */
 export const FOCUS_EXIT_EVENT = "focus-exit";

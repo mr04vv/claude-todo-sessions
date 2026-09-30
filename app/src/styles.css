@@ -1785,6 +1785,40 @@ input.panel-title:focus-visible {
   background: none;
 }
 
+/* A page asked onto the focus mode's left, while it is judged or waits for an answer. */
+.browser-tab.asking {
+  border: 1px dashed var(--border-2);
+  border-bottom: 0;
+  font-style: italic;
+}
+
+.browser-tab.asking .browser-tab-main:disabled {
+  opacity: 1;
+}
+
+.asking-mark {
+  flex-shrink: 0;
+  font-style: normal;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.focus-link-title {
+  font-weight: 600;
+}
+
+.focus-verdict b {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Jev's API key (JevKeyField). */
+.jev-key {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+
 .browser-tab-close {
   width: 20px !important;
   height: 20px !important;
@@ -2224,6 +2258,13 @@ body.resizing {
 .filter-search {
   width: 200px;
   height: 28px;
+}
+
+/* The Input page's field, which takes several URLs. */
+.input-add {
+  width: auto;
+  flex: 0 1 380px;
+  min-width: 200px;
 }
 
 .filter-menu {

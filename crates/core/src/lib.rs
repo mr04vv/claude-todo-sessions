@@ -5,6 +5,7 @@ pub mod github;
 pub mod herdr;
 pub mod launch;
 pub mod ogp;
+pub mod relevance;
 pub mod skills;
 pub mod transcript;
 pub mod usage;
