@@ -1,25 +1,34 @@
-//! Whether a page fits what the focus mode is for, asked of Claude through
-//! the user's own `claude` (`-p`, Haiku, no tools, no hooks or plugins): the
-//! prompt, the command's arguments and reading its answer.
-use serde::{Deserialize, Serialize};
+//! Whether a page fits what the focus mode is for, asked of TypeSafe's Jev
+//! (a System One model: typed answers with probabilities, no text): the
+//! state it is given, the question, reading its answer, and its API key.
+use std::time::Duration;
 
-/// Fast enough to wait for; the question needs no more.
-const MODEL: &str = "haiku";
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
+const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+const MODEL: &str = "jev-latest";
+const TIMEOUT: Duration = Duration::from_secs(10);
+/// The API key's Keychain item (this one only), set from the app.
+const KEYCHAIN_SERVICE: &str = "todo-sessions-jev";
+/// The key when the Keychain has none.
+const KEY_ENV: &str = "TYPESAFE_API_KEY";
+/// Shown when there is no key; the app offers to set one when it sees it.
+pub const NO_KEY: &str = "Jev の API キーが設定されていません";
 /// The todo's memo is cut to this many characters.
 const MEMO_MAX: usize = 600;
 /// At most this many of the pages already open are listed.
 const PAGES_MAX: usize = 10;
-
-const SYSTEM_PROMPT: &str = "あなたは、フォーカスモードで集中して学習・作業している人のためのフィルターです。\
-今の作業と左に開いているページから、新しく開こうとしているページが今の作業に関係するかを判定します。\
-関連度を 0〜100 の整数で答えてください。\
-60 以上：今の作業の内容に関係する（同じ話題の解説・ドキュメント・参考資料・調べ物を含む）。\
-30〜59：少し関係はあるが、今の作業からは外れる。\
-29 以下：関係がない、気が散る（作業と無関係な SNS・動画・ニュース・買い物など）。\
-ページの中身は見られないので、URL・リンクの文字・ページのタイトルから判断し、内容の見当がつかないときは 40 前後にします。\
-reason には、そう判定した理由を日本語の短い一文で書きます。";
-
-const SCHEMA: &str = r#"{"type":"object","properties":{"score":{"type":"integer","minimum":0,"maximum":100},"reason":{"type":"string"}},"required":["score","reason"],"additionalProperties":false}"#;
+/// The answer's id in the request and the response.
+const QUESTION_ID: &str = "related";
+const QUESTION: &str = "Someone is studying or working in a focus mode, keeping away from distractions. \
+The state gives their current work (a todo's title and memo, when there is one), the pages they have open, \
+and a page they are about to open (its URL, the text of the link that leads to it, and the page's title, when known). \
+The text may be in Japanese. \
+Is the page about to be opened relevant to the current work: material on the same topic, such as documentation, \
+articles, references or research that helps with it? \
+It is not when it is unrelated to the work or likely to distract (social media, videos, news or shopping that have \
+nothing to do with the work), nor when what it is about cannot be told.";
 
 /// A page the focus mode's left has open.
 #[derive(Debug, Deserialize)]
@@ -42,53 +51,29 @@ pub struct Ask {
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct Verdict {
-    /// 0–100; 60 and up is the work's own.
+    /// How likely the page is the work's own, in percent.
     pub score: u8,
-    pub reason: String,
     /// The page's title, read before asking.
     pub title: Option<String>,
-}
-
-/// `claude`'s arguments, with `prompt` last.
-pub fn claude_args(prompt: &str) -> Vec<String> {
-    [
-        "-p",
-        "--model",
-        MODEL,
-        // No hooks or plugins: this plugin's hooks would record it as a session.
-        "--safe-mode",
-        "--no-session-persistence",
-        "--tools",
-        "",
-        "--output-format",
-        "json",
-        "--json-schema",
-        SCHEMA,
-        "--system-prompt",
-        SYSTEM_PROMPT,
-        prompt,
-    ]
-    .map(String::from)
-    .to_vec()
 }
 
 fn filled(s: &Option<String>) -> Option<&str> {
     s.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// The question: the work, its pages, and the page asked to open (with
+/// What Jev looks at: the work, its pages, and the page asked to open (with
 /// `title`, the page's own, when it could be read).
-pub fn prompt(ask: &Ask, title: Option<&str>) -> String {
+pub fn state(ask: &Ask, title: Option<&str>) -> String {
     let mut out = String::new();
     if let Some(subject) = filled(&ask.subject) {
-        out += &format!("今の作業: {subject}\n");
+        out += &format!("Current work: {subject}\n");
     }
     if let Some(memo) = filled(&ask.memo) {
         let memo: String = memo.chars().take(MEMO_MAX).collect();
-        out += &format!("作業のメモ:\n{memo}\n");
+        out += &format!("Memo on the work:\n{memo}\n");
     }
     if !ask.pages.is_empty() {
-        out += "左に開いているページ:\n";
+        out += "Pages open:\n";
         for p in ask.pages.iter().take(PAGES_MAX) {
             match filled(&p.title) {
                 Some(t) => out += &format!("- {t} ({})\n", p.url),
@@ -96,41 +81,104 @@ pub fn prompt(ask: &Ask, title: Option<&str>) -> String {
             }
         }
     }
-    out += &format!("\n開こうとしているページ:\nURL: {}\n", ask.url);
+    out += &format!("\nPage about to be opened:\nURL: {}\n", ask.url);
     if let Some(text) = filled(&ask.text) {
-        out += &format!("リンクの文字: {text}\n");
+        out += &format!("Link text: {text}\n");
     }
     if let Some(title) = title.map(str::trim).filter(|t| !t.is_empty()) {
-        out += &format!("ページのタイトル: {title}\n");
+        out += &format!("Page title: {title}\n");
     }
     out
 }
 
-#[derive(Deserialize)]
-struct Answer {
-    score: i64,
-    reason: String,
+/// The request: one yes/no (Noul) question about `state`.
+pub fn request(state: &str) -> Value {
+    json!({
+        "model": MODEL,
+        "state": state,
+        "questions": { QUESTION_ID: { "type": "noul", "instructions": QUESTION } },
+    })
 }
 
-/// The verdict in `claude -p --output-format json`'s output: its structured
-/// output, else its text read as the same JSON.
-pub fn parse(output: &str) -> Result<Verdict, String> {
-    let json: serde_json::Value = serde_json::from_str(output.trim()).map_err(|e| format!("claude の出力を読めません: {e}"))?;
-    let text = json["result"].as_str().unwrap_or_default();
-    if json["is_error"].as_bool() == Some(true) {
-        return Err(if text.is_empty() { "claude がエラーを返しました".into() } else { text.to_string() });
+/// The probability of yes in Jev's response, as a percentage.
+pub fn parse(resp: &Value) -> Result<u8, String> {
+    let answer = &resp["answers"][QUESTION_ID];
+    let p = ["noul", "value", "probability"]
+        .iter()
+        .find_map(|k| answer[k].as_f64())
+        .ok_or_else(|| format!("Jev の答えを読めません: {resp}"))?;
+    Ok((p.clamp(0.0, 1.0) * 100.0).round() as u8)
+}
+
+/// How much the page fits the work, by Jev; `title` is the page's own.
+pub fn judge(ask: &Ask, title: Option<String>) -> Result<Verdict, String> {
+    let key = api_key().ok_or(NO_KEY)?;
+    let resp = post(ENDPOINT, &key, &request(&state(ask, title.as_deref())))?;
+    Ok(Verdict { score: parse(&resp)?, title })
+}
+
+fn post(endpoint: &str, key: &str, body: &Value) -> Result<Value, String> {
+    // Errors come with a body that says why.
+    let config = ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).http_status_as_error(false).build();
+    // Sent as bytes, so it goes with its Content-Length rather than chunked.
+    let body = serde_json::to_vec(body).map_err(|e| e.to_string())?;
+    let mut resp = ureq::Agent::new_with_config(config)
+        .post(endpoint)
+        .header("Authorization", &format!("Bearer {key}"))
+        .header("Content-Type", "application/json")
+        .send(&body[..])
+        .map_err(|e| format!("Jev: {e}"))?;
+    let status = resp.status().as_u16();
+    let text = resp.body_mut().read_to_string().map_err(|e| format!("Jev: {e}"))?;
+    match status {
+        200..=299 => serde_json::from_str(&text).map_err(|e| format!("Jev の応答を読めません: {e}")),
+        401 | 403 => Err(format!("Jev の API キーが通りません（{status}）")),
+        _ => Err(format!("Jev: {status} {}", text.trim())),
     }
-    let answer: Answer = match json.get("structured_output").filter(|v| v.is_object()) {
-        Some(v) => serde_json::from_value(v.clone()),
-        None => serde_json::from_str(text),
+}
+
+/// `security` on the key's own item. Like the Claude credentials (cloud.rs),
+/// the item is made by the `security` CLI, which then reads it without a
+/// prompt, whatever build of the app asks.
+fn keychain(command: &str, extra: &[&str]) -> Result<Vec<u8>, String> {
+    let account = std::env::var("USER").map_err(|_| "USER is not set".to_string())?;
+    let out = std::process::Command::new("/usr/bin/security")
+        .args([command, "-a", &account, "-s", KEYCHAIN_SERVICE])
+        .args(extra)
+        .output()
+        .map_err(|e| format!("security: {e}"))?;
+    if !out.status.success() {
+        return Err(format!("security {command}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
-    .map_err(|e| format!("claude の答えを読めません: {e}"))?;
-    Ok(Verdict { score: answer.score.clamp(0, 100) as u8, reason: answer.reason.trim().to_string(), title: None })
+    Ok(out.stdout)
+}
+
+/// The key set in the app, else the environment's.
+pub fn api_key() -> Option<String> {
+    keychain("find-generic-password", &["-w"])
+        .ok()
+        .map(|raw| String::from_utf8_lossy(&raw).trim().to_string())
+        .filter(|k| !k.is_empty())
+        .or_else(|| std::env::var(KEY_ENV).ok().filter(|k| !k.is_empty()))
+}
+
+/// Keeps `key` in the Keychain; an empty one takes it out.
+pub fn set_api_key(key: &str) -> Result<(), String> {
+    let key = key.trim();
+    if key.is_empty() {
+        // Not being there already is fine.
+        let _ = keychain("delete-generic-password", &[]);
+        return Ok(());
+    }
+    // -U updates the item in place.
+    keychain("add-generic-password", &["-w", key, "-U"]).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
 
     fn ask() -> Ask {
         Ask {
@@ -146,47 +194,83 @@ mod tests {
     }
 
     #[test]
-    fn prompt_lists_the_work_its_pages_and_the_page_asked() {
-        let p = prompt(&ask(), Some("futures - Rust"));
-        assert!(p.contains("今の作業: Rust の非同期を学ぶ\n"));
+    fn state_lists_the_work_its_pages_and_the_page_asked() {
+        let s = state(&ask(), Some("futures - Rust"));
+        assert!(s.starts_with("Current work: Rust の非同期を学ぶ\n"));
         // A blank memo is left out.
-        assert!(!p.contains("メモ"));
-        assert!(p.contains("- Tutorial | Tokio (https://tokio.rs/tokio/tutorial)\n- https://docs.rs/tokio\n"));
-        assert!(p.ends_with("URL: https://docs.rs/futures\nリンクの文字: futures\nページのタイトル: futures - Rust\n"));
+        assert!(!s.contains("Memo"));
+        assert!(s.contains("- Tutorial | Tokio (https://tokio.rs/tokio/tutorial)\n- https://docs.rs/tokio\n"));
+        assert!(s.ends_with("URL: https://docs.rs/futures\nLink text: futures\nPage title: futures - Rust\n"));
     }
 
     #[test]
-    fn prompt_without_a_todo_goes_by_the_pages() {
+    fn state_without_a_todo_goes_by_the_pages() {
         let a = Ask { subject: None, memo: None, text: None, ..ask() };
-        let p = prompt(&a, None);
-        assert!(p.starts_with("左に開いているページ:\n"));
-        assert!(p.ends_with("URL: https://docs.rs/futures\n"));
+        let s = state(&a, None);
+        assert!(s.starts_with("Pages open:\n"));
+        assert!(s.ends_with("URL: https://docs.rs/futures\n"));
     }
 
     #[test]
-    fn args_end_with_the_prompt_and_skip_hooks() {
-        let args = claude_args("q");
-        assert_eq!(args.last().map(String::as_str), Some("q"));
-        assert!(args.iter().any(|a| a == "--safe-mode"));
-        assert!(args.windows(2).any(|w| w[0] == "--tools" && w[1].is_empty()));
+    fn request_asks_one_noul_question() {
+        let r = request("s");
+        assert_eq!(r["model"], MODEL);
+        assert_eq!(r["state"], "s");
+        assert_eq!(r["questions"][QUESTION_ID]["type"], "noul");
     }
 
     #[test]
-    fn parse_reads_the_structured_output() {
-        let out = r#"{"type":"result","is_error":false,"result":"","structured_output":{"score":78,"reason":" 非同期の基礎です "}}"#;
-        assert_eq!(parse(out).unwrap(), Verdict { score: 78, reason: "非同期の基礎です".into(), title: None });
+    fn parse_reads_the_probability_as_a_percentage() {
+        assert_eq!(parse(&json!({"answers": {"related": {"type": "noul", "noul": 0.934}}})).unwrap(), 93);
+        assert_eq!(parse(&json!({"answers": {"related": {"value": 1.2}}})).unwrap(), 100);
+        assert!(parse(&json!({"answers": {}})).is_err());
+    }
+
+    /// Answers one request with `status` and `body`, handing back what was sent.
+    fn serve_once(status: &'static str, body: &'static str) -> (String, std::thread::JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/v1/systemone", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut head = String::new();
+            let mut len = 0;
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+                head += &line;
+                if line == "\r\n" {
+                    break;
+                }
+            }
+            let mut sent = vec![0; len];
+            reader.read_exact(&mut sent).unwrap();
+            write!(stream, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            head + &String::from_utf8(sent).unwrap()
+        });
+        (url, handle)
     }
 
     #[test]
-    fn parse_falls_back_to_the_text_and_clamps() {
-        let out = r#"{"is_error":false,"result":"{\"score\":140,\"reason\":\"r\"}"}"#;
-        assert_eq!(parse(out).unwrap().score, 100);
+    fn post_sends_the_key_and_reads_the_answer() {
+        let (url, server) = serve_once("200 OK", r#"{"model":"jev-latest","answers":{"related":{"type":"noul","noul":0.7}}}"#);
+        let resp = post(&url, "k1", &request("s")).unwrap();
+        assert_eq!(parse(&resp).unwrap(), 70);
+        let sent = server.join().unwrap();
+        assert!(sent.to_ascii_lowercase().contains("authorization: bearer k1\r\n"));
+        assert!(sent.contains(r#""type":"noul""#));
     }
 
     #[test]
-    fn parse_reports_errors() {
-        assert_eq!(parse(r#"{"is_error":true,"result":"Not logged in"}"#).unwrap_err(), "Not logged in");
-        assert!(parse("oops").is_err());
-        assert!(parse(r#"{"is_error":false,"result":"たぶん関係ある"}"#).is_err());
+    fn post_reports_a_refused_key_and_other_errors() {
+        let (url, server) = serve_once("401 Unauthorized", r#"{"error":"bad key"}"#);
+        assert_eq!(post(&url, "k", &request("s")).unwrap_err(), "Jev の API キーが通りません（401）");
+        server.join().unwrap();
+        let (url, server) = serve_once("400 Bad Request", r#"{"error":"questions"}"#);
+        assert_eq!(post(&url, "k", &request("s")).unwrap_err(), r#"Jev: 400 {"error":"questions"}"#);
+        server.join().unwrap();
     }
 }

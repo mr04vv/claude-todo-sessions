@@ -38,6 +38,7 @@ import {
   EFFORTS,
   isCloud,
   issueRef,
+  JEV_NO_KEY,
   MODELS,
   type Board,
   type Issue,
@@ -3655,20 +3656,87 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | "jevKey" | null;
 
 const FOCUS_LINK_ENTER_AFTER_MS = 600;
 
+/// Jev's API key, typed here and kept in the Keychain (an empty Enter does nothing).
+function JevKeyField({ onSaved }: { onSaved?: () => void }) {
+  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const save = (key: string) =>
+    key &&
+    api.setJevKey(key).then(
+      () => (setSaved(true), setError(null), onSaved?.()),
+      (e) => setError(String(e)),
+    );
+  return (
+    <div className="jev-key">
+      <input
+        type="password"
+        className="mono"
+        autoFocus
+        placeholder="TypeSafe の API キーを貼って Enter"
+        aria-label="Jev の API キー"
+        onKeyDown={(e) => {
+          if (!isEnter(e)) return;
+          e.preventDefault();
+          save(e.currentTarget.value.trim());
+        }}
+      />
+      {saved && <span className="muted">Keychain に入れました</span>}
+      {error && <span className="error-text">{error}</span>}
+    </div>
+  );
+}
+
+/// ⌘K's "Jev の API キー": sets (or takes out) the key the focus mode's
+/// judging uses.
+function JevKeyDialog({ onClose }: { onClose: () => void }) {
+  const [exists, setExists] = useState<boolean | null>(null);
+  const check = () => api.jevKeyExists().then(setExists, () => setExists(false));
+  useEffect(() => void check(), []); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <Modal
+      title="Jev の API キー"
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          {exists && (
+            <button className="ghost" onClick={() => api.setJevKey("").then(check, check)}>
+              外す
+            </button>
+          )}
+          <button onClick={onClose}>閉じる</button>
+        </>
+      }
+    >
+      <p className="muted">
+        フォーカスモードで開こうとしたページが今の作業に関係するかを、TypeSafe の Jev が判定します。キーは Keychain に入れます。
+        {exists === true && "いまは設定されています。"}
+        {exists === false && "まだ設定されていません。"}
+      </p>
+      <JevKeyField onSaved={check} />
+    </Modal>
+  );
+}
+
 /// Asked when a page for the focus mode's left, outside what it may open, was
-/// judged not to fit the work (or could not be judged).
-function FocusLinkDialog({ asking, onOpen, onClose }: { asking: FocusAsking; onOpen: () => void; onClose: () => void }) {
+/// judged not to fit the work (or could not be judged). Without a working
+/// key, one can be typed in and the page judged again.
+function FocusLinkDialog({ asking, onOpen, onClose, onJudgeAgain }: { asking: FocusAsking; onOpen: () => void; onClose: () => void; onJudgeAgain: () => void }) {
   const { url, verdict, failed } = asking;
+  // Jev's key errors (relevance.rs): none set, or refused.
+  const keyTrouble = failed === JEV_NO_KEY || failed?.startsWith("Jev の API キーが通りません");
   // It comes up on its own once the page is judged: an Enter meant for the
   // page being typed into then opens nothing.
   const shownAt = useRef(Date.now());
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Enter" || Date.now() - shownAt.current < FOCUS_LINK_ENTER_AFTER_MS) return;
+      // The key's field takes its own Enter.
+      if ((e.target as HTMLElement).closest("input")) return;
       e.preventDefault();
       e.stopImmediatePropagation();
       onOpen();
@@ -3698,10 +3766,13 @@ function FocusLinkDialog({ asking, onOpen, onClose }: { asking: FocusAsking; onO
       </p>
       {verdict ? (
         <p className="focus-verdict">
-          今の作業との関連度 <b>{verdict.score}</b>：{verdict.reason}
+          今の作業に関係する見込み <b>{verdict.score}%</b>（Jev の判定）
         </p>
       ) : (
-        <p className="error-text">今の作業に関係するか判定できませんでした：{failed}</p>
+        <>
+          <p className="error-text">今の作業に関係するか判定できませんでした：{failed}</p>
+          {keyTrouble && <JevKeyField onSaved={onJudgeAgain} />}
+        </>
       )}
       <p className="muted">フォーカスモードで開くページの外です。開くと、このページ（とその下）はこのあいだ開けるようになります。</p>
     </Modal>
@@ -4058,6 +4129,15 @@ export default function App() {
     if (next) return showAsking(next);
     setFocusLink(null);
     setDialog(null);
+  };
+  /// Once Jev has a key (typed in FocusLinkDialog), the page asked about is
+  /// judged again, as if just asked.
+  const judgeAgain = () => {
+    if (!focusLink) return;
+    setAsking(focusAskingRef.current.filter((a) => a.id !== focusLink.id));
+    setFocusLink(null);
+    setDialog(null);
+    askFocusLink(focusLink.url, focusLink.text);
   };
   // A link ⌥-clicked in a page becomes an input todo; the page says so.
   const [addedInput, setAddedInput] = useState<string | null>(null);
@@ -4670,6 +4750,7 @@ export default function App() {
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "focus", label: "フォーカスモード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
+    { key: "jevKey", label: "Jev の API キーを設定（フォーカスモードで開くページの判定）", run: () => setDialog("jevKey") },
     { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
@@ -5094,7 +5175,10 @@ export default function App() {
           </div>
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
-        {dialog === "focusLink" && focusLink && <FocusLinkDialog key={focusLink.id} asking={focusLink} onClose={() => answerAsking(false)} onOpen={() => answerAsking(true)} />}
+        {dialog === "focusLink" && focusLink && (
+          <FocusLinkDialog key={focusLink.id} asking={focusLink} onClose={() => answerAsking(false)} onOpen={() => answerAsking(true)} onJudgeAgain={judgeAgain} />
+        )}
+        {dialog === "jevKey" && <JevKeyDialog onClose={() => setDialog(null)} />}
         {dialog === "focusPick" && (
           <FocusPicker
             adding={focusPicking === "add"}

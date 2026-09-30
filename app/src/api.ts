@@ -64,12 +64,14 @@ export interface FocusAsk {
   text: string | null;
 }
 
-/** How much the page fits the focus mode's work (0–100), why, and its title. */
+/** How likely the page is the focus mode's work (Jev's, in percent), and its title. */
 export interface Verdict {
   score: number;
-  reason: string;
   title: string | null;
 }
+
+/** judgeFocusLink's error when Jev has no API key (crates/core relevance::NO_KEY). */
+export const JEV_NO_KEY = "Jev の API キーが設定されていません";
 
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
@@ -252,6 +254,9 @@ export const api = {
   /// Where tab `tab`'s page may go in the focus mode (address prefixes); null lifts it.
   setFocusAllow: (tab: string, allow: string[] | null) => invoke<void>("set_focus_allow", { tab, allow }),
   judgeFocusLink: (ask: FocusAsk) => invoke<Verdict>("judge_focus_link", { ask }),
+  /// Jev's API key, kept in the Keychain; an empty one takes it out.
+  jevKeyExists: () => invoke<boolean>("jev_key_exists"),
+  setJevKey: (key: string) => invoke<void>("set_jev_key", { key }),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),

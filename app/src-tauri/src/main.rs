@@ -1259,12 +1259,10 @@ fn set_focus_allow(app: AppHandle, state: State<AppState>, tab: String, allow: O
 
 /// The page's title is waited for this long before asking without it.
 const JUDGE_TITLE_TIMEOUT: Duration = Duration::from_secs(3);
-/// `claude -p` gets this long to answer.
-const JUDGE_TIMEOUT: Duration = Duration::from_secs(40);
 
 /// How much a page a focus mode page asked to open (or one typed in) fits the
-/// focus mode's work, asked of `claude` (cts_core::relevance) once the page's
-/// title is read.
+/// focus mode's work, asked of Jev (cts_core::relevance) once the page's title
+/// is read.
 #[tauri::command]
 async fn judge_focus_link(ask: cts_core::relevance::Ask) -> Result<cts_core::relevance::Verdict, String> {
     if !is_web_url(&ask.url) {
@@ -1272,37 +1270,22 @@ async fn judge_focus_link(ask: cts_core::relevance::Ask) -> Result<cts_core::rel
     }
     tauri::async_runtime::spawn_blocking(move || {
         let title = cts_core::ogp::fetch_within(&ask.url, JUDGE_TITLE_TIMEOUT).ok().and_then(|m| m.title);
-        let mut cmd = cli("claude");
-        cmd.args(cts_core::relevance::claude_args(&cts_core::relevance::prompt(&ask, title.as_deref())))
-            // Thinking only slows a question this small.
-            .env("MAX_THINKING_TOKENS", "0")
-            .current_dir(std::env::temp_dir());
-        let out = output_within(cmd, JUDGE_TIMEOUT).map_err(|e| format!("claude: {e}"))?;
-        if out.stdout.is_empty() {
-            return Err(format!("claude: {}", String::from_utf8_lossy(&out.stderr).trim()));
-        }
-        let verdict = cts_core::relevance::parse(&String::from_utf8_lossy(&out.stdout))?;
-        Ok(cts_core::relevance::Verdict { title, ..verdict })
+        cts_core::relevance::judge(&ask, title)
     })
     .await
     .map_err(err)?
 }
 
-/// Runs `cmd` to the end, killing it after `timeout`.
-fn output_within(mut cmd: Command, timeout: Duration) -> Result<std::process::Output, String> {
-    use std::process::Stdio;
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(err)?;
-    let until = std::time::Instant::now() + timeout;
-    // Its output (a few KB) fits the pipe, so it can wait there until the end.
-    while child.try_wait().map_err(err)?.is_none() {
-        if std::time::Instant::now() >= until {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(format!("{} 秒で答えが返りませんでした", timeout.as_secs()));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-    child.wait_with_output().map_err(err)
+/// Whether Jev has an API key (the Keychain's, or TYPESAFE_API_KEY).
+#[tauri::command(async)]
+fn jev_key_exists() -> bool {
+    cts_core::relevance::api_key().is_some()
+}
+
+/// Keeps Jev's API key in the Keychain; an empty one takes it out.
+#[tauri::command(async)]
+fn set_jev_key(key: String) -> Result<(), String> {
+    cts_core::relevance::set_api_key(&key)
 }
 
 /// When a page's Esc, in the focus mode, asks about leaving it.
@@ -2077,6 +2060,8 @@ fn main() {
             set_page_keys,
             set_focus_allow,
             judge_focus_link,
+            jev_key_exists,
+            set_jev_key,
             start_review_cloud,
             start_desktop_prompt,
             terminal_quick,

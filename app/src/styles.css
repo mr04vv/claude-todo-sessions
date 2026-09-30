@@ -1811,6 +1811,14 @@ input.panel-title:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+/* Jev's API key (JevKeyField). */
+.jev-key {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+}
+
 .browser-tab-close {
   width: 20px !important;
   height: 20px !important;
