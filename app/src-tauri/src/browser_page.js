@@ -129,12 +129,12 @@
   // page may go to (as prefixes); a link to anything else asks the app first.
   const guardLink = (e) => {
     const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
+    const text = (link?.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
     // ⌥ + click keeps the link as an input todo instead of following it.
     if (e.type === "click" && e.altKey && !e.metaKey && !e.ctrlKey && link && /^https?:/.test(link.href)) {
       e.preventDefault();
       e.stopImmediatePropagation();
-      const title = (link.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120) || link.href;
-      location.href = `${ADD_INPUT}?u=${encodeURIComponent(link.href)}&t=${encodeURIComponent(title)}`;
+      location.href = `${ADD_INPUT}?u=${encodeURIComponent(link.href)}&t=${encodeURIComponent(text || link.href)}`;
       return;
     }
     const allow = window.__todoSessionsAllow;
@@ -142,7 +142,8 @@
     if (!a || !/^https?:/.test(a.href) || allow.some((p) => a.href.startsWith(p))) return;
     e.preventDefault();
     e.stopImmediatePropagation();
-    location.href = FOCUS_LINK + encodeURIComponent(a.href);
+    // The link's text helps the app judge whether the page fits.
+    location.href = `${FOCUS_LINK}${encodeURIComponent(a.href)}&t=${encodeURIComponent(text)}`;
   };
   window.addEventListener("click", guardLink, true);
   window.addEventListener("auxclick", guardLink, true);

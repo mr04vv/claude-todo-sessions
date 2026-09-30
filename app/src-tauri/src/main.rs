@@ -1216,19 +1216,21 @@ struct InputLink {
     title: String,
 }
 
-/// `{tab, url}` when a page, in the focus mode, is asked to go where it may not.
+/// `{tab, url, text}` when a page, in the focus mode, is asked to go where it
+/// may not (`text` the link's, when a link was clicked).
 const FOCUS_LINK_EVENT: &str = "focus-link";
+
+#[derive(Clone, Serialize)]
+struct FocusLink {
+    tab: String,
+    url: String,
+    text: Option<String>,
+}
 
 #[derive(Clone, Serialize)]
 struct TabText {
     tab: String,
     text: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-struct TabUrlOnly {
-    tab: String,
-    url: String,
 }
 
 /// The addresses a page may go to in the focus mode (prefixes), for its script.
@@ -1253,6 +1255,54 @@ fn set_focus_allow(app: AppHandle, state: State<AppState>, tab: String, allow: O
         let _ = view.eval(focus_allow_script(allow.as_ref()));
     }
     Ok(())
+}
+
+/// The page's title is waited for this long before asking without it.
+const JUDGE_TITLE_TIMEOUT: Duration = Duration::from_secs(3);
+/// `claude -p` gets this long to answer.
+const JUDGE_TIMEOUT: Duration = Duration::from_secs(40);
+
+/// How much a page a focus mode page asked to open (or one typed in) fits the
+/// focus mode's work, asked of `claude` (cts_core::relevance) once the page's
+/// title is read.
+#[tauri::command]
+async fn judge_focus_link(ask: cts_core::relevance::Ask) -> Result<cts_core::relevance::Verdict, String> {
+    if !is_web_url(&ask.url) {
+        return Err(format!("開けない URL です: {}", ask.url));
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        let title = cts_core::ogp::fetch_within(&ask.url, JUDGE_TITLE_TIMEOUT).ok().and_then(|m| m.title);
+        let mut cmd = cli("claude");
+        cmd.args(cts_core::relevance::claude_args(&cts_core::relevance::prompt(&ask, title.as_deref())))
+            // Thinking only slows a question this small.
+            .env("MAX_THINKING_TOKENS", "0")
+            .current_dir(std::env::temp_dir());
+        let out = output_within(cmd, JUDGE_TIMEOUT).map_err(|e| format!("claude: {e}"))?;
+        if out.stdout.is_empty() {
+            return Err(format!("claude: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        let verdict = cts_core::relevance::parse(&String::from_utf8_lossy(&out.stdout))?;
+        Ok(cts_core::relevance::Verdict { title, ..verdict })
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Runs `cmd` to the end, killing it after `timeout`.
+fn output_within(mut cmd: Command, timeout: Duration) -> Result<std::process::Output, String> {
+    use std::process::Stdio;
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().map_err(err)?;
+    let until = std::time::Instant::now() + timeout;
+    // Its output (a few KB) fits the pipe, so it can wait there until the end.
+    while child.try_wait().map_err(err)?.is_none() {
+        if std::time::Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("{} 秒で答えが返りませんでした", timeout.as_secs()));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    child.wait_with_output().map_err(err)
 }
 
 /// When a page's Esc, in the focus mode, asks about leaving it.
@@ -1357,8 +1407,8 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                     on_focus.emit(ADD_INPUT_EVENT, InputLink { url: param("u"), title: param("t") })
                 }
                 Some("focus-link") => {
-                    let link = url.query_pairs().find(|(k, _)| k == "u").map(|(_, v)| v.into_owned()).unwrap_or_default();
-                    on_focus.emit(FOCUS_LINK_EVENT, TabUrlOnly { tab: focus_tab.clone(), url: link })
+                    let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned());
+                    on_focus.emit(FOCUS_LINK_EVENT, FocusLink { tab: focus_tab.clone(), url: param("u").unwrap_or_default(), text: param("t") })
                 }
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
@@ -2026,6 +2076,7 @@ fn main() {
             set_focus_mode,
             set_page_keys,
             set_focus_allow,
+            judge_focus_link,
             start_review_cloud,
             start_desktop_prompt,
             terminal_quick,

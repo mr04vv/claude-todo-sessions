@@ -30,6 +30,7 @@ export type Action =
   | "link"
   | "parent"
   | "add"
+  | "dismiss"
   | "search"
   | "help"
   | "paletteDown"
@@ -75,6 +76,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["link", "PR / issue を開く"],
       ["parent", "親の todo を開く"],
       ["add", "その場所に todo を追加"],
+      ["dismiss", "通知：選んでいる通知を消す"],
       ["search", "絞り込み欄へ"],
       ["help", "キーの一覧"],
     ],
@@ -114,6 +116,7 @@ export const DEFAULT_KEYS: Record<Action, string> = {
   link: "p",
   parent: "u",
   add: "c",
+  dismiss: "x",
   search: "/",
   help: "?",
   paletteDown: "ctrl+j",
