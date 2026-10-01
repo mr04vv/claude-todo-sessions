@@ -1768,7 +1768,8 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
   onClose: (id: string) => void;
   onNewTab: () => void;
   onHide: () => void;
-  onOpen: (url: string) => void;
+  /// `keys` gives the page the keyboard.
+  onOpen: (url: string, keys?: boolean) => void;
   onAddress: (tab: string, url: string) => void;
   /// Moves a dragged tab to where another one is.
   onMove: (tab: string, to: string) => void;
@@ -1850,7 +1851,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
       ) : active ? (
         <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} onToInput={active.pinned ? undefined : onToInput} />
       ) : (
-        <NewTabPage onOpen={onOpen} />
+        <NewTabPage onOpen={(url) => onOpen(url, true)} />
       )}
     </section>
   );
@@ -2471,7 +2472,11 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
           defaultValue={active.url}
           label="URL（⌘L で編集）"
           title="⌘L で編集、Enter で移動、Esc でやめる（開いたページから候補が出ます）"
-          onGo={(url) => navigate(url, true)}
+          // What was typed is to be read (j k scroll it, pick a search result): the page takes the keyboard.
+          onGo={(url) => {
+            keysInto = active.id;
+            navigate(url, true);
+          }}
           onSuggesting={setSuggesting}
           // Esc puts the address back and returns to the page, as in a browser.
           onEscape={(input) => {
@@ -4539,7 +4544,8 @@ export default function App() {
   };
   /// In the pane, a page already open in a tab comes to the front and anything
   /// else gets a new tab; with Dia chosen, pages go there instead.
-  const openInBrowser = (url: string) => {
+  /// `keys` gives the page the keyboard (one typed into the new tab page).
+  const openInBrowser = (url: string, keys = false) => {
     if (linkTarget === "dia") {
       api.openInDia(url).catch(report);
       return;
@@ -4550,6 +4556,7 @@ export default function App() {
     const open = CLOUD_SESSION_PAGE.test(url) ? paneTabs.find((t) => sameTarget(t.url, url)) : undefined;
     if (open) return setActiveTabId(open.id);
     const id = `t${nextTab.current++}`;
+    if (keys) keysInto = id;
     setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
     setActiveTabId(id);
   };

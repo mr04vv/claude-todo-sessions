@@ -151,7 +151,8 @@
   const GOOGLE = /(^|\.)google\.[a-z.]+$/;
   const PICKED = "todo-sessions-picked";
   const onResults = () => !FRAME && GOOGLE.test(location.hostname) && location.pathname === "/search";
-  const results = () => [...new Set([...document.querySelectorAll("#search a h3")].map((h) => h.closest("a")))].filter((a) => a && a.offsetParent !== null);
+  const results = () =>
+    [...new Set([...document.querySelectorAll("#search a h3, #rso a h3, #center_col a h3")].map((h) => h.closest("a")))].filter((a) => a && a.offsetParent !== null);
   const pickResult = (dir, smooth) => {
     const list = results();
     if (list.length === 0) return false;
@@ -168,12 +169,23 @@
     next.scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
     return true;
   };
+  const listDir = (e) =>
+    e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement) ? 0 : is(e, "down") ? 1 : is(e, "up") ? -1 : 0;
+  // Ahead of Google's own keys (a letter typed anywhere goes to its search box).
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      const dir = onResults() ? listDir(e) : 0;
+      if (!dir || !pickResult(dir, !e.repeat)) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    },
+    true,
+  );
   window.addEventListener("keydown", (e) => {
-    if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement)) return;
-    const dir = is(e, "down") ? 1 : is(e, "up") ? -1 : 0;
+    const dir = e.defaultPrevented ? 0 : listDir(e);
     if (!dir) return;
     e.preventDefault();
-    if (onResults() && pickResult(dir, !e.repeat)) return;
     scroller().scrollBy({ top: dir * SCROLL_STEP, behavior: e.repeat ? "auto" : "smooth" });
   });
 
