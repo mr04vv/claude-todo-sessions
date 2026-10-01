@@ -43,7 +43,6 @@
   const FOCUS_PANE = "todo-sessions://focus-pane";
   const FOCUS_EXIT = "todo-sessions://focus-exit";
   const CLOSE_TAB = "todo-sessions://close-tab";
-  const FOCUS_LINK = "todo-sessions://focus-link?u=";
   const ADD_INPUT = "todo-sessions://add-input";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
@@ -211,28 +210,19 @@
     tryFocus();
   };
 
-  // In the focus mode the app sets __todoSessionsAllow, the addresses this
-  // page may go to (as prefixes); a link to anything else asks the app first.
-  const guardLink = (e) => {
-    const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
-    const text = (link?.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
-    // ⌥ + click keeps the link as an input todo instead of following it.
-    if (e.type === "click" && e.altKey && !e.metaKey && !e.ctrlKey && link && /^https?:/.test(link.href)) {
+  // ⌥ + click keeps the link as an input instead of following it.
+  window.addEventListener(
+    "click",
+    (e) => {
+      const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
+      if (!e.altKey || e.metaKey || e.ctrlKey || !link || !/^https?:/.test(link.href)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
+      const text = (link.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
       location.href = `${ADD_INPUT}?u=${encodeURIComponent(link.href)}&t=${encodeURIComponent(text || link.href)}`;
-      return;
-    }
-    const allow = window.__todoSessionsAllow;
-    const a = allow ? link : null;
-    if (!a || !/^https?:/.test(a.href) || allow.some((p) => a.href.startsWith(p))) return;
-    e.preventDefault();
-    e.stopImmediatePropagation();
-    // The link's text helps the app judge whether the page fits.
-    location.href = `${FOCUS_LINK}${encodeURIComponent(a.href)}&t=${encodeURIComponent(text)}`;
-  };
-  window.addEventListener("click", guardLink, true);
-  window.addEventListener("auxclick", guardLink, true);
+    },
+    true,
+  );
 
   let menu = null;
   const close = () => {

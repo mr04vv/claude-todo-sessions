@@ -72,8 +72,6 @@ struct AppState {
     /// The focus mode is on: pages' Esc asks about leaving it, and macOS
     /// notifications wait (the in-app list still gets them).
     focus_mode: AtomicBool,
-    /// Where each tab's page may go in the focus mode (see `set_focus_allow`).
-    focus_allow: Mutex<HashMap<String, Vec<String>>>,
     /// The app's keys for the pages, as JSON (see `set_page_keys`).
     page_keys: Mutex<String>,
     /// Tabs whose page should focus its text box once it loads, and since when.
@@ -1376,17 +1374,6 @@ struct InputLink {
     title: String,
 }
 
-/// `{tab, url, text}` when a page, in the focus mode, is asked to go where it
-/// may not (`text` the link's, when a link was clicked).
-const FOCUS_LINK_EVENT: &str = "focus-link";
-
-#[derive(Clone, Serialize)]
-struct FocusLink {
-    tab: String,
-    url: String,
-    text: Option<String>,
-}
-
 #[derive(Clone, Serialize)]
 struct TabDelta {
     tab: String,
@@ -1399,32 +1386,6 @@ struct TabText {
     text: Option<String>,
 }
 
-/// The addresses a page may go to in the focus mode (prefixes), for its script.
-fn focus_allow_script(allow: Option<&Vec<String>>) -> String {
-    match allow {
-        Some(list) => format!("window.__todoSessionsAllow = {};", serde_json::to_string(list).unwrap_or_else(|_| "[]".into())),
-        None => "delete window.__todoSessionsAllow;".into(),
-    }
-}
-
-/// Sets (or, with none, lifts) where tab `tab`'s page may go in the focus
-/// mode; kept for the pages it loads next, and for a tab not yet open.
-#[tauri::command]
-fn set_focus_allow(app: AppHandle, state: State<AppState>, tab: String, allow: Option<Vec<String>>) -> Result<(), String> {
-    let label = tab_label(&tab)?;
-    let mut all = state.focus_allow.lock().map_err(err)?;
-    match &allow {
-        Some(list) => all.insert(tab, list.clone()),
-        None => all.remove(&tab),
-    };
-    if let Some(view) = app.get_webview(&label) {
-        let _ = view.eval(focus_allow_script(allow.as_ref()));
-    }
-    Ok(())
-}
-
-/// The page's title is waited for this long before asking without it.
-const JUDGE_TITLE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long an input added without a title waits for its page's.
 const PAGE_TITLE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -1437,34 +1398,6 @@ async fn page_title(url: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || cts_core::ogp::fetch_within(&url, PAGE_TITLE_TIMEOUT).map(|m| m.title))
         .await
         .map_err(err)?
-}
-
-/// How much a page a focus mode page asked to open (or one typed in) fits the
-/// focus mode's work, asked of Jev (cts_core::relevance) once the page's title
-/// is read.
-#[tauri::command]
-async fn judge_focus_link(ask: cts_core::relevance::Ask) -> Result<cts_core::relevance::Verdict, String> {
-    if !is_web_url(&ask.url) {
-        return Err(format!("開けない URL です: {}", ask.url));
-    }
-    tauri::async_runtime::spawn_blocking(move || {
-        let title = cts_core::ogp::fetch_within(&ask.url, JUDGE_TITLE_TIMEOUT).ok().and_then(|m| m.title);
-        cts_core::relevance::judge(&ask, title)
-    })
-    .await
-    .map_err(err)?
-}
-
-/// Whether Jev has an API key (the Keychain's, or TYPESAFE_API_KEY).
-#[tauri::command(async)]
-fn jev_key_exists() -> bool {
-    cts_core::relevance::api_key().is_some()
-}
-
-/// Keeps Jev's API key in the Keychain; an empty one takes it out.
-#[tauri::command(async)]
-fn set_jev_key(key: String) -> Result<(), String> {
-    cts_core::relevance::set_api_key(&key)
 }
 
 /// When a page's Esc, in the focus mode, asks about leaving it.
@@ -1579,10 +1512,6 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                     let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
                     on_focus.emit(ADD_INPUT_EVENT, InputLink { url: param("u"), title: param("t") })
                 }
-                Some("focus-link") => {
-                    let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned());
-                    on_focus.emit(FOCUS_LINK_EVENT, FocusLink { tab: focus_tab.clone(), url: param("u").unwrap_or_default(), text: param("t") })
-                }
                 _ => on_focus.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab: focus_tab.clone() }),
             };
             false
@@ -1594,11 +1523,6 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 let state = on_load.state::<AppState>();
                 if state.focus_mode.load(Ordering::Relaxed) {
                     let _ = view.eval(focus_mode_script(true));
-                }
-                if let Ok(all) = state.focus_allow.lock() {
-                    if let Some(list) = all.get(&load_tab) {
-                        let _ = view.eval(focus_allow_script(Some(list)));
-                    }
                 }
                 // The keys as they are now; the page began with the ones set when its tab opened.
                 if let Ok(keys) = state.page_keys.lock() {
@@ -2140,7 +2064,6 @@ fn main() {
             focus_input: Mutex::new(HashMap::new()),
             focus_mode: AtomicBool::new(false),
             page_keys: Mutex::new("{}".into()),
-            focus_allow: Mutex::new(HashMap::new()),
             archived: Mutex::new(HashSet::new()),
             browser_lock: Mutex::new(()),
             github_wake: Mutex::new(github_tx),
@@ -2248,10 +2171,6 @@ fn main() {
             window_focused,
             set_focus_mode,
             set_page_keys,
-            set_focus_allow,
-            judge_focus_link,
-            jev_key_exists,
-            set_jev_key,
             start_review_cloud,
             start_desktop_prompt,
             terminal_quick,

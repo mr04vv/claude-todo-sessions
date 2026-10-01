@@ -28,7 +28,6 @@ import {
   PAGE_FOCUSED_EVENT,
   FOCUS_PANE_EVENT,
   FOCUS_EXIT_EVENT,
-  FOCUS_LINK_EVENT,
   ADD_INPUT_EVENT,
   WINDOW_FOCUS_EVENT,
   BROWSER_NEW_TAB_EVENT,
@@ -40,7 +39,6 @@ import {
   EFFORTS,
   isCloud,
   issueRef,
-  JEV_NO_KEY,
   MODELS,
   type Board,
   type Input,
@@ -62,7 +60,6 @@ import {
   type StartOptions,
   type Status,
   type Todo,
-  type Verdict,
 } from "./api";
 import { useTodoKeys } from "./todoKeys";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
@@ -381,30 +378,12 @@ const NOTE_POLL_MS = 5000;
 const RIGHT_KINDS = [NOTE_TAB, "pinchatgpt", "pinclaude", "pinnotion"];
 /// A space's tab for a right page (ids are letters and digits only).
 const rightTabId = (space: string, kind: string) => `s${space}${kind}`;
-const newSpace = (right: string): InputSpace => ({ lefts: [], active: null, right, pages: [], accepted: [], rightUrls: {} });
-/// Where the focus mode's right pages may go (address prefixes), with the
-/// sign-in pages they send to.
-const SIGN_IN_PAGES = ["https://accounts.google.com/", "https://appleid.apple.com/", "https://login.microsoftonline.com/"];
-const FOCUS_RIGHT_ALLOW: Record<string, string[]> = {
-  pinchatgpt: ["https://chatgpt.com/", "https://auth.openai.com/", ...SIGN_IN_PAGES],
-  pinclaude: ["https://claude.ai/", ...SIGN_IN_PAGES],
-  pinnotion: ["https://www.notion.so/", "https://notion.so/", ...SIGN_IN_PAGES],
-  // The note, and its Cloud session's page while it is made.
-  [NOTE_TAB]: ["https://claude.ai/", ...SIGN_IN_PAGES],
-};
+const newSpace = (right: string): InputSpace => ({ lefts: [], active: null, right, pages: [], rightUrls: {} });
 /// The prefix a page's address allows: the page and the ones under it.
 const pagePrefix = (url: string) => {
   try {
     const u = new URL(url);
     return u.origin + u.pathname;
-  } catch {
-    return url;
-  }
-};
-/// A study page allows its whole site.
-const sitePrefix = (url: string) => {
-  try {
-    return new URL(url).origin + "/";
   } catch {
     return url;
   }
@@ -1696,14 +1675,15 @@ interface BrowserTab {
 /// One Input mode space: the pages a todo or an input (or FREE_SPACE) has open on the
 /// left and right, kept while the app runs (hidden while another is shown).
 interface InputSpace {
-  /// Tab ids on the left (its own pages, and the pane's terminals), and the one shown.
+  /// Tab ids on the left (its own pages, and the pane's terminals), and the
+  /// one shown, or a new tab (⌘T) in front of them.
   lefts: string[];
   active: string | null;
+  newTab?: boolean;
   /// The right page shown (a FOCUS_PAGES id or NOTE_TAB).
   right: string;
-  /// The addresses its pages may go under, and the ones let through.
+  /// The pages put on its left, so a subject's added since are known.
   pages: string[];
-  accepted: string[];
   /// Right pages to open where they were (a resumed space's), by kind.
   rightUrls: Record<string, string>;
 }
@@ -1715,7 +1695,6 @@ interface SavedSpace {
   right: string;
   rightUrls: Record<string, string>;
   pages: string[];
-  accepted: string[];
 }
 
 /// The browser pane: tabs of web pages, each a webview laid over this one on
@@ -2033,21 +2012,6 @@ interface StudyPage {
 const STUDY_PAGES_KEY = "studyPages";
 /// What the focus mode's left opens: a page, or a terminal the pane has.
 type FocusItem = { url: string } | { terminal: string };
-/// A page asked onto the focus mode's left (a link, or typed in) while
-/// Claude judges whether it fits the work; judged not to, or not judged, it
-/// waits to be answered (FocusLinkDialog).
-interface FocusAsking {
-  id: number;
-  url: string;
-  /// The text of the link that asked.
-  text?: string;
-  verdict?: Verdict;
-  /// Why it could not be judged.
-  failed?: string;
-}
-/// A page judged this related to the work, or more, opens on its own.
-const FOCUS_RELATED_SCORE = 60;
-const isAnswerable = (a: FocusAsking) => a.verdict !== undefined || a.failed !== undefined;
 
 /// Picks the focus mode's left page: a URL, a study page (kept and edited
 /// here) or a terminal the pane has open.
@@ -2200,12 +2164,11 @@ function NoteStart({ note }: { note: FocusNote }) {
 
 /// The focus mode: its own pages (and terminals) on the left and a pinned
 /// page (ChatGPT, Claude Code or Notion) or the note on the right, nothing else.
-function FocusMode({ lefts, left, asking, right, rightKind, note, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onAnswer, onGiveUp, onExit }: {
-  /// The left side's tabs (its own pages, and terminals), and the one shown.
+function FocusMode({ lefts, left, right, rightKind, note, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onExit }: {
+  /// The left side's tabs (its own pages, and terminals), and the one shown
+  /// (none for a new tab).
   lefts: BrowserTab[];
   left: BrowserTab | null;
-  /// Pages asked onto the left, shown after its tabs until they open.
-  asking: FocusAsking[];
   right: BrowserTab | undefined;
   /// Which right page is picked (a FOCUS_PAGES id or NOTE_TAB).
   rightKind: string;
@@ -2224,9 +2187,8 @@ function FocusMode({ lefts, left, asking, right, rightKind, note, onRemakeNote, 
   onCloseLeft: (id: string) => void;
   /// Picks another page (or terminal) for the left.
   onAddLeft: () => void;
-  /// Asks about an asked page judged not to fit; gives it up.
-  onAnswer: (asking: FocusAsking) => void;
-  onGiveUp: (id: number) => void;
+  /// A page from the left's new tab.
+  onOpenLeft: (url: string) => void;
   onExit: () => void;
 }) {
   const leftWeb = left && !left.term ? left.id : undefined;
@@ -2247,26 +2209,14 @@ function FocusMode({ lefts, left, asking, right, rightKind, note, onRemakeNote, 
               </button>
             </span>
           ))}
-          {asking.map((a) => {
-            const label = a.text || hostOf(a.url);
-            const answerable = isAnswerable(a);
-            return (
-              <span
-                key={`ask${a.id}`}
-                className="browser-tab asking"
-                title={answerable ? `${a.url}\n今の作業との関係が薄そうです。押すと開くか聞きます` : `${a.url}\n今の作業に関係するか確かめています`}
-              >
-                <button className="browser-tab-main" disabled={!answerable} onClick={() => onAnswer(a)}>
-                  {answerable ? <span className="asking-mark">?</span> : <span className="spinner" aria-label="確かめています" />}
-                  <span className="ellipsis">{label}</span>
-                </button>
-                <button className="ghost icon browser-tab-close" aria-label={`${label} を開くのをやめる`} onClick={() => onGiveUp(a.id)}>
-                  <Icon name="close" size={11} />
-                </button>
-              </span>
-            );
-          })}
-          <button className="ghost icon browser-new-tab" aria-label="左に開くページを選ぶ" title="左に開くページを選ぶ" onClick={onAddLeft}>
+          {!left && (
+            <span className="browser-tab on">
+              <button role="tab" aria-selected className="browser-tab-main">
+                <span className="ellipsis">新しいタブ</span>
+              </button>
+            </span>
+          )}
+          <button className="ghost icon browser-new-tab" aria-label="左に開くページを選ぶ" title="左に開くページを選ぶ（⌘T で新しいタブ）" onClick={onAddLeft}>
             <Icon name="plus" size={13} />
           </button>
         </div>
@@ -2275,7 +2225,7 @@ function FocusMode({ lefts, left, asking, right, rightKind, note, onRemakeNote, 
         ) : left ? (
           <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} noDia />
         ) : (
-          <p className="muted empty">＋ から左に開くページを選びます。</p>
+          <NewTabPage onOpen={onOpenLeft} />
         )}
       </section>
       <aside className="browser-dock focus-right">
@@ -4249,128 +4199,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | "jevKey" | null;
-
-const FOCUS_LINK_ENTER_AFTER_MS = 600;
-
-/// Jev's API key, typed here and kept in the Keychain (an empty Enter does nothing).
-function JevKeyField({ onSaved }: { onSaved?: () => void }) {
-  const [saved, setSaved] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const save = (key: string) =>
-    key &&
-    api.setJevKey(key).then(
-      () => (setSaved(true), setError(null), onSaved?.()),
-      (e) => setError(String(e)),
-    );
-  return (
-    <div className="jev-key">
-      <input
-        type="password"
-        className="mono"
-        autoFocus
-        placeholder="TypeSafe の API キーを貼って Enter"
-        aria-label="Jev の API キー"
-        onKeyDown={(e) => {
-          if (!isEnter(e)) return;
-          e.preventDefault();
-          save(e.currentTarget.value.trim());
-        }}
-      />
-      {saved && <span className="muted">Keychain に入れました</span>}
-      {error && <span className="error-text">{error}</span>}
-    </div>
-  );
-}
-
-/// ⌘K's "Jev の API キー": sets (or takes out) the key the focus mode's
-/// judging uses.
-function JevKeyDialog({ onClose }: { onClose: () => void }) {
-  const [exists, setExists] = useState<boolean | null>(null);
-  const check = () => api.jevKeyExists().then(setExists, () => setExists(false));
-  useEffect(() => void check(), []); // eslint-disable-line react-hooks/exhaustive-deps
-  return (
-    <Modal
-      title="Jev の API キー"
-      onClose={onClose}
-      footer={
-        <>
-          <span className="grow" />
-          {exists && (
-            <button className="ghost" onClick={() => api.setJevKey("").then(check, check)}>
-              外す
-            </button>
-          )}
-          <button onClick={onClose}>閉じる</button>
-        </>
-      }
-    >
-      <p className="muted">
-        Input モードで開こうとしたページが今の作業に関係するかを、TypeSafe の Jev が判定します。キーは Keychain に入れます。
-        {exists === true && "いまは設定されています。"}
-        {exists === false && "まだ設定されていません。"}
-      </p>
-      <JevKeyField onSaved={check} />
-    </Modal>
-  );
-}
-
-/// Asked when a page for the focus mode's left, outside what it may open, was
-/// judged not to fit the work (or could not be judged). Without a working
-/// key, one can be typed in and the page judged again.
-function FocusLinkDialog({ asking, onOpen, onClose, onJudgeAgain }: { asking: FocusAsking; onOpen: () => void; onClose: () => void; onJudgeAgain: () => void }) {
-  const { url, verdict, failed } = asking;
-  // Jev's key errors (relevance.rs): none set, or refused.
-  const keyTrouble = failed === JEV_NO_KEY || failed?.startsWith("Jev の API キーが通りません");
-  // It comes up on its own once the page is judged: an Enter meant for the
-  // page being typed into then opens nothing.
-  const shownAt = useRef(Date.now());
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Enter" || Date.now() - shownAt.current < FOCUS_LINK_ENTER_AFTER_MS) return;
-      // The key's field takes its own Enter.
-      if ((e.target as HTMLElement).closest("input")) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      onOpen();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [onOpen]);
-  return (
-    <Modal
-      title="このページを開きますか？"
-      onClose={onClose}
-      footer={
-        <>
-          <span className="grow" />
-          <button className="ghost" onClick={onClose}>
-            やめる <span className="kbd">Esc</span>
-          </button>
-          <button className="primary" onClick={onOpen}>
-            左に開く <span className="kbd">Enter</span>
-          </button>
-        </>
-      }
-    >
-      {verdict?.title && <p className="focus-link-title">{verdict.title}</p>}
-      <p className="mono ellipsis" title={url}>
-        {url}
-      </p>
-      {verdict ? (
-        <p className="focus-verdict">
-          今の作業に関係する見込み <b>{verdict.score}%</b>（Jev の判定）
-        </p>
-      ) : (
-        <>
-          <p className="error-text">今の作業に関係するか判定できませんでした：{failed}</p>
-          {keyTrouble && <JevKeyField onSaved={onJudgeAgain} />}
-        </>
-      )}
-      <p className="muted">Input モードで開くページの外です。開くと、このページ（とその下）はこのあいだ開けるようになります。</p>
-    </Modal>
-  );
-}
+type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | null;
 
 /// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
@@ -4635,17 +4464,15 @@ export default function App() {
       setTabs((prev) => prev.filter((t) => !(t.focus && t.space === FREE_SPACE)));
       setSpaces(({ [FREE_SPACE]: _, ...rest }) => rest);
     }
-    // Judgments still out are dropped as they come back.
-    setAsking([]);
-    setFocusLink(null);
     setFocusSubject(null);
     setHeldNotices(Math.max(0, unreadNow() - unreadAtFocus.current));
   };
   // The space's left: its own tabs (apart from the pane's) and terminals the
   // pane has, and the one shown.
   const focusLefts = space.lefts.map((id) => tabs.find((t) => t.id === id)).filter((t): t is BrowserTab => t !== undefined);
-  const focusLeft = focusLefts.find((t) => t.id === space.active) ?? focusLefts[0] ?? null;
-  /// Puts items on the left of space `key` (the one shown, by default), the first of them shown.
+  const focusLeft = space.newTab ? null : (focusLefts.find((t) => t.id === space.active) ?? focusLefts[0] ?? null);
+  /// Puts items on the left of space `key` (the one shown, by default), the
+  /// first of them shown; gives their tab ids.
   const addToFocus = (items: FocusItem[], key = spaceKey) => {
     const ids = items.map((item) => {
       if ("terminal" in item) return item.terminal;
@@ -4658,7 +4485,9 @@ export default function App() {
       pages: [...s.pages, ...items.flatMap((item) => ("url" in item ? [item.url] : []))],
       lefts: [...s.lefts, ...ids.filter((id) => !s.lefts.includes(id))],
       active: ids[0] ?? s.active,
+      newTab: ids.length === 0 && s.newTab,
     }));
+    return ids;
   };
   /// Takes a tab off the left (its own page closes; a terminal stays the pane's).
   const removeFromFocus = (id: string) => {
@@ -4668,18 +4497,13 @@ export default function App() {
       setTabs((prev) => prev.filter((t) => t.id !== id));
     }
   };
-  // Where the space's pages may go: the left's own pages (and under them),
-  // the study pages' sites and the pages let through; the right its site.
-  // A link anywhere else asks first (FOCUS_LINK_EVENT).
-  const leftAllow = () => [...space.pages.map(pagePrefix), ...space.accepted, ...loadJson<StudyPage[]>(STUDY_PAGES_KEY, []).map((p) => sitePrefix(p.url))];
-  const allowedLeft = (url: string) => leftAllow().some((p) => url.startsWith(p));
-  useEffect(() => {
-    if (!focusMode) return;
-    const left = leftAllow();
-    for (const t of focusLefts.filter((t) => t.focus)) api.setFocusAllow(t.id, left).catch(report);
-    api.setFocusAllow(focusRightId, FOCUS_RIGHT_ALLOW[focusRight] ?? null).catch(report);
-    return () => void api.setFocusAllow(focusRightId, null).catch(() => {});
-  }, [focusMode, space.lefts.join(), space.pages.join(), space.accepted.join(), focusRightId]); // eslint-disable-line react-hooks/exhaustive-deps
+  /// ⌘T on the Input mode's left: a new tab in front of its tabs.
+  const newFocusTab = () => patchSpace(spaceKey, (s) => ({ ...s, newTab: true }));
+  /// ⌘W on the left: its tab shown goes, as a new tab does (back to the one shown before).
+  const closeFocusTab = () => {
+    if (space.newTab) patchSpace(spaceKey, (s) => ({ ...s, newTab: false }));
+    else if (focusLeft) removeFromFocus(focusLeft.id);
+  };
   // A todo's space is saved as it changes, to be resumed after a restart.
   const savedSpace: SavedSpace | null =
     focusMode && focusSubject !== null
@@ -4692,7 +4516,6 @@ export default function App() {
             right: space.right,
             rightUrls: Object.fromEntries(rights.map((t) => [t.kind!, t.url])),
             pages: space.pages,
-            accepted: space.accepted,
           };
         })()
       : null;
@@ -4774,76 +4597,6 @@ export default function App() {
       const term = started.run;
       if (term) setTabs((prev) => [...prev, { id: `t${nextTab.current++}`, url: "", title: term.title, loading: false, nav: 0, term }]);
     });
-  const [focusAsking, setFocusAsking] = useState<FocusAsking[]>([]);
-  const focusAskingRef = useRef(focusAsking);
-  focusAskingRef.current = focusAsking;
-  const nextAsking = useRef(0);
-  const setAsking = (list: FocusAsking[]) => {
-    focusAskingRef.current = list;
-    setFocusAsking(list);
-  };
-  /// The asked page FocusLinkDialog asks about.
-  const [focusLink, setFocusLink] = useState<FocusAsking | null>(null);
-  /// A page for the left (a link its pages may not go to, or one typed in):
-  /// under what the left may open, it opens at once; otherwise Claude judges
-  /// whether it fits the work (the todo, the left's pages), and it opens if
-  /// it does, or is asked about if not (or if it could not be judged).
-  const askFocusLink = (url: string, text?: string) => {
-    if (allowedLeft(url)) return addToFocus([{ url }]);
-    if (focusAskingRef.current.some((a) => a.url === url)) return;
-    const id = nextAsking.current++;
-    setAsking([...focusAskingRef.current, { id, url, text: text || undefined }]);
-    const pages = focusLefts.filter((t) => !t.term).map((t) => ({ title: t.title, url: t.url }));
-    api
-      .judgeFocusLink({ subject: subjectItem?.title ?? null, memo: subjectItem?.memo ?? null, pages, url, text: text || null })
-      .then(
-        (verdict) => judged(id, { verdict }),
-        (e) => judged(id, { failed: String(e) }),
-      );
-  };
-  // Called back after a while, so it goes by the refs and state setters only.
-  const judged = (id: number, result: { verdict: Verdict } | { failed: string }) => {
-    const asking = focusAskingRef.current.find((a) => a.id === id);
-    // Given up meanwhile, or the focus mode is over.
-    if (!asking) return;
-    if ("verdict" in result && result.verdict.score >= FOCUS_RELATED_SCORE) {
-      setAsking(focusAskingRef.current.filter((a) => a.id !== id));
-      return openAsked(asking.url);
-    }
-    const answerable = { ...asking, ...result };
-    setAsking(focusAskingRef.current.map((a) => (a.id === id ? answerable : a)));
-    // With another dialog up, its tab waits to be clicked.
-    if (dialogRef.current === null) showAsking(answerable);
-  };
-  const showAsking = (asking: FocusAsking) => {
-    setFocusLink(asking);
-    setDialog("focusLink");
-  };
-  /// Opens an asked page on the left, and lets the left go under it from now on.
-  const openAsked = (url: string) => {
-    patchSpace(spaceKey, (s) => ({ ...s, accepted: [...s.accepted, pagePrefix(url)] }));
-    addToFocus([{ url }]);
-  };
-  /// FocusLinkDialog's answer; the next page waiting for one is asked after it.
-  const answerAsking = (open: boolean) => {
-    if (!focusLink) return;
-    const rest = focusAskingRef.current.filter((a) => a.id !== focusLink.id);
-    setAsking(rest);
-    if (open) openAsked(focusLink.url);
-    const next = rest.find(isAnswerable);
-    if (next) return showAsking(next);
-    setFocusLink(null);
-    setDialog(null);
-  };
-  /// Once Jev has a key (typed in FocusLinkDialog), the page asked about is
-  /// judged again, as if just asked.
-  const judgeAgain = () => {
-    if (!focusLink) return;
-    setAsking(focusAskingRef.current.filter((a) => a.id !== focusLink.id));
-    setFocusLink(null);
-    setDialog(null);
-    askFocusLink(focusLink.url, focusLink.text);
-  };
   // A link ⌥-clicked in a page becomes an input todo; the page says so (and
   // the input a page went into, from AddToInputDialog).
   const [addedInput, setAddedInputState] = useState<string | null>(null);
@@ -4868,8 +4621,12 @@ export default function App() {
 
   const addInputRef = useRef(addInputFrom);
   addInputRef.current = addInputFrom;
-  const askFocusLinkRef = useRef(askFocusLink);
-  askFocusLinkRef.current = askFocusLink;
+  const addToFocusRef = useRef(addToFocus);
+  addToFocusRef.current = addToFocus;
+  const newFocusTabRef = useRef(newFocusTab);
+  newFocusTabRef.current = newFocusTab;
+  const closeFocusTabRef = useRef(closeFocusTab);
+  closeFocusTabRef.current = closeFocusTab;
   const [focusPicking, setFocusPicking] = useState<"start" | "add">("start");
   const pickFocus = (mode: "start" | "add") => {
     if (mode === "start") setFocusSubject(null);
@@ -4896,9 +4653,10 @@ export default function App() {
     setFocusTyping(right ? "right" : "left");
     if (right) return setFocusRight(RIGHT_KINDS[(RIGHT_KINDS.indexOf(focusRight) + delta + RIGHT_KINDS.length) % RIGHT_KINDS.length]);
     if (focusLefts.length === 0) return;
-    const i = focusLefts.findIndex((t) => t.id === focusLeft?.id);
+    // From a new tab, the first or the last.
+    const i = focusLeft ? focusLefts.findIndex((t) => t.id === focusLeft.id) : delta > 0 ? -1 : focusLefts.length;
     const next = focusLefts[(i + delta + focusLefts.length) % focusLefts.length];
-    patchSpace(spaceKey, (s) => ({ ...s, active: next.id }));
+    patchSpace(spaceKey, (s) => ({ ...s, active: next.id, newTab: false }));
     if (next.term) requestAnimationFrame(() => focusTerminal(next.id));
     // The tab shown already (the only one) is not shown again, which gives the keyboard.
     else if (next.id === focusLeft?.id) api.browserFocus(next.id).catch(report);
@@ -4943,7 +4701,7 @@ export default function App() {
         return id;
       });
       ({ right, rightUrls } = saved);
-      setSpaces((prev) => ({ ...prev, [key]: { lefts: ids, active: ids[saved.active] ?? ids[0] ?? null, right, pages: saved.pages, accepted: saved.accepted, rightUrls } }));
+      setSpaces((prev) => ({ ...prev, [key]: { lefts: ids, active: ids[saved.active] ?? ids[0] ?? null, right, pages: saved.pages, rightUrls } }));
       if (lacking.length > 0) addToFocus(lacking, key);
     } else if (!spaces[key]) {
       setSpaces((prev) => ({ ...prev, [key]: newSpace(right) }));
@@ -5045,7 +4803,9 @@ export default function App() {
     // whose text box (ChatGPT's) takes the typing, in a chat going on too.
     if (focusMode) {
       const side = pane ? focusRightTab : focusLeft;
-      if (side) setFocusTyping(pane ? "right" : "left");
+      if (side || !pane) setFocusTyping(pane ? "right" : "left");
+      // The left's new tab: its address field.
+      if (!side && !pane) document.querySelector<HTMLInputElement>(".focus-left .browser-bar input")?.focus();
       if (side?.term) focusTerminal(side.id);
       else if (side) {
         const chat = pane && CHAT_PAGES.includes(side.kind ?? side.id);
@@ -5168,16 +4928,17 @@ export default function App() {
         if (url) recordVisit(url, payload.title, false);
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)));
       }),
-      // In the focus mode a page's new window goes to the left, if it may.
-      listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => (focusModeRef.current ? askFocusLinkRef.current(payload.url) : openRef.current(payload.url))),
-      listen<{ tab: string; url: string; text: string | null }>(FOCUS_LINK_EVENT, ({ payload }) => askFocusLinkRef.current(payload.url, payload.text ?? undefined)),
+      // In the Input mode a page's new window is a new tab on the left.
+      listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => (focusModeRef.current ? addToFocusRef.current([{ url: payload.url }]) : openRef.current(payload.url))),
       listen<{ url: string; title: string }>(ADD_INPUT_EVENT, ({ payload }) => addInputRef.current(payload.url, payload.title)),
-      // The focus mode lets none of the app's own shortcuts through.
-      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => !focusModeRef.current && openNewTab()),
+      // The Input mode's left takes the browser's keys; it lets the app's other shortcuts through.
+      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => (focusModeRef.current ? newFocusTabRef.current() : openNewTab())),
       listen<{ tab: string; delta: number }>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) =>
         focusModeRef.current ? switchFocusTabRef.current(onFocusRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
       ),
-      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => !focusModeRef.current && closeShownRef.current()),
+      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, ({ payload }) =>
+        focusModeRef.current ? !onFocusRightRef.current(payload.tab) && closeFocusTabRef.current() : closeShownRef.current(),
+      ),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
       listen<{ tab: string }>(BROWSER_TO_INPUT_EVENT, () => !focusModeRef.current && toInputRef.current()),
       listen(OPEN_PALETTE_EVENT, () => paletteRef.current()),
@@ -5394,10 +5155,17 @@ export default function App() {
         return;
       }
       // The focus mode: Esc asks about leaving (a terminal keeps its Esc, and
-      // the address bar its own), and ⌘ only edits text.
+      // the address bar its own), the left takes ⌘T ⌘W as a browser, and ⌘
+      // otherwise only edits text.
       if (focusModeRef.current) {
         const t = e.target as HTMLElement;
-        if (matches(e, "prevTab") || matches(e, "nextTab")) {
+        if (matches(e, "newTab")) {
+          e.preventDefault();
+          newFocusTabRef.current();
+        } else if (matches(e, "closeTab")) {
+          e.preventDefault();
+          if (!t.closest(".focus-right")) closeFocusTabRef.current();
+        } else if (matches(e, "prevTab") || matches(e, "nextTab")) {
           e.preventDefault();
           switchFocusTabRef.current(!!t.closest(".focus-right"), matches(e, "prevTab") ? -1 : 1);
         } else if (matches(e, "palette")) {
@@ -5580,7 +5348,6 @@ export default function App() {
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
-    { key: "jevKey", label: "Jev の API キーを設定（Input モードで開くページの判定）", run: () => setDialog("jevKey") },
     { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },
@@ -5943,12 +5710,10 @@ export default function App() {
           <FocusMode
             lefts={focusLefts}
             left={focusLeft}
-            onSelectLeft={(id) => patchSpace(spaceKey, (s) => ({ ...s, active: id }))}
+            onSelectLeft={(id) => patchSpace(spaceKey, (s) => ({ ...s, active: id, newTab: false }))}
             onCloseLeft={removeFromFocus}
             onAddLeft={() => pickFocus("add")}
-            asking={focusAsking}
-            onAnswer={showAsking}
-            onGiveUp={(id) => setAsking(focusAskingRef.current.filter((a) => a.id !== id))}
+            onOpenLeft={(url) => (keysInto = addToFocus([{ url }])[0] ?? null)}
             right={focusRightTab}
             rightKind={focusRight}
             note={
@@ -6051,10 +5816,6 @@ export default function App() {
           </div>
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
-        {dialog === "focusLink" && focusLink && (
-          <FocusLinkDialog key={focusLink.id} asking={focusLink} onClose={() => answerAsking(false)} onOpen={() => answerAsking(true)} onJudgeAgain={judgeAgain} />
-        )}
-        {dialog === "jevKey" && <JevKeyDialog onClose={() => setDialog(null)} />}
         {dialog === "focusPick" && (
           <FocusPicker
             adding={focusPicking === "add"}
@@ -6062,9 +5823,7 @@ export default function App() {
             onClose={() => setDialog(null)}
             onPick={(item) => {
               setDialog(null);
-              // A page added in the focus mode is judged like a link.
               if (focusPicking !== "add") enterFocus([item]);
-              else if ("url" in item) askFocusLink(item.url);
               else addToFocus([item]);
             }}
           />
