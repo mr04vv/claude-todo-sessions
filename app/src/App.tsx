@@ -3808,6 +3808,7 @@ const SEARCH_ALIASES: Record<string, string[]> = {
   ショートカット: ["shortcut", "key", "keys", "キー", "keymap"],
   通知: ["notification", "notice", "お知らせ", "bell"],
   ブラウザ: ["browser", "web", "タブ", "tab"],
+  作業スペース: ["ブラウザ", "browser", "web", "タブ", "tab", "ターミナル", "terminal", "pane", "ペイン", "workspace"],
   タブ: ["tab"],
   同期: ["sync", "更新", "refresh", "reload"],
   issue: ["イシュー", "課題", "import", "取り込み"],
@@ -5179,7 +5180,7 @@ export default function App() {
   // ⌘K lists the sidebar's entries first, in its order, then the actions.
   const commands: Command[] = [
     ...nav.map((n) => ({ key: `nav:${n.key}`, label: n.label, run: n.go })),
-    { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザ", run: toggleBrowser },
+    { key: "browser", label: browserShown ? "作業スペースを隠す" : "作業スペース", run: toggleBrowser },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
@@ -5233,9 +5234,9 @@ export default function App() {
                 {n.count !== undefined && <span className="muted">{n.count}</span>}
               </button>
             ))}
-            <button className={browserShown ? "on" : ""} aria-pressed={browserShown} title="ブラウザを表示・隠す（⌘T で新しいタブ）" onClick={toggleBrowser}>
+            <button className={browserShown ? "on" : ""} aria-pressed={browserShown} title="作業スペース（右のページとターミナル）を表示・隠す（⌘T で新しいタブ）" onClick={toggleBrowser}>
               <Icon name="globe" />
-              <span className="grow">ブラウザ</span>
+              <span className="grow">作業スペース</span>
               {paneTabs.some((t) => !t.pinned) && <span className="muted">{paneTabs.filter((t) => !t.pinned).length}</span>}
             </button>
             {PINNED_PAGES.map((p) => (
