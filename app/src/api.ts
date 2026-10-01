@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { TerminalRun } from "./Terminal";
 
 export type Status = "todo" | "doing" | "review" | "pending" | "done";
 export type SessionState = "running" | "needs_input" | "idle" | "ended";
@@ -259,6 +260,11 @@ export const api = {
   setJevKey: (key: string) => invoke<void>("set_jev_key", { key }),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
+  /// A session making the focus mode's note of `urls` for the todo; locally, the
+  /// in-app terminal gets the command to run (`run`), herdr runs it itself.
+  startNote: (todoId: number, urls: string[], format: NoteFormat, cloud: boolean) => invoke<NoteStart>("start_note", { todoId, urls, format, cloud }),
+  /// The note the session published, once it has (kept as a link of the todo).
+  noteUrl: (todoId: number, sessionId: string) => invoke<string | null>("note_url", { todoId, sessionId }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
   startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),
@@ -281,6 +287,14 @@ export const api = {
   browserUrl: (tab: string) => invoke<string | null>("browser_url", { tab }),
   browserGo: (tab: string, action: "back" | "forward" | "reload") => invoke<void>("browser_go", { tab, action }),
 };
+
+/// What the note is made as (`NoteFormat` in launch.rs).
+export type NoteFormat = "page" | "docs" | "slides" | "design";
+
+export interface NoteStart {
+  session: string;
+  run: TerminalRun | null;
+}
 
 /** `{tab, url}` after a tab navigates. */
 export const BROWSER_URL_EVENT = "browser-url";

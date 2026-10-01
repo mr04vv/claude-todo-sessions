@@ -2409,6 +2409,34 @@ body.resizing {
   padding: 4px 8px;
 }
 
+/* The focus mode's note before it has a page (NoteStart). */
+.note-start {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px 20px;
+  line-height: 1.7;
+}
+
+.note-start .segmented {
+  align-self: flex-start;
+}
+
+.note-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* Over the session making the note (NoteMaking). */
+.note-making {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+
 /* The focus mode's page picker (FocusPicker). */
 .focus-picker {
   display: flex;

@@ -41,6 +41,7 @@ import {
   JEV_NO_KEY,
   MODELS,
   type Board,
+  type NoteFormat,
   type Issue,
   type HerdrSessions,
   type Limit,
@@ -346,6 +347,26 @@ const DOCK_DEFAULT_SHARE = 0.44;
 const FOCUS_RIGHT_KEY = "focusRight";
 const FOCUS_RIGHT_W_KEY = "focusRightWidth";
 const FOCUS_RIGHT_SHARE = 0.45;
+/// The focus mode's note: an artifact (a doc, page, deck or design) a
+/// session makes of the left's pages, commented on to ask it (FocusNote). Its
+/// tab on the right, its address, and the session making it for each todo
+/// (kept, as it goes on answering).
+const NOTE_TAB = "fnote";
+const NOTE_PAGE = /^https:\/\/claude\.ai\/(code\/)?artifact\//;
+const NOTE_SESSIONS_KEY = "noteSessions";
+const NOTE_FORMAT_KEY = "noteFormat";
+const NOTE_FORMATS: [NoteFormat, string][] = [
+  ["docs", "Docs"],
+  ["page", "HTML"],
+  ["slides", "スライド"],
+  ["design", "デザイン"],
+];
+interface NoteSession {
+  session: string;
+  cloud: boolean;
+}
+/// How often a note being made is looked for in its session.
+const NOTE_POLL_MS = 5000;
 /// Where the focus mode's right pages may go (address prefixes), with the
 /// sign-in pages they send to.
 const SIGN_IN_PAGES = ["https://accounts.google.com/", "https://appleid.apple.com/", "https://login.microsoftonline.com/"];
@@ -353,6 +374,8 @@ const FOCUS_RIGHT_ALLOW: Record<string, string[]> = {
   pinchatgpt: ["https://chatgpt.com/", "https://auth.openai.com/", ...SIGN_IN_PAGES],
   pinclaude: ["https://claude.ai/", ...SIGN_IN_PAGES],
   pinnotion: ["https://www.notion.so/", "https://notion.so/", ...SIGN_IN_PAGES],
+  // The note, and its Cloud session's page while it is made.
+  [NOTE_TAB]: ["https://claude.ai/", ...SIGN_IN_PAGES],
 };
 /// The prefix a page's address allows: the page and the ones under it.
 const pagePrefix = (url: string) => {
@@ -1969,20 +1992,86 @@ function FocusPicker({ terminals, adding, onPick, onClose }: {
   );
 }
 
+/// The right side's note before it is published (NOTE_TAB): whether there is a
+/// todo to make it for, a session making it, and pages on the left for it.
+interface FocusNote {
+  subject: boolean;
+  making: boolean;
+  pages: boolean;
+  onCreate: (format: NoteFormat, cloud: boolean) => void;
+  /// Leaves the session making it (it goes on) to start another.
+  onReset: () => void;
+}
+
+/// Over the session making the note (its terminal or page): what it is, and
+/// a way out to make it again.
+function NoteMaking({ note }: { note: FocusNote }) {
+  return (
+    <div className="note-making">
+      <span className="spinner" aria-label="作成中" />
+      <span className="grow">ノートを作っています。できたらここに替わります。</span>
+      <button className="ghost small" title="このセッションは残したまま、作り直します" onClick={note.onReset}>
+        作り直す
+      </button>
+    </div>
+  );
+}
+
+/// The note's place on the right until there is a page to show: what it is
+/// and how to make it, or that it is being made (in herdr, out of sight).
+function NoteStart({ note }: { note: FocusNote }) {
+  const [format, setFormatState] = useState<NoteFormat>(() => load(NOTE_FORMAT_KEY, NOTE_FORMATS.map(([f]) => f), "docs"));
+  const setFormat = (f: NoteFormat) => {
+    remember(NOTE_FORMAT_KEY, f);
+    setFormatState(f);
+  };
+  if (!note.subject) return <p className="muted empty pad">ノートは、todo（Input など）から開いたフォーカスモードで作れます。</p>;
+  // herdr runs it behind the app, with nothing to show here.
+  if (note.making) return <NoteMaking note={note} />;
+  // Cloud sessions have no Claude Docs connector.
+  const cloudOk = format !== "docs";
+  return (
+    <div className="note-start">
+      <p>左のページを Claude が整理し直して、コメントできる「ノート」にします。気になるところにコメントで質問すると、ノートを作ったセッションが返信し、大事なことはノートにも書き足します。</p>
+      <div className="segmented" role="group" aria-label="ノートの形">
+        {NOTE_FORMATS.map(([f, label]) => (
+          <button key={f} className={format === f ? "on" : ""} aria-pressed={format === f} onClick={() => setFormat(f)}>
+            {label}
+          </button>
+        ))}
+      </div>
+      <div className="note-actions">
+        <button className="primary" disabled={!note.pages} onClick={() => note.onCreate(format, false)}>
+          Local で作る
+        </button>
+        <button className="small" disabled={!note.pages || !cloudOk} title={cloudOk ? undefined : "Cloud のセッションには Claude Docs のコネクタがありません"} onClick={() => note.onCreate(format, true)}>
+          Cloud で作る
+        </button>
+      </div>
+      <p className="muted small">
+        Local は「ターミナル」の設定（アプリ内か herdr）で動き、アプリやターミナルを閉じると返信が止まります。Cloud は claude.ai で動きます（Docs は Local だけ）。どちらもセッションを1本使います。
+      </p>
+    </div>
+  );
+}
+
 /// The focus mode: its own pages (and terminals) on the left and a pinned
-/// page (ChatGPT, Claude Code or Notion) on the right, nothing else.
-function FocusMode({ lefts, left, asking, right, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onAnswer, onGiveUp, onExit }: {
+/// page (ChatGPT, Claude Code or Notion) or the note on the right, nothing else.
+function FocusMode({ lefts, left, asking, right, note, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onAnswer, onGiveUp, onExit }: {
   /// The left side's tabs (its own pages, and terminals), and the one shown.
   lefts: BrowserTab[];
   left: BrowserTab | null;
   /// Pages asked onto the left, shown after its tabs until they open.
   asking: FocusAsking[];
   right: BrowserTab | undefined;
+  /// Set while the note is shown and not yet published.
+  note: FocusNote | null;
   covered: boolean;
   report: (e: unknown) => void;
   width: number;
   onResize: (w: number) => void;
-  onRight: (pinnedId: string) => void;
+  /// A pinned page's id, or NOTE_TAB.
+  onRight: (id: string) => void;
   onAddress: (tab: string, url: string) => void;
   onSelectLeft: (id: string) => void;
   onCloseLeft: (id: string) => void;
@@ -1994,6 +2083,8 @@ function FocusMode({ lefts, left, asking, right, covered, report, width, onResiz
   onExit: () => void;
 }) {
   const leftWeb = left && !left.term ? left.id : undefined;
+  // The note is on the right as its page, the session making it, or the start.
+  const noteShown = note !== null || right?.id === NOTE_TAB;
   return (
     <div className="focus-mode">
       <section className="browser focus-left" aria-label="フォーカスモードの左側">
@@ -2051,13 +2142,23 @@ function FocusMode({ lefts, left, asking, right, covered, report, width, onResiz
                   <Icon name={p.icon} size={12} /> {p.label}
                 </button>
               ))}
+              <button className={noteShown ? "on" : ""} aria-pressed={noteShown} onClick={() => onRight(NOTE_TAB)}>
+                <Icon name="list" size={12} /> ノート
+              </button>
             </div>
             <span className="grow" />
             <button className="ghost small" title="フォーカスモードを終える（Esc）" onClick={onExit}>
               終える <span className="kbd">Esc</span>
             </button>
           </div>
-          {right && <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} noDia />}
+          {right && note && <NoteMaking note={note} />}
+          {right?.term ? (
+            <TerminalView key={right.id} id={right.id} run={right.term} report={report} />
+          ) : right ? (
+            <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} noDia />
+          ) : (
+            note && <NoteStart note={note} />
+          )}
         </section>
       </aside>
     </div>
@@ -3987,7 +4088,7 @@ export default function App() {
   };
   // The focus mode (FocusMode), and the pinned page it keeps on the right.
   const [focusMode, setFocusMode] = useState(false);
-  const [focusRight, setFocusRightState] = useState<string>(() => load(FOCUS_RIGHT_KEY, ["pinchatgpt", "pinclaude", "pinnotion"] as const, "pinchatgpt"));
+  const [focusRight, setFocusRightState] = useState<string>(() => load(FOCUS_RIGHT_KEY, ["pinchatgpt", "pinclaude", "pinnotion", NOTE_TAB] as const, "pinchatgpt"));
   /// A pinned page's tab, opened (not shown) if it is not yet.
   const ensurePinned = (id: string) => {
     const page = FOCUS_PAGES.find((p) => p.id === id);
@@ -4068,6 +4169,55 @@ export default function App() {
   }, [focusMode, focusLeftIds.join(), focusPages.join(), focusAccepted.join(), focusRight]); // eslint-disable-line react-hooks/exhaustive-deps
   // The todo the focus mode was opened for, which pages are judged against.
   const [focusSubject, setFocusSubject] = useState<number | null>(null);
+  // The note (NOTE_TAB): the subject's, once published (one of its links),
+  // else the session making it.
+  const [noteSessions, setNoteSessionsState] = useState<Record<number, NoteSession>>(() => loadJson(NOTE_SESSIONS_KEY, {}));
+  const subjectTodo = board?.todos.find((t) => t.id === focusSubject);
+  const noteUrl = subjectTodo?.links.find((l) => NOTE_PAGE.test(l.url))?.url ?? null;
+  const noteSession = focusSubject === null ? undefined : noteSessions[focusSubject];
+  const noteTerminal = noteSession && tabs.find((t) => t.term?.session === noteSession.session);
+  // A note being made on Cloud shows its session's page meanwhile.
+  const notePage = noteUrl ?? (noteSession?.cloud ? cloudWebUrl(noteSession.session) : null);
+  useEffect(() => {
+    if (!focusMode || focusRight !== NOTE_TAB || !notePage) return;
+    setTabs((prev) =>
+      prev.some((t) => t.id === NOTE_TAB)
+        ? prev.map((t) => (t.id === NOTE_TAB && t.url !== notePage ? { ...t, url: notePage, loading: true, nav: t.nav + 1 } : t))
+        : [...prev, { id: NOTE_TAB, url: notePage, title: "ノート", loading: true, nav: 0, focus: true }],
+    );
+  }, [focusMode, focusRight, notePage]);
+  /// The right side's tab: the pinned page, or the note (its page, else the
+  /// terminal making it).
+  const focusRightTab =
+    focusRight !== NOTE_TAB ? tabs.find((t) => t.id === focusRight) : notePage ? tabs.find((t) => t.id === NOTE_TAB) : noteTerminal;
+  // The note is looked for in its session until it is published.
+  useEffect(() => {
+    if (!focusMode || focusSubject === null || !noteSession || noteUrl) return;
+    const todoId = focusSubject;
+    const look = () => void api.noteUrl(todoId, noteSession.session).then((url) => url && refresh(), report);
+    const timer = setInterval(look, NOTE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [focusMode, focusSubject, noteSession?.session, noteUrl]); // eslint-disable-line react-hooks/exhaustive-deps
+  const setNoteSessions = (next: Record<number, NoteSession>) => {
+    remember(NOTE_SESSIONS_KEY, JSON.stringify(next));
+    setNoteSessionsState(next);
+  };
+  const resetNote = () => {
+    if (focusSubject === null) return;
+    const { [focusSubject]: _, ...rest } = noteSessions;
+    setNoteSessions(rest);
+  };
+  /// Starts the session that makes the note of the left's pages.
+  const createNote = (format: NoteFormat, cloud: boolean) =>
+    run(async () => {
+      if (focusSubject === null) return;
+      const urls = focusLefts.filter((t) => !t.term).map((t) => t.url);
+      const started = await api.startNote(focusSubject, urls, format, cloud);
+      setNoteSessions({ ...noteSessions, [focusSubject]: { session: started.session, cloud } });
+      // Its terminal is one of the pane's, shown on the right while it works.
+      const term = started.run;
+      if (term) setTabs((prev) => [...prev, { id: `t${nextTab.current++}`, url: "", title: term.title, loading: false, nav: 0, term }]);
+    });
   const [focusAsking, setFocusAsking] = useState<FocusAsking[]>([]);
   const focusAskingRef = useRef(focusAsking);
   focusAskingRef.current = focusAsking;
@@ -4160,7 +4310,8 @@ export default function App() {
   /// The focus mode with the todo's pages on the left (its links, PR and
   /// issue); with none, the pages to pick from.
   const focusTodo = (todo: Todo) => {
-    const urls = [...new Set([...todo.links.map((l) => l.url), todo.pr_url, todo.issue_url].filter((u): u is string => !!u))];
+    const pages = todo.links.map((l) => l.url).filter((u) => !NOTE_PAGE.test(u));
+    const urls = [...new Set([...pages, todo.pr_url, todo.issue_url].filter((u): u is string => !!u))];
     if (urls.length === 0) pickFocus("start");
     else enterFocus(urls.map((url) => ({ url })));
     setFocusSubject(todo.id);
@@ -4262,7 +4413,7 @@ export default function App() {
     // The focus mode's two sides: its left tab and the pinned page on the right,
     // whose text box (ChatGPT's) takes the typing, in a chat going on too.
     if (focusMode) {
-      const side = pane ? tabs.find((t) => t.id === focusRight) : focusLeft;
+      const side = pane ? focusRightTab : focusLeft;
       if (side?.term) focusTerminal(side.id);
       else if (side) {
         const chat = pane && CHAT_PAGES.includes(side.id);
@@ -5104,7 +5255,12 @@ export default function App() {
             asking={focusAsking}
             onAnswer={showAsking}
             onGiveUp={(id) => setAsking(focusAskingRef.current.filter((a) => a.id !== id))}
-            right={tabs.find((t) => t.id === focusRight)}
+            right={focusRightTab}
+            note={
+              focusRight !== NOTE_TAB || noteUrl
+                ? null
+                : { subject: focusSubject !== null, making: noteSession !== undefined, pages: focusLefts.some((t) => !t.term), onCreate: createNote, onReset: resetNote }
+            }
             covered={covered}
             report={report}
             width={focusRightW}

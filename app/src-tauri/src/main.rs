@@ -368,7 +368,7 @@ fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -
 /// claude and reopening a session (see `terminal.rs`).
 #[tauri::command(async)]
 fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<TerminalRun, String> {
-    prepare_terminal(&state, todo_id, &options.unwrap_or_default())
+    prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)
 }
 
 #[tauri::command(async)]
@@ -700,8 +700,9 @@ struct TerminalRun {
 }
 
 /// Registers a session for the todo (so it is linked before it starts) and
-/// returns the `claude --session-id` command that runs it.
-fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions) -> Result<TerminalRun, String> {
+/// returns the `claude --session-id` command that runs it, with `body` (else
+/// the todo's own) as its first prompt.
+fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: Option<String>) -> Result<TerminalRun, String> {
     let (todo, session_id) = {
         let db = state.db.lock().map_err(err)?;
         let todo = todo_or_err(&db, todo_id)?;
@@ -716,23 +717,26 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions) -> Resu
     let flags: String = opts.claude_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
     let command = format!(
         "claude --session-id {session_id}{flags} {}",
-        shell_quote(&launch::start_prompt(todo.id, &todo.prompt_body()))
+        shell_quote(&launch::start_prompt(todo.id, &body.unwrap_or_else(|| todo.prompt_body())))
     );
     Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: Some(session_id), herdr: None })
 }
 
 /// Starts `claude --session-id` for the todo in herdr (Ghostty if herdr is
 /// down), linked before it starts. `focus` brings the new workspace forward.
-fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOptions) -> Result<(), String> {
-    let TerminalRun { cwd, title, command, .. } = prepare_terminal(state, todo_id, opts)?;
+/// Returns the session's id.
+fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOptions, body: Option<String>) -> Result<String, String> {
+    let TerminalRun { cwd, title, command, session, .. } = prepare_terminal(state, todo_id, opts, body)?;
     start_in_herdr(state, &cwd, &title, &command, focus).or_else(|herdr_err| {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", shell_quote(&cwd)))
             .map_err(|e| format!("{herdr_err} / {e}"))
-    })
+    })?;
+    Ok(session.unwrap_or_default())
 }
 
-/// Creates a cloud session for the todo and returns its `cse_…` id.
-fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions) -> Result<String, String> {
+/// Creates a cloud session for the todo and returns its `cse_…` id, with
+/// `body` (else the todo's own) as its first prompt.
+fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions, body: Option<String>) -> Result<String, String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
     if todo.is_orchestrator() {
         // Planning creates child todos through the local MCP server, which cloud sessions cannot reach.
@@ -741,12 +745,62 @@ fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions) -> Result<S
     // Without a GitHub repository the session runs with no checkout, which is fine for research.
     let repos = launch::github_repos(&repos_of_todo(state, &todo));
     let db = state.db.lock().map_err(err)?;
-    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &todo.prompt_body(), opts)
+    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &body.unwrap_or_else(|| todo.prompt_body()), opts)
+}
+
+/// A note session (the focus mode's "ノート"): where it runs, and the command
+/// for the in-app terminal when it runs there.
+#[derive(Serialize)]
+struct NoteStart {
+    session: String,
+    run: Option<TerminalRun>,
+}
+
+/// Starts a session that turns `urls` into a note (in `format`) for the
+/// todo: on Cloud, or locally where "herdr" sessions run (the in-app
+/// terminal, whose command comes back to run, or herdr behind the app).
+#[tauri::command(async)]
+fn start_note(state: State<AppState>, todo_id: i64, urls: Vec<String>, format: launch::NoteFormat, cloud: bool) -> Result<NoteStart, String> {
+    if urls.is_empty() {
+        return Err("ノートにするページを左に開いてください".into());
+    }
+    let title = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?.title;
+    let body = Some(launch::note_prompt(&title, &urls, format));
+    let opts = StartOptions::default();
+    if cloud {
+        return Ok(NoteStart { session: launch_cloud(&state, todo_id, &opts, body)?, run: None });
+    }
+    if state.in_app_terminal.load(Ordering::Relaxed) {
+        let run = prepare_terminal(&state, todo_id, &opts, body)?;
+        return Ok(NoteStart { session: run.session.clone().unwrap_or_default(), run: Some(run) });
+    }
+    Ok(NoteStart { session: launch_terminal(&state, todo_id, false, &opts, body)?, run: None })
+}
+
+/// Title the note's link gets, in place of its page's (which needs a login).
+const NOTE_TITLE: &str = "ノート";
+
+/// The note session `session_id` published for the todo, once it has; it is
+/// kept as one of the todo's links from then on.
+#[tauri::command(async)]
+fn note_url(state: State<AppState>, todo_id: i64, session_id: String) -> Result<Option<String>, String> {
+    let text = if launch::is_cloud_session(&session_id) {
+        serde_json::to_string(&cts_core::cloud::recent_entries(&session_id)?).map_err(err)?
+    } else {
+        transcript_tail(&session_id).unwrap_or_default()
+    };
+    let Some(url) = cts_core::transcript::note_url(&text) else { return Ok(None) };
+    let db = state.db.lock().map_err(err)?;
+    if !db.links_for(todo_id).map_err(err)?.iter().any(|l| l.url == url) {
+        let link = db.add_link(todo_id, &url).map_err(err)?;
+        db.set_link_meta(link.id, Some(NOTE_TITLE), None).map_err(err)?;
+    }
+    Ok(Some(url))
 }
 
 #[tauri::command(async)]
 fn start_terminal(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<(), String> {
-    launch_terminal(&state, todo_id, true, &options.unwrap_or_default())?;
+    launch_terminal(&state, todo_id, true, &options.unwrap_or_default(), None)?;
     // herdr has switched to the new workspace; show it.
     cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
 }
@@ -755,7 +809,7 @@ fn start_terminal(state: State<AppState>, todo_id: i64, options: Option<StartOpt
 /// Claude Desktop; otherwise the page shows it on the web.
 #[tauri::command(async)]
 fn start_cloud(state: State<AppState>, todo_id: i64, options: Option<StartOptions>, desktop: bool) -> Result<String, String> {
-    let id = launch_cloud(&state, todo_id, &options.unwrap_or_default())?;
+    let id = launch_cloud(&state, todo_id, &options.unwrap_or_default(), None)?;
     if desktop {
         open_url(&launch::jump_url(&id, None))?;
     }
@@ -810,7 +864,7 @@ fn queue_loop(app: AppHandle) {
             let cloud = runner == RUNNER_CLOUD
                 || (runner == RUNNER_AUTO && !launch::github_repos(&repos_of_todo(&state, &todo)).is_empty());
             let opts = StartOptions::default();
-            let started = if cloud { launch_cloud(&state, todo.id, &opts).map(|_| ()) } else { launch_terminal(&state, todo.id, false, &opts) };
+            let started = if cloud { launch_cloud(&state, todo.id, &opts, None).map(|_| ()) } else { launch_terminal(&state, todo.id, false, &opts, None).map(|_| ()) };
             if let Ok(db) = state.db.lock() {
                 let _ = match started {
                     Ok(()) => db.dequeue(todo.id),
@@ -2067,6 +2121,8 @@ fn main() {
             terminal_quick,
             terminal_resume,
             set_in_app_terminal,
+            start_note,
+            note_url,
             terminal::term_open,
             terminal::term_write,
             terminal::term_resize,

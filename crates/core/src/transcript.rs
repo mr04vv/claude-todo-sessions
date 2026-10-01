@@ -75,6 +75,50 @@ fn tool_summary(input: &Value) -> String {
         .unwrap_or_default()
 }
 
+const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
+/// How the Artifact tool reports a publish: "Published <file> at <url> (…".
+const PUBLISHED: &str = "Published ";
+const PUBLISHED_AT: &str = " at ";
+/// The Docs connector's ack for a new doc: `"artifactUrl":"<url>"`.
+const DOC_BORN: &str = "artifactUrl";
+/// The line a note session ends its first answer with (launch::note_prompt).
+pub const NOTE_LINE: &str = "NOTE_URL: ";
+
+/// The note a session made (the focus mode's "ノート"): the first artifact it
+/// published, the first doc it made (shown as it fills), or the one its
+/// NOTE_LINE names, in its transcript or events (as text, its quotes escaped
+/// once or more). Placeholders and links merely mentioned are not it.
+pub fn note_url(text: &str) -> Option<String> {
+    let published = text.match_indices(PUBLISHED).find_map(|(i, _)| {
+        let line = until_line_end(&text[i + PUBLISHED.len()..]);
+        line.find(PUBLISHED_AT).and_then(|j| artifact_at(&line[j + PUBLISHED_AT.len()..]))
+    });
+    let after = |marker: &str, skip: &[char]| {
+        text.match_indices(marker).find_map(|(i, _)| artifact_at(text[i + marker.len()..].trim_start_matches(skip)))
+    };
+    // The line is asked for as "NOTE_URL: <url>", and may come with the brackets.
+    published.or_else(|| after(DOC_BORN, &['\\', '"', ':'])).or_else(|| after(NOTE_LINE, &['<']))
+}
+
+/// Up to the end of the line, also where the line is a JSON string's.
+fn until_line_end(s: &str) -> &str {
+    &s[..s.find(['\n', '"', '\\']).unwrap_or(s.len())]
+}
+
+/// Where a link ends in text: a space, a quote, a bracket, an escape.
+const LINK_END: &[char] = &['"', '\'', '`', '(', ')', '<', '>', '[', ']', '\\', ','];
+
+/// The artifact link `s` starts with. Its last part is `[<title>-]<id>`, the
+/// title in any letters; the id is letters and digits, so what follows it
+/// (a "。") is left out.
+fn artifact_at(s: &str) -> Option<String> {
+    let page = ARTIFACT_PAGES.iter().find(|p| s.starts_with(**p))?;
+    let rest = &s[page.len()..];
+    let end = rest.find(|c: char| c.is_whitespace() || LINK_END.contains(&c)).unwrap_or(rest.len());
+    let id = rest[..end].trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+    (!id.is_empty()).then(|| format!("{page}{id}"))
+}
+
 /// Entries of a JSONL transcript. The first line may be cut off when only
 /// the tail of the file was read, and is skipped when it does not parse.
 pub fn parse_jsonl(text: &str) -> Vec<Value> {
@@ -136,6 +180,41 @@ mod tests {
     fn jsonl_skips_a_cut_first_line_and_blank_lines() {
         let v = parse_jsonl("e\": 1}\n{\"type\": \"user\"}\n\n{\"type\": \"assistant\"}\n");
         assert_eq!(v, [json!({"type": "user"}), json!({"type": "assistant"})]);
+    }
+
+    #[test]
+    fn the_note_is_the_first_artifact_published() {
+        let text = concat!(
+            r#"{"type":"user","message":{"content":"see https://claude.ai/artifact/{id} and https://claude.ai/artifact/abc123 in the docs"}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Published /tmp/note.html at https://claude.ai/artifact/1UnAnmsD3RX7oDxWBD5q9c (Version 1)\n\nLive subscription"}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Published /tmp/other.html at https://claude.ai/artifact/Zz9 (Version 1)"}]}}"#,
+        );
+        assert_eq!(note_url(text).as_deref(), Some("https://claude.ai/artifact/1UnAnmsD3RX7oDxWBD5q9c"));
+    }
+
+    #[test]
+    fn a_doc_is_known_from_its_birth() {
+        // The Docs connector's ack, a JSON string inside the transcript's line.
+        let text = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"created\":{\"minted\":\"e1e7\"},\"frame\":{\"url\":\"https://claude.ai/code/artifact/e1e71452-f7a7\",\"artifactUrl\":\"https://claude.ai/code/artifact/e1e71452-f7a7\"}}"}]}}"#;
+        assert_eq!(note_url(text).as_deref(), Some("https://claude.ai/code/artifact/e1e71452-f7a7"));
+        // As events serialized again, the quotes are escaped once more.
+        assert_eq!(note_url(&serde_json::to_string(text).unwrap()).as_deref(), Some("https://claude.ai/code/artifact/e1e71452-f7a7"));
+    }
+
+    #[test]
+    fn the_note_line_names_it_too() {
+        let text = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"できました。\nNOTE_URL: https://claude.ai/code/artifact/8574c0b4-3336-416f"}]}}"#;
+        assert_eq!(note_url(text).as_deref(), Some("https://claude.ai/code/artifact/8574c0b4-3336-416f"));
+        assert_eq!(note_url("Published /a at https://claude.ai/artifact/ (Version 1)"), None);
+        // A doc's link may lead with its title, and a sentence may follow it.
+        assert_eq!(
+            note_url("NOTE_URL: https://claude.ai/artifact/Rust-の所有権-3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90。").as_deref(),
+            Some("https://claude.ai/artifact/Rust-の所有権-3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90")
+        );
+        assert_eq!(note_url("NOTE_URL: <https://claude.ai/code/artifact/Q3-plan%E3%81%AE-abcDEF0123456789abcdef>").as_deref(), Some("https://claude.ai/code/artifact/Q3-plan%E3%81%AE-abcDEF0123456789abcdef"));
+        assert_eq!(note_url("nothing published"), None);
     }
 
     #[test]
