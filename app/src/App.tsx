@@ -1975,7 +1975,7 @@ function FocusPicker({ terminals, adding, onPick, onClose }: {
     setAddingPage(false);
   };
   return (
-    <Modal title={adding ? "左に開くページ" : " Input モードで開くページ"} onClose={onClose}>
+    <Modal title={adding ? "左に開くページ" : "Input モードで開くページ"} onClose={onClose}>
       <div className="focus-picker">
         <input
           autoFocus
@@ -2132,7 +2132,7 @@ function FocusMode({ lefts, left, asking, right, rightKind, note, onRemakeNote, 
   const noteShown = rightKind === NOTE_TAB;
   return (
     <div className="focus-mode">
-      <section className="browser focus-left" aria-label=" Input モードの左側">
+      <section className="browser focus-left" aria-label="Input モードの左側">
         <div className="browser-tabs" role="tablist">
           {lefts.map((t) => (
             <span key={t.id} className={`browser-tab${t.id === left?.id ? " on" : ""}`}>
@@ -2197,7 +2197,7 @@ function FocusMode({ lefts, left, asking, right, rightKind, note, onRemakeNote, 
                 ノートを作り直す
               </button>
             )}
-            <button className="ghost small" title=" Input モードを終える（Esc）" onClick={onExit}>
+            <button className="ghost small" title="Input モードを終える（Esc）" onClick={onExit}>
               終える <span className="kbd">Esc</span>
             </button>
           </div>
@@ -2440,7 +2440,7 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
         )}
         <span className="mono">#{todo.id}</span>
         <span className="grow" />
-        <button className="ghost small" title={` Input モードで開く（${keyLabel(keyOf("focusTodo"))}）：添付の URL を左、ChatGPT を右に`} onClick={onFocus}>
+        <button className="ghost small" title={`Input モードで開く（${keyLabel(keyOf("focusTodo"))}）：添付の URL を左、ChatGPT を右に`} onClick={onFocus}>
           Input モード
         </button>
         {gh && (
@@ -3255,8 +3255,10 @@ const NOTICE_STATE: Record<Notice["kind"], string> = {
 /// The notifications not dealt with yet; opening or dismissing one takes it off.
 /// The input todos: reading material, each opening in the focus mode with its
 /// page on the left. A URL here, or ⌥-clicking a link in the browser, adds one.
-function InputsPage({ todos, resumable, run, onFocus, onDetail }: {
+function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
   todos: Todo[];
+  /// The dialog adding one.
+  onAdd: () => void;
   /// Todos whose Input mode space is kept, to go on where it was left.
   resumable: Set<number>;
   run: (f: () => Promise<unknown>) => void;
@@ -3309,10 +3311,13 @@ function InputsPage({ todos, resumable, run, onFocus, onDetail }: {
             Done も表示 {done}
           </button>
         )}
+        <button className="primary" onClick={onAdd}>
+          <Icon name="plus" size={13} /> 新しい input
+        </button>
       </header>
       <div className="content" ref={list}>
         {rows.length === 0 && (
-          <p className="muted empty">まだありません。ブラウザでリンクを ⌥ + クリックするか、上に URL を入れると追加されます。URL をいくつか入れると 1 件にまとまり、 Input モードで全部左に開きます。</p>
+          <p className="muted empty">まだありません。ブラウザでリンクを ⌥ + クリックするか、上に URL を入れると追加されます。URL をいくつか入れると 1 件にまとまり、Input モードで全部左に開きます。</p>
         )}
         <ul className="rows">
           {rows.map((t) => {
@@ -3360,11 +3365,13 @@ function parseInput(text: string): { title: string; urls: string[] } | null {
   return { title: title || hostOf(urls[0]), urls };
 }
 
-/// Adds an input todo with `urls` as its links, in that order.
-async function addInput(urls: string[], title: string) {
+/// Adds an input todo with `urls` as its links, in that order; it comes back
+/// with them (to open it before the board catches up).
+async function addInput(urls: string[], title: string): Promise<Todo> {
   const todo = await api.createTodo({ title, kind: "input" });
-  for (const url of urls) await api.addLink(todo.id, url);
-  return todo;
+  const links = [];
+  for (const url of urls) links.push(await api.addLink(todo.id, url));
+  return { ...todo, links };
 }
 
 /// The PR of a review request's notice: its URL, and the title it was posted with (`owner/repo#n title`).
@@ -3560,6 +3567,75 @@ function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo }:
                 <span className="mono muted">#{t.id}</span>
                 <span className="row-title">{t.title}</span>
                 <span className="tag">{t.repos[0] ? repoName(t.repos[0]) : NO_REPO_LANE}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/// Adds input todos as AddTodoDialog adds todos: the pages to read (one or
+/// more, one per line) and a title (else the words among them, or the first
+/// page's host). One just added opens in the Input mode.
+function AddInputDialog({ run, onClose, onOpen }: { run: (f: () => Promise<unknown>) => void; onClose: () => void; onOpen: (todo: Todo) => void }) {
+  const [title, setTitle] = useState("");
+  const [pages, setPages] = useState("");
+  const [added, setAdded] = useState<Todo[]>([]);
+  const pagesRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => pagesRef.current?.focus(), []);
+  const input = parseInput(pages);
+  const submit = () => {
+    if (!input) return;
+    run(async () => {
+      const todo = await addInput(input.urls, title.trim() || input.title);
+      setAdded((prev) => [todo, ...prev]);
+      setTitle("");
+      setPages("");
+      pagesRef.current?.focus();
+    });
+  };
+  return (
+    <Modal
+      title="input を追加"
+      onClose={onClose}
+      footer={
+        <>
+          <span className="muted">⌘Enter で追加。続けて入力できます</span>
+          <span className="grow" />
+          <button className="ghost" onClick={onClose}>
+            閉じる
+          </button>
+          <button className="primary" disabled={!input} onClick={submit}>
+            追加
+          </button>
+        </>
+      }
+    >
+      <label className="field">
+        <span>読むページの URL（1行に1つ、いくつでも）</span>
+        <textarea
+          ref={pagesRef}
+          rows={3}
+          value={pages}
+          placeholder="https://…"
+          onChange={(e) => setPages(e.target.value)}
+          onKeyDown={(e) => isEnter(e) && e.metaKey && (e.preventDefault(), submit())}
+        />
+      </label>
+      <label className="field">
+        <span>タイトル（任意。空ならページの名前）</span>
+        <input value={title} placeholder={input?.title ?? "何を読む？"} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && submit()} />
+      </label>
+      {added.length > 0 && (
+        <div className="added">
+          <span className="muted">追加済み {added.length} 件（押すと Input モードで開きます）</span>
+          <ul className="rows compact">
+            {added.map((t) => (
+              <li key={t.id} className="row" onClick={() => onOpen(t)}>
+                <span className="mono muted">#{t.id}</span>
+                <span className="row-title">{t.title}</span>
               </li>
             ))}
           </ul>
@@ -3828,7 +3904,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | "jevKey" | null;
+type DialogKind = "add" | "addInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | "jevKey" | null;
 
 const FOCUS_LINK_ENTER_AFTER_MS = 600;
 
@@ -3946,7 +4022,7 @@ function FocusLinkDialog({ asking, onOpen, onClose, onJudgeAgain }: { asking: Fo
           {keyTrouble && <JevKeyField onSaved={onJudgeAgain} />}
         </>
       )}
-      <p className="muted"> Input モードで開くページの外です。開くと、このページ（とその下）はこのあいだ開けるようになります。</p>
+      <p className="muted">Input モードで開くページの外です。開くと、このページ（とその下）はこのあいだ開けるようになります。</p>
     </Modal>
   );
 }
@@ -3969,7 +4045,7 @@ function ExitFocusDialog({ onExit, onStay }: { onExit: () => void; onStay: () =>
   }, [onExit, onStay]);
   return (
     <Modal
-      title=" Input モードを終えますか？"
+      title="Input モードを終えますか？"
       onClose={onStay}
       footer={
         <>
@@ -5075,10 +5151,11 @@ export default function App() {
     { key: "browser", label: browserShown ? "ブラウザを隠す" : "ブラウザ", run: toggleBrowser },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
-    { key: "focus", label: " Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
+    { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
     { key: "jevKey", label: "Jev の API キーを設定（Input モードで開くページの判定）", run: () => setDialog("jevKey") },
     { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
+    { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
     { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
@@ -5253,7 +5330,7 @@ export default function App() {
             <div className="banners">
               {heldNotices > 0 && (
                 <div className="notice" role="status">
-                  <span className="grow"> Input モードのあいだに通知が {heldNotices} 件ありました。</span>
+                  <span className="grow">Input モードのあいだに通知が {heldNotices} 件ありました。</span>
                   <button className="primary small" onClick={() => (setHeldNotices(0), setView("notices"))}>
                     通知を見る
                   </button>
@@ -5402,6 +5479,7 @@ export default function App() {
               run={run}
               onFocus={focusTodo}
               onDetail={openTodo}
+              onAdd={() => setDialog("addInput")}
             />
           )}
           {view === "notices" && board && <NoticesPage board={board} local={local} report={report} onOpenTodo={goTodo} run={run} />}
@@ -5490,6 +5568,16 @@ export default function App() {
           </aside>
         )}
 
+        {dialog === "addInput" && (
+          <AddInputDialog
+            run={run}
+            onClose={() => setDialog(null)}
+            onOpen={(todo) => {
+              setDialog(null);
+              focusTodo(todo);
+            }}
+          />
+        )}
         {dialog === "add" && (
           <AddTodoDialog
             local={local}
