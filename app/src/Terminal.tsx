@@ -8,7 +8,8 @@ import { listen } from "@tauri-apps/api/event";
 import { Terminal, type ITerminalOptions, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
-import { matches } from "./keymap";
+import { allKeys, matches, matchesCombo } from "./keymap";
+import { KittyFlags, kittyChord } from "./kitty";
 
 /// A command to run, where, and what to call its tab (`TerminalRun` in main.rs).
 export interface TerminalRun {
@@ -204,14 +205,22 @@ function entryFor(id: string, look: Look): Entry {
     term.loadAddon(fit);
     const write = (data: string) => void invoke("term_write", { id, data }).catch(() => {});
     term.onData(write);
+    const kitty = new KittyFlags();
+    const first = (params: (number | number[])[], fallback: number) => (typeof params[0] === "number" && params[0]) || fallback;
+    term.parser.registerCsiHandler({ prefix: "?", final: "u" }, () => (write(kitty.answer()), true));
+    term.parser.registerCsiHandler({ prefix: ">", final: "u" }, (p) => (kitty.push(first(p, 0)), true));
+    term.parser.registerCsiHandler({ prefix: "<", final: "u" }, (p) => (kitty.pop(first(p, 1)), true));
+    term.parser.registerCsiHandler({ prefix: "=", final: "u" }, (p) => (kitty.set(first(p, 0), typeof p[1] === "number" ? p[1] : 1), true));
     // Keys type what they do in Ghostty: ⌘← ⌘→ to the line's ends, ⌘⌫
     // clears the line, ⇧Enter a new line (from the user's keybind), ...
     term.attachCustomKeyEventHandler((ev) => {
       // The keys moving the typing between the app's sides (App.tsx) stay out of the program.
       if (matches(ev, "sideApp") || matches(ev, "sidePane")) return false;
       const sends = ev.isComposing ? null : sendsFor(look.keys, ev);
-      if (sends === null) return true;
-      if (ev.type === "keydown") write(sends);
+      const chord =
+        sends === null && kitty.current && !ev.isComposing && !Object.values(allKeys()).some((c) => matchesCombo(ev, c, true)) ? kittyChord(ev) : null;
+      if (sends === null && chord === null) return true;
+      if (ev.type === "keydown") write(sends ?? chord ?? "");
       return false;
     });
     // The wheel moves a row per row's height scrolled, as in Ghostty.
