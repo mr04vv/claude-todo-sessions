@@ -109,7 +109,7 @@ pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" &&
   - 紐づいたセッションの「開く」は、Cloud ならアプリ内の Web、Local なら herdr の pane（なければ Desktop）で開きます。▾ でほかの開き方を選べます。閉じたセッションは、herdr では `claude --resume` で再開します
 - 「issue を取り込む」（⌘K）で、自分に割り当てられた GitHub issue（`gh search issues --assignee @me`）を todo にします。作業フォルダは ghq の配置（`<ghq root>/github.com/<owner>/<repo>`）にあれば自動で入ります
 - 「ちょっと Claude」（⌘K、セッション画面）で、todo に紐づけずに herdr でホームフォルダの claude を開きます
-- サイドバー左下の「ターミナル」で、Local のセッションを動かす場所を Ghostty（herdr。既定）かアプリ内にするか選べます。アプリ内にすると、起動先 herdr（表示は「ターミナル」）、PR の /review、ちょっと Claude、閉じたセッションの再開が、右側のペインのターミナルタブ（`$` 付き）で動きます。Local のセッションの「開く」（通知画面・メニューバー・macOS の通知からも）は、そのセッションのターミナルタブ、herdr（pane を選んだ状態で herdr のセッションをターミナルタブに attach）、Claude Desktop（Desktop で動いているセッション）の順に探し、どこにもなければターミナルタブで `claude --resume` します。タブを切り替えたりペインを隠したりしても出力は残り、タブを閉じると中の claude も終わります。お試しの機能です
+- サイドバー左下の「ターミナル」で、Local のセッションを動かす場所を Ghostty（herdr。既定）かアプリ内にするか選べます。アプリ内にすると、起動先 herdr（表示は「ターミナル」）、PR の /review、ちょっと Claude、閉じたセッションの再開が、右側のペインのターミナルタブ（`$` 付き）に出ます。herdr が動いていれば、セッションは herdr の新しいワークスペース（サイドバーの「herdr」で選んだセッション）で動き、タブはその herdr を表示します（herdr のセッションごとに1タブ。アプリを閉じてもセッションは herdr で続きます）。herdr が止まっているときは、タブの中で直接動きます。Local のセッションの「開く」（通知画面・メニューバー・macOS の通知からも）は、そのセッションのターミナルタブ、herdr（pane を選んだ状態で herdr のセッションをターミナルタブに attach）、Claude Desktop（Desktop で動いているセッション）の順に探し、どこにもなければターミナルタブで `claude --resume` します。タブを切り替えたりペインを隠したりしても出力は残り、タブを閉じると中の claude も終わります。お試しの機能です
   - 見た目とキーは Ghostty の設定に合わせます。フォント（`~/Library/Fonts` のもの）・サイズ・余白・テーマ・カーソルを Ghostty の設定から読み、キーは `ghostty +list-keybinds` の内容（⌘← ⌘→ で行頭・行末、⌘⌫ で行の削除、⇧Enter で改行など）を送ります
   - スクロールは Ghostty と同じく、トラックパッドで動かした分だけ行が進みます。変換中の日本語は端末のマス目に沿って表示します
 

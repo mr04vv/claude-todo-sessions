@@ -5680,7 +5680,6 @@ export default function App() {
                 </button>
               </div>
             </div>
-            {terminalTarget === "ghostty" && (
             <div className="link-target">
               <span className="muted">herdr</span>
               {herdr && herdr.running.length > 0 ? (
@@ -5700,12 +5699,11 @@ export default function App() {
                   ))}
                 </select>
               ) : (
-                <button className="ghost small" title="herdr のセッションを探し直す" onClick={loadHerdr}>
+                <button className="ghost small" title="herdr のセッションを探し直す（止まっているときは、アプリ内のセッションはタブの中で直接動きます）" onClick={loadHerdr}>
                   停止中
                 </button>
               )}
             </div>
-            )}
             <UsageBox limits={limits} error={usageError} />
             <div className="sync-line">
               <span className="dot state-running" />

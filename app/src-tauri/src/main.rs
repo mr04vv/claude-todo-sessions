@@ -370,12 +370,36 @@ fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -
 /// claude and reopening a session (see `terminal.rs`).
 #[tauri::command(async)]
 fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<TerminalRun, String> {
-    prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)
+    Ok(via_herdr(&state, prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)?))
 }
 
 #[tauri::command(async)]
-fn terminal_quick(prompt: Option<String>, cwd: Option<String>, title: Option<String>) -> TerminalRun {
-    quick_run(prompt.as_deref(), cwd, title)
+fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>) -> TerminalRun {
+    via_herdr(&state, quick_run(prompt.as_deref(), cwd, title))
+}
+
+/// The in-app terminal's sessions run in herdr when one runs (so they go on
+/// with the app closed): `run` goes to a new workspace there, shown, and the
+/// tab attaches that herdr session (one tab for it, as `terminal_resume`'s).
+/// Without herdr, or when it fails, `run` runs in the tab itself.
+fn via_herdr(state: &AppState, run: TerminalRun) -> TerminalRun {
+    let Some(name) = herdr_target(state) else { return run };
+    if let Err(e) = start_in_herdr(state, &run.cwd, &run.title, &run.command, true) {
+        eprintln!("herdr: {e}; running in the tab instead");
+        return run;
+    }
+    herdr_attach_run(name)
+}
+
+/// What the in-app terminal runs to show herdr session `name`.
+fn herdr_attach_run(name: String) -> TerminalRun {
+    TerminalRun {
+        cwd: home().to_string_lossy().into(),
+        title: format!("herdr: {name}"),
+        command: format!("herdr session attach {}", shell_quote(&name)),
+        session: None,
+        herdr: Some(name),
+    }
 }
 
 /// What the in-app terminal runs to show a session: a session running in
@@ -385,13 +409,7 @@ fn terminal_quick(prompt: Option<String>, cwd: Option<String>, title: Option<Str
 #[tauri::command(async)]
 fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) -> Result<Option<TerminalRun>, String> {
     if let Some(name) = focus_herdr_pane(&session_id) {
-        return Ok(Some(TerminalRun {
-            cwd: home().to_string_lossy().into(),
-            title: format!("herdr: {name}"),
-            command: format!("herdr session attach {}", shell_quote(&name)),
-            session: None,
-            herdr: Some(name),
-        }));
+        return Ok(Some(herdr_attach_run(name)));
     }
     // One still going in Desktop stays there; a finished one resumes here.
     let running = state.db.lock().map_err(err)?.get_session(&session_id).map_err(err)?.is_some_and(|s| s.state != SessionState::Ended);
@@ -400,7 +418,7 @@ fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) ->
             return open_url(&launch::jump_url(&session_id, Some(&local))).map(|_| None);
         }
     }
-    resume_run(&state, &session_id).map(Some)
+    resume_run(&state, &session_id).map(|run| Some(via_herdr(&state, run)))
 }
 
 #[tauri::command]
