@@ -2170,6 +2170,9 @@ function FocusMode({ lefts, left, asking, right, note, covered, report, width, o
 /// draws above everything in the page.
 /// A tab to give the typing to (its page's text box) once it is shown.
 let typeInto: string | null = null;
+/// Each tab's `nav` when it was last sent to its address: showing it again
+/// with the same one leaves its page where the user moved it.
+const sentNav = new Map<string, number>();
 
 function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noDia }: {
   tab: BrowserTab;
@@ -2188,9 +2191,9 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noD
     const r = slot.current!.getBoundingClientRect();
     return { x: r.left, y: r.top, width: r.width, height: r.height, viewport: window.innerHeight };
   };
-  const navigate = (to: string) =>
+  const navigate = (to: string, go: boolean) =>
     api
-      .browserOpen(active.id, to, rect(), keep)
+      .browserOpen(active.id, to, rect(), go, keep)
       .then(() => {
         if (typeInto !== active.id) return;
         typeInto = null;
@@ -2198,10 +2201,13 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noD
       })
       .catch(report);
   // Switching tabs or coming back from under a dialog shows the page the tab
-  // is on; the backend leaves a tab alone when it already shows that URL.
+  // is on, which may have moved on from the address kept here (a page moving
+  // without loading is seen a while later); only a new `nav` sends it.
   useEffect(() => {
-    if (covered) api.browserHide(active.id).catch(report);
-    else navigate(active.url);
+    if (covered) return void api.browserHide(active.id).catch(report);
+    const go = sentNav.get(active.id) !== active.nav;
+    sentNav.set(active.id, active.nav);
+    navigate(active.url, go);
   }, [active.id, active.nav, covered, keep]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (covered || !slot.current) return;
@@ -2314,7 +2320,7 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noD
               return;
             }
             const url = isEnter(e) ? addressToUrl(e.currentTarget.value) : null;
-            if (url) navigate(url);
+            if (url) navigate(url, true);
           }}
         />
         {onArchive && (

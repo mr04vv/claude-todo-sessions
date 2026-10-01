@@ -1389,10 +1389,11 @@ fn browser_tabs(app: &AppHandle) -> Vec<tauri::Webview> {
 /// Shows tab `tab` with `url` in the browser pane: a webview laid over the
 /// main one at the given rectangle (logical pixels), created on first use,
 /// with the other tabs hidden behind it (but `keep`, shown beside it in the
-/// focus mode). GitHub refuses to be framed, so the pane cannot be an iframe.
+/// focus mode). An open tab goes to `url` only with `go`. GitHub refuses to
+/// be framed, so the pane cannot be an iframe.
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, keep: Option<String>) -> Result<(), String> {
+fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, go: bool, keep: Option<String>) -> Result<(), String> {
     if !is_web_url(&url) {
         return Err(format!("開けない URL です: {url}"));
     }
@@ -1405,8 +1406,9 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
         other.hide().map_err(err)?;
     }
     if let Some(view) = app.get_webview(&label) {
-        // Showing the tab again keeps the page the user moved on to.
-        if view.url().ok().as_ref() != Some(&parsed) {
+        // Showing the tab again keeps the page the user moved on to; only
+        // `go` (the app sending it somewhere) moves it.
+        if go && view.url().ok().as_ref() != Some(&parsed) {
             view.navigate(parsed).map_err(err)?;
         }
         view.set_bounds(browser_rect(&app, x, y, width, height, viewport)).map_err(err)?;

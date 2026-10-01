@@ -277,7 +277,8 @@ export const api = {
   ghPrs: () => invoke<PrLists>("gh_prs"),
   /** Shows tab `tab` (created on first use) at `url` and hides the other tabs. */
   /// Shows `tab`, hiding the other tabs but `keep` (the focus mode's other side).
-  browserOpen: (tab: string, url: string, r: Rect, keep?: string) => invoke<void>("browser_open", { tab, url, ...r, keep: keep ?? null }),
+  /// With `go` it is sent to `url`; else a tab already open stays on its page.
+  browserOpen: (tab: string, url: string, r: Rect, go: boolean, keep?: string) => invoke<void>("browser_open", { tab, url, ...r, go, keep: keep ?? null }),
   browserBounds: (tab: string, r: Rect) => invoke<void>("browser_bounds", { tab, ...r }),
   /// Hides `tab`, or every tab.
   browserHide: (tab?: string) => invoke<void>("browser_hide", { tab: tab ?? null }),
