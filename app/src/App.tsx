@@ -77,9 +77,6 @@ const USAGE_RETRY_MS = 60_000;
 const PR_REFRESH_MS = 5 * 60_000;
 /// How long the focus events are let settle before marking the typing's side.
 const FOCUS_SETTLE_MS = 120;
-/// The typing's side is looked at this often too: a browser tab taking the
-/// keyboard from another one tells this page nothing.
-const FOCUS_POLL_MS = 300;
 const DETAIL_REFRESH_MS = 10_000;
 /// The shown tab's address is checked this often, for pages that move
 /// without loading or changing their title.
@@ -4896,6 +4893,7 @@ export default function App() {
   /// ⌘⇧[ ⌘⇧] in the Input mode: the previous or next tab of the side that has
   /// the keyboard, the left's own or the right's pages (which take the typing).
   const switchFocusTab = (right: boolean, delta: number) => {
+    setFocusTyping(right ? "right" : "left");
     if (right) return setFocusRight(RIGHT_KINDS[(RIGHT_KINDS.indexOf(focusRight) + delta + RIGHT_KINDS.length) % RIGHT_KINDS.length]);
     if (focusLefts.length === 0) return;
     const i = focusLefts.findIndex((t) => t.id === focusLeft?.id);
@@ -4907,7 +4905,7 @@ export default function App() {
     else keysInto = next.id;
   };
   // Which side of the Input mode has the keyboard (see `typingSide`), or
-  // neither while the app's own parts or another app have it.
+  // neither while the app's other parts or another app have it.
   const [focusTyping, setFocusTyping] = useState<"left" | "right" | null>("right");
   /// ⌘K: the commands, leaving the Input mode (a todo's pages stay) on the way.
   const togglePalette = () => {
@@ -5047,6 +5045,7 @@ export default function App() {
     // whose text box (ChatGPT's) takes the typing, in a chat going on too.
     if (focusMode) {
       const side = pane ? focusRightTab : focusLeft;
+      if (side) setFocusTyping(pane ? "right" : "left");
       if (side?.term) focusTerminal(side.id);
       else if (side) {
         const chat = pane && CHAT_PAGES.includes(side.kind ?? side.id);
@@ -5057,10 +5056,12 @@ export default function App() {
     // Left from the Todo side is the sidebar; right from the sidebar, the Todo side.
     if (!pane) {
       if (typingSideRef.current === "app" && !sideZoneRef.current) setSideZone(true);
+      setTypingSide("app");
       return void (document.activeElement as HTMLElement | null)?.blur();
     }
     if (sideZoneRef.current) return setSideZone(false);
     if (!browserShown || !activeTab) return;
+    setTypingSide("pane");
     if (activeTab.term) focusTerminal(activeTab.id);
     else api.browserFocus(activeTab.id, CHAT_PAGES.includes(activeTab.id)).catch(report);
   };
@@ -5070,40 +5071,54 @@ export default function App() {
   focusSideRef.current = focusSide;
   // Which side has the typing, marked on the page: this one, the pane (its
   // terminal, a page), or neither while another app is in front; in the Input
-  // mode, its left or right. Where the keyboard is comes from AppKit (which
-  // webview has it) and, in this page, from the DOM: looked at once focus
-  // events stop, and every FOCUS_POLL_MS.
+  // mode, its left or right. The keys moving the typing (⌃h ⌃l, ⌘⇧[ ⌘⇧]) mark
+  // it as they move it; a click, or a page taking it, as that happens.
   const [typingSide, setTypingSide] = useState<"app" | "pane" | null>("app");
   const typingSideRef = useRef(typingSide);
   typingSideRef.current = typingSide;
   useEffect(() => {
     let timer = 0;
-    const look = () =>
-      api.typingIn().then((t) => {
-        if (t.kind === "other") return;
-        // This page's own fields and terminals by where they are (the pane's address bar is the pane's).
-        const here = t.kind === "app" ? document.activeElement : null;
-        setTypingSide(t.kind === "away" ? null : t.kind === "tab" || here?.closest(".xterm, .browser-dock") ? "pane" : "app");
-        const side = here?.closest(".focus-left, .focus-right");
-        setFocusTyping(t.kind === "tab" ? (onFocusRightRef.current(t.tab) ? "right" : "left") : side ? (side.classList.contains("focus-right") ? "right" : "left") : null);
-      }, () => {});
-    const settle = () => {
-      clearTimeout(timer);
-      timer = window.setTimeout(look, FOCUS_SETTLE_MS);
+    // This page has it: its fields and terminals by where they are (the
+    // pane's address bar is the pane's). Nothing focused in it leaves the
+    // Input mode's side to the key that is moving the typing.
+    const here = () => {
+      const el = document.activeElement;
+      setTypingSide(el?.closest(".xterm, .browser-dock") ? "pane" : "app");
+      if (!el || el === document.body) return;
+      const side = el.closest(".focus-left, .focus-right");
+      setFocusTyping(side ? (side.classList.contains("focus-right") ? "right" : "left") : null);
     };
-    const poll = window.setInterval(look, FOCUS_POLL_MS);
-    const events = ["focus", "blur"] as const;
-    events.forEach((ev) => window.addEventListener(ev, settle));
-    document.addEventListener("focusin", settle);
-    document.addEventListener("focusout", settle);
-    const offs = [listen(WINDOW_FOCUS_EVENT, settle), listen(PAGE_FOCUSED_EVENT, settle)];
+    // This page lost it, to a page (which says so in the Input mode) or to
+    // another app (asked once the focus events stop).
+    const lost = () => {
+      clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        if (document.hasFocus()) return here();
+        api.windowFocused().then((front) => {
+          if (document.hasFocus()) return;
+          setTypingSide(front ? "pane" : null);
+          if (!front) setFocusTyping(null);
+        }, () => {});
+      }, FOCUS_SETTLE_MS);
+    };
+    window.addEventListener("focus", here);
+    document.addEventListener("focusin", here);
+    window.addEventListener("blur", lost);
+    document.addEventListener("focusout", lost);
+    const offs = [
+      listen(WINDOW_FOCUS_EVENT, lost),
+      listen<{ tab: string }>(PAGE_FOCUSED_EVENT, ({ payload }) => {
+        setTypingSide("pane");
+        setFocusTyping(onFocusRightRef.current(payload.tab) ? "right" : "left");
+      }),
+    ];
     return () => {
       clearTimeout(timer);
-      clearInterval(poll);
       offs.forEach((off) => void off.then((f) => f()));
-      events.forEach((ev) => window.removeEventListener(ev, settle));
-      document.removeEventListener("focusin", settle);
-      document.removeEventListener("focusout", settle);
+      window.removeEventListener("focus", here);
+      document.removeEventListener("focusin", here);
+      window.removeEventListener("blur", lost);
+      document.removeEventListener("focusout", lost);
     };
   }, []);
   const closeShownRef = useRef(closeShown);

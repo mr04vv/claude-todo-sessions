@@ -276,7 +276,7 @@ export const api = {
   removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
-  typingIn: () => invoke<Typing>("typing_in"),
+  windowFocused: () => invoke<boolean>("window_focused"),
   setFocusMode: (on: boolean) => invoke<void>("set_focus_mode", { on }),
   /// The app's keys (keymap.ts), as JSON, for the pages' script.
   setPageKeys: (keys: string) => invoke<void>("set_page_keys", { keys }),
@@ -338,8 +338,6 @@ export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
 /** When the window's focus changes (another app, or a browser tab, took the keyboard). */
 export const WINDOW_FOCUS_EVENT = "window-focus";
-/** Where the keyboard is, as AppKit has it: this page, a browser tab, elsewhere in the app (a sign-in popup), or another app. */
-export type Typing = { kind: "app" } | { kind: "tab"; tab: string } | { kind: "other" } | { kind: "away" };
 /** `{tab}` when a page's ⌃l asks for the focus mode's right side. */
 export const FOCUS_PANE_EVENT = "focus-pane";
 /** `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo. */

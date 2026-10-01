@@ -470,51 +470,12 @@ fn set_focus_mode(app: AppHandle, state: State<AppState>, on: bool) {
     }
 }
 
-/// Where the keyboard is, as AppKit has it: in the app's page, in a browser
-/// tab, elsewhere in the app (a sign-in popup), or in another app.
-#[derive(Serialize)]
-#[serde(tag = "kind", content = "tab", rename_all = "camelCase")]
-enum Typing {
-    Away,
-    App,
-    Tab(String),
-    Other,
-}
-
-/// The first responder and the views it sits in, innermost first, as
-/// addresses; None while another app is in front.
-fn responder_chain() -> Option<Vec<usize>> {
-    let mtm = objc2::MainThreadMarker::new()?;
-    let window = objc2_app_kit::NSApplication::sharedApplication(mtm).keyWindow()?;
-    let mut view = window.firstResponder().and_then(|r| r.downcast::<objc2_app_kit::NSView>().ok());
-    let mut chain = Vec::new();
-    while let Some(v) = view {
-        chain.push(objc2::rc::Retained::as_ptr(&v) as usize);
-        // SAFETY: on the main thread, as AppKit wants; only read.
-        view = unsafe { v.superview() };
-    }
-    Some(chain)
-}
-
-/// Which webview holds the keyboard: the one whose view the first responder sits in.
-#[tauri::command(async)]
-fn typing_in(app: AppHandle) -> Result<Typing, String> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    for (label, view) in app.webviews() {
-        let tx = tx.clone();
-        view.with_webview(move |w| drop(tx.send((label, w.inner() as usize)))).map_err(err)?;
-    }
-    drop(tx);
-    let views: Vec<(String, usize)> = rx.iter().collect();
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.run_on_main_thread(move || drop(tx.send(responder_chain()))).map_err(err)?;
-    let Some(chain) = rx.recv().map_err(err)? else { return Ok(Typing::Away) };
-    let label = chain.iter().find_map(|p| views.iter().find(|(_, v)| v == p).map(|(l, _)| l.as_str()));
-    Ok(match label {
-        Some("main") => Typing::App,
-        Some(l) => l.strip_prefix(BROWSER_PREFIX).map_or(Typing::Other, |t| Typing::Tab(t.to_string())),
-        None => Typing::Other,
-    })
+/// Whether the app is in front. With the page not having the keyboard, a
+/// browser tab then has it. (The window's own focus follows the webviews, so
+/// it cannot tell a browser tab from another app.)
+#[tauri::command]
+fn window_focused() -> bool {
+    objc2_app_kit::NSRunningApplication::currentApplication().isActive()
 }
 
 /// Archives cloud sessions, as archiving them on claude.ai does.
@@ -2237,7 +2198,7 @@ fn main() {
                 api.prevent_close();
                 let _ = window.hide();
             }
-            // A cue for the page to look again at who has the typing (see `typing_in`).
+            // A cue for the page to look again at who has the typing (see `window_focused`).
             WindowEvent::Focused(_) => {
                 let _ = window.emit(WINDOW_FOCUS_EVENT, ());
             }
@@ -2284,7 +2245,7 @@ fn main() {
             herdr_sessions,
             terminal_start,
             archive_sessions,
-            typing_in,
+            window_focused,
             set_focus_mode,
             set_page_keys,
             set_focus_allow,
