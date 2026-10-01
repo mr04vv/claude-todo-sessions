@@ -175,17 +175,21 @@ export function comboOf(e: KeyboardEvent): string | null {
 }
 
 /// Whether the event is `action`'s key. A symbol typed with ⇧ (? on most
-/// keyboards) matches a key written without it; one that ⇧ turns into
-/// another (⇧[ is "{") does not, so ⌘⇧[ is not ⌘[.
+/// keyboards) matches a key written without it, unless another key matches
+/// the ⇧ too: ⌘⇧[ (which macOS reports as "[" with ⇧, ⌘ keeping the key
+/// unshifted) is the previous tab, never ⌘[.
 export function matches(e: KeyboardEvent, action: Action): boolean {
-  return matchesCombo(e, keys[action]);
+  const combo = keys[action];
+  if (matchesCombo(e, combo, true)) return true;
+  return matchesCombo(e, combo) && !Object.values(keys).some((c) => matchesCombo(e, c, true));
 }
 
-export function matchesCombo(e: KeyboardEvent, combo: string): boolean {
+/// `exact` leaves out the ⇧ a symbol may come with.
+export function matchesCombo(e: KeyboardEvent, combo: string, exact = false): boolean {
   const parts = combo.split("+");
   const key = parts.pop() ?? "";
   const has = (m: (typeof MODIFIERS)[number]) => parts.includes(m);
-  const symbol = key.length === 1 && !/[a-z0-9]/.test(key) && e.key === key;
+  const symbol = !exact && key.length === 1 && !/[a-z0-9]/.test(key) && e.key === key;
   return (
     normal(e.key) === key &&
     e.metaKey === has("cmd") &&

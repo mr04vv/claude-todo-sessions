@@ -54,13 +54,18 @@
     const k = key.length === 1 ? key.toLowerCase() : key;
     return SHIFTED[k] ?? k;
   };
+  // A symbol typed with ⇧ (?) matches a key written without ⇧, unless another
+  // key matches the ⇧ too: ⌘⇧[ comes as "[" with ⇧, and is not ⌘[.
   const is = (e, action) => {
-    const combo = (window.__todoSessionsKeys ?? {})[action];
-    if (!combo) return false;
+    const keys = window.__todoSessionsKeys ?? {};
+    if (!keys[action]) return false;
+    return isCombo(e, keys[action], true) || (isCombo(e, keys[action], false) && !Object.values(keys).some((c) => isCombo(e, c, true)));
+  };
+  const isCombo = (e, combo, exact) => {
     const parts = combo.split("+");
     const key = parts.pop();
     // ⇧ only makes the symbol written (?), not another one (⇧[ is "{", not ⌘[).
-    const symbol = key.length === 1 && !/[a-z0-9]/.test(key) && e.key === key;
+    const symbol = !exact && key.length === 1 && !/[a-z0-9]/.test(key) && e.key === key;
     return (
       normal(e.key) === key &&
       e.metaKey === parts.includes("cmd") &&
