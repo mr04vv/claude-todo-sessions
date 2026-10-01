@@ -24,6 +24,7 @@ import {
   BROWSER_ARCHIVE_EVENT,
   OPEN_PALETTE_EVENT,
   FOCUS_APP_EVENT,
+  PAGE_FOCUSED_EVENT,
   FOCUS_PANE_EVENT,
   FOCUS_EXIT_EVENT,
   FOCUS_LINK_EVENT,
@@ -372,7 +373,7 @@ interface NoteSession {
 /// How often a note being made is looked for in its session.
 const NOTE_POLL_MS = 5000;
 /// The right pages a space may show.
-const RIGHT_KINDS = ["pinchatgpt", "pinclaude", "pinnotion", NOTE_TAB];
+const RIGHT_KINDS = [NOTE_TAB, "pinchatgpt", "pinclaude", "pinnotion"];
 /// A space's tab for a right page (ids are letters and digits only).
 const rightTabId = (space: number, kind: string) => `s${space}${kind}`;
 const newSpace = (right: string): InputSpace => ({ lefts: [], active: null, right, pages: [], accepted: [], rightUrls: {} });
@@ -2181,14 +2182,14 @@ function FocusMode({ lefts, left, asking, right, rightKind, note, onRemakeNote, 
         <section className="browser">
           <div className="browser-tabs focus-head">
             <div className="segmented" role="group" aria-label="右側のページ">
+              <button className={noteShown ? "on" : ""} aria-pressed={noteShown} onClick={() => onRight(NOTE_TAB)}>
+                <Icon name="list" size={12} /> ノート
+              </button>
               {FOCUS_PAGES.map((p) => (
                 <button key={p.id} className={rightKind === p.id ? "on" : ""} aria-pressed={rightKind === p.id} onClick={() => onRight(p.id)}>
                   <Icon name={p.icon} size={12} /> {p.label}
                 </button>
               ))}
-              <button className={noteShown ? "on" : ""} aria-pressed={noteShown} onClick={() => onRight(NOTE_TAB)}>
-                <Icon name="list" size={12} /> ノート
-              </button>
             </div>
             <span className="grow" />
             {onRemakeNote && (
@@ -2219,6 +2220,8 @@ function FocusMode({ lefts, left, asking, right, rightKind, note, onRemakeNote, 
 /// draws above everything in the page.
 /// A tab to give the typing to (its page's text box) once it is shown.
 let typeInto: string | null = null;
+/// A tab to give the keyboard to (the page, not its text box) once it is shown.
+let keysInto: string | null = null;
 /// Each tab's `nav` when it was last sent to its address: showing it again
 /// with the same one leaves its page where the user moved it.
 const sentNav = new Map<string, number>();
@@ -2244,6 +2247,10 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noD
     api
       .browserOpen(active.id, to, rect(), go, keep)
       .then(() => {
+        if (keysInto === active.id) {
+          keysInto = null;
+          return api.browserFocus(active.id);
+        }
         if (typeInto !== active.id) return;
         typeInto = null;
         return api.browserFocus(active.id, true);
@@ -4284,7 +4291,7 @@ export default function App() {
     const id = focusRightId;
     setTabs((prev) =>
       prev.some((t) => t.id === id)
-        ? prev.map((t) => (t.id === id && t.url !== notePage ? { ...t, url: notePage, loading: true, nav: t.nav + 1 } : t))
+        ? prev.map((t) => (t.id === id && pagePrefix(t.url) !== pagePrefix(notePage) ? { ...t, url: notePage, loading: true, nav: t.nav + 1 } : t))
         : [...prev, { id, url: notePage, title: "ノート", loading: true, nav: 0, focus: true, space: spaceKey, kind: NOTE_TAB }],
     );
   }, [focusMode, focusRightId, notePage]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -4425,6 +4432,27 @@ export default function App() {
     setFocusSubject(todo.id);
   };
   const savedSpaces = () => loadJson<Record<number, SavedSpace>>(INPUT_SPACES_KEY, {});
+  /// ⌘⇧[ ⌘⇧] in the Input mode: the previous or next tab of the side that has
+  /// the keyboard, the left's own or the right's pages (which take the typing).
+  const switchFocusTab = (right: boolean, delta: number) => {
+    setFocusTyping(right ? "right" : "left");
+    if (right) return setFocusRight(RIGHT_KINDS[(RIGHT_KINDS.indexOf(focusRight) + delta + RIGHT_KINDS.length) % RIGHT_KINDS.length]);
+    if (focusLefts.length === 0) return;
+    const i = focusLefts.findIndex((t) => t.id === focusLeft?.id);
+    const next = focusLefts[(i + delta + focusLefts.length) % focusLefts.length];
+    patchSpace(spaceKey, (s) => ({ ...s, active: next.id }));
+    if (next.term) requestAnimationFrame(() => focusTerminal(next.id));
+    else keysInto = next.id;
+  };
+  // Which side of the Input mode has the keyboard, as the app moved it (⌃h ⌃l,
+  // tabs) or a page or this side's own fields took it; shown as in the pane.
+  const [focusTyping, setFocusTyping] = useState<"left" | "right">("right");
+  const switchFocusTabRef = useRef(switchFocusTab);
+  switchFocusTabRef.current = switchFocusTab;
+  /// Whether tab `id` is on the Input mode's right (a right page, or the terminal making the note).
+  const onFocusRight = (id: string) => tabs.find((t) => t.id === id)?.kind !== undefined || focusRightTab?.id === id;
+  const onFocusRightRef = useRef(onFocusRight);
+  onFocusRightRef.current = onFocusRight;
   /// Shows space `key`: the one open still, else the saved one opened again,
   /// else a new one with `items` on the left.
   const enterFocus = (items: FocusItem[], key = spaceKey) => {
@@ -4447,6 +4475,7 @@ export default function App() {
     }
     ensureRight(key, right, rightUrls[right]);
     typeInto = rightTabId(key, right);
+    setFocusTyping("right");
     setFocusMode(true);
   };
   /// Brings up a pinned page, opening its tab the first time, with its text
@@ -4539,6 +4568,7 @@ export default function App() {
     // The focus mode's two sides: its left tab and the pinned page on the right,
     // whose text box (ChatGPT's) takes the typing, in a chat going on too.
     if (focusMode) {
+      setFocusTyping(pane ? "right" : "left");
       const side = pane ? focusRightTab : focusLeft;
       if (side?.term) focusTerminal(side.id);
       else if (side) {
@@ -4629,7 +4659,10 @@ export default function App() {
       listen<{ url: string; title: string }>(ADD_INPUT_EVENT, ({ payload }) => addInputRef.current(payload.url, payload.title)),
       // The focus mode lets none of the app's own shortcuts through.
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => !focusModeRef.current && openNewTab()),
-      listen<number>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => !focusModeRef.current && switchRef.current(payload)),
+      listen<{ tab: string }>(PAGE_FOCUSED_EVENT, ({ payload }) => setFocusTyping(onFocusRightRef.current(payload.tab) ? "right" : "left")),
+      listen<{ tab: string; delta: number }>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) =>
+        focusModeRef.current ? switchFocusTabRef.current(onFocusRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
+      ),
       listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => !focusModeRef.current && closeShownRef.current()),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
       listen(OPEN_PALETTE_EVENT, () => !focusModeRef.current && setDialog((d) => (d === "palette" ? null : "palette"))),
@@ -4847,7 +4880,10 @@ export default function App() {
       // the address bar its own), and ⌘ only edits text.
       if (focusModeRef.current) {
         const t = e.target as HTMLElement;
-        if (e.key === "Escape" && !t.closest(".xterm, input, textarea") && !document.querySelector("[role=dialog]")) {
+        if (matches(e, "prevTab") || matches(e, "nextTab")) {
+          e.preventDefault();
+          switchFocusTabRef.current(!!t.closest(".focus-right"), matches(e, "prevTab") ? -1 : 1);
+        } else if (e.key === "Escape" && !t.closest(".xterm, input, textarea") && !document.querySelector("[role=dialog]")) {
           e.preventDefault();
           setDialog("exitFocus");
         } else if (e.metaKey && !FOCUS_EDIT_KEYS.includes(e.key.toLowerCase())) e.preventDefault();
@@ -5048,7 +5084,12 @@ export default function App() {
     <OpenCloudContext.Provider value={openCloud}>
     <TerminalContext.Provider value={inAppTerminal}>
       <div
-        className={`app${browserShown ? " with-browser" : ""}${browserShown && !focusMode && typingSide ? ` typing-${typingSide}` : ""}${focusMode ? " focus" : ""}`}
+        className={`app${browserShown ? " with-browser" : ""}${browserShown && !focusMode && typingSide ? ` typing-${typingSide}` : ""}${focusMode ? ` focus typing-${focusTyping}` : ""}`}
+        onFocus={(e) => {
+          // This side's own fields and terminals in the Input mode.
+          const side = (e.target as HTMLElement).closest(".focus-left, .focus-right");
+          if (side) setFocusTyping(side.classList.contains("focus-right") ? "right" : "left");
+        }}
         data-zone={sideZone ? "sidebar" : undefined}
         style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px`, "--focus-right-w": `${focusRightW}px` } as React.CSSProperties}
       >

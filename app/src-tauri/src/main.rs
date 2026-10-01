@@ -1251,13 +1251,15 @@ const APP_SCHEME: &str = "todo-sessions";
 const BROWSER_FOCUS_URL_EVENT: &str = "browser-focus-url";
 /// When a page asks for a new tab (⌘T).
 const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
-/// `-1` or `1` when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]).
+/// `{tab, delta}` (-1 or 1) when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]).
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
 /// When ⌘W in the app menu asks to close the shown tab.
 const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
 /// `{tab}` when a page's ⌃h hands the typing back to the app's side (the
 /// main page already has the keyboard by then), or to the focus mode's left.
 const FOCUS_APP_EVENT: &str = "focus-app";
+/// `{tab}` when a page takes the keyboard in the focus mode (which side has it).
+const PAGE_FOCUSED_EVENT: &str = "page-focused";
 /// `{tab, text}` when a page's ⌃l asks for the focus mode's right side, with
 /// the text selected in it (to paste there), if any.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
@@ -1279,6 +1281,12 @@ struct FocusLink {
     tab: String,
     url: String,
     text: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct TabDelta {
+    tab: String,
+    delta: i32,
 }
 
 #[derive(Clone, Serialize)]
@@ -1419,10 +1427,16 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
     let (load_tab, title_tab, focus_tab) = (tab.clone(), tab.clone(), tab);
     let keys = state.page_keys.lock().map_err(err)?.clone();
     let builder = WebviewBuilder::new(&label, WebviewUrl::External(parsed))
-        .initialization_script(format!("{}\n{BROWSER_PAGE_SCRIPT}", page_keys_script(&keys)))
+        // In every frame, so the keys work in a page's frames too (a doc's editor).
+        .initialization_script_for_all_frames(format!("{}\n{BROWSER_PAGE_SCRIPT}", page_keys_script(&keys)))
         .on_navigation(move |url| {
             if url.scheme() != APP_SCHEME {
                 return true;
+            }
+            // Only telling: the page keeps the keyboard.
+            if url.host_str() == Some("page-focused") {
+                let _ = on_focus.emit(PAGE_FOCUSED_EVENT, TabOnly { tab: focus_tab.clone() });
+                return false;
             }
             // Keys typed next belong in the app (its address bar).
             if let Some(main) = on_focus.get_webview("main") {
@@ -1430,8 +1444,8 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             }
             let _ = match url.host_str() {
                 Some("new-tab") => on_focus.emit(BROWSER_OPEN_NEW_TAB_EVENT, ()),
-                Some("tab-prev") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, -1),
-                Some("tab-next") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, 1),
+                Some("tab-prev") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab: focus_tab.clone(), delta: -1 }),
+                Some("tab-next") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab: focus_tab.clone(), delta: 1 }),
                 Some("archive") => on_focus.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("palette") => on_focus.emit(OPEN_PALETTE_EVENT, ()),
                 Some("focus-app") => on_focus.emit(FOCUS_APP_EVENT, TabOnly { tab: focus_tab.clone() }),

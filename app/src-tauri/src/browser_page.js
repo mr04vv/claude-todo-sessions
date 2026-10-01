@@ -3,9 +3,13 @@
 // commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, as the user set
 // them), right-click offers translation (WKWebView has no translate item),
 // ⌥ + click keeps a link as an input todo, and X shows its bookmarks only.
+// It runs in the page's frames too (a doc's editor on claude.ai is one), but
+// there only passes the app's keys up to the page (FRAME): a frame must not
+// navigate for them, which some pages (claude.ai's viewer) take as leaving.
 (() => {
   if (window.__todoSessionsPage) return;
   window.__todoSessionsPage = true;
+  const FRAME = window !== window.top;
 
   // X (Twitter) opens its bookmarks only, with the posts they lead to and
   // signing in; anything else (the timeline) goes back to the bookmarks.
@@ -13,7 +17,7 @@
   const X_HOSTS = /(^|\.)(x|twitter)\.com$/;
   const X_ALLOWED = /^\/(i\/bookmarks|i\/flow\/|login|logout|[^/]+\/status\/)/;
   const X_HOME = "https://x.com/i/bookmarks";
-  if (X_HOSTS.test(location.hostname)) {
+  if (!FRAME && X_HOSTS.test(location.hostname)) {
     const guard = () => X_ALLOWED.test(location.pathname) || location.replace(X_HOME);
     for (const name of ["pushState", "replaceState"]) {
       const original = history[name];
@@ -69,8 +73,7 @@
   const KEY_ACTIONS = [
     ["sideApp", () => (location.href = FOCUS_APP)],
     // With text selected, it goes along (the focus mode pastes it on the right).
-    ["sidePane", () => {
-      const text = String(getSelection() ?? "").trim();
+    ["sidePane", (text) => {
       location.href = text ? `${FOCUS_PANE}?text=${encodeURIComponent(text)}` : FOCUS_PANE;
     }],
     ["palette", () => (location.href = PALETTE)],
@@ -84,6 +87,15 @@
     ["forward", () => history.forward()],
     ["reload", () => location.reload()],
   ];
+  // A frame's history is not the page's.
+  const PAGE_ONLY = ["back", "forward", "reload"];
+  const FRAME_KEY = "__todoSessionsKey";
+  // In the focus mode the app shows which side has the keyboard; a page (or
+  // one of its frames) taking it says so.
+  const FOCUSED = "todo-sessions://page-focused";
+  const FRAME_FOCUSED = "focused";
+  const tellFocused = () => window.__todoSessionsFocusMode && (location.href = FOCUSED);
+  window.addEventListener("focus", () => (FRAME ? window.top.postMessage({ [FRAME_KEY]: FRAME_FOCUSED }, "*") : tellFocused()));
 
   window.addEventListener(
     "keydown",
@@ -96,14 +108,25 @@
         return;
       }
       // Ahead of the page's own keys (ChatGPT's ⌘K search, say).
-      const hit = KEY_ACTIONS.find(([action]) => is(e, action));
+      const hit = KEY_ACTIONS.find(([action]) => is(e, action) && !(FRAME && PAGE_ONLY.includes(action)));
       if (!hit) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      hit[1]();
+      const text = String(getSelection() ?? "").trim();
+      if (FRAME) window.top.postMessage({ [FRAME_KEY]: hit[0], text }, "*");
+      else hit[1](text);
     },
     true,
   );
+  // A frame's key, done here.
+  window.addEventListener("message", (e) => {
+    const action = e.data?.[FRAME_KEY];
+    if (!FRAME && e.source !== window && action === FRAME_FOCUSED) return tellFocused();
+    const hit = !FRAME && e.source !== window && KEY_ACTIONS.find(([a]) => a === action && !PAGE_ONLY.includes(a));
+    if (hit) hit[1](typeof e.data.text === "string" ? e.data.text : "");
+  });
+
+  if (FRAME) return;
 
   // The app asks a page (ChatGPT's) to take the typing: its prompt box, once
   // the page has drawn it, with `text` typed into it when given.

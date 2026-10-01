@@ -299,7 +299,7 @@ export interface NoteStart {
 
 /** `{tab, url}` after a tab navigates. */
 export const BROWSER_URL_EVENT = "browser-url";
-/** `-1` or `1` when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]). */
+/** `{tab, delta}` (-1 or 1) when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]). */
 export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 /** When ⌘W in the app menu asks to close the shown tab. */
 export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
@@ -315,6 +315,8 @@ export const FOCUS_LINK_EVENT = "focus-link";
 export const FOCUS_EXIT_EVENT = "focus-exit";
 /** When a page's ⌃h hands the typing back to the app's side. */
 export const FOCUS_APP_EVENT = "focus-app";
+/** `{tab}` when a page takes the keyboard in the Input mode. */
+export const PAGE_FOCUSED_EVENT = "page-focused";
 /** When a page's ⌘K asks for the app's commands. */
 export const OPEN_PALETTE_EVENT = "open-palette";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */

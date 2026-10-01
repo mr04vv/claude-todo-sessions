@@ -53,8 +53,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     items: [
       ["newTab", "新しいタブ"],
       ["closeTab", "タブを閉じる"],
-      ["prevTab", "前のタブ"],
-      ["nextTab", "次のタブ"],
+      ["prevTab", "前のタブ（Input モードでは入力先の側のタブ）"],
+      ["nextTab", "次のタブ（Input モードでは入力先の側のタブ）"],
       ["focusUrl", "アドレス欄へ"],
       ["back", "戻る"],
       ["forward", "進む"],
