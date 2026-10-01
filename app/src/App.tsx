@@ -4420,7 +4420,13 @@ export default function App() {
     const shown = tabs.filter((t) => !t.focus && (!t.pinned || PINNED_PAGES.some((p) => p.id === t.id)));
     if (!browserShown || shown.length === 0) return;
     const i = activeTab ? shown.findIndex((t) => t.id === activeTab.id) : delta > 0 ? -1 : shown.length;
-    setActiveTabId(shown[(i + delta + shown.length) % shown.length].id);
+    const next = shown[(i + delta + shown.length) % shown.length];
+    // The tab switched to takes the keyboard, as in a browser (a page's keys
+    // hand it to this page on the way); one shown already is not shown again.
+    if (next.term) requestAnimationFrame(() => focusTerminal(next.id));
+    else if (next.id === activeTab?.id) api.browserFocus(next.id).catch(report);
+    else keysInto = next.id;
+    setActiveTabId(next.id);
   };
   const switchRef = useRef(switchTab);
   switchRef.current = switchTab;
@@ -5250,8 +5256,9 @@ export default function App() {
         } else if (e.metaKey && !FOCUS_EDIT_KEYS.includes(e.key.toLowerCase())) e.preventDefault();
         return;
       }
-      // The tabs move only from the pane; on the Todo side these keys go through the lanes (todoKeys.ts).
-      if ((matches(e, "prevTab") || matches(e, "nextTab")) && !(e.target as HTMLElement).closest(".browser-dock")) return;
+      // The tabs move only while the pane has the typing (as marked); on the
+      // Todo side these keys go through the lanes (todoKeys.ts).
+      if ((matches(e, "prevTab") || matches(e, "nextTab")) && typingSideRef.current !== "pane" && !(e.target as HTMLElement).closest(".browser-dock")) return;
       const run: [Action, () => unknown][] = [
         ["archive", () => archiveShownRef.current()],
         ["toInput", () => toInputRef.current()],

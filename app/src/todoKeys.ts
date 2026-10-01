@@ -101,7 +101,8 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
       if (rows.length === 0) return;
       // The lane before or after with a card (or a list lane's head), in the
       // kanban's column the cursor is in when that has one.
-      if (matches(e, "prevTab") || matches(e, "nextTab")) {
+      // (While the pane has the typing, as App.tsx marks it, they are its tabs'.)
+      if ((matches(e, "prevTab") || matches(e, "nextTab")) && !document.querySelector(".app.typing-pane")) {
         e.preventDefault();
         const dir = matches(e, "nextTab") ? 1 : -1;
         const lanes = [...(root.current?.querySelectorAll<HTMLElement>("[data-lane]") ?? [])];
