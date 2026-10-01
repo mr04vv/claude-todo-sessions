@@ -4691,9 +4691,9 @@ export default function App() {
       const urls = focusLefts.filter((t) => !t.term).map((t) => t.url);
       const started = await api.startNote(focusSubject, urls, format, cloud);
       setNoteSessions({ ...noteSessions, [spaceKey]: { session: started.session, cloud } });
-      // Its terminal is one of the pane's, shown on the right while it works.
+      // Its terminal is the space's own, apart from the pane's, shown on the right while it works.
       const term = started.run;
-      if (term) setTabs((prev) => [...prev, { id: `t${nextTab.current++}`, url: "", title: term.title, loading: false, nav: 0, term }]);
+      if (term) setTabs((prev) => [...prev, { id: `t${nextTab.current++}`, url: "", title: term.title, loading: false, nav: 0, term, focus: true, space: spaceKey }]);
     });
   // A link ⌥-clicked in a page becomes an input todo; the page says so (and
   // the input a page went into, from AddToInputDialog).
@@ -4817,7 +4817,7 @@ export default function App() {
     setBrowserShown(true);
     setActiveTabId(id);
   };
-  const terminalTab = (sessionId: string) => tabs.find((t) => t.term?.session === sessionId);
+  const terminalTab = (sessionId: string) => tabs.find((t) => !t.focus && t.term?.session === sessionId);
   const showTab = (id: string) => {
     setBrowserShown(true);
     setActiveTabId(id);
@@ -4839,6 +4839,11 @@ export default function App() {
           },
           focus: (sessionId) => {
             const tab = terminalTab(sessionId);
+            // A note's session runs in its Input mode space, apart from the pane (and is not started again).
+            if (!tab && tabs.some((t) => t.focus && t.term?.session === sessionId)) {
+              report("このセッションは Input モードのノートを作っています。その input（todo）の Input モードの右で見られます");
+              return true;
+            }
             if (!tab) return false;
             showTab(tab.id);
             // After the tab is shown, so its terminal is in the page.

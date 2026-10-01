@@ -51,7 +51,7 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 
 - 画面に出る名前は「Input モード」だが、コードでは focus mode（`focusMode`・`FocusMode`・`FOCUS_*`）のまま。
 - input は todo ではない。`inputs` / `input_links` テーブル（`Db::create_input` など）にあり、ステータス・親子・セッションの紐づけを持たない（`done` だけ）。昔は kind が `input` の todo だったので、`migrate` の最後で id のまま移す。
-- Input モードは subject（`Subject`：input か、f で開いた todo）ごとに「スペース」（`InputSpace`。左のタブと ⌘T の新しいタブ、右のページ）を持つ。キーは `subjectKey`（`i<id>` / `t<id>`、どちらでもないときは `FREE_SPACE`）。タブは `BrowserTab.focus` と `space` で、右のページは `kind` と `rightTabId(space, kind)` の id。終えても subject のスペースは隠すだけで残し、subject なしのものだけ閉じる。
+- Input モードは subject（`Subject`：input か、f で開いた todo）ごとに「スペース」（`InputSpace`。左のタブと ⌘T の新しいタブ、右のページ）を持つ。キーは `subjectKey`（`i<id>` / `t<id>`、どちらでもないときは `FREE_SPACE`）。タブは `BrowserTab.focus` と `space` で（ノートを作るターミナルもスペースのもので、ペインのタブには出さない）、右のページは `kind` と `rightTabId(space, kind)` の id。終えても subject のスペースは隠すだけで残し、subject なしのものだけ閉じる。
 - スペースは localStorage の `inputSpaces`（`SavedSpace`。左右のページの URL）に保存し、再起動後に開いたときは保存した URL から開き直す。開くときに subject のページで足りないものは左に足す。
 
 ### Input モードのノート
