@@ -2048,7 +2048,32 @@ fn sync_loop(wake: std::sync::mpsc::Receiver<()>, status: impl Fn(String)) {
     }
 }
 
+/// Set in what a Claude Code session runs, with the variables below.
+const CLAUDE_SESSION_MARK: &str = "CLAUDECODE";
+const CLAUDE_SESSION_PREFIX: &str = "CLAUDE_CODE_";
+const CLAUDE_SESSION_VARS: [&str; 2] = ["CLAUDE_PID", "CLAUDE_EFFORT"];
+
+/// The variables of the Claude Code session the app was opened from (`open`
+/// in its shell, as the swap command run there does). A `claude` the app
+/// starts with them takes itself for that session's child, and its
+/// transcript is not where the app looks for it (a note is never found).
+fn inherited_session_vars(names: &[String]) -> Vec<String> {
+    if !names.iter().any(|n| n == CLAUDE_SESSION_MARK) {
+        return Vec::new();
+    }
+    names
+        .iter()
+        .filter(|n| *n == CLAUDE_SESSION_MARK || n.starts_with(CLAUDE_SESSION_PREFIX) || CLAUDE_SESSION_VARS.contains(&n.as_str()))
+        .cloned()
+        .collect()
+}
+
 fn main() {
+    // Before any thread starts, so the programs the app runs are as when it is opened from the Dock.
+    let names: Vec<String> = std::env::vars_os().filter_map(|(k, _)| k.into_string().ok()).collect();
+    for name in inherited_session_vars(&names) {
+        std::env::remove_var(name);
+    }
     let db = open_db().expect("open database");
     let (github_tx, github_rx) = std::sync::mpsc::channel();
     let (cloud_tx, cloud_rx) = std::sync::mpsc::channel();
@@ -2197,4 +2222,21 @@ fn main() {
         ])
         .run(tauri::generate_context!())
         .expect("run tauri app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn drops_the_variables_of_the_claude_code_session_it_was_opened_from() {
+        let names = ["PATH", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_PID", "CLAUDE_EFFORT", "HOME"].map(String::from);
+        assert_eq!(inherited_session_vars(&names), ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_PID", "CLAUDE_EFFORT"]);
+    }
+
+    #[test]
+    fn keeps_claude_code_settings_when_not_opened_from_a_session() {
+        let names = ["PATH", "CLAUDE_CODE_USE_BEDROCK"].map(String::from);
+        assert!(inherited_session_vars(&names).is_empty());
+    }
 }

@@ -83,3 +83,4 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 - フロントは3秒ごとに board を取り直す。その場で編集する入力欄は非制御（`defaultValue` + `key`）にしてある。制御コンポーネントにすると、IME の変換中に文字が消えることがある。
 - Enter の判定は `isEnter` を使う。WebKit では、変換確定の Enter の時点で `isComposing` がもう false になっているので、keyCode 229 も見ている。
 - Tauri の WebView では `window.confirm` が true を返さない。確認はインラインで出す。
+- Claude Code の中（`!` の入れ替えコマンドなど）から `open` したアプリは、そのセッションの `CLAUDECODE` や `CLAUDE_CODE_*` を受け継ぐ。そのまま `claude` を起動すると親セッションの子として動き、transcript が `~/.claude/projects` に出ない（ノートが見つからない）ので、`main` の最初で消している（`inherited_session_vars`）。
