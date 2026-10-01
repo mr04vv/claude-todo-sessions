@@ -5088,6 +5088,13 @@ export default function App() {
       const side = el.closest(".focus-left, .focus-right");
       setFocusTyping(side ? (side.classList.contains("focus-right") ? "right" : "left") : null);
     };
+    // A page took it. What was focused here would come back as this page
+    // takes the keyboard on the way to a side (a page's ⌃h ⌃l), marking the
+    // side it is on, so it lets go; a click puts the focus back.
+    const toPage = () => {
+      setTypingSide("pane");
+      if (!document.hasFocus()) (document.activeElement as HTMLElement | null)?.blur();
+    };
     // This page lost it, to a page (which says so in the Input mode) or to
     // another app (asked once the focus events stop).
     const lost = () => {
@@ -5096,8 +5103,9 @@ export default function App() {
         if (document.hasFocus()) return here();
         api.windowFocused().then((front) => {
           if (document.hasFocus()) return;
-          setTypingSide(front ? "pane" : null);
-          if (!front) setFocusTyping(null);
+          if (front) return toPage();
+          setTypingSide(null);
+          setFocusTyping(null);
         }, () => {});
       }, FOCUS_SETTLE_MS);
     };
@@ -5108,7 +5116,7 @@ export default function App() {
     const offs = [
       listen(WINDOW_FOCUS_EVENT, lost),
       listen<{ tab: string }>(PAGE_FOCUSED_EVENT, ({ payload }) => {
-        setTypingSide("pane");
+        toPage();
         setFocusTyping(onFocusRightRef.current(payload.tab) ? "right" : "left");
       }),
     ];
