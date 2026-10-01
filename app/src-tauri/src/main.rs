@@ -1365,6 +1365,10 @@ const PAGE_FOCUSED_EVENT: &str = "page-focused";
 /// `{tab, text}` when a page's ⌃l asks for the focus mode's right side, with
 /// the text selected in it (to paste there), if any.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
+/// A page's keys whose action gives a page or terminal the keyboard
+/// (switching tabs, ⌃l to the Input mode's right), not the app.
+const KEYS_HANDED_ON: [&str; 3] = ["tab-prev", "tab-next", "focus-pane"];
+
 /// `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo.
 const ADD_INPUT_EVENT: &str = "add-input";
 
@@ -1490,8 +1494,11 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 let _ = on_focus.emit(PAGE_FOCUSED_EVENT, TabOnly { tab: focus_tab.clone() });
                 return false;
             }
-            // Keys typed next belong in the app (its address bar).
-            if let Some(main) = on_focus.get_webview("main") {
+            // Keys typed next belong in the app (its address bar, a dialog),
+            // but for the ones handing the keyboard on to a page or terminal
+            // themselves: passing through the app would mark its side for a moment.
+            let hands_on = matches!(url.host_str(), Some(h) if KEYS_HANDED_ON.contains(&h));
+            if let Some(main) = on_focus.get_webview("main").filter(|_| !hands_on) {
                 let _ = main.set_focus();
             }
             let _ = match url.host_str() {
