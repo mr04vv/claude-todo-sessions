@@ -2057,7 +2057,7 @@ function NoteStart({ note }: { note: FocusNote }) {
 
 /// The focus mode: its own pages (and terminals) on the left and a pinned
 /// page (ChatGPT, Claude Code or Notion) or the note on the right, nothing else.
-function FocusMode({ lefts, left, asking, right, note, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onAnswer, onGiveUp, onExit }: {
+function FocusMode({ lefts, left, asking, right, note, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onAnswer, onGiveUp, onExit }: {
   /// The left side's tabs (its own pages, and terminals), and the one shown.
   lefts: BrowserTab[];
   left: BrowserTab | null;
@@ -2066,6 +2066,8 @@ function FocusMode({ lefts, left, asking, right, note, covered, report, width, o
   right: BrowserTab | undefined;
   /// Set while the note is shown and not yet published.
   note: FocusNote | null;
+  /// Set while a published note is shown: leaves it to make another.
+  onRemakeNote?: () => void;
   covered: boolean;
   report: (e: unknown) => void;
   width: number;
@@ -2147,6 +2149,11 @@ function FocusMode({ lefts, left, asking, right, note, covered, report, width, o
               </button>
             </div>
             <span className="grow" />
+            {onRemakeNote && (
+              <button className="ghost small" title="このノートは claude.ai に残したまま、別のノートを作ります" onClick={onRemakeNote}>
+                ノートを作り直す
+              </button>
+            )}
             <button className="ghost small" title="フォーカスモードを終える（Esc）" onClick={onExit}>
               終える <span className="kbd">Esc</span>
             </button>
@@ -3209,7 +3216,9 @@ function InputsPage({ todos, run, onFocus, onDetail }: {
   const inputs = todos.filter((t) => t.kind === "input").sort((a, b) => b.updated_at - a.updated_at);
   const rows = inputs.filter((t) => showDone || t.status !== "done");
   const done = inputs.length - inputs.filter((t) => t.status !== "done").length;
-  const pageOf = (t: Todo) => t.links[0]?.url ?? t.pr_url ?? t.issue_url;
+  // The note (NOTE_PAGE) is not one of the pages to read.
+  const pagesOf = (t: Todo) => t.links.filter((l) => !NOTE_PAGE.test(l.url));
+  const pageOf = (t: Todo) => pagesOf(t)[0]?.url ?? t.pr_url ?? t.issue_url;
   // ↑↓ or j k pick one, Enter opens it in the focus mode, ⌥Enter its panel.
   const { cursorId, setCursor, list } = useRowCursor(
     rows.map((t) => String(t.id)),
@@ -3267,7 +3276,7 @@ function InputsPage({ todos, run, onFocus, onDetail }: {
                 <StatusIcon status={t.status} />
                 <span className="row-title">{t.title}</span>
                 {page && <span className="muted mono ellipsis">{hostOf(page)}</span>}
-                {t.links.length > 1 && <span className="tag">{t.links.length} ページ</span>}
+                {pagesOf(t).length > 1 && <span className="tag">{pagesOf(t).length} ページ</span>}
                 <span className="muted when">{ago(t.updated_at)}</span>
                 <button className="ghost icon" aria-label={`${t.title} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onDetail(t.id))}>
                   <Icon name="more" size={14} />
@@ -4208,11 +4217,17 @@ export default function App() {
     remember(NOTE_SESSIONS_KEY, JSON.stringify(next));
     setNoteSessionsState(next);
   };
-  const resetNote = () => {
-    if (focusSubject === null) return;
-    const { [focusSubject]: _, ...rest } = noteSessions;
-    setNoteSessions(rest);
-  };
+  /// Leaves the note (published or being made) to make another; the old one
+  /// stays on claude.ai, and its session goes on.
+  const resetNote = () =>
+    run(async () => {
+      if (focusSubject === null) return;
+      const { [focusSubject]: _, ...rest } = noteSessions;
+      setNoteSessions(rest);
+      const link = subjectTodo?.links.find((l) => NOTE_PAGE.test(l.url));
+      if (link) await api.removeLink(link.id);
+      refresh();
+    });
   /// Starts the session that makes the note of the left's pages.
   const createNote = (format: NoteFormat, cloud: boolean) =>
     run(async () => {
@@ -5267,6 +5282,7 @@ export default function App() {
                 ? null
                 : { subject: focusSubject !== null, making: noteSession !== undefined, pages: focusLefts.some((t) => !t.term), onCreate: createNote, onReset: resetNote }
             }
+            onRemakeNote={focusRight === NOTE_TAB && noteUrl ? resetNote : undefined}
             covered={covered}
             report={report}
             width={focusRightW}

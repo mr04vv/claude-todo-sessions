@@ -75,6 +75,7 @@ fn tool_summary(input: &Value) -> String {
         .unwrap_or_default()
 }
 
+const ARTIFACT_HOST: &str = "https://claude.ai/";
 const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
 /// How the Artifact tool reports a publish: "Published <file> at <url> (…".
 const PUBLISHED: &str = "Published ";
@@ -93,11 +94,19 @@ pub fn note_url(text: &str) -> Option<String> {
         let line = until_line_end(&text[i + PUBLISHED.len()..]);
         line.find(PUBLISHED_AT).and_then(|j| artifact_at(&line[j + PUBLISHED_AT.len()..]))
     });
-    let after = |marker: &str, skip: &[char]| {
-        text.match_indices(marker).find_map(|(i, _)| artifact_at(text[i + marker.len()..].trim_start_matches(skip)))
+    let born = || {
+        text.match_indices(DOC_BORN)
+            .find_map(|(i, _)| artifact_at(text[i + DOC_BORN.len()..].trim_start_matches(['\\', '"', ':'])))
     };
-    // The line is asked for as "NOTE_URL: <url>", and may come with the brackets.
-    published.or_else(|| after(DOC_BORN, &['\\', '"', ':'])).or_else(|| after(NOTE_LINE, &['<']))
+    // The line is asked for as "NOTE_URL: <url>"; it may come in brackets or
+    // as a Markdown link, so the link is looked for on the rest of the line.
+    let named = || {
+        text.match_indices(NOTE_LINE).find_map(|(i, _)| {
+            let line = until_line_end(&text[i + NOTE_LINE.len()..]);
+            line.find(ARTIFACT_HOST).and_then(|j| artifact_at(&line[j..]))
+        })
+    };
+    published.or_else(born).or_else(named)
 }
 
 /// Up to the end of the line, also where the line is a JSON string's.
@@ -214,6 +223,12 @@ mod tests {
             Some("https://claude.ai/artifact/Rust-の所有権-3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90")
         );
         assert_eq!(note_url("NOTE_URL: <https://claude.ai/code/artifact/Q3-plan%E3%81%AE-abcDEF0123456789abcdef>").as_deref(), Some("https://claude.ai/code/artifact/Q3-plan%E3%81%AE-abcDEF0123456789abcdef"));
+        // Cloud sessions write it as a Markdown link.
+        assert_eq!(
+            note_url("NOTE_URL: [Server Components ノート](https://claude.ai/artifact/Ab3dEf6hIj9kLm2nOp5qRs)\n").as_deref(),
+            Some("https://claude.ai/artifact/Ab3dEf6hIj9kLm2nOp5qRs")
+        );
+        assert_eq!(note_url("NOTE_URL: まだありません\nhttps://claude.ai/artifact/Ab3dEf6hIj9kLm2nOp5qRs"), None);
         assert_eq!(note_url("nothing published"), None);
     }
 
