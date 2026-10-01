@@ -3312,7 +3312,7 @@ function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
           </button>
         )}
         <button className="primary" onClick={onAdd}>
-          <Icon name="plus" size={13} /> 新しい input
+          <Icon name="plus" size={13} /> 新しい input <span className="kbd">{keyLabel(keyOf("newTodo"))}</span>
         </button>
       </header>
       <div className="content" ref={list}>
@@ -4799,6 +4799,8 @@ export default function App() {
   const dialogRef = useRef(dialog);
   dialogRef.current = dialog;
   const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "notices"] as const, "todos"));
+  const viewRef = useRef(view);
+  viewRef.current = view;
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
   const [groupBy, setGroupByState] = useState<GroupBy>(() => load(GROUP_KEY, ["repo", "parent"] as const, "repo"));
   const [doneRecent, setDoneRecentState] = useState<boolean>(() => load(DONE_RECENT_KEY, ["1", "0"] as const, "1") === "1");
@@ -5014,7 +5016,8 @@ export default function App() {
         ["archive", () => archiveShownRef.current()],
         ["prevTab", () => switchRef.current(-1)],
         ["nextTab", () => switchRef.current(1)],
-        ["newTodo", () => setDialog("add")],
+        // On the Input page it adds an input.
+        ["newTodo", () => setDialog(viewRef.current === "inputs" ? "addInput" : "add")],
         // Again closes the commands.
         ["palette", () => setDialog((d) => (d === "palette" ? null : "palette"))],
         ["newTab", () => openNewTab()],

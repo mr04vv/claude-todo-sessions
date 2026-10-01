@@ -42,7 +42,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     group: "どこでも",
     items: [
       ["palette", "コマンド（⌘K のメニュー）"],
-      ["newTodo", "新しい todo"],
+      ["newTodo", "新しい todo（Input の画面では input）"],
       ["reload", "今の画面を取り直す（ページでは再読み込み）"],
       ["sideApp", "入力先を Todo 側へ（Input モードでは左へ）"],
       ["sidePane", "入力先を右のペインへ（Input モードでは右へ）"],
