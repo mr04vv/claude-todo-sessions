@@ -2503,3 +2503,56 @@ body.resizing {
   outline: 2px solid var(--accent-line);
   outline-offset: -2px;
 }
+
+/* The address field and its suggestions from the pages visited (AddressInput). */
+.browser-bar .address {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.browser-bar .address .url {
+  flex: 1;
+  min-width: 0;
+}
+
+.suggestions {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  left: 6px;
+  right: 6px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+.suggestions li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.suggestions li:hover,
+.suggestions li[data-active] {
+  background: var(--accent-soft);
+}
+
+/* The 作業スペース's pages to pick from in AddInputDialog. */
+.open-pages {
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.open-pages .row.on {
+  background: var(--accent-soft);
+}

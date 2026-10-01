@@ -1859,6 +1859,117 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
 }
 
 /// A new tab: type an address or a search, or pick a start page.
+/// The pages visited in the app's browser, for the address field's
+/// suggestions: kept in this browser's storage, the most used and recent first.
+interface Visit {
+  url: string;
+  title: string | null;
+  visits: number;
+  last: number;
+}
+const HISTORY_KEY = "browserHistory";
+/// Each tab's page as last loaded, which its title then belongs to.
+const tabUrls = new Map<string, string>();
+const HISTORY_MAX = 1000;
+const SUGGESTIONS_MAX = 8;
+const DAY_MS = 86_400_000;
+let history: Visit[] = loadJson<Visit[]>(HISTORY_KEY, []);
+const historyKey = (url: string) => url.replace(/#.*$/, "");
+const visitScore = (v: Visit, now: number) => v.visits / (1 + (now - v.last) / DAY_MS);
+/// A page loaded (`title` unknown yet) or titled (`visit` false) in a tab.
+function recordVisit(url: string, title: string | null, visit: boolean) {
+  if (!/^https?:\/\//.test(url)) return;
+  const key = historyKey(url);
+  const now = Date.now();
+  const old = history.find((v) => historyKey(v.url) === key);
+  const entry = { url: key, title: title ?? old?.title ?? null, visits: (old?.visits ?? 0) + (visit ? 1 : 0), last: visit ? now : (old?.last ?? now) };
+  history = [entry, ...history.filter((v) => v !== old)];
+  if (history.length > HISTORY_MAX) history = [...history].sort((a, b) => visitScore(b, now) - visitScore(a, now)).slice(0, HISTORY_MAX);
+  remember(HISTORY_KEY, JSON.stringify(history));
+}
+/// The visited pages with every word of `query` in their address or title.
+function historyMatches(query: string): Visit[] {
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+  const now = Date.now();
+  return history
+    .filter((v) => words.every((w) => v.url.toLowerCase().includes(w) || v.title?.toLowerCase().includes(w)))
+    .sort((a, b) => visitScore(b, now) - visitScore(a, now))
+    .slice(0, SUGGESTIONS_MAX);
+}
+
+/// The address field (a tab's, the new tab page's), suggesting visited pages
+/// as it is typed in: ↑↓ (or the menu's ⌃j ⌃k) pick one, Enter opens it (or
+/// what was typed), Esc drops the suggestions, then `onEscape`.
+function AddressInput({ inputRef, defaultValue, placeholder, autoFocus, label, title, onGo, onEscape, onSuggesting }: {
+  inputRef?: React.RefObject<HTMLInputElement | null>;
+  defaultValue?: string;
+  placeholder?: string;
+  autoFocus?: boolean;
+  label: string;
+  title?: string;
+  onGo: (url: string) => void;
+  onEscape?: (input: HTMLInputElement) => void;
+  /// While suggestions show (a page's webview would cover them).
+  onSuggesting?: (on: boolean) => void;
+}) {
+  const [items, setItemsState] = useState<Visit[]>([]);
+  const [active, setActive] = useState(-1);
+  const setItems = (list: Visit[]) => {
+    setItemsState(list);
+    setActive(-1);
+    onSuggesting?.(list.length > 0);
+  };
+  useEffect(() => () => onSuggesting?.(false), []); // eslint-disable-line react-hooks/exhaustive-deps
+  const step = (e: React.KeyboardEvent) =>
+    e.key === "ArrowDown" || matches(e.nativeEvent, "paletteDown") ? 1 : e.key === "ArrowUp" || matches(e.nativeEvent, "paletteUp") ? -1 : 0;
+  const go = (url: string) => {
+    setItems([]);
+    onGo(url);
+  };
+  return (
+    <div className="address">
+      <input
+        ref={inputRef}
+        autoFocus={autoFocus}
+        className="url mono"
+        defaultValue={defaultValue}
+        placeholder={placeholder}
+        aria-label={label}
+        title={title}
+        aria-autocomplete="list"
+        onInput={(e) => setItems(historyMatches(e.currentTarget.value))}
+        onBlur={() => setItems([])}
+        onKeyDown={(e) => {
+          const d = items.length > 0 ? step(e) : 0;
+          if (d) {
+            e.preventDefault();
+            // -1 is what was typed, above the first suggestion.
+            return setActive((i) => ((i + 1 + d + items.length + 1) % (items.length + 1)) - 1);
+          }
+          if (e.key === "Escape") {
+            if (items.length > 0) return setItems([]);
+            return onEscape?.(e.currentTarget);
+          }
+          if (!isEnter(e)) return;
+          const url = items[active]?.url ?? addressToUrl(e.currentTarget.value);
+          if (url) go(url);
+        }}
+      />
+      {items.length > 0 && (
+        <ul className="suggestions" role="listbox">
+          {items.map((v, i) => (
+            <li key={v.url} role="option" aria-selected={i === active} data-active={i === active || undefined} onMouseDown={(e) => (e.preventDefault(), go(v.url))}>
+              <span className="ellipsis">{v.title || hostOf(v.url)}</span>
+              <span className="muted mono ellipsis">{v.url.replace(/^https?:\/\//, "")}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
   const [pages, setPagesState] = useState<StartPage[]>(() => loadJson<StartPage[]>(START_PAGES_KEY, []));
   const setPages = (list: StartPage[]) => {
@@ -1878,16 +1989,7 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
   return (
     <>
       <div className="browser-bar">
-        <input
-          autoFocus
-          className="url mono"
-          placeholder="URL か検索したい言葉を入力して Enter"
-          aria-label="URL か検索したい言葉"
-          onKeyDown={(e) => {
-            const url = isEnter(e) ? addressToUrl(e.currentTarget.value) : null;
-            if (url) onOpen(url);
-          }}
-        />
+        <AddressInput autoFocus placeholder="URL か検索したい言葉を入力して Enter（開いたページから候補が出ます）" label="URL か検索したい言葉" onGo={onOpen} />
       </div>
       <div className="new-tab">
         {pages.map((p) => (
@@ -2226,7 +2328,7 @@ let keysInto: string | null = null;
 /// with the same one leaves its page where the user moved it.
 const sentNav = new Map<string, number>();
 
-function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noDia }: {
+function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, keep, noDia }: {
   tab: BrowserTab;
   covered: boolean;
   report: (e: unknown) => void;
@@ -2239,6 +2341,9 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noD
   noDia?: boolean;
 }) {
   const slot = useRef<HTMLDivElement>(null);
+  // The address field's suggestions show where the page is, so it steps aside.
+  const [suggesting, setSuggesting] = useState(false);
+  const covered = dialogUp || suggesting;
   const rect = () => {
     const r = slot.current!.getBoundingClientRect();
     return { x: r.left, y: r.top, width: r.width, height: r.height, viewport: window.innerHeight };
@@ -2360,23 +2465,19 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noD
         <button className="ghost icon" aria-label="再読み込み" onClick={() => api.browserGo(active.id, "reload").catch(report)}>
           <Icon name="reload" size={14} />
         </button>
-        <input
-          ref={address}
+        <AddressInput
           key={`${active.id}:${active.url}`}
-          className="url mono"
+          inputRef={address}
           defaultValue={active.url}
-          aria-label="URL（⌘L で編集）"
-          title="⌘L で編集、Enter で移動、Esc でやめる"
-          onKeyDown={(e) => {
-            // Esc puts the address back and returns to the page, as in a browser.
-            if (e.key === "Escape") {
-              e.currentTarget.value = active.url;
-              e.currentTarget.blur();
-              api.browserFocus(active.id).catch(report);
-              return;
-            }
-            const url = isEnter(e) ? addressToUrl(e.currentTarget.value) : null;
-            if (url) navigate(url, true);
+          label="URL（⌘L で編集）"
+          title="⌘L で編集、Enter で移動、Esc でやめる（開いたページから候補が出ます）"
+          onGo={(url) => navigate(url, true)}
+          onSuggesting={setSuggesting}
+          // Esc puts the address back and returns to the page, as in a browser.
+          onEscape={(input) => {
+            input.value = active.url;
+            input.blur();
+            api.browserFocus(active.id).catch(report);
           }}
         />
         {onArchive && (
@@ -2392,7 +2493,7 @@ function TabView({ tab: active, covered, report, onAddress, onArchive, keep, noD
       </div>
       <div className={`load-bar${active.loading ? " on" : ""}`} aria-hidden="true" />
       <div ref={slot} className="browser-slot">
-        {covered && <span className="muted">ダイアログを閉じると表示に戻ります</span>}
+        {dialogUp && <span className="muted">ダイアログを閉じると表示に戻ります</span>}
       </div>
     </>
   );
@@ -3590,7 +3691,13 @@ const TITLE_LOOKUP_MS = 400;
 /// more, one per line) and a title (else the words among them, or the first
 /// page's own title, read as they are typed). One just added opens in the
 /// Input mode.
-function AddInputDialog({ run, onClose, onOpen }: { run: (f: () => Promise<unknown>) => void; onClose: () => void; onOpen: (todo: Todo) => void }) {
+function AddInputDialog({ openPages, run, onClose, onOpen }: {
+  /// The pages open in the 作業スペース (the one shown first), to pick from.
+  openPages: { url: string; title: string | null; shown: boolean }[];
+  run: (f: () => Promise<unknown>) => void;
+  onClose: () => void;
+  onOpen: (todo: Todo) => void;
+}) {
   const [title, setTitle] = useState("");
   const [pages, setPages] = useState("");
   const [added, setAdded] = useState<Todo[]>([]);
@@ -3609,7 +3716,16 @@ function AddInputDialog({ run, onClose, onOpen }: { run: (f: () => Promise<unkno
     );
     return () => clearTimeout(t);
   }, [first]);
-  const pageTitle = read && read.url === first ? read.title : undefined;
+  // A page open here has its title already, even one behind a sign-in.
+  const openTitle = openPages.find((p) => p.url === first)?.title;
+  const pageTitle = openTitle || (read && read.url === first ? read.title : undefined);
+  const picked = (url: string) => input?.urls.includes(url) ?? false;
+  /// Adds an open page to the URLs, or takes it out again.
+  const toggle = (url: string) => {
+    const lines = pages.split(/\s+/).filter(Boolean);
+    setPages((picked(url) ? lines.filter((l) => l !== url) : [...lines, url]).join("\n"));
+    pagesRef.current?.focus();
+  };
   const submit = () => {
     if (!input) return;
     run(async () => {
@@ -3650,6 +3766,21 @@ function AddInputDialog({ run, onClose, onOpen }: { run: (f: () => Promise<unkno
           onKeyDown={(e) => isEnter(e) && e.metaKey && (e.preventDefault(), submit())}
         />
       </label>
+      {openPages.length > 0 && (
+        <div className="field">
+          <span>作業スペースで開いているページ（押すと URL に入ります）</span>
+          <ul className="rows compact open-pages">
+            {openPages.map((p) => (
+              <li key={p.url} className={`row${picked(p.url) ? " on" : ""}`} onClick={() => toggle(p.url)}>
+                <Icon name={picked(p.url) ? "check" : "plus"} size={12} />
+                <span className="row-title">{p.title || hostOf(p.url)}</span>
+                {p.shown && <span className="tag">表示中</span>}
+                <span className="muted mono ellipsis">{hostOf(p.url)}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <label className="field">
         <span>タイトル（任意。空ならページのタイトル）</span>
         <input
@@ -4766,11 +4897,20 @@ export default function App() {
   openCloudRef.current = openCloud;
   useEffect(() => {
     const offs = [
-      listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) =>
-        setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url, loading: payload.loading } : t))),
-      ),
+      listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) => {
+        // A page loaded is a visit, for the address field's suggestions.
+        if (!payload.loading) {
+          tabUrls.set(payload.tab, payload.url);
+          recordVisit(payload.url, null, true);
+        }
+        setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url, loading: payload.loading } : t)));
+      }),
       listen<{ tab: string; url: string }>(BROWSER_ADDRESS_EVENT, ({ payload }) => setTabUrl(payload.tab, payload.url)),
-      listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
+      listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => {
+        const url = tabUrls.get(payload.tab);
+        if (url) recordVisit(url, payload.title, false);
+        setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)));
+      }),
       // In the focus mode a page's new window goes to the left, if it may.
       listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => (focusModeRef.current ? askFocusLinkRef.current(payload.url) : openRef.current(payload.url))),
       listen<{ tab: string; url: string; text: string | null }>(FOCUS_LINK_EVENT, ({ payload }) => askFocusLinkRef.current(payload.url, payload.text ?? undefined)),
@@ -5605,6 +5745,10 @@ export default function App() {
 
         {dialog === "addInput" && (
           <AddInputDialog
+            // The page shown first, then the other tabs' pages (the pinned chats aside).
+            openPages={[...(activeTab ? [activeTab] : []), ...paneTabs.filter((t) => t !== activeTab)]
+              .filter((t) => !t.term && !t.pinned && /^https?:\/\//.test(t.url))
+              .map((t) => ({ url: t.url, title: t.title, shown: browserShown && t === activeTab }))}
             run={run}
             onClose={() => setDialog(null)}
             onOpen={(todo) => {
