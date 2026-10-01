@@ -183,12 +183,19 @@ const COLUMNS: { status: Status; label: string }[] = [
   { status: "done", label: "Done" },
 ];
 
-const STATE_LABEL: Record<SessionState, string> = {
+/// A session's state as shown: "review" once its turn is over (or it ended)
+/// while its todo's PR waits for a review.
+type ShownState = SessionState | "review";
+const STATE_LABEL: Record<ShownState, string> = {
   running: "実行中",
   needs_input: "入力待ち",
   idle: "待機中",
   ended: "終了",
+  review: "レビュー待ち",
 };
+const REVIEW_PRS: PrState[] = ["review_requested", "approved"];
+const shownState = (state: SessionState, todo: Todo | undefined): ShownState =>
+  (state === "idle" || state === "ended") && todo?.pr_state && REVIEW_PRS.includes(todo.pr_state) ? "review" : state;
 
 /// The state that needs the user comes first.
 const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle", "ended"];
@@ -576,7 +583,7 @@ function StatusIcon({ status }: { status: Status }) {
   );
 }
 
-function StateBadge({ state }: { state: SessionState }) {
+function StateBadge({ state }: { state: ShownState }) {
   return (
     <span className={`state state-${state}`}>
       <i />
@@ -951,7 +958,7 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
     >
       <div className="card-head">
         <span className="mono">{todoRef(todo)}</span>
-        {urgent && <StateBadge state={urgent} />}
+        {urgent && <StateBadge state={shownState(urgent, todo)} />}
       </div>
       <div className="card-title">{todo.title}</div>
       {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner) && (
@@ -1274,7 +1281,7 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
                 <StatusIcon status={t.status} />
                 <span className="mono muted ref">{todoRef(t)}</span>
                 <span className="row-title">{t.title}</span>
-                {urgent && <StateBadge state={urgent} />}
+                {urgent && <StateBadge state={shownState(urgent, t)} />}
                 <GhChip todo={t} report={report} />
                 {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
                 {t.repos[0] && !lane.repo && (
@@ -2702,12 +2709,12 @@ function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOp
           {todo.sessions.length === 0 && <p className="muted hint">まだありません。下から始めるか、セッション画面で既存のものを紐づけます。</p>}
           <ul className="sessions">
             {todo.sessions.map((s) => (
-              <li key={s.session_id} className={`session-row state-bg-${s.state}`}>
-                <span className={`dot state-${s.state}`} />
+              <li key={s.session_id} className={`session-row state-bg-${shownState(s.state, todo)}`}>
+                <span className={`dot state-${shownState(s.state, todo)}`} />
                 <span className="session-main">
                   <span className="ellipsis">{sessionLabel(s)}</span>
                   <span className="muted">
-                    {STATE_LABEL[s.state]} · {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
+                    {STATE_LABEL[shownState(s.state, todo)]} · {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
                   </span>
                 </span>
                 <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
@@ -2934,7 +2941,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                 className={`row sessions-grid${s.session_id === selectedId ? " selected" : ""}${s.session_id === cursorId ? " cursor" : ""}${s.state === "ended" ? " done" : ""}`}
                 onClick={(e) => (setCursor(s.session_id), e.currentTarget.querySelector<HTMLButtonElement>(".open-main")?.click())}
               >
-                <StateBadge state={s.state} />
+                <StateBadge state={shownState(s.state, todo)} />
                 <span className="ellipsis">{sessionLabel(s)}</span>
                 {todo ? (
                   <button className="link-button ellipsis" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))}>
@@ -3006,7 +3013,7 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
   return (
     <aside className="panel" aria-label={sessionLabel(s)}>
       <header className="panel-head">
-        <StateBadge state={s.state} />
+        <StateBadge state={shownState(s.state, item.todo)} />
         <span className="muted">{ago(s.state_at)}から</span>
         <span className="grow" />
         <button className="ghost icon" onClick={onClose} aria-label="閉じる">

@@ -692,7 +692,8 @@ a:hover {
   color: var(--review-text);
 }
 
-.state-review i {
+.state-review i,
+.dot.state-review {
   background: var(--st-review);
 }
 
