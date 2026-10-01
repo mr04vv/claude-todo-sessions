@@ -175,7 +175,8 @@ export function comboOf(e: KeyboardEvent): string | null {
 }
 
 /// Whether the event is `action`'s key. A symbol typed with ⇧ (? on most
-/// keyboards) matches a key written without it.
+/// keyboards) matches a key written without it; one that ⇧ turns into
+/// another (⇧[ is "{") does not, so ⌘⇧[ is not ⌘[.
 export function matches(e: KeyboardEvent, action: Action): boolean {
   return matchesCombo(e, keys[action]);
 }
@@ -184,7 +185,7 @@ export function matchesCombo(e: KeyboardEvent, combo: string): boolean {
   const parts = combo.split("+");
   const key = parts.pop() ?? "";
   const has = (m: (typeof MODIFIERS)[number]) => parts.includes(m);
-  const symbol = key.length === 1 && !/[a-z0-9]/.test(key);
+  const symbol = key.length === 1 && !/[a-z0-9]/.test(key) && e.key === key;
   return (
     normal(e.key) === key &&
     e.metaKey === has("cmd") &&

@@ -59,7 +59,8 @@
     if (!combo) return false;
     const parts = combo.split("+");
     const key = parts.pop();
-    const symbol = key.length === 1 && !/[a-z0-9]/.test(key);
+    // ⇧ only makes the symbol written (?), not another one (⇧[ is "{", not ⌘[).
+    const symbol = key.length === 1 && !/[a-z0-9]/.test(key) && e.key === key;
     return (
       normal(e.key) === key &&
       e.metaKey === parts.includes("cmd") &&
