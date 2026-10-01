@@ -5177,6 +5177,8 @@ export default function App() {
         } else if (e.metaKey && !FOCUS_EDIT_KEYS.includes(e.key.toLowerCase())) e.preventDefault();
         return;
       }
+      // The tabs move only from the pane; on the Todo side these keys go through the lanes (todoKeys.ts).
+      if ((matches(e, "prevTab") || matches(e, "nextTab")) && !(e.target as HTMLElement).closest(".browser-dock")) return;
       const run: [Action, () => unknown][] = [
         ["archive", () => archiveShownRef.current()],
         ["toInput", () => toInputRef.current()],

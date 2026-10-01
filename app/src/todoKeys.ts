@@ -3,7 +3,8 @@
 // user may change), and keys acting on the todo under it:
 // Enter its panel, s its status, ⇧h ⇧l (kanban) the column it is in, o and
 // ⌥Enter its session, p its PR, u its parent; c adds a todo there, / searches,
-// ? lists the keys.
+// ? lists the keys. The browser's tab keys (⌘⇧[ ⌘⇧]) go to the lane (a
+// repository's, a parent's) before or after.
 // It reads the page's elements, so the pages only mark them:
 //   data-row="todo:<id>" on a card or row, data-row="lane:<key>" on a list
 //   lane's head, data-lane="<key>" on a lane, data-col="<status>" on a
@@ -96,6 +97,20 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
         return;
       }
       if (rows.length === 0) return;
+      // The lane before or after with a card (or a list lane's head), in the
+      // kanban's column the cursor is in when that has one.
+      if (matches(e, "prevTab") || matches(e, "nextTab")) {
+        e.preventDefault();
+        const dir = matches(e, "nextTab") ? 1 : -1;
+        const lanes = [...(root.current?.querySelectorAll<HTMLElement>("[data-lane]") ?? [])];
+        const col = at && colOf(at)?.dataset.col;
+        const from = at ? lanes.findIndex((l) => l.contains(at)) : dir > 0 ? -1 : lanes.length;
+        for (let i = from + dir; i >= 0 && i < lanes.length; i += dir) {
+          const first = (col && lanes[i].querySelector<HTMLElement>(`[data-col="${col}"] ${ROW}`)) || lanes[i].querySelector<HTMLElement>(ROW);
+          if (first) return move(first);
+        }
+        return;
+      }
       // The session opens as its "開く" does (⌥Enter: its menu); the PR, the parent.
       const onTodo: [boolean, () => void][] = [
         [matches(e, "session"), () => at!.querySelector<HTMLButtonElement>(".open-main")?.click()],
