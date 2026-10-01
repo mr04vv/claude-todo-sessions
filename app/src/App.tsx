@@ -77,6 +77,9 @@ const USAGE_RETRY_MS = 60_000;
 const PR_REFRESH_MS = 5 * 60_000;
 /// How long the focus events are let settle before marking the typing's side.
 const FOCUS_SETTLE_MS = 120;
+/// The typing's side is looked at this often too: a browser tab taking the
+/// keyboard from another one tells this page nothing.
+const FOCUS_POLL_MS = 300;
 const DETAIL_REFRESH_MS = 10_000;
 /// The shown tab's address is checked this often, for pages that move
 /// without loading or changing their title.
@@ -4893,18 +4896,19 @@ export default function App() {
   /// ⌘⇧[ ⌘⇧] in the Input mode: the previous or next tab of the side that has
   /// the keyboard, the left's own or the right's pages (which take the typing).
   const switchFocusTab = (right: boolean, delta: number) => {
-    setFocusTyping(right ? "right" : "left");
     if (right) return setFocusRight(RIGHT_KINDS[(RIGHT_KINDS.indexOf(focusRight) + delta + RIGHT_KINDS.length) % RIGHT_KINDS.length]);
     if (focusLefts.length === 0) return;
     const i = focusLefts.findIndex((t) => t.id === focusLeft?.id);
     const next = focusLefts[(i + delta + focusLefts.length) % focusLefts.length];
     patchSpace(spaceKey, (s) => ({ ...s, active: next.id }));
     if (next.term) requestAnimationFrame(() => focusTerminal(next.id));
+    // The tab shown already (the only one) is not shown again, which gives the keyboard.
+    else if (next.id === focusLeft?.id) api.browserFocus(next.id).catch(report);
     else keysInto = next.id;
   };
-  // Which side of the Input mode has the keyboard, as the app moved it (⌃h ⌃l,
-  // tabs) or a page or this side's own fields took it; shown as in the pane.
-  const [focusTyping, setFocusTyping] = useState<"left" | "right">("right");
+  // Which side of the Input mode has the keyboard (see `typingSide`), or
+  // neither while the app's own parts or another app have it.
+  const [focusTyping, setFocusTyping] = useState<"left" | "right" | null>("right");
   /// ⌘K: the commands, leaving the Input mode (a todo's pages stay) on the way.
   const togglePalette = () => {
     if (focusModeRef.current) {
@@ -5042,7 +5046,6 @@ export default function App() {
     // The focus mode's two sides: its left tab and the pinned page on the right,
     // whose text box (ChatGPT's) takes the typing, in a chat going on too.
     if (focusMode) {
-      setFocusTyping(pane ? "right" : "left");
       const side = pane ? focusRightTab : focusLeft;
       if (side?.term) focusTerminal(side.id);
       else if (side) {
@@ -5066,32 +5069,38 @@ export default function App() {
   const focusSideRef = useRef(focusSide);
   focusSideRef.current = focusSide;
   // Which side has the typing, marked on the page: this one, the pane (its
-  // terminal, or a page, when this page lost the keyboard but the window has
-  // it), or neither while another app is in front.
-  // The page's focus comes from the DOM and whether the app is in front from
-  // the backend, asked once the focus events stop. The window's own events
-  // (which also fire as a browser tab takes the keyboard) only prompt a look.
+  // terminal, a page), or neither while another app is in front; in the Input
+  // mode, its left or right. Where the keyboard is comes from AppKit (which
+  // webview has it) and, in this page, from the DOM: looked at once focus
+  // events stop, and every FOCUS_POLL_MS.
   const [typingSide, setTypingSide] = useState<"app" | "pane" | null>("app");
   const typingSideRef = useRef(typingSide);
   typingSideRef.current = typingSide;
   useEffect(() => {
     let timer = 0;
+    const look = () =>
+      api.typingIn().then((t) => {
+        if (t.kind === "other") return;
+        // This page's own fields and terminals by where they are (the pane's address bar is the pane's).
+        const here = t.kind === "app" ? document.activeElement : null;
+        setTypingSide(t.kind === "away" ? null : t.kind === "tab" || here?.closest(".xterm, .browser-dock") ? "pane" : "app");
+        const side = here?.closest(".focus-left, .focus-right");
+        setFocusTyping(t.kind === "tab" ? (onFocusRightRef.current(t.tab) ? "right" : "left") : side ? (side.classList.contains("focus-right") ? "right" : "left") : null);
+      }, () => {});
     const settle = () => {
       clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        // The pane's own fields (the address bar, the new tab page's) count as the pane.
-        if (document.hasFocus()) return setTypingSide(document.activeElement?.closest(".xterm, .browser-dock") ? "pane" : "app");
-        api.windowFocused().then((f) => !document.hasFocus() && setTypingSide(f ? "pane" : null), () => {});
-      }, FOCUS_SETTLE_MS);
+      timer = window.setTimeout(look, FOCUS_SETTLE_MS);
     };
+    const poll = window.setInterval(look, FOCUS_POLL_MS);
     const events = ["focus", "blur"] as const;
     events.forEach((ev) => window.addEventListener(ev, settle));
     document.addEventListener("focusin", settle);
     document.addEventListener("focusout", settle);
-    const off = listen(WINDOW_FOCUS_EVENT, settle);
+    const offs = [listen(WINDOW_FOCUS_EVENT, settle), listen(PAGE_FOCUSED_EVENT, settle)];
     return () => {
       clearTimeout(timer);
-      void off.then((f) => f());
+      clearInterval(poll);
+      offs.forEach((off) => void off.then((f) => f()));
       events.forEach((ev) => window.removeEventListener(ev, settle));
       document.removeEventListener("focusin", settle);
       document.removeEventListener("focusout", settle);
@@ -5142,7 +5151,6 @@ export default function App() {
       listen<{ url: string; title: string }>(ADD_INPUT_EVENT, ({ payload }) => addInputRef.current(payload.url, payload.title)),
       // The focus mode lets none of the app's own shortcuts through.
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => !focusModeRef.current && openNewTab()),
-      listen<{ tab: string }>(PAGE_FOCUSED_EVENT, ({ payload }) => setFocusTyping(onFocusRightRef.current(payload.tab) ? "right" : "left")),
       listen<{ tab: string; delta: number }>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) =>
         focusModeRef.current ? switchFocusTabRef.current(onFocusRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
       ),
@@ -5575,12 +5583,7 @@ export default function App() {
     <OpenCloudContext.Provider value={openCloud}>
     <TerminalContext.Provider value={inAppTerminal}>
       <div
-        className={`app${browserShown ? " with-browser" : ""}${browserShown && !focusMode && typingSide ? ` typing-${typingSide}` : ""}${focusMode ? ` focus typing-${focusTyping}` : ""}`}
-        onFocus={(e) => {
-          // This side's own fields and terminals in the Input mode.
-          const side = (e.target as HTMLElement).closest(".focus-left, .focus-right");
-          if (side) setFocusTyping(side.classList.contains("focus-right") ? "right" : "left");
-        }}
+        className={`app${browserShown ? " with-browser" : ""}${browserShown && !focusMode && typingSide ? ` typing-${typingSide}` : ""}${focusMode ? ` focus${focusTyping ? ` typing-${focusTyping}` : ""}` : ""}`}
         data-zone={sideZone ? "sidebar" : undefined}
         style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px`, "--focus-right-w": `${focusRightW}px` } as React.CSSProperties}
       >
