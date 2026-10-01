@@ -15,6 +15,7 @@ export type Action =
   | "sideApp"
   | "sidePane"
   | "archive"
+  | "toInput"
   | "focusUrl"
   | "back"
   | "forward"
@@ -59,6 +60,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["back", "戻る"],
       ["forward", "進む"],
       ["archive", "Cloud セッションのページをアーカイブ"],
+      ["toInput", "表示中のページを input に追加"],
     ],
   },
   {
@@ -101,6 +103,8 @@ export const DEFAULT_KEYS: Record<Action, string> = {
   sideApp: "ctrl+h",
   sidePane: "ctrl+l",
   archive: "cmd+shift+a",
+  // As Safari's "Add to Reading List".
+  toInput: "cmd+shift+d",
   focusUrl: "cmd+l",
   back: "cmd+[",
   forward: "cmd+]",

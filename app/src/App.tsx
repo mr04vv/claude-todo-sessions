@@ -22,6 +22,7 @@ import {
   BROWSER_SWITCH_TAB_EVENT,
   BROWSER_CLOSE_TAB_EVENT,
   BROWSER_ARCHIVE_EVENT,
+  BROWSER_TO_INPUT_EVENT,
   OPEN_PALETTE_EVENT,
   FOCUS_APP_EVENT,
   PAGE_FOCUSED_EVENT,
@@ -2480,7 +2481,7 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
           }}
         />
         {onToInput && (
-          <button className="ghost small" title="このページを input に入れる（先に作った input にも、新しい input にも）" onClick={onToInput}>
+          <button className="ghost small" title={`このページを input に入れる（${keyLabel(keyOf("toInput"))}。先に作った input にも、新しい input にも）`} onClick={onToInput}>
             Input に追加
           </button>
         )}
@@ -4850,11 +4851,14 @@ export default function App() {
     });
   /// The page AddToInputDialog puts in an input: the 作業スペース's shown one.
   const [toInputPage, setToInputPage] = useState<{ url: string; title: string | null } | null>(null);
+  const toInputRef = useRef(() => {});
   const toInput = () => {
     if (!activeTab || activeTab.term || !/^https?:\/\//.test(activeTab.url)) return;
     setToInputPage({ url: activeTab.url, title: activeTab.title });
     setDialog("toInput");
   };
+  toInputRef.current = toInput;
+
   const addInputRef = useRef(addInputFrom);
   addInputRef.current = addInputFrom;
   const askFocusLinkRef = useRef(askFocusLink);
@@ -5137,6 +5141,7 @@ export default function App() {
       ),
       listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => !focusModeRef.current && closeShownRef.current()),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
+      listen<{ tab: string }>(BROWSER_TO_INPUT_EVENT, () => !focusModeRef.current && toInputRef.current()),
       listen(OPEN_PALETTE_EVENT, () => paletteRef.current()),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
@@ -5368,6 +5373,7 @@ export default function App() {
       }
       const run: [Action, () => unknown][] = [
         ["archive", () => archiveShownRef.current()],
+        ["toInput", () => toInputRef.current()],
         ["prevTab", () => switchRef.current(-1)],
         ["nextTab", () => switchRef.current(1)],
         // On the Input page it adds an input.

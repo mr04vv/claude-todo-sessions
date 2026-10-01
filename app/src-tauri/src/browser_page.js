@@ -1,7 +1,7 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
-// commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling, as
-// the user set them), right-click offers translation (WKWebView has no translate item),
+// commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling (and
+// picking a Google result), as the user set them), right-click offers translation (WKWebView has no translate item),
 // ⌥ + click keeps a link as an input todo, and X shows its bookmarks only.
 // It runs in the page's frames too (a doc's editor on claude.ai is one), but
 // there only passes the app's keys up to the page (FRAME): a frame must not
@@ -37,6 +37,7 @@
   const PREV_TAB = "todo-sessions://tab-prev";
   const NEXT_TAB = "todo-sessions://tab-next";
   const ARCHIVE = "todo-sessions://archive";
+  const TO_INPUT = "todo-sessions://to-input";
   const PALETTE = "todo-sessions://palette";
   const FOCUS_APP = "todo-sessions://focus-app";
   const FOCUS_PANE = "todo-sessions://focus-pane";
@@ -89,6 +90,7 @@
     ["prevTab", () => (location.href = PREV_TAB)],
     ["nextTab", () => (location.href = NEXT_TAB)],
     ["archive", () => (location.href = ARCHIVE)],
+    ["toInput", () => (location.href = TO_INPUT)],
     ["back", () => history.back()],
     ["forward", () => history.forward()],
     ["reload", () => location.reload()],
@@ -144,11 +146,34 @@
     }
     return document.scrollingElement ?? document.documentElement;
   };
+  // On a Google results page they pick a result instead: it takes the focus,
+  // so Enter opens it (⌘Enter in a new tab), as a link does.
+  const GOOGLE = /(^|\.)google\.[a-z.]+$/;
+  const PICKED = "todo-sessions-picked";
+  const onResults = () => !FRAME && GOOGLE.test(location.hostname) && location.pathname === "/search";
+  const results = () => [...new Set([...document.querySelectorAll("#search a h3")].map((h) => h.closest("a")))].filter((a) => a && a.offsetParent !== null);
+  const pickResult = (dir, smooth) => {
+    const list = results();
+    if (list.length === 0) return false;
+    if (!document.getElementById(PICKED)) {
+      const style = document.createElement("style");
+      style.id = PICKED;
+      style.textContent = `.${PICKED} { outline: 2px solid #5e6ad2 !important; outline-offset: 6px; border-radius: 6px; }`;
+      document.head.appendChild(style);
+    }
+    const at = list.findIndex((a) => a.classList.contains(PICKED));
+    const next = list[at === -1 ? (dir > 0 ? 0 : list.length - 1) : Math.min(Math.max(at + dir, 0), list.length - 1)];
+    list.forEach((a) => a.classList.toggle(PICKED, a === next));
+    next.focus({ preventScroll: true });
+    next.scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
+    return true;
+  };
   window.addEventListener("keydown", (e) => {
     if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement)) return;
     const dir = is(e, "down") ? 1 : is(e, "up") ? -1 : 0;
     if (!dir) return;
     e.preventDefault();
+    if (onResults() && pickResult(dir, !e.repeat)) return;
     scroller().scrollBy({ top: dir * SCROLL_STEP, behavior: e.repeat ? "auto" : "smooth" });
   });
 

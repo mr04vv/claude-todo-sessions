@@ -354,6 +354,8 @@ export const PAGE_FOCUSED_EVENT = "page-focused";
 export const OPEN_PALETTE_EVENT = "open-palette";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
+/** `{tab}` when a page asks to go into an input (⌘⇧D). */
+export const BROWSER_TO_INPUT_EVENT = "browser-to-input";
 /** When a page asks for a new tab (⌘T). */
 export const BROWSER_OPEN_NEW_TAB_EVENT = "browser-open-new-tab";
 /** `{tab}` when a page asks for the address bar (⌘L). */

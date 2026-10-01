@@ -1459,6 +1459,8 @@ fn focus_mode_script(on: bool) -> String {
 const OPEN_PALETTE_EVENT: &str = "open-palette";
 /// `{tab}` when a cloud session's page asks to archive it (⌘⇧A).
 const BROWSER_ARCHIVE_EVENT: &str = "browser-archive";
+/// `{tab}` when a page asks to go into an input (⌘⇧D).
+const BROWSER_TO_INPUT_EVENT: &str = "browser-to-input";
 
 #[derive(Clone, Serialize)]
 struct TabOnly {
@@ -1546,6 +1548,7 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 Some("tab-prev") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab: focus_tab.clone(), delta: -1 }),
                 Some("tab-next") => on_focus.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab: focus_tab.clone(), delta: 1 }),
                 Some("archive") => on_focus.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab: focus_tab.clone() }),
+                Some("to-input") => on_focus.emit(BROWSER_TO_INPUT_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("palette") => on_focus.emit(OPEN_PALETTE_EVENT, ()),
                 Some("focus-app") => on_focus.emit(FOCUS_APP_EVENT, TabOnly { tab: focus_tab.clone() }),
                 Some("focus-pane") => {
