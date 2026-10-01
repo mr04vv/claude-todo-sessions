@@ -2489,7 +2489,7 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
   const addChild = (title: string) =>
     run(() => api.createTodo({ title, parent_id: todo.id, repos: todo.repos.length === 1 && !todo.repos_derived ? todo.repos : [], cwd: todo.repos.length === 1 ? (todo.cwd ?? undefined) : undefined }));
   return (
-    <aside className="panel" aria-label={`#${todo.id} ${todo.title}`}>
+    <aside className="panel" aria-label={`#${todo.id} ${todo.title}`} onClick={stop}>
       <header className="panel-head">
         {parent && (
           <>
@@ -5290,7 +5290,7 @@ export default function App() {
   const todoPage = useRef<HTMLDivElement>(null);
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
   const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
-  useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode && !sideZone, selectedTodo !== null, {
+  const { setCursor: setTodoCursor } = useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode && !sideZone, selectedTodo !== null, {
     open: (id) => openTodo(id),
     select: openTodo,
     status: setStatusMenuFor,
@@ -5317,6 +5317,10 @@ export default function App() {
     toggleLane,
     isCollapsed: (lane) => collapsed.has(lane),
   });
+  // The keys act on the todo the sheet shows, however it was opened.
+  useEffect(() => {
+    if (selection?.kind === "todo") setTodoCursor(`todo:${selection.id}`);
+  }, [selection]); // eslint-disable-line react-hooks/exhaustive-deps
   const draggedTodo = dragging !== null ? allTodos.find((t) => t.id === dragging) : undefined;
   const reviewCount = prs?.review.length ?? 0;
   const unreadCount = board?.notifications.filter((n) => !n.read).length ?? 0;
@@ -5680,26 +5684,29 @@ export default function App() {
           {view === "prs" && (
             <PrsPage prs={prs} prsLoading={prsLoading} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} />
           )}
+          {panel === "todo" && selectedTodo && (
+            // A sheet over the Todo page, not a dialog: the pane stays, and j k go on to the next todo.
+            <div className="sheet-backdrop" onClick={() => setSelection(null)}>
+              <TodoPanel
+                todo={selectedTodo}
+                allTodos={allTodos}
+                local={local}
+                groups={groups}
+                skills={skillsByCwd[skillsKey] ?? []}
+                run={run}
+                report={report}
+                setStatus={setStatus}
+                onOpenTodo={openTodo}
+                onFocus={() => focusTodo(selectedTodo)}
+                onClose={() => setSelection(null)}
+              />
+            </div>
+          )}
         </main>
 
-        {panel && (
+        {(panel === "input" || panel === "session") && (
           <div className="side">
             <Resizer label="パネルの幅" cssVar="--panel-w" width={panelW} min={PANEL_MIN_W} max={() => maxPaneWidth(browserShown ? dockW : 0)} onResize={setPanelW} />
-        {panel === "todo" && selectedTodo && (
-          <TodoPanel
-            todo={selectedTodo}
-            allTodos={allTodos}
-            local={local}
-            groups={groups}
-            skills={skillsByCwd[skillsKey] ?? []}
-            run={run}
-            report={report}
-            setStatus={setStatus}
-            onOpenTodo={openTodo}
-            onFocus={() => focusTodo(selectedTodo)}
-            onClose={() => setSelection(null)}
-          />
-        )}
         {panel === "input" && selectedInput && (
           <InputPanel input={selectedInput} run={run} report={report} onFocus={() => focusInput(selectedInput)} onClose={() => setSelection(null)} />
         )}
