@@ -6,13 +6,14 @@ Todo Sessions は、todo と Claude Code のセッションをひとつの画面
 
 [![紹介動画](images/promo-poster.png)](promo.mp4)
 
-紹介動画：[promo.mp4](promo.mp4)（約1分・音声なし）
+紹介動画：[promo.mp4](promo.mp4)（約1分40秒・音声なし）
 
 ## できること
 
 - todo ごとに、紐づいた Claude Code のセッションの状態（入力待ち・実行中・待機中）が見えます
 - todo から、そのままセッションを始められます。始めたセッションは todo に自動で紐づきます
 - GitHub の PR や issue が進むと、todo のステータスも自動で進みます
+- PR リストから、レビュー依頼の /review をすぐ始められます
 - 入力待ちや作業の完了は通知で知らせます
 - 読みたい記事は「フォーカスモード」で、ChatGPT や Claude と並べて読めます
 - 操作はほとんどキーボードだけでできます
@@ -74,8 +75,17 @@ flowchart LR
 3. サブタスク。全部 Done になると、親の todo も Done になります
 4. 最初のプロンプト。`[todo:N]` は自動で付きます
 5. スキル。よく使うものが先に並びます
-6. 起動先。Cloud・Web / Cloud・Desktop / Local・Desktop / herdr（ターミナル）/ キュー から選びます
+6. 起動先。Cloud・Web / Cloud・Desktop / Local・Desktop / herdr / キュー から選びます（サイドバー左下の「ターミナル」をアプリ内にすると、herdr は「ターミナル」になります）
 7. モデルと effort を選んで開始します（⌘Enter でも始まります）
+
+開始すると、選んだ起動先でセッションが始まり、パネルの「セッション」に状態（実行中・待機中など）が出ます。
+
+![アプリ内ターミナルで動くセッション](images/terminal.png)
+
+- ターミナル：右のペインのタブで claude が動きます（「ターミナル」を Ghostty にしているときは herdr の新しいワークスペースで動きます）
+- Cloud・Web：claude.ai にセッションを作り、そのページを右のペインで開きます
+
+![Cloud のセッション](images/cloud.png)
 
 ### セッション
 
@@ -86,6 +96,20 @@ todo に紐づいたものも、紐づいていないものも、すべてのセ
 - 紐づいていないセッションは、ここで todo を作るか、既存の todo に紐づけます
 - 上の「起動待ち」がキューです
 - 待機中の Cloud セッションは、まとめてアーカイブできます
+
+### PR
+
+![PR リスト](images/pr.png)
+
+自分へのレビュー依頼と、自分の PR を並べます（`gh` で取得します）。
+
+- j / k で選んで Enter を押すと、「提出前に確認して開始」か「自動で提出まで行う」を選んでレビューを始めます。todo は作りません
+- レビューを始める場所（Cloud・Web / Cloud・Desktop / Local・Desktop / ターミナル）は、上のプルダウンで選びます
+- 選んだ PR は右のペインで開きます。自分の PR は「todo にする」で todo にできます
+
+![/review の様子](images/pr-review.png)
+
+「提出前に確認して開始」では、claude が指摘をまとめたあと、どの形（Request changes / Comment など）で提出するかを聞いてきます。このあいだセッションは入力待ちになります。
 
 ### 通知
 
