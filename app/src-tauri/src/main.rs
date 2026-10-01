@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use cts_core::launch::StartOptions;
-use cts_core::{launch, Db, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
+use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -143,6 +143,8 @@ struct SessionView {
 #[derive(Serialize)]
 struct Board {
     todos: Vec<TodoView>,
+    /// The Input page's reading material, apart from the todos.
+    inputs: Vec<Input>,
     inbox: Vec<SessionView>,
     /// Notifications posted, newest first, for the in-app list.
     notifications: Vec<cts_core::Notice>,
@@ -219,7 +221,7 @@ struct TodoUpdate {
 
 #[tauri::command(async)]
 fn board(state: State<AppState>) -> Result<Board, String> {
-    let (todos, inbox, notifications) = {
+    let (todos, inputs, inbox, notifications) = {
         let db = state.db.lock().map_err(err)?;
         let (mut sessions, mut links) = (db.sessions_by_todo().map_err(err)?, db.links_by_todo().map_err(err)?);
         let todos = db
@@ -235,7 +237,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             .into_iter()
             .filter(|s| s.state != SessionState::Ended && !archived.contains(&s.session_id))
             .collect();
-        (todos, inbox, db.notifications().map_err(err)?)
+        (todos, db.list_inputs().map_err(err)?, inbox, db.notifications().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -255,7 +257,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, inbox, notifications, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
+    Ok(Board { todos, inputs, inbox, notifications, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
 }
 
 #[tauri::command(async)]
@@ -508,6 +510,50 @@ fn open_link(url: String) -> Result<(), String> {
 /// Attaches a URL to a todo. The page's title and image are fetched in the
 /// background, so the link shows up at once and fills in on the next refresh.
 #[tauri::command(async)]
+fn create_input(state: State<AppState>, title: String) -> Result<Input, String> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err("タイトルを入れてください".into());
+    }
+    state.db.lock().map_err(err)?.create_input(title, None).map_err(err)
+}
+
+#[tauri::command(async)]
+fn update_input(state: State<AppState>, id: i64, update: InputPatch) -> Result<Input, String> {
+    state.db.lock().map_err(err)?.update_input(id, update).map_err(err)
+}
+
+#[tauri::command(async)]
+fn delete_input(state: State<AppState>, id: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.delete_input(id).map_err(err)
+}
+
+/// A page for an input; what it says about itself comes in the background, as for a todo's link.
+#[tauri::command(async)]
+fn add_input_link(app: AppHandle, input_id: i64, url: String) -> Result<cts_core::InputLink, String> {
+    let url = url.trim().to_string();
+    if !is_web_url(&url) {
+        return Err("http(s) の URL を入れてください".into());
+    }
+    let link = app.state::<AppState>().db.lock().map_err(err)?.add_input_link(input_id, &url).map_err(err)?;
+    let id = link.id;
+    std::thread::spawn(move || {
+        let Ok(meta) = cts_core::ogp::fetch(&url) else { return };
+        if let Ok(db) = app.state::<AppState>().db.lock() {
+            if let Err(e) = db.set_input_link_meta(id, meta.title.as_deref(), meta.image.as_deref()) {
+                eprintln!("{e}");
+            }
+        }
+    });
+    Ok(link)
+}
+
+#[tauri::command(async)]
+fn remove_input_link(state: State<AppState>, id: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.remove_input_link(id).map_err(err)
+}
+
+#[tauri::command(async)]
 fn add_link(app: AppHandle, todo_id: i64, url: String) -> Result<cts_core::Link, String> {
     let url = url.trim().to_string();
     if !is_web_url(&url) {
@@ -756,34 +802,63 @@ struct NoteStart {
     run: Option<TerminalRun>,
 }
 
+/// What the Input mode is open for: a todo (its pages) or an input.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(tag = "kind", content = "id", rename_all = "lowercase")]
+enum Subject {
+    Todo(i64),
+    Input(i64),
+}
+
 /// Starts a session that turns `urls` into a note (in `format`) for the
-/// todo: on Cloud, or locally where "herdr" sessions run (the in-app
-/// terminal, whose command comes back to run, or herdr behind the app).
+/// subject: on Cloud, or locally where "herdr" sessions run (the in-app
+/// terminal, whose command comes back to run, or herdr behind the app). A
+/// todo's session is linked to it; an input's is linked to nothing.
 #[tauri::command(async)]
-fn start_note(state: State<AppState>, todo_id: i64, urls: Vec<String>, format: launch::NoteFormat, cloud: bool) -> Result<NoteStart, String> {
+fn start_note(state: State<AppState>, subject: Subject, urls: Vec<String>, format: launch::NoteFormat, cloud: bool) -> Result<NoteStart, String> {
     if urls.is_empty() {
         return Err("ノートにするページを左に開いてください".into());
     }
-    let title = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?.title;
-    let body = Some(launch::note_prompt(&title, &urls, format));
     let opts = StartOptions::default();
+    let input_id = match subject {
+        Subject::Input(id) => id,
+        Subject::Todo(todo_id) => {
+            let title = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?.title;
+            let body = Some(launch::note_prompt(&title, &urls, format));
+            if cloud {
+                return Ok(NoteStart { session: launch_cloud(&state, todo_id, &opts, body)?, run: None });
+            }
+            if state.in_app_terminal.load(Ordering::Relaxed) {
+                let run = prepare_terminal(&state, todo_id, &opts, body)?;
+                return Ok(NoteStart { session: run.session.clone().unwrap_or_default(), run: Some(run) });
+            }
+            return Ok(NoteStart { session: launch_terminal(&state, todo_id, false, &opts, body)?, run: None });
+        }
+    };
+    let title = state.db.lock().map_err(err)?.get_input(input_id).map_err(err)?.ok_or("input が見つかりません")?.title;
+    let prompt = launch::note_prompt(&title, &urls, format);
     if cloud {
-        return Ok(NoteStart { session: launch_cloud(&state, todo_id, &opts, body)?, run: None });
+        let db = state.db.lock().map_err(err)?;
+        return Ok(NoteStart { session: cts_core::cloud::create_loose_session(&db, &title, &prompt)?, run: None });
     }
+    let run = quick_run(Some(&prompt), None, Some(title));
+    let session = run.session.clone().unwrap_or_default();
     if state.in_app_terminal.load(Ordering::Relaxed) {
-        let run = prepare_terminal(&state, todo_id, &opts, body)?;
-        return Ok(NoteStart { session: run.session.clone().unwrap_or_default(), run: Some(run) });
+        return Ok(NoteStart { session, run: Some(run) });
     }
-    Ok(NoteStart { session: launch_terminal(&state, todo_id, false, &opts, body)?, run: None })
+    start_in_herdr(&state, &run.cwd, &run.title, &run.command, false).or_else(|herdr_err| {
+        start_in_ghostty(&run.cwd, &format!("cd {} && {}", shell_quote(&run.cwd), run.command)).map_err(|e| format!("{herdr_err} / {e}"))
+    })?;
+    Ok(NoteStart { session, run: None })
 }
 
 /// Title the note's link gets, in place of its page's (which needs a login).
 const NOTE_TITLE: &str = "ノート";
 
-/// The note session `session_id` published for the todo, once it has; it is
-/// kept as one of the todo's links from then on.
+/// The note session `session_id` published for the subject, once it has; it
+/// is kept as one of its links from then on.
 #[tauri::command(async)]
-fn note_url(state: State<AppState>, todo_id: i64, session_id: String) -> Result<Option<String>, String> {
+fn note_url(state: State<AppState>, subject: Subject, session_id: String) -> Result<Option<String>, String> {
     let text = if launch::is_cloud_session(&session_id) {
         serde_json::to_string(&cts_core::cloud::recent_entries(&session_id)?).map_err(err)?
     } else {
@@ -791,9 +866,20 @@ fn note_url(state: State<AppState>, todo_id: i64, session_id: String) -> Result<
     };
     let Some(url) = cts_core::transcript::note_url(&text) else { return Ok(None) };
     let db = state.db.lock().map_err(err)?;
-    if !db.links_for(todo_id).map_err(err)?.iter().any(|l| l.url == url) {
-        let link = db.add_link(todo_id, &url).map_err(err)?;
-        db.set_link_meta(link.id, Some(NOTE_TITLE), None).map_err(err)?;
+    match subject {
+        Subject::Todo(id) => {
+            if !db.links_for(id).map_err(err)?.iter().any(|l| l.url == url) {
+                let link = db.add_link(id, &url).map_err(err)?;
+                db.set_link_meta(link.id, Some(NOTE_TITLE), None).map_err(err)?;
+            }
+        }
+        Subject::Input(id) => {
+            let input = db.get_input(id).map_err(err)?.ok_or("input が見つかりません")?;
+            if !input.links.iter().any(|l| l.url == url) {
+                let link = db.add_input_link(id, &url).map_err(err)?;
+                db.set_input_link_meta(link.id, Some(NOTE_TITLE), None).map_err(err)?;
+            }
+        }
     }
     Ok(Some(url))
 }
@@ -2152,6 +2238,11 @@ fn main() {
             set_in_app_terminal,
             start_note,
             note_url,
+            create_input,
+            update_input,
+            delete_input,
+            add_input_link,
+            remove_input_link,
             page_title,
             terminal::term_open,
             terminal::term_write,

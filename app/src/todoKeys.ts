@@ -13,7 +13,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { matches } from "./keymap";
 
 export interface TodoKeyActions {
-  /// Enter: the todo's panel (an input todo: the focus mode).
+  /// Enter: the todo's panel.
   open: (todoId: number) => void;
   /// The panel following the cursor, while it is open.
   select: (todoId: number) => void;

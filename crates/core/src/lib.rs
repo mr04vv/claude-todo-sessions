@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 pub enum Error {
     Sql(rusqlite::Error),
     TodoNotFound(i64),
+    InputNotFound(i64),
     SessionNotFound(String),
     /// Subtasks go one level deep: why this parent cannot be set.
     InvalidParent(String),
@@ -31,6 +32,7 @@ impl std::fmt::Display for Error {
         match self {
             Error::Sql(e) => write!(f, "sqlite: {e}"),
             Error::TodoNotFound(id) => write!(f, "todo {id} not found"),
+            Error::InputNotFound(id) => write!(f, "input {id} not found"),
             Error::SessionNotFound(id) => write!(f, "session {id} not found"),
             Error::InvalidParent(why) => write!(f, "{why}"),
         }
@@ -66,8 +68,6 @@ pub enum Kind {
     #[default]
     Implementation,
     Research,
-    /// Material to take in (an article, a book's chapter), read in the focus mode.
-    Input,
 }
 
 /// Skill that drills into the details before implementing.
@@ -79,13 +79,11 @@ impl Kind {
         match self {
             Kind::Implementation => "implementation",
             Kind::Research => "research",
-            Kind::Input => "input",
         }
     }
     fn parse(s: Option<String>) -> Kind {
         match s.as_deref() {
             Some("research") => Kind::Research,
-            Some("input") => Kind::Input,
             _ => Kind::Implementation,
         }
     }
@@ -174,7 +172,6 @@ impl Todo {
         let head = match self.kind {
             Kind::Implementation => format!("{GRILLING_COMMAND} {}", self.title),
             Kind::Research => format!("調査: {}", self.title),
-            Kind::Input => format!("インプット: {}", self.title),
         };
         let mut body = head;
         if let Some(m) = memo {
@@ -198,6 +195,39 @@ pub struct NewTodo {
     pub cwd: Option<String>,
     pub memo: Option<String>,
     pub repos: Vec<String>,
+}
+
+/// Material to take in (an article, a book's chapter), read in the Input
+/// mode: apart from the todos, with no status or sessions of its own.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Input {
+    pub id: i64,
+    pub title: String,
+    pub memo: Option<String>,
+    /// Read already: kept, out of the way.
+    pub done: bool,
+    pub updated_at: i64,
+    /// Its pages (and its note), in the order they were added.
+    pub links: Vec<InputLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InputLink {
+    pub id: i64,
+    pub input_id: i64,
+    pub url: String,
+    pub title: Option<String>,
+    pub image: Option<String>,
+    pub created_at: i64,
+}
+
+/// None leaves a field unchanged; an empty memo clears it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct InputPatch {
+    pub title: Option<String>,
+    pub memo: Option<String>,
+    pub done: Option<bool>,
 }
 
 #[derive(Debug, Default)]
@@ -354,9 +384,26 @@ CREATE TABLE IF NOT EXISTS links (
     image TEXT,
     created_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS inputs (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    memo TEXT,
+    done INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS input_links (
+    id INTEGER PRIMARY KEY,
+    input_id INTEGER NOT NULL REFERENCES inputs(id) ON DELETE CASCADE,
+    url TEXT NOT NULL,
+    title TEXT,
+    image TEXT,
+    created_at INTEGER NOT NULL
+);
 ";
 
 const LINK_COLS: &str = "id, todo_id, url, title, image, created_at";
+const INPUT_COLS: &str = "id, title, memo, done, updated_at";
+const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER)";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at)";
@@ -430,6 +477,10 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
     })
 }
 
+fn input_link_from_row(r: &Row) -> rusqlite::Result<InputLink> {
+    Ok(InputLink { id: r.get(0)?, input_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
+}
+
 fn link_from_row(r: &Row) -> rusqlite::Result<Link> {
     Ok(Link { id: r.get(0)?, todo_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
 }
@@ -497,6 +548,18 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             create = TODOS_TABLE.replace("{name}", "todos_new"),
         ))?;
     }
+    // Inputs were todos of kind 'input' once: they move to their own table
+    // with their ids (the app keeps their Input mode pages by id) and pages.
+    conn.execute_batch(
+        "BEGIN;
+         INSERT INTO inputs (id, title, memo, done, updated_at)
+             SELECT id, title, memo, status = 'done', updated_at FROM todos WHERE kind = 'input';
+         INSERT INTO input_links (input_id, url, title, image, created_at)
+             SELECT todo_id, url, title, image, created_at FROM links
+             WHERE todo_id IN (SELECT id FROM todos WHERE kind = 'input') ORDER BY id;
+         DELETE FROM todos WHERE kind = 'input';
+         COMMIT;",
+    )?;
     Ok(())
 }
 
@@ -660,6 +723,83 @@ impl Db {
             by_todo.entry(link.todo_id).or_default().push(link);
         }
         Ok(by_todo)
+    }
+
+    pub fn create_input(&self, title: &str, memo: Option<&str>) -> Result<Input> {
+        self.conn.execute("INSERT INTO inputs (title, memo, updated_at) VALUES (?1, ?2, ?3)", params![title, memo, now()])?;
+        let id = self.conn.last_insert_rowid();
+        self.get_input(id)?.ok_or(Error::InputNotFound(id))
+    }
+
+    pub fn get_input(&self, id: i64) -> Result<Option<Input>> {
+        let row = self
+            .conn
+            .query_row(&format!("SELECT {INPUT_COLS} FROM inputs WHERE id = ?1"), [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .optional()?;
+        let Some((id, title, memo, done, updated_at)) = row else { return Ok(None) };
+        let links = self.input_links(Some(id))?;
+        Ok(Some(Input { id, title, memo, done, updated_at, links }))
+    }
+
+    /// Every input, the latest changed first.
+    pub fn list_inputs(&self) -> Result<Vec<Input>> {
+        let mut by_input: std::collections::HashMap<i64, Vec<InputLink>> = std::collections::HashMap::new();
+        for link in self.input_links(None)? {
+            by_input.entry(link.input_id).or_default().push(link);
+        }
+        let mut stmt = self.conn.prepare(&format!("SELECT {INPUT_COLS} FROM inputs ORDER BY updated_at DESC, id DESC"))?;
+        let rows = stmt.query_map([], |r| {
+            let id: i64 = r.get(0)?;
+            Ok(Input { id, title: r.get(1)?, memo: r.get(2)?, done: r.get(3)?, updated_at: r.get(4)?, links: by_input.remove(&id).unwrap_or_default() })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The links of one input, or of all, in the order they were added.
+    fn input_links(&self, input_id: Option<i64>) -> Result<Vec<InputLink>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT {INPUT_LINK_COLS} FROM input_links WHERE ?1 IS NULL OR input_id = ?1 ORDER BY id"))?;
+        let rows = stmt.query_map([input_id], input_link_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn update_input(&self, id: i64, p: InputPatch) -> Result<Input> {
+        let memo = p.memo.map(|m| m.trim().to_string());
+        let changed = self.conn.execute(
+            "UPDATE inputs SET title = COALESCE(?2, title), memo = CASE WHEN ?3 IS NULL THEN memo ELSE NULLIF(?3, '') END,
+                 done = COALESCE(?4, done), updated_at = ?5 WHERE id = ?1",
+            params![id, p.title, memo, p.done, now()],
+        )?;
+        if changed == 0 {
+            return Err(Error::InputNotFound(id));
+        }
+        self.get_input(id)?.ok_or(Error::InputNotFound(id))
+    }
+
+    pub fn delete_input(&self, id: i64) -> Result<()> {
+        match self.conn.execute("DELETE FROM inputs WHERE id = ?1", [id])? {
+            0 => Err(Error::InputNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn add_input_link(&self, input_id: i64, url: &str) -> Result<InputLink> {
+        let created_at = now();
+        if self.conn.execute("UPDATE inputs SET updated_at = ?2 WHERE id = ?1", params![input_id, created_at])? == 0 {
+            return Err(Error::InputNotFound(input_id));
+        }
+        self.conn.execute("INSERT INTO input_links (input_id, url, created_at) VALUES (?1, ?2, ?3)", params![input_id, url, created_at])?;
+        Ok(InputLink { id: self.conn.last_insert_rowid(), input_id, url: url.into(), title: None, image: None, created_at })
+    }
+
+    /// Records what the input's page says about itself.
+    pub fn set_input_link_meta(&self, id: i64, title: Option<&str>, image: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE input_links SET title = ?2, image = ?3 WHERE id = ?1", params![id, title, image])?;
+        Ok(())
+    }
+
+    pub fn remove_input_link(&self, id: i64) -> Result<()> {
+        self.conn.execute("DELETE FROM input_links WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     pub fn links_for(&self, todo_id: i64) -> Result<Vec<Link>> {

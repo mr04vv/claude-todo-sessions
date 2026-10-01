@@ -53,6 +53,31 @@ export interface Link {
   created_at: number;
 }
 
+/** Material to read in the Input mode, apart from the todos. */
+export interface Input {
+  id: number;
+  title: string;
+  memo: string | null;
+  /** Read already. */
+  done: boolean;
+  updated_at: number;
+  /** Its pages and its note, in the order added. */
+  links: InputLink[];
+}
+
+/** A page of an input; like a todo's Link, its title and image come later. */
+export interface InputLink {
+  id: number;
+  input_id: number;
+  url: string;
+  title: string | null;
+  image: string | null;
+  created_at: number;
+}
+
+/** What the Input mode is open for: a todo's pages, or an input. */
+export type Subject = { kind: "todo"; id: number } | { kind: "input"; id: number };
+
 /** What a page asked onto the focus mode's left is judged against. */
 export interface FocusAsk {
   /** The todo the focus mode was opened for, and its memo. */
@@ -77,7 +102,7 @@ export const JEV_NO_KEY = "Jev の API キーが設定されていません";
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
 export type Runner = "auto" | "cloud" | "local";
-export type Kind = "implementation" | "research" | "input";
+export type Kind = "implementation" | "research";
 
 /** A notification the app posted, kept for the in-app list. */
 export interface Notice {
@@ -94,6 +119,7 @@ export interface Notice {
 
 export interface Board {
   todos: Todo[];
+  inputs: Input[];
   inbox: Session[];
   /** Newest first. */
   notifications: Notice[];
@@ -264,9 +290,14 @@ export const api = {
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   /// A session making the focus mode's note of `urls` for the todo; locally, the
   /// in-app terminal gets the command to run (`run`), herdr runs it itself.
-  startNote: (todoId: number, urls: string[], format: NoteFormat, cloud: boolean) => invoke<NoteStart>("start_note", { todoId, urls, format, cloud }),
+  startNote: (subject: Subject, urls: string[], format: NoteFormat, cloud: boolean) => invoke<NoteStart>("start_note", { subject, urls, format, cloud }),
   /// The note the session published, once it has (kept as a link of the todo).
-  noteUrl: (todoId: number, sessionId: string) => invoke<string | null>("note_url", { todoId, sessionId }),
+  noteUrl: (subject: Subject, sessionId: string) => invoke<string | null>("note_url", { subject, sessionId }),
+  createInput: (title: string) => invoke<Input>("create_input", { title }),
+  updateInput: (id: number, update: { title?: string; memo?: string; done?: boolean }) => invoke<Input>("update_input", { id, update }),
+  deleteInput: (id: number) => invoke<void>("delete_input", { id }),
+  addInputLink: (inputId: number, url: string) => invoke<InputLink>("add_input_link", { inputId, url }),
+  removeInputLink: (id: number) => invoke<void>("remove_input_link", { id }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
   startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),

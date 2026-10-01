@@ -42,7 +42,9 @@ import {
   JEV_NO_KEY,
   MODELS,
   type Board,
+  type Input,
   type NoteFormat,
+  type Subject,
   type Issue,
   type HerdrSessions,
   type Limit,
@@ -346,10 +348,12 @@ const DOCK_MIN_W = 360;
 const DOCK_DEFAULT_SHARE = 0.44;
 /// The Input mode: the page a new space shows on the right, and that side's width.
 const FOCUS_RIGHT_KEY = "focusRight";
-/// Each input todo's space, saved to be resumed (SavedSpace by todo id).
+/// Each subject's space, saved to be resumed (SavedSpace by subjectKey).
 const INPUT_SPACES_KEY = "inputSpaces";
-/// The space of pages picked without a todo; it closes with the Input mode.
-const FREE_SPACE = 0;
+/// The space of pages picked without a todo or an input; it closes with the Input mode.
+const FREE_SPACE = "free";
+/// A subject's spaces and notes are kept under this (letters and digits, as tab ids are).
+const subjectKey = (s: Subject | null) => (s === null ? FREE_SPACE : `${s.kind === "todo" ? "t" : "i"}${s.id}`);
 const FOCUS_RIGHT_W_KEY = "focusRightWidth";
 const FOCUS_RIGHT_SHARE = 0.45;
 /// The focus mode's note: an artifact (a doc, page, deck or design) a
@@ -375,7 +379,7 @@ const NOTE_POLL_MS = 5000;
 /// The right pages a space may show.
 const RIGHT_KINDS = [NOTE_TAB, "pinchatgpt", "pinclaude", "pinnotion"];
 /// A space's tab for a right page (ids are letters and digits only).
-const rightTabId = (space: number, kind: string) => `s${space}${kind}`;
+const rightTabId = (space: string, kind: string) => `s${space}${kind}`;
 const newSpace = (right: string): InputSpace => ({ lefts: [], active: null, right, pages: [], accepted: [], rightUrls: {} });
 /// Where the focus mode's right pages may go (address prefixes), with the
 /// sign-in pages they send to.
@@ -970,9 +974,8 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
         {urgent && <StateBadge state={urgent} />}
       </div>
       <div className="card-title">{todo.title}</div>
-      {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner || todo.kind === "input") && (
+      {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner) && (
         <div className="card-foot">
-          {todo.kind === "input" && <span className="tag">input</span>}
           <GhChip todo={todo} report={report} />
           {rel && <span className="tag">{rel}</span>}
           {todo.queue_runner && <span className={`tag${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "起動待ち"}</span>}
@@ -1057,10 +1060,8 @@ interface TodoFilter {
   statuses: Status[];
   places: string[];
   waiting: boolean;
-  /// Leaves the input todos (reading material) to their own page.
-  hideInput: boolean;
 }
-const NO_FILTER: TodoFilter = { text: "", statuses: [], places: [], waiting: false, hideInput: false };
+const NO_FILTER: TodoFilter = { text: "", statuses: [], places: [], waiting: false };
 /// The kanban's and the list's filters, each its own.
 const TODO_FILTERS_KEY = "todoFilters";
 /// Filters kept under a name, listed in the sidebar and ⌘K; each opens the
@@ -1072,7 +1073,7 @@ interface SavedFilter {
   layout: Layout;
 }
 const SAVED_FILTERS_KEY = "savedFilters";
-const filterCount = (f: TodoFilter) => (f.text.trim() ? 1 : 0) + f.statuses.length + f.places.length + (f.waiting ? 1 : 0) + (f.hideInput ? 1 : 0);
+const filterCount = (f: TodoFilter) => (f.text.trim() ? 1 : 0) + f.statuses.length + f.places.length + (f.waiting ? 1 : 0);
 const sameFilter = (a: TodoFilter, b: TodoFilter) => JSON.stringify(a) === JSON.stringify(b);
 function matchesFilter(t: Todo, f: TodoFilter) {
   const words = f.text.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -1081,8 +1082,7 @@ function matchesFilter(t: Todo, f: TodoFilter) {
     words.every((w) => hay.includes(w)) &&
     (f.statuses.length === 0 || f.statuses.includes(t.status)) &&
     (f.places.length === 0 || f.places.includes(laneKey(t.repos))) &&
-    (!f.waiting || liveSessions(t).some((s) => s.state === "needs_input")) &&
-    (!f.hideInput || t.kind !== "input")
+    (!f.waiting || liveSessions(t).some((s) => s.state === "needs_input"))
   );
 }
 
@@ -1142,10 +1142,6 @@ function TodoFilterBar({ filter, version, places, onChange, onSave }: {
             <label className="toggle">
               <input type="checkbox" checked={filter.waiting} onChange={() => onChange({ ...filter, waiting: !filter.waiting })} />
               入力待ちだけ
-            </label>
-            <label className="toggle">
-              <input type="checkbox" checked={filter.hideInput} onChange={() => onChange({ ...filter, hideInput: !filter.hideInput })} />
-              input を隠す
             </label>
             <div className="filter-actions">
               {naming ? (
@@ -1298,7 +1294,6 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
                 <StatusIcon status={t.status} />
                 <span className="mono muted ref">{todoRef(t)}</span>
                 <span className="row-title">{t.title}</span>
-                {t.kind === "input" && <span className="tag">input</span>}
                 {urgent && <StateBadge state={urgent} />}
                 <GhChip todo={t} report={report} />
                 {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
@@ -1691,13 +1686,13 @@ interface BrowserTab {
   pinned?: boolean;
   /// The Input mode's own page (on its left or right), apart from the pane's tabs.
   focus?: boolean;
-  /// The Input mode's space it belongs to (InputSpace's key).
-  space?: number;
+  /// The Input mode's space it belongs to (InputSpace's key, subjectKey).
+  space?: string;
   /// On the right: which page it is (a FOCUS_PAGES id or NOTE_TAB).
   kind?: string;
 }
 
-/// One Input mode space: the pages a todo (or FREE_SPACE) has open on the
+/// One Input mode space: the pages a todo or an input (or FREE_SPACE) has open on the
 /// left and right, kept while the app runs (hidden while another is shown).
 interface InputSpace {
   /// Tab ids on the left (its own pages, and the pane's terminals), and the one shown.
@@ -1712,7 +1707,7 @@ interface InputSpace {
   rightUrls: Record<string, string>;
 }
 
-/// What is kept of a todo's space across restarts (INPUT_SPACES_KEY).
+/// What is kept of a subject's space across restarts (INPUT_SPACES_KEY).
 interface SavedSpace {
   lefts: { url: string; title: string | null }[];
   active: number;
@@ -3362,32 +3357,28 @@ const NOTICE_STATE: Record<Notice["kind"], string> = {
   review_requested: "state-review",
 };
 
-/// The notifications not dealt with yet; opening or dismissing one takes it off.
-/// The input todos: reading material, each opening in the focus mode with its
-/// page on the left. A URL here, or ⌥-clicking a link in the browser, adds one.
-function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
-  todos: Todo[];
+/// The inputs: reading material, apart from the todos, each opening in the
+/// Input mode with its pages on the left. A URL here, the dialog, or
+/// ⌥-clicking a link in the browser adds one.
+function InputsPage({ inputs: all, resumable, run, onFocus, onDetail, onAdd }: {
+  inputs: Input[];
   /// The dialog adding one.
   onAdd: () => void;
-  /// Todos whose Input mode space is kept, to go on where it was left.
+  /// Inputs whose Input mode pages are kept, to go on where they were left.
   resumable: Set<number>;
   run: (f: () => Promise<unknown>) => void;
-  onFocus: (todo: Todo) => void;
+  onFocus: (input: Input) => void;
   onDetail: (id: number) => void;
 }) {
   const [showDone, setShowDone] = useState(false);
-  const inputs = todos.filter((t) => t.kind === "input").sort((a, b) => b.updated_at - a.updated_at);
-  const rows = inputs.filter((t) => showDone || t.status !== "done");
-  const done = inputs.length - inputs.filter((t) => t.status !== "done").length;
-  // The note (NOTE_PAGE) is not one of the pages to read.
-  const pagesOf = (t: Todo) => t.links.filter((l) => !NOTE_PAGE.test(l.url));
-  const pageOf = (t: Todo) => pagesOf(t)[0]?.url ?? t.pr_url ?? t.issue_url;
-  // ↑↓ or j k pick one, Enter opens it in the focus mode, ⌥Enter its panel.
+  const rows = all.filter((i) => showDone || !i.done);
+  const done = all.filter((i) => i.done).length;
+  // ↑↓ or j k pick one, Enter opens it in the Input mode, ⌥Enter its panel.
   const { cursorId, setCursor, list } = useRowCursor(
-    rows.map((t) => String(t.id)),
+    rows.map((i) => String(i.id)),
     (id, alt) => {
-      const todo = rows.find((t) => String(t.id) === id);
-      if (todo) (alt ? onDetail(todo.id) : onFocus(todo));
+      const input = rows.find((i) => String(i.id) === id);
+      if (input) (alt ? onDetail(input.id) : onFocus(input));
     },
   );
   /// One input for all the URLs typed; false when there is none.
@@ -3400,7 +3391,7 @@ function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
     <>
       <header className="toolbar">
         <h1>Input</h1>
-        <span className="muted">{inputs.length - done}</span>
+        <span className="muted">{all.length - done}</span>
         <input
           className="filter-search input-add"
           placeholder="URL（いくつでも）とタイトルを入れて Enter で追加"
@@ -3418,7 +3409,7 @@ function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
         <span className="grow" />
         {done > 0 && (
           <button className={`filter${showDone ? " on" : ""}`} aria-pressed={showDone} onClick={() => setShowDone((v) => !v)}>
-            Done も表示 {done}
+            読み終わったものも表示 {done}
           </button>
         )}
         <button className="primary" onClick={onAdd}>
@@ -3427,29 +3418,37 @@ function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
       </header>
       <div className="content" ref={list}>
         {rows.length === 0 && (
-          <p className="muted empty">まだありません。ブラウザでリンクを ⌥ + クリックするか、上に URL を入れると追加されます。URL をいくつか入れると 1 件にまとまり、Input モードで全部左に開きます。</p>
+          <p className="muted empty">まだありません。「新しい input」か、上に URL を入れるか、ブラウザでリンクを ⌥ + クリックすると追加されます。URL をいくつか入れると 1 件にまとまり、Input モードで全部左に開きます。</p>
         )}
         <ul className="rows">
-          {rows.map((t) => {
-            const page = pageOf(t);
+          {rows.map((i) => {
+            const pages = pagesOf(i);
             return (
               <li
-                key={t.id}
-                data-row={t.id}
-                className={`row${String(t.id) === cursorId ? " cursor" : ""}${t.status === "done" ? " done" : ""}`}
-                onClick={() => (setCursor(String(t.id)), onFocus(t))}
+                key={i.id}
+                data-row={i.id}
+                className={`row${String(i.id) === cursorId ? " cursor" : ""}${i.done ? " done" : ""}`}
+                onClick={() => (setCursor(String(i.id)), onFocus(i))}
               >
-                <StatusIcon status={t.status} />
-                <span className="row-title">{t.title}</span>
-                {page && <span className="muted mono ellipsis">{hostOf(page)}</span>}
-                {pagesOf(t).length > 1 && <span className="tag">{pagesOf(t).length} ページ</span>}
-                {resumable.has(t.id) && (
+                <button
+                  className="ghost icon"
+                  aria-label={i.done ? `${i.title} を読み終わっていないことにする` : `${i.title} を読み終わったことにする`}
+                  title={i.done ? "読み終わっていないことにする" : "読み終わった"}
+                  onClick={(e) => (e.stopPropagation(), run(() => api.updateInput(i.id, { done: !i.done })))}
+                >
+                  <StatusIcon status={i.done ? "done" : "todo"} />
+                </button>
+                <span className="row-title">{i.title}</span>
+                {pages[0] && <span className="muted mono ellipsis">{hostOf(pages[0].url)}</span>}
+                {pages.length > 1 && <span className="tag">{pages.length} ページ</span>}
+                {i.links.some((l) => NOTE_PAGE.test(l.url)) && <span className="tag">ノート</span>}
+                {resumable.has(i.id) && (
                   <span className="tag" title="開くと、前に開いていたページの続きから始まります">
                     続き
                   </span>
                 )}
-                <span className="muted when">{ago(t.updated_at)}</span>
-                <button className="ghost icon" aria-label={`${t.title} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onDetail(t.id))}>
+                <span className="muted when">{ago(i.updated_at)}</span>
+                <button className="ghost icon" aria-label={`${i.title} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onDetail(i.id))}>
                   <Icon name="more" size={14} />
                 </button>
               </li>
@@ -3458,6 +3457,88 @@ function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
         </ul>
       </div>
     </>
+  );
+}
+
+/// An input's pages to read: its links but its note (NOTE_PAGE).
+const pagesOf = <L extends { url: string }>(i: { links: L[] }) => i.links.filter((l) => !NOTE_PAGE.test(l.url));
+
+/// An input's panel (InputsPage's ⌥Enter and …): its title, memo and pages,
+/// read or not, and deleting it.
+function InputPanel({ input, run, report, onFocus, onClose }: {
+  input: Input;
+  run: (f: () => Promise<unknown>) => void;
+  report: (e: unknown) => void;
+  onFocus: () => void;
+  onClose: () => void;
+}) {
+  const [deleting, setDeleting] = useState(false);
+  useEffect(() => setDeleting(false), [input.id]);
+  const update = (u: Parameters<typeof api.updateInput>[1]) => run(() => api.updateInput(input.id, u));
+  const note = input.links.find((l) => NOTE_PAGE.test(l.url));
+  return (
+    <aside className="panel" aria-label={input.title}>
+      <header className="panel-head">
+        <span className="muted">input</span>
+        <span className="grow" />
+        <button className="ghost small" title="Input モードで開く（Enter）" onClick={onFocus}>
+          Input モード
+        </button>
+        <button className="ghost small" onClick={() => setDeleting(true)}>
+          削除
+        </button>
+        <button className="ghost icon" aria-label="閉じる" onClick={onClose}>
+          <Icon name="close" size={14} />
+        </button>
+      </header>
+      {deleting && (
+        <div className="notice danger-notice">
+          <span>「{input.title}」を削除しますか？ ノートは claude.ai に残ります。</span>
+          <button className="danger" onClick={() => run(async () => (await api.deleteInput(input.id), onClose()))}>
+            削除する
+          </button>
+          <button className="ghost" onClick={() => setDeleting(false)}>
+            やめる
+          </button>
+        </div>
+      )}
+      <InlineInput className="panel-title" value={input.title} label="タイトル" placeholder="タイトル" required onSave={(title) => update({ title: title.trim() })} />
+      <div className="panel-body">
+        <label className="toggle">
+          <input type="checkbox" checked={input.done} onChange={() => update({ done: !input.done })} />
+          読み終わった
+        </label>
+        <section>
+          <h3>メモ</h3>
+          <MemoEditor value={input.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
+        </section>
+        <section>
+          <h3>
+            ページ <span className="muted">{pagesOf(input).length}</span>
+          </h3>
+          <ul className="rows compact">
+            {pagesOf(input).map((l) => (
+              <li key={l.id} className="row">
+                <span className="row-title ellipsis" title={l.url}>
+                  {l.title || l.url}
+                </span>
+                <span className="muted mono ellipsis">{hostOf(l.url)}</span>
+                <button className="ghost icon" aria-label={`${l.title || l.url} を外す`} onClick={() => run(() => api.removeInputLink(l.id))}>
+                  <Icon name="close" size={12} />
+                </button>
+              </li>
+            ))}
+          </ul>
+          <SubmitInput placeholder="URL を貼って Enter で追加" onSubmit={(url) => run(() => api.addInputLink(input.id, url))} />
+        </section>
+        {note && (
+          <section>
+            <h3>ノート</h3>
+            <p className="muted mono ellipsis">{note.url}</p>
+          </section>
+        )}
+      </div>
+    </aside>
   );
 }
 
@@ -3482,13 +3563,13 @@ async function inputTitle(urls: string[], given: string) {
   return title || hostOf(urls[0]);
 }
 
-/// Adds an input todo with `urls` as its links, in that order; it comes back
-/// with them (to open it before the board catches up).
-async function addInput(urls: string[], title: string): Promise<Todo> {
-  const todo = await api.createTodo({ title, kind: "input" });
+/// Adds an input with `urls` as its pages, in that order; it comes back with
+/// them (to open it before the board catches up).
+async function addInput(urls: string[], title: string): Promise<Input> {
+  const input = await api.createInput(title);
   const links = [];
-  for (const url of urls) links.push(await api.addLink(todo.id, url));
-  return { ...todo, links };
+  for (const url of urls) links.push(await api.addInputLink(input.id, url));
+  return { ...input, links };
 }
 
 /// The PR of a review request's notice: its URL, and the title it was posted with (`owner/repo#n title`).
@@ -3705,11 +3786,11 @@ function AddInputDialog({ openPages, run, onClose, onOpen }: {
   openPages: { url: string; title: string | null; shown: boolean }[];
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
-  onOpen: (todo: Todo) => void;
+  onOpen: (input: Input) => void;
 }) {
   const [title, setTitle] = useState("");
   const [pages, setPages] = useState("");
-  const [added, setAdded] = useState<Todo[]>([]);
+  const [added, setAdded] = useState<Input[]>([]);
   const pagesRef = useRef<HTMLTextAreaElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   useEffect(() => titleRef.current?.focus(), []);
@@ -3825,8 +3906,8 @@ function AddInputDialog({ openPages, run, onClose, onOpen }: {
 /// new one: ↑↓ (⌃j ⌃k) pick, Enter puts it there; the words typed narrow them.
 function AddToInputDialog({ page, inputs, run, onDone, onClose }: {
   page: { url: string; title: string | null };
-  /// The input todos not done, the latest first.
-  inputs: Todo[];
+  /// The inputs not read yet, the latest first.
+  inputs: Input[];
   run: (f: () => Promise<unknown>) => void;
   /// Told what the page went into.
   onDone: (title: string) => void;
@@ -3836,13 +3917,13 @@ function AddToInputDialog({ page, inputs, run, onDone, onClose }: {
   const [active, setActive] = useState(0);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = inputs.filter((t) => words.every((w) => t.title.toLowerCase().includes(w)));
-  const has = (t: Todo) => t.links.some((l) => l.url === page.url);
+  const has = (t: Input) => t.links.some((l) => l.url === page.url);
   // The new input comes last, as one more choice.
   const count = shown.length + 1;
-  const put = (t: Todo | undefined) =>
+  const put = (t: Input | undefined) =>
     run(async () => {
       if (t) {
-        if (!has(t)) await api.addLink(t.id, page.url);
+        if (!has(t)) await api.addInputLink(t.id, page.url);
         onDone(t.title);
       } else {
         const todo = await addInput([page.url], page.title || (await inputTitle([page.url], "")));
@@ -3876,7 +3957,7 @@ function AddToInputDialog({ page, inputs, run, onDone, onClose }: {
         {shown.map((t, i) => (
           <li key={t.id} role="option" aria-selected={i === active} className={`row${i === active ? " cursor" : ""}`} onMouseEnter={() => setActive(i)} onClick={() => put(t)}>
             <span className="row-title">{t.title}</span>
-            {has(t) ? <span className="tag">追加済み</span> : <span className="muted">{t.links.filter((l) => !NOTE_PAGE.test(l.url)).length} ページ</span>}
+            {has(t) ? <span className="tag">追加済み</span> : <span className="muted">{pagesOf(t).length} ページ</span>}
           </li>
         ))}
         <li role="option" aria-selected={active === shown.length} className={`row${active === shown.length ? " cursor" : ""}`} onMouseEnter={() => setActive(shown.length)} onClick={() => put(undefined)}>
@@ -4039,7 +4120,14 @@ function commandMatches(label: string, query: string) {
 }
 
 /// ⌘K: the actions that used to crowd the sidebar, the screens, and a jump to any todo.
-function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Command[]; todos: Todo[]; onOpenTodo: (id: number) => void; onClose: () => void }) {
+function CommandPalette({ commands, todos, inputs, onOpenTodo, onOpenInput, onClose }: {
+  commands: Command[];
+  todos: Todo[];
+  inputs: Input[];
+  onOpenTodo: (id: number) => void;
+  onOpenInput: (input: Input) => void;
+  onClose: () => void;
+}) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const q = query.trim().toLowerCase();
@@ -4050,6 +4138,13 @@ function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Co
           .filter((t) => t.title.toLowerCase().includes(q) || `#${t.id}` === q || String(t.id) === q)
           .slice(0, 20)
           .map((t) => ({ key: `todo:${t.id}`, label: `#${t.id} ${t.title}`, hint: t.status, run: () => onOpenTodo(t.id) }))
+      : []),
+    // Inputs open in the Input mode.
+    ...(q
+      ? inputs
+          .filter((i) => i.title.toLowerCase().includes(q))
+          .slice(0, 20)
+          .map((i) => ({ key: `input:${i.id}`, label: `input: ${i.title}`, hint: i.done ? "読み終わった" : undefined, run: () => onOpenInput(i) }))
       : []),
   ];
   useEffect(() => setActive(0), [query]);
@@ -4068,8 +4163,8 @@ function CommandPalette({ commands, todos, onOpenTodo, onClose }: { commands: Co
         <input
           autoFocus
           value={query}
-          placeholder="操作を選ぶ、または todo を検索"
-          aria-label="操作を選ぶ、または todo を検索"
+          placeholder="操作を選ぶ、または todo や input を検索"
+          aria-label="操作を選ぶ、または todo や input を検索"
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             // ⌃J ⌃K (as set) move too, as in fzf.
@@ -4147,7 +4242,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
   );
 }
 
-type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
+type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | { kind: "session"; id: string } | null;
 type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | "jevKey" | null;
 
 const FOCUS_LINK_ENTER_AFTER_MS = 600;
@@ -4477,25 +4572,26 @@ export default function App() {
     remember(TERMINAL_TARGET_KEY, t);
     setTerminalTargetState(t);
   };
-  // The Input mode (FocusMode): a space per input todo (and FREE_SPACE for
-  // pages picked without one), each with its own pages on the left and right.
-  // A todo's space stays (hidden) when the mode ends and comes back when the
-  // todo is opened again; it is saved to come back after a restart too.
+  // The Input mode (FocusMode): a space per subject (an input, or a todo's
+  // pages; FREE_SPACE for pages picked without one), each with its own pages
+  // on the left and right. A subject's space stays (hidden) when the mode
+  // ends and comes back when it is opened again; it is saved to come back
+  // after a restart too.
   const [focusMode, setFocusMode] = useState(false);
   /// The right page a new space shows, the one picked last.
   const [focusRightPref, setFocusRightPref] = useState<string>(() => load(FOCUS_RIGHT_KEY, RIGHT_KINDS, "pinchatgpt"));
-  // The todo the Input mode is open for (its space), null for FREE_SPACE.
-  const [focusSubject, setFocusSubject] = useState<number | null>(null);
-  const [spaces, setSpaces] = useState<Record<number, InputSpace>>({});
-  const spaceKey = focusSubject ?? FREE_SPACE;
+  // What the Input mode is open for (its space), null for FREE_SPACE.
+  const [focusSubject, setFocusSubject] = useState<Subject | null>(null);
+  const [spaces, setSpaces] = useState<Record<string, InputSpace>>({});
+  const spaceKey = subjectKey(focusSubject);
   const space = spaces[spaceKey] ?? newSpace(focusRightPref);
-  const patchSpace = (key: number, f: (s: InputSpace) => InputSpace) =>
+  const patchSpace = (key: string, f: (s: InputSpace) => InputSpace) =>
     setSpaces((prev) => ({ ...prev, [key]: f(prev[key] ?? newSpace(focusRightPref)) }));
   const focusRight = space.right;
   const focusRightId = rightTabId(spaceKey, focusRight);
   /// A space's right page, opened (not shown) if it is not yet; the note's
   /// tab comes from its address (below).
-  const ensureRight = (key: number, kind: string, url?: string) => {
+  const ensureRight = (key: string, kind: string, url?: string) => {
     const page = FOCUS_PAGES.find((p) => p.id === kind);
     const id = rightTabId(key, kind);
     if (page && !tabs.some((t) => t.id === id)) {
@@ -4581,7 +4677,7 @@ export default function App() {
     focusMode && focusSubject !== null
       ? (() => {
           const pages = focusLefts.filter((t) => !t.term);
-          const rights = tabs.filter((t) => t.space === focusSubject && t.kind && t.kind !== NOTE_TAB);
+          const rights = tabs.filter((t) => t.space === spaceKey && t.kind && t.kind !== NOTE_TAB);
           return {
             lefts: pages.map((t) => ({ url: t.url, title: t.title })),
             active: Math.max(0, pages.findIndex((t) => t.id === focusLeft?.id)),
@@ -4595,14 +4691,16 @@ export default function App() {
   const savedSpaceJson = savedSpace && JSON.stringify(savedSpace);
   useEffect(() => {
     if (focusSubject === null || !savedSpaceJson) return;
-    remember(INPUT_SPACES_KEY, JSON.stringify({ ...loadJson<Record<number, SavedSpace>>(INPUT_SPACES_KEY, {}), [focusSubject]: JSON.parse(savedSpaceJson) }));
+    remember(INPUT_SPACES_KEY, JSON.stringify({ ...savedSpaces(), [spaceKey]: JSON.parse(savedSpaceJson) }));
   }, [savedSpaceJson]); // eslint-disable-line react-hooks/exhaustive-deps
   // The note (NOTE_TAB): the subject's, once published (one of its links),
   // else the session making it.
-  const [noteSessions, setNoteSessionsState] = useState<Record<number, NoteSession>>(() => loadJson(NOTE_SESSIONS_KEY, {}));
-  const subjectTodo = board?.todos.find((t) => t.id === focusSubject);
-  const noteUrl = subjectTodo?.links.find((l) => NOTE_PAGE.test(l.url))?.url ?? null;
-  const noteSession = focusSubject === null ? undefined : noteSessions[focusSubject];
+  const [noteSessions, setNoteSessionsState] = useState<Record<string, NoteSession>>(() => loadJson(NOTE_SESSIONS_KEY, {}));
+  /// The todo or input the Input mode is open for.
+  const subjectItem: { title: string; memo: string | null; links: { id: number; url: string }[] } | undefined =
+    focusSubject?.kind === "todo" ? board?.todos.find((t) => t.id === focusSubject.id) : focusSubject?.kind === "input" ? board?.inputs.find((i) => i.id === focusSubject.id) : undefined;
+  const noteUrl = subjectItem?.links.find((l) => NOTE_PAGE.test(l.url))?.url ?? null;
+  const noteSession = focusSubject === null ? undefined : noteSessions[spaceKey];
   const noteTerminal = noteSession && tabs.find((t) => t.term?.session === noteSession.session);
   // A note being made on Cloud shows its session's page meanwhile.
   const notePage = noteUrl ?? (noteSession?.cloud ? cloudWebUrl(noteSession.session) : null);
@@ -4621,12 +4719,28 @@ export default function App() {
   // The note is looked for in its session until it is published.
   useEffect(() => {
     if (!focusMode || focusSubject === null || !noteSession || noteUrl) return;
-    const todoId = focusSubject;
-    const look = () => void api.noteUrl(todoId, noteSession.session).then((url) => url && refresh(), report);
+    const subject = focusSubject;
+    const look = () => void api.noteUrl(subject, noteSession.session).then((url) => url && refresh(), report);
     const timer = setInterval(look, NOTE_POLL_MS);
     return () => clearInterval(timer);
   }, [focusMode, focusSubject, noteSession?.session, noteUrl]); // eslint-disable-line react-hooks/exhaustive-deps
-  const setNoteSessions = (next: Record<number, NoteSession>) => {
+  // Spaces and notes were kept by todo id while inputs were todos (they kept
+  // their ids as they moved): the keys become subjectKey's, once.
+  useEffect(() => {
+    if (!board) return;
+    const rekey = <T,>(key: string) => {
+      const old = loadJson<Record<string, T>>(key, {});
+      if (!Object.keys(old).some((k) => /^\d+$/.test(k))) return null;
+      const kind = (id: number) => (board.inputs.some((i) => i.id === id) ? "input" : "todo");
+      const next = Object.fromEntries(Object.entries(old).map(([k, v]) => [/^\d+$/.test(k) ? subjectKey({ kind: kind(Number(k)), id: Number(k) }) : k, v]));
+      remember(key, JSON.stringify(next));
+      return next;
+    };
+    rekey<SavedSpace>(INPUT_SPACES_KEY);
+    const notes = rekey<NoteSession>(NOTE_SESSIONS_KEY);
+    if (notes) setNoteSessionsState(notes);
+  }, [board === null]); // eslint-disable-line react-hooks/exhaustive-deps
+  const setNoteSessions = (next: Record<string, NoteSession>) => {
     remember(NOTE_SESSIONS_KEY, JSON.stringify(next));
     setNoteSessionsState(next);
   };
@@ -4635,10 +4749,10 @@ export default function App() {
   const resetNote = () =>
     run(async () => {
       if (focusSubject === null) return;
-      const { [focusSubject]: _, ...rest } = noteSessions;
+      const { [spaceKey]: _, ...rest } = noteSessions;
       setNoteSessions(rest);
-      const link = subjectTodo?.links.find((l) => NOTE_PAGE.test(l.url));
-      if (link) await api.removeLink(link.id);
+      const link = subjectItem?.links.find((l) => NOTE_PAGE.test(l.url));
+      if (link) await (focusSubject.kind === "todo" ? api.removeLink(link.id) : api.removeInputLink(link.id));
       refresh();
     });
   /// Starts the session that makes the note of the left's pages.
@@ -4647,7 +4761,7 @@ export default function App() {
       if (focusSubject === null) return;
       const urls = focusLefts.filter((t) => !t.term).map((t) => t.url);
       const started = await api.startNote(focusSubject, urls, format, cloud);
-      setNoteSessions({ ...noteSessions, [focusSubject]: { session: started.session, cloud } });
+      setNoteSessions({ ...noteSessions, [spaceKey]: { session: started.session, cloud } });
       // Its terminal is one of the pane's, shown on the right while it works.
       const term = started.run;
       if (term) setTabs((prev) => [...prev, { id: `t${nextTab.current++}`, url: "", title: term.title, loading: false, nav: 0, term }]);
@@ -4671,10 +4785,9 @@ export default function App() {
     if (focusAskingRef.current.some((a) => a.url === url)) return;
     const id = nextAsking.current++;
     setAsking([...focusAskingRef.current, { id, url, text: text || undefined }]);
-    const todo = allTodos.find((t) => t.id === focusSubject);
     const pages = focusLefts.filter((t) => !t.term).map((t) => ({ title: t.title, url: t.url }));
     api
-      .judgeFocusLink({ subject: todo?.title ?? null, memo: todo?.memo ?? null, pages, url, text: text || null })
+      .judgeFocusLink({ subject: subjectItem?.title ?? null, memo: subjectItem?.memo ?? null, pages, url, text: text || null })
       .then(
         (verdict) => judged(id, { verdict }),
         (e) => judged(id, { failed: String(e) }),
@@ -4752,17 +4865,20 @@ export default function App() {
     setFocusPicking(mode);
     setDialog("focusPick");
   };
-  /// The Input mode for the todo: its space as it was left (or saved), else
-  /// its pages on the left (its links, PR and issue); with none, the pages to
-  /// pick from.
-  const focusTodo = (todo: Todo) => {
-    const pages = todo.links.map((l) => l.url).filter((u) => !NOTE_PAGE.test(u));
-    const urls = [...new Set([...pages, todo.pr_url, todo.issue_url].filter((u): u is string => !!u))];
-    if (spaces[todo.id] || savedSpaces()[todo.id] || urls.length > 0) return enterFocus(urls.map((url) => ({ url })), todo.id);
+  /// The Input mode for a subject: its space as it was left (or saved), with
+  /// any of `urls` it lacks added, else `urls` on the left; with none, the
+  /// pages to pick from.
+  const focusOn = (subject: Subject, urls: string[]) => {
+    const key = subjectKey(subject);
+    if (spaces[key] || savedSpaces()[key] || urls.length > 0) return enterFocus(urls.map((url) => ({ url })), subject);
     pickFocus("start");
-    setFocusSubject(todo.id);
+    setFocusSubject(subject);
   };
-  const savedSpaces = () => loadJson<Record<number, SavedSpace>>(INPUT_SPACES_KEY, {});
+  /// A todo's pages: its links, PR and issue.
+  const focusTodo = (todo: Todo) =>
+    focusOn({ kind: "todo", id: todo.id }, [...new Set([...pagesOf(todo).map((l) => l.url), todo.pr_url, todo.issue_url].filter((u): u is string => !!u))]);
+  const focusInput = (input: Input) => focusOn({ kind: "input", id: input.id }, pagesOf(input).map((l) => l.url));
+  const savedSpaces = () => loadJson<Record<string, SavedSpace>>(INPUT_SPACES_KEY, {});
   /// ⌘⇧[ ⌘⇧] in the Input mode: the previous or next tab of the side that has
   /// the keyboard, the left's own or the right's pages (which take the typing).
   const switchFocusTab = (right: boolean, delta: number) => {
@@ -4794,14 +4910,19 @@ export default function App() {
   const onFocusRight = (id: string) => tabs.find((t) => t.id === id)?.kind !== undefined || focusRightTab?.id === id;
   const onFocusRightRef = useRef(onFocusRight);
   onFocusRightRef.current = onFocusRight;
-  /// Shows space `key`: the one open still, else the saved one opened again,
-  /// else a new one with `items` on the left.
-  const enterFocus = (items: FocusItem[], key = spaceKey) => {
+  /// Shows the subject's space: the one open still, else the saved one
+  /// opened again (either with what of `items` it lacks), else a new one with
+  /// `items` on the left.
+  const enterFocus = (items: FocusItem[], subject = focusSubject) => {
+    const key = subjectKey(subject);
     unreadAtFocus.current = unreadNow();
-    setFocusSubject(key === FREE_SPACE ? null : key);
-    const saved = key === FREE_SPACE ? undefined : savedSpaces()[key];
+    setFocusSubject(subject);
+    const saved = subject === null ? undefined : savedSpaces()[key];
     let right = spaces[key]?.right ?? focusRightPref;
     let rightUrls = spaces[key]?.rightUrls ?? {};
+    // Pages added to the subject since its space was left.
+    const known = spaces[key]?.pages ?? saved?.pages ?? [];
+    const lacking = items.filter((item) => "url" in item && !known.includes(item.url));
     if (!spaces[key] && saved) {
       const ids = saved.lefts.map(({ url, title }) => {
         const id = `f${nextTab.current++}`;
@@ -4810,10 +4931,11 @@ export default function App() {
       });
       ({ right, rightUrls } = saved);
       setSpaces((prev) => ({ ...prev, [key]: { lefts: ids, active: ids[saved.active] ?? ids[0] ?? null, right, pages: saved.pages, accepted: saved.accepted, rightUrls } }));
+      if (lacking.length > 0) addToFocus(lacking, key);
     } else if (!spaces[key]) {
       setSpaces((prev) => ({ ...prev, [key]: newSpace(right) }));
       addToFocus(items, key);
-    }
+    } else if (lacking.length > 0) addToFocus(lacking, key);
     ensureRight(key, right, rightUrls[right]);
     typeInto = rightTabId(key, right);
     setFocusTyping("right");
@@ -5280,6 +5402,7 @@ export default function App() {
   };
 
   const allTodos = board?.todos ?? [];
+  const allInputs = board?.inputs ?? [];
   const selectedTodo = selection?.kind === "todo" ? allTodos.find((t) => t.id === selection.id) ?? null : null;
 
   // Skills depend on the folder a session starts in; fetch each folder's once.
@@ -5330,12 +5453,6 @@ export default function App() {
     // The panel shows issue and PR state; fetch this todo's now.
     api.syncNow(id).catch(() => {});
   };
-  /// An input todo opens in the focus mode (its page on the left); others their panel.
-  const openOrFocus = (id: number) => {
-    const todo = allTodos.find((t) => t.id === id);
-    if (todo?.kind === "input") focusTodo(todo);
-    else openTodo(id);
-  };
   const goTodo = (id: number) => {
     setView("todos");
     openTodo(id);
@@ -5360,7 +5477,7 @@ export default function App() {
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
   const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
   useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode && !sideZone, selectedTodo !== null, {
-    open: (id) => openOrFocus(id),
+    open: (id) => openTodo(id),
     select: openTodo,
     status: setStatusMenuFor,
     focus: (id) => {
@@ -5407,7 +5524,7 @@ export default function App() {
         </span>
       ),
     },
-    { key: "inputs", label: "Input", icon: "import", count: allTodos.filter((t) => t.kind === "input" && t.status !== "done").length, on: view === "inputs", go: () => setView("inputs") },
+    { key: "inputs", label: "Input", icon: "import", count: allInputs.filter((i) => !i.done).length, on: view === "inputs", go: () => setView("inputs") },
     { key: "prs", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
     { key: "notices", label: "通知", icon: "bell", on: view === "notices", go: () => setView("notices"), badge: unreadCount > 0 && <span className="pill accent">{unreadCount}</span> },
   ];
@@ -5436,7 +5553,8 @@ export default function App() {
       : { key: "linkApp", label: "リンクをアプリ内のブラウザで開くようにする", run: () => setLinkTarget("app") },
   ];
 
-  const panel = (view === "todos" || view === "inputs") && selectedTodo ? "todo" : view === "sessions" && selectedSession ? "session" : null;
+  const selectedInput = selection?.kind === "input" ? board?.inputs.find((i) => i.id === selection.id) ?? null : null;
+  const panel = view === "todos" && selectedTodo ? "todo" : view === "inputs" && selectedInput ? "input" : view === "sessions" && selectedSession ? "session" : null;
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
@@ -5696,7 +5814,7 @@ export default function App() {
                         collapsed={collapsed.has(lane.key)}
                         onToggle={() => toggleLane(lane.key)}
                         selectedId={selectedTodo?.id ?? null}
-                        onSelectTodo={openOrFocus}
+                        onSelectTodo={openTodo}
                         report={report}
                         allTodos={allTodos}
                         doneRecent={doneRecent}
@@ -5709,7 +5827,7 @@ export default function App() {
                         collapsed={collapsed.has(lane.key)}
                         onToggle={() => toggleLane(lane.key)}
                         selectedId={selectedTodo?.id ?? null}
-                        onSelectTodo={openOrFocus}
+                        onSelectTodo={openTodo}
                         report={report}
                         run={run}
                         setStatus={setStatus}
@@ -5744,11 +5862,11 @@ export default function App() {
           )}
           {view === "inputs" && board && (
             <InputsPage
-              todos={allTodos}
-              resumable={new Set([...Object.keys(spaces), ...Object.keys(savedSpaces())].map(Number))}
+              inputs={allInputs}
+              resumable={new Set([...Object.keys(spaces), ...Object.keys(savedSpaces())].filter((k) => k.startsWith("i")).map((k) => Number(k.slice(1))))}
               run={run}
-              onFocus={focusTodo}
-              onDetail={openTodo}
+              onFocus={focusInput}
+              onDetail={(id) => setSelection({ kind: "input", id })}
               onAdd={() => setDialog("addInput")}
             />
           )}
@@ -5775,6 +5893,9 @@ export default function App() {
             onFocus={() => focusTodo(selectedTodo)}
             onClose={() => setSelection(null)}
           />
+        )}
+        {panel === "input" && selectedInput && (
+          <InputPanel input={selectedInput} run={run} report={report} onFocus={() => focusInput(selectedInput)} onClose={() => setSelection(null)} />
         )}
         {panel === "session" && selectedSession && (
           <SessionPanel item={selectedSession} todos={allTodos} run={run} report={report} onClose={() => setSelection(null)} onOpenTodo={goTodo} />
@@ -5842,7 +5963,7 @@ export default function App() {
         {dialog === "toInput" && toInputPage && (
           <AddToInputDialog
             page={toInputPage}
-            inputs={allTodos.filter((t) => t.kind === "input" && t.status !== "done").sort((a, b) => b.updated_at - a.updated_at)}
+            inputs={allInputs.filter((i) => !i.done)}
             run={run}
             onDone={setAddedInput}
             onClose={() => setDialog(null)}
@@ -5856,9 +5977,9 @@ export default function App() {
               .map((t) => ({ url: t.url, title: t.title, shown: browserShown && t === activeTab }))}
             run={run}
             onClose={() => setDialog(null)}
-            onOpen={(todo) => {
+            onOpen={(input) => {
               setDialog(null);
-              focusTodo(todo);
+              focusInput(input);
             }}
           />
         )}
@@ -5911,7 +6032,7 @@ export default function App() {
             }}
           />
         )}
-        {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} onOpenTodo={goTodo} onClose={() => setDialog(null)} />}
+        {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} inputs={allInputs} onOpenTodo={goTodo} onOpenInput={focusInput} onClose={() => setDialog(null)} />}
       </div>
     </TerminalContext.Provider>
     </OpenCloudContext.Provider>

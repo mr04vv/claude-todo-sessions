@@ -1,4 +1,4 @@
-use cts_core::{parse_todo_marker, Db, Error, NewTodo, NoticeKind, SessionState, Status, TodoPatch};
+use cts_core::{parse_todo_marker, Db, Error, InputPatch, NewTodo, NoticeKind, SessionState, Status, TodoPatch};
 
 fn open() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -368,13 +368,63 @@ fn kind_picks_the_default_prompt() {
 }
 
 #[test]
-fn input_todos_keep_their_kind() {
+fn inputs_are_kept_apart_from_todos() {
     let (_d, db) = open();
-    let t = db.create_todo(NewTodo { title: "Rust の所有権".into(), kind: cts_core::Kind::Input, ..Default::default() }).unwrap();
-    let t = db.get_todo(t.id).unwrap().unwrap();
-    assert_eq!(t.kind, cts_core::Kind::Input);
-    // A session on it reads the material with the user.
-    assert!(t.prompt_body().starts_with("インプット: Rust の所有権"), "{}", t.prompt_body());
+    let todo = db.create_todo(new_todo("fix it")).unwrap();
+    let a = db.create_input("Rust の所有権", None).unwrap();
+    let b = db.create_input("React の入門", Some("SC から")).unwrap();
+    assert_eq!((a.title.as_str(), a.done, a.links.len()), ("Rust の所有権", false, 0));
+    assert_eq!(b.memo.as_deref(), Some("SC から"));
+    // Not todos: the todos list is the todos' alone.
+    assert_eq!(db.list_todos(None).unwrap(), vec![db.get_todo(todo.id).unwrap().unwrap()]);
+    let l1 = db.add_input_link(a.id, "https://doc.rust-lang.org/book/ch04-00.html").unwrap();
+    db.add_input_link(a.id, "https://doc.rust-lang.org/book/ch04-01.html").unwrap();
+    db.set_input_link_meta(l1.id, Some("Understanding Ownership"), None).unwrap();
+    let a = db.get_input(a.id).unwrap().unwrap();
+    assert_eq!(a.links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(), ["https://doc.rust-lang.org/book/ch04-00.html", "https://doc.rust-lang.org/book/ch04-01.html"]);
+    assert_eq!(a.links[0].title.as_deref(), Some("Understanding Ownership"));
+    db.remove_input_link(l1.id).unwrap();
+    let a = db.update_input(a.id, InputPatch { title: Some("所有権".into()), done: Some(true), ..Default::default() }).unwrap();
+    assert_eq!((a.title.as_str(), a.done, a.links.len()), ("所有権", true, 1));
+    // (The latest changed come first: see the migration's test, whose times differ.)
+    assert_eq!(db.list_inputs().unwrap().len(), 2);
+    db.delete_input(a.id).unwrap();
+    assert_eq!(db.list_inputs().unwrap().len(), 1);
+    assert!(matches!(db.add_input_link(a.id, "https://x.example/"), Err(Error::InputNotFound(_))));
+}
+
+#[test]
+fn input_todos_become_inputs_with_their_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'review', 'pending', 'done')),
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL, repos TEXT, prompt TEXT, issue_state TEXT,
+         pr_url TEXT, pr_state TEXT, queue_runner TEXT, queue_pos INTEGER, queue_error TEXT, kind TEXT,
+         parent_id INTEGER REFERENCES todos(id) ON DELETE SET NULL);
+         CREATE TABLE links (id INTEGER PRIMARY KEY, todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+         url TEXT NOT NULL, title TEXT, image TEXT, created_at INTEGER NOT NULL);
+         INSERT INTO todos (id, title, status, updated_at, kind) VALUES (3, 'fix it', 'doing', 5, 'implementation');
+         INSERT INTO todos (id, title, status, memo, updated_at, kind) VALUES (7, 'Rust の所有権', 'todo', 'ch4', 6, 'input');
+         INSERT INTO todos (id, title, status, updated_at, kind) VALUES (9, '読んだ', 'done', 7, 'input');
+         INSERT INTO links (todo_id, url, title, created_at) VALUES (7, 'https://doc.rust-lang.org/book/ch04-00.html', 'Ownership', 1);
+         INSERT INTO links (todo_id, url, created_at) VALUES (3, 'https://example.com/spec', 2);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.list_todos(None).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), [3]);
+    assert_eq!(db.links_for(3).unwrap().len(), 1);
+    let inputs = db.list_inputs().unwrap();
+    assert_eq!(inputs.iter().map(|i| (i.id, i.title.as_str(), i.done)).collect::<Vec<_>>(), [(9, "読んだ", true), (7, "Rust の所有権", false)]);
+    let rust = &inputs[1];
+    assert_eq!((rust.memo.as_deref(), rust.updated_at), (Some("ch4"), 6));
+    assert_eq!(rust.links.iter().map(|l| (l.url.as_str(), l.title.as_deref())).collect::<Vec<_>>(), [("https://doc.rust-lang.org/book/ch04-00.html", Some("Ownership"))]);
+    // Opening again moves nothing twice.
+    drop(db);
+    assert_eq!(Db::open(&path).unwrap().list_inputs().unwrap().len(), 2);
 }
 
 #[test]

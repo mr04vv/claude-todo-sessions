@@ -392,6 +392,11 @@ pub fn create_session(db: &Db, todo_id: i64, repos: &[String], title: &str, prom
     Ok(id)
 }
 
+/// Creates a cloud session with no checkout, linked to no todo (an input's note).
+pub fn create_loose_session(db: &Db, title: &str, prompt: &str) -> Result<String, String> {
+    create_unlinked(db, &[], title, prompt, "note", &StartOptions::default())
+}
+
 /// Creates a cloud session reviewing a PR of `repo`, linked to no todo.
 pub fn create_review_session(db: &Db, repo: &str, title: &str, prompt: &str) -> Result<String, String> {
     create_unlinked(db, &[repo.to_string()], title, prompt, "review", &StartOptions::default())
