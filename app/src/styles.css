@@ -2556,3 +2556,10 @@ body.resizing {
 .open-pages .row.on {
   background: var(--accent-soft);
 }
+
+/* The inputs a page can go into (AddToInputDialog). */
+.to-input {
+  max-height: 260px;
+  overflow-y: auto;
+  margin-top: 8px;
+}

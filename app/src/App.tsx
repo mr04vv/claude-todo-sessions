@@ -1759,7 +1759,9 @@ function addressToUrl(text: string): string | null {
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
-function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove, onArchive }: {
+function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove, onArchive, onToInput }: {
+  /// Puts the shown page in an input (AddToInputDialog).
+  onToInput: () => void;
   tabs: BrowserTab[];
   active: BrowserTab | null;
   covered: boolean;
@@ -1850,7 +1852,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
       {active?.term ? (
         <TerminalView key={active.id} id={active.id} run={active.term} report={report} />
       ) : active ? (
-        <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} />
+        <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} onToInput={active.pinned ? undefined : onToInput} />
       ) : (
         <NewTabPage onOpen={onOpen} />
       )}
@@ -2328,7 +2330,9 @@ let keysInto: string | null = null;
 /// with the same one leaves its page where the user moved it.
 const sentNav = new Map<string, number>();
 
-function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, keep, noDia }: {
+function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onToInput, keep, noDia }: {
+  /// Set in the 作業スペース: puts the page in an input.
+  onToInput?: () => void;
   tab: BrowserTab;
   covered: boolean;
   report: (e: unknown) => void;
@@ -2480,6 +2484,11 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
             api.browserFocus(active.id).catch(report);
           }}
         />
+        {onToInput && (
+          <button className="ghost small" title="このページを input に入れる（先に作った input にも、新しい input にも）" onClick={onToInput}>
+            Input に追加
+          </button>
+        )}
         {onArchive && (
           <button className="ghost small" title="この Cloud セッションをアーカイブしてタブを閉じる（⌘⇧A）" onClick={onArchive}>
             アーカイブ
@@ -3807,6 +3816,73 @@ function AddInputDialog({ openPages, run, onClose, onOpen }: {
   );
 }
 
+/// Puts a page (the 作業スペース's shown one) in an input made before, or in a
+/// new one: ↑↓ (⌃j ⌃k) pick, Enter puts it there; the words typed narrow them.
+function AddToInputDialog({ page, inputs, run, onDone, onClose }: {
+  page: { url: string; title: string | null };
+  /// The input todos not done, the latest first.
+  inputs: Todo[];
+  run: (f: () => Promise<unknown>) => void;
+  /// Told what the page went into.
+  onDone: (title: string) => void;
+  onClose: () => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const shown = inputs.filter((t) => words.every((w) => t.title.toLowerCase().includes(w)));
+  const has = (t: Todo) => t.links.some((l) => l.url === page.url);
+  // The new input comes last, as one more choice.
+  const count = shown.length + 1;
+  const put = (t: Todo | undefined) =>
+    run(async () => {
+      if (t) {
+        if (!has(t)) await api.addLink(t.id, page.url);
+        onDone(t.title);
+      } else {
+        const todo = await addInput([page.url], page.title || (await inputTitle([page.url], "")));
+        onDone(todo.title);
+      }
+      onClose();
+    });
+  return (
+    <Modal title="このページを input に追加" onClose={onClose}>
+      <p className="muted ellipsis">{page.title || page.url}</p>
+      <input
+        autoFocus
+        className="filter-search"
+        value={query}
+        placeholder="input を絞り込む"
+        aria-label="追加先の input を絞り込む"
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setActive(0);
+        }}
+        onKeyDown={(e) => {
+          const d = e.key === "ArrowDown" || matches(e.nativeEvent, "paletteDown") ? 1 : e.key === "ArrowUp" || matches(e.nativeEvent, "paletteUp") ? -1 : 0;
+          if (d) {
+            e.preventDefault();
+            return setActive((i) => (i + d + count) % count);
+          }
+          if (isEnter(e)) put(shown[active]);
+        }}
+      />
+      <ul className="rows compact to-input" role="listbox">
+        {shown.map((t, i) => (
+          <li key={t.id} role="option" aria-selected={i === active} className={`row${i === active ? " cursor" : ""}`} onMouseEnter={() => setActive(i)} onClick={() => put(t)}>
+            <span className="row-title">{t.title}</span>
+            {has(t) ? <span className="tag">追加済み</span> : <span className="muted">{t.links.filter((l) => !NOTE_PAGE.test(l.url)).length} ページ</span>}
+          </li>
+        ))}
+        <li role="option" aria-selected={active === shown.length} className={`row${active === shown.length ? " cursor" : ""}`} onMouseEnter={() => setActive(shown.length)} onClick={() => put(undefined)}>
+          <Icon name="plus" size={12} />
+          <span className="row-title">新しい input にする</span>
+        </li>
+      </ul>
+    </Modal>
+  );
+}
+
 function ImportDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -4067,7 +4143,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "addInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | "jevKey" | null;
+type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "focusLink" | "jevKey" | null;
 
 const FOCUS_LINK_ENTER_AFTER_MS = 600;
 
@@ -4642,14 +4718,25 @@ export default function App() {
     setDialog(null);
     askFocusLink(focusLink.url, focusLink.text);
   };
-  // A link ⌥-clicked in a page becomes an input todo; the page says so.
-  const [addedInput, setAddedInput] = useState<string | null>(null);
+  // A link ⌥-clicked in a page becomes an input todo; the page says so (and
+  // the input a page went into, from AddToInputDialog).
+  const [addedInput, setAddedInputState] = useState<string | null>(null);
+  const setAddedInput = (title: string) => {
+    setAddedInputState(title);
+    setTimeout(() => setAddedInputState(null), ADDED_INPUT_MS);
+  };
   const addInputFrom = (url: string, title: string) =>
     run(async () => {
       await addInput([url], title);
       setAddedInput(title);
-      setTimeout(() => setAddedInput(null), ADDED_INPUT_MS);
     });
+  /// The page AddToInputDialog puts in an input: the 作業スペース's shown one.
+  const [toInputPage, setToInputPage] = useState<{ url: string; title: string | null } | null>(null);
+  const toInput = () => {
+    if (!activeTab || activeTab.term || !/^https?:\/\//.test(activeTab.url)) return;
+    setToInputPage({ url: activeTab.url, title: activeTab.title });
+    setDialog("toInput");
+  };
   const addInputRef = useRef(addInputFrom);
   addInputRef.current = addInputFrom;
   const askFocusLinkRef = useRef(askFocusLink);
@@ -5331,6 +5418,9 @@ export default function App() {
     { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },
+    ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned
+      ? [{ key: "toInput", label: "表示中のページを input に追加", run: toInput }]
+      : []),
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
     { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
@@ -5729,6 +5819,7 @@ export default function App() {
               onHide={() => setBrowserShown(false)}
               onOpen={openInBrowser}
               onAddress={setTabUrl}
+              onToInput={toInput}
               onMove={(id, to) =>
                 setTabs((prev) => {
                   const from = prev.findIndex((t) => t.id === id);
@@ -5743,6 +5834,15 @@ export default function App() {
           </aside>
         )}
 
+        {dialog === "toInput" && toInputPage && (
+          <AddToInputDialog
+            page={toInputPage}
+            inputs={allTodos.filter((t) => t.kind === "input" && t.status !== "done").sort((a, b) => b.updated_at - a.updated_at)}
+            run={run}
+            onDone={setAddedInput}
+            onClose={() => setDialog(null)}
+          />
+        )}
         {dialog === "addInput" && (
           <AddInputDialog
             // The page shown first, then the other tabs' pages (the pinned chats aside).
