@@ -2289,6 +2289,15 @@ function FocusMode({ lefts, left, right, rightKind, note, onRemakeNote, covered,
 let typeInto: string | null = null;
 /// A tab to give the keyboard to (the page, not its text box) once it is shown.
 let keysInto: string | null = null;
+/// Gives the tab coming up the keyboard, as a browser does: a page once it is
+/// shown (now, if it is `shown` already), a terminal, or with none (a new tab
+/// page, whose field takes it) this page.
+function keysToTab(next: BrowserTab | null, shown: string | undefined, report: (e: unknown) => void) {
+  if (!next) api.focusAppPage().catch(report);
+  else if (next.term) requestAnimationFrame(() => focusTerminal(next.id));
+  else if (next.id === shown) api.browserFocus(next.id).catch(report);
+  else keysInto = next.id;
+}
 /// Each tab's `nav` when it was last sent to its address: showing it again
 /// with the same one leaves its page where the user moved it.
 const sentNav = new Map<string, number>();
@@ -4428,11 +4437,7 @@ export default function App() {
     if (!browserShown || shown.length === 0) return;
     const i = activeTab ? shown.findIndex((t) => t.id === activeTab.id) : delta > 0 ? -1 : shown.length;
     const next = shown[(i + delta + shown.length) % shown.length];
-    // The tab switched to takes the keyboard, as in a browser (a page's keys
-    // hand it to this page on the way); one shown already is not shown again.
-    if (next.term) requestAnimationFrame(() => focusTerminal(next.id));
-    else if (next.id === activeTab?.id) api.browserFocus(next.id).catch(report);
-    else keysInto = next.id;
+    keysToTab(next, activeTab?.id, report);
     setActiveTabId(next.id);
   };
   const switchRef = useRef(switchTab);
@@ -4587,8 +4592,15 @@ export default function App() {
   const newFocusTab = () => patchSpace(spaceKey, (s) => ({ ...s, newTab: true }));
   /// ⌘W on the left: its tab shown goes, as a new tab does (back to the one shown before).
   const closeFocusTab = () => {
-    if (space.newTab) patchSpace(spaceKey, (s) => ({ ...s, newTab: false }));
-    else if (focusLeft) removeFromFocus(focusLeft.id);
+    const rest = focusLefts.filter((t) => t.id !== focusLeft?.id);
+    // The one shown instead takes the keyboard.
+    if (space.newTab) {
+      patchSpace(spaceKey, (s) => ({ ...s, newTab: false }));
+      keysToTab(focusLefts.find((t) => t.id === space.active) ?? focusLefts[0] ?? null, undefined, report);
+    } else if (focusLeft) {
+      removeFromFocus(focusLeft.id);
+      keysToTab(rest[0] ?? null, undefined, report);
+    }
   };
   // A todo's space is saved as it changes, to be resumed after a restart.
   const savedSpace: SavedSpace | null =
@@ -4743,10 +4755,7 @@ export default function App() {
     const i = focusLeft ? focusLefts.findIndex((t) => t.id === focusLeft.id) : delta > 0 ? -1 : focusLefts.length;
     const next = focusLefts[(i + delta + focusLefts.length) % focusLefts.length];
     patchSpace(spaceKey, (s) => ({ ...s, active: next.id, newTab: false }));
-    if (next.term) requestAnimationFrame(() => focusTerminal(next.id));
-    // The tab shown already (the only one) is not shown again, which gives the keyboard.
-    else if (next.id === focusLeft?.id) api.browserFocus(next.id).catch(report);
-    else keysInto = next.id;
+    keysToTab(next, focusLeft?.id, report);
   };
   // Which side of the Input mode has the keyboard (see `typingSide`), or
   // neither while the app's other parts or another app have it.
@@ -4851,9 +4860,17 @@ export default function App() {
     const i = tabs.findIndex((t) => t.id === id);
     const rest = tabs.filter((t) => t.id !== id);
     setTabs(rest);
-    // Closing the last tab leaves the pane open on a new tab (pinned pages aside).
-    if (!rest.some((t) => !t.pinned)) setNewTab(true);
-    else if (id === activeTab?.id) setActiveTabId(rest[Math.min(i, rest.length - 1)].id);
+    // Closing the last tab leaves the pane open on a new tab (pinned pages
+    // aside); the one shown instead takes the keyboard, if the pane had it.
+    const typing = typingSideRef.current === "pane";
+    if (!rest.some((t) => !t.pinned)) {
+      setNewTab(true);
+      if (typing) keysToTab(null, undefined, report);
+    } else if (id === activeTab?.id) {
+      const next = rest[Math.min(i, rest.length - 1)];
+      if (typing) keysToTab(next, undefined, report);
+      setActiveTabId(next.id);
+    }
   };
   /// ⌘W: closes the tab shown (a pinned page stays), or leaves the new tab
   /// page for the last tab. False when the pane is hidden and ⌘W is not ours.

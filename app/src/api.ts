@@ -256,6 +256,8 @@ export const api = {
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
   windowFocused: () => invoke<boolean>("window_focused"),
+  /// Gives the app's own page the keyboard, which a browser tab may hold.
+  focusAppPage: () => invoke<void>("term_focus"),
   setFocusMode: (on: boolean) => invoke<void>("set_focus_mode", { on }),
   /// The app's keys (keymap.ts), as JSON, for the pages' script.
   setPageKeys: (keys: string) => invoke<void>("set_page_keys", { keys }),

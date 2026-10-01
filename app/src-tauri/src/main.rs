@@ -1366,8 +1366,8 @@ const PAGE_FOCUSED_EVENT: &str = "page-focused";
 /// the text selected in it (to paste there), if any.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
 /// A page's keys whose action gives a page or terminal the keyboard
-/// (switching tabs, ⌃l to the Input mode's right), not the app.
-const KEYS_HANDED_ON: [&str; 3] = ["tab-prev", "tab-next", "focus-pane"];
+/// (switching and closing tabs, ⌃l to the Input mode's right), not the app.
+const KEYS_HANDED_ON: [&str; 4] = ["tab-prev", "tab-next", "close-tab", "focus-pane"];
 
 /// `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo.
 const ADD_INPUT_EVENT: &str = "add-input";
