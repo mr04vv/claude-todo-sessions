@@ -64,8 +64,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
   {
     group: "一覧（Todo・セッション・PR・通知・メニュー）",
     items: [
-      ["down", "下へ"],
-      ["up", "上へ"],
+      ["down", "下へ（ブラウザのページではスクロール）"],
+      ["up", "上へ（ブラウザのページではスクロール）"],
       ["left", "左へ（リストはレーンを畳む）"],
       ["right", "右へ（リストはレーンを開く）"],
       ["moveLeft", "カンバン：カードを左の列へ"],

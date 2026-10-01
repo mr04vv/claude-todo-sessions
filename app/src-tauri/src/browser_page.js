@@ -1,7 +1,7 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
-// commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, as the user set
-// them), right-click offers translation (WKWebView has no translate item),
+// commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling, as
+// the user set them), right-click offers translation (WKWebView has no translate item),
 // ⌥ + click keeps a link as an input todo, and X shows its bookmarks only.
 // It runs in the page's frames too (a doc's editor on claude.ai is one), but
 // there only passes the app's keys up to the page (FRAME): a frame must not
@@ -124,6 +124,26 @@
     if (!FRAME && e.source !== window && action === FRAME_FOCUSED) return tellFocused();
     const hit = !FRAME && e.source !== window && KEY_ACTIONS.find(([a]) => a === action && !PAGE_ONLY.includes(a));
     if (hit) hit[1](typeof e.data.text === "string" ? e.data.text : "");
+  });
+
+  // The list keys (j k) scroll the page when no field has the typing, unless
+  // the page took them itself (X's own j k, say). The page's scrolling box
+  // is the one under the middle of the view, or the page itself.
+  const SCROLL_STEP = 80;
+  const editing = (el) => el instanceof Element && (el.isContentEditable || el.closest("input, textarea, select, [role=textbox]"));
+  const scroller = () => {
+    for (let el = document.elementFromPoint(innerWidth / 2, innerHeight / 2); el; el = el.parentElement) {
+      const y = getComputedStyle(el).overflowY;
+      if ((y === "auto" || y === "scroll") && el.scrollHeight > el.clientHeight) return el;
+    }
+    return document.scrollingElement ?? document.documentElement;
+  };
+  window.addEventListener("keydown", (e) => {
+    if (e.defaultPrevented || e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement)) return;
+    const dir = is(e, "down") ? 1 : is(e, "up") ? -1 : 0;
+    if (!dir) return;
+    e.preventDefault();
+    scroller().scrollBy({ top: dir * SCROLL_STEP, behavior: e.repeat ? "auto" : "smooth" });
   });
 
   if (FRAME) return;

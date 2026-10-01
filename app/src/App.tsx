@@ -4447,6 +4447,16 @@ export default function App() {
   // Which side of the Input mode has the keyboard, as the app moved it (⌃h ⌃l,
   // tabs) or a page or this side's own fields took it; shown as in the pane.
   const [focusTyping, setFocusTyping] = useState<"left" | "right">("right");
+  /// ⌘K: the commands, leaving the Input mode (a todo's pages stay) on the way.
+  const togglePalette = () => {
+    if (focusModeRef.current) {
+      exitFocus();
+      return setDialog("palette");
+    }
+    setDialog((d) => (d === "palette" ? null : "palette"));
+  };
+  const paletteRef = useRef(togglePalette);
+  paletteRef.current = togglePalette;
   const switchFocusTabRef = useRef(switchFocusTab);
   switchFocusTabRef.current = switchFocusTab;
   /// Whether tab `id` is on the Input mode's right (a right page, or the terminal making the note).
@@ -4665,7 +4675,7 @@ export default function App() {
       ),
       listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => !focusModeRef.current && closeShownRef.current()),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
-      listen(OPEN_PALETTE_EVENT, () => !focusModeRef.current && setDialog((d) => (d === "palette" ? null : "palette"))),
+      listen(OPEN_PALETTE_EVENT, () => paletteRef.current()),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
@@ -4883,6 +4893,9 @@ export default function App() {
         if (matches(e, "prevTab") || matches(e, "nextTab")) {
           e.preventDefault();
           switchFocusTabRef.current(!!t.closest(".focus-right"), matches(e, "prevTab") ? -1 : 1);
+        } else if (matches(e, "palette")) {
+          e.preventDefault();
+          paletteRef.current();
         } else if (e.key === "Escape" && !t.closest(".xterm, input, textarea") && !document.querySelector("[role=dialog]")) {
           e.preventDefault();
           setDialog("exitFocus");
