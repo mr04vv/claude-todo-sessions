@@ -3696,10 +3696,10 @@ function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo }:
 /// How long the pages typed in AddInputDialog rest before their title is read.
 const TITLE_LOOKUP_MS = 400;
 
-/// Adds input todos as AddTodoDialog adds todos: the pages to read (one or
-/// more, one per line) and a title (else the words among them, or the first
-/// page's own title, read as they are typed). One just added opens in the
-/// Input mode.
+/// Adds input todos as AddTodoDialog adds todos: a title and the pages to
+/// read (none yet, or one or more, one per line). Without a title it takes
+/// the words among the pages, else the first page's own title, read as they
+/// are typed. One just added opens in the Input mode.
 function AddInputDialog({ openPages, run, onClose, onOpen }: {
   /// The pages open in the 作業スペース (the one shown first), to pick from.
   openPages: { url: string; title: string | null; shown: boolean }[];
@@ -3711,8 +3711,11 @@ function AddInputDialog({ openPages, run, onClose, onOpen }: {
   const [pages, setPages] = useState("");
   const [added, setAdded] = useState<Todo[]>([]);
   const pagesRef = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => pagesRef.current?.focus(), []);
+  const titleRef = useRef<HTMLInputElement>(null);
+  useEffect(() => titleRef.current?.focus(), []);
   const input = parseInput(pages);
+  // A title alone makes one too, its pages added later.
+  const ready = input !== null || title.trim() !== "";
   // The first page's own title, read once the pages stop changing: the title
   // an input without one gets (undefined while it is read).
   const first = input?.urls[0];
@@ -3736,15 +3739,16 @@ function AddInputDialog({ openPages, run, onClose, onOpen }: {
     pagesRef.current?.focus();
   };
   const submit = () => {
-    if (!input) return;
+    if (!ready) return;
     run(async () => {
-      const given = title.trim() || input.title;
-      const name = given || pageTitle || (pageTitle === undefined ? await inputTitle(input.urls, "") : hostOf(input.urls[0]));
-      const todo = await addInput(input.urls, name);
+      const urls = input?.urls ?? [];
+      const given = title.trim() || input?.title || "";
+      const name = given || pageTitle || (pageTitle === undefined ? await inputTitle(urls, "") : hostOf(urls[0]));
+      const todo = await addInput(urls, name);
       setAdded((prev) => [todo, ...prev]);
       setTitle("");
       setPages("");
-      pagesRef.current?.focus();
+      titleRef.current?.focus();
     });
   };
   return (
@@ -3758,14 +3762,24 @@ function AddInputDialog({ openPages, run, onClose, onOpen }: {
           <button className="ghost" onClick={onClose}>
             閉じる
           </button>
-          <button className="primary" disabled={!input} onClick={submit}>
+          <button className="primary" disabled={!ready} onClick={submit}>
             追加
           </button>
         </>
       }
     >
       <label className="field">
-        <span>読むページの URL（1行に1つ、いくつでも）</span>
+        <span>タイトル（URL を入れたときは空でも可。ページのタイトルが入ります）</span>
+        <input
+          ref={titleRef}
+          value={title}
+          placeholder={!first ? "何を読む？" : input?.title || pageTitle || (pageTitle === undefined ? "ページのタイトルを読み込み中…" : hostOf(first))}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => isEnter(e) && submit()}
+        />
+      </label>
+      <label className="field">
+        <span>読むページの URL（任意。1行に1つ、いくつでも。あとから足せます）</span>
         <textarea
           ref={pagesRef}
           rows={3}
@@ -3790,15 +3804,6 @@ function AddInputDialog({ openPages, run, onClose, onOpen }: {
           </ul>
         </div>
       )}
-      <label className="field">
-        <span>タイトル（任意。空ならページのタイトル）</span>
-        <input
-          value={title}
-          placeholder={!first ? "何を読む？" : input?.title || pageTitle || (pageTitle === undefined ? "ページのタイトルを読み込み中…" : hostOf(first))}
-          onChange={(e) => setTitle(e.target.value)}
-          onKeyDown={(e) => isEnter(e) && submit()}
-        />
-      </label>
       {added.length > 0 && (
         <div className="added">
           <span className="muted">追加済み {added.length} 件（押すと Input モードで開きます）</span>
