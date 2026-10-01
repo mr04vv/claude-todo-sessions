@@ -106,9 +106,9 @@ pub enum NoteFormat {
 impl NoteFormat {
     pub const ALL: [NoteFormat; 4] = [NoteFormat::Page, NoteFormat::Docs, NoteFormat::Slides, NoteFormat::Design];
 
-    /// What to make, and how comments come to it and are answered.
+    /// What to make, and what becomes of the comments on it.
     fn instructions(self) -> (&'static str, &'static str) {
-        const BY_ARTIFACT: &str = "Claude 宛てのコメントが来たら、ArtifactComments でそのスレッドに返信します。理解に大事な内容は、ノートの該当する箇所にも書き足して公開し直します（URL は変えない）。";
+        const BY_ARTIFACT: &str = "できたあとも、このセッションでノートへのコメントを待ちます。Claude 宛てのコメントが来たら、ArtifactComments でそのスレッドに返信します。理解に大事な内容は、ノートの該当する箇所にも書き足して公開し直します（URL は変えない）。";
         match self {
             NoteFormat::Page => (
                 "ノートは Artifact ツールで公開する HTML のページにします。記事全体を見出しごとに整理し直し、元の記事の代わりに読める密度で書きます（要点だけに縮めない）。図や表が分かりやすくなるところでは使います。",
@@ -116,7 +116,8 @@ impl NoteFormat {
             ),
             NoteFormat::Docs => (
                 "ノートは Claude Docs のドキュメントにします（docs のスキルか Claude Docs のツールで作る）。記事全体を見出しごとに整理し直し、元の記事の代わりに読める密度で書きます（要点だけに縮めない）。表が分かりやすくなるところでは使います。",
-                "ドキュメントに Claude 宛てのコメントが来たら、Claude Docs の作法どおりそのスレッドにコメントで返信します。理解に大事な内容は、ドキュメントの該当する箇所にも書き足します。",
+                // claude.ai's Claude answers the comments on a doc itself.
+                "ドキュメントへのコメントには claude.ai の Claude が答えるので、できたらこのセッションの作業は終わりです。",
             ),
             NoteFormat::Slides => (
                 "ノートは Artifact ツールのスライドにします（quickstart の intent は slides）。記事全体を章ごとに整理し直し、1枚に1つの話題で、記事を読まなくても流れが分かる枚数にします。",
@@ -132,15 +133,15 @@ impl NoteFormat {
 
 /// First prompt (after the marker) of a note session: it turns the pages
 /// into a commentable note in `format`, names it on a NOTE_LINE for the app
-/// to find, and stays to answer the comments.
+/// to find, and (but for a doc) stays to answer the comments.
 pub fn note_prompt(title: &str, urls: &[String], format: NoteFormat) -> String {
     let pages: String = urls.iter().map(|u| format!("- {u}\n")).collect();
     let (make, comments) = format.instructions();
     format!(
         "インプット: {title}\n\n次のページを読んで、内容を整理した「ノート」を作ってください。\n\n{pages}\n\
          - {make}日本語で書きます。\n\
-         - できたら、最後の行に「{line}<ノートの URL>」と書いてください。アプリはこの行でノートを見つけて、フォーカスモードの右に出します。ノートはアプリが開くので、Artifact の open やブラウザでは open しないでください。\n\
-         - できたあとも、このセッションでノートへのコメントを待ちます。{comments}\n\
+         - できたら、最後の行に「{line}<ノートの URL>」と書いてください。アプリはこの行でノートを見つけて、 Input モードの右に出します。ノートはアプリが開くので、Artifact の open やブラウザでは open しないでください。\n\
+         - {comments}\n\
          - ページが読めないとき（ログインが必要など）は、ノートを作らずにそう伝えてください。",
         line = crate::transcript::NOTE_LINE,
     )
@@ -278,6 +279,8 @@ mod tests {
             let docs = format == NoteFormat::Docs;
             assert_eq!(p.contains("Claude Docs"), docs, "{format:?}");
             assert_eq!(p.contains("ArtifactComments"), !docs, "{format:?}");
+            // claude.ai answers a doc's comments; the others wait in the session.
+            assert_eq!(p.contains("コメントを待ちます"), !docs, "{format:?}");
         }
         assert!(note_prompt("t", &urls, NoteFormat::Slides).contains("intent は slides"));
         assert!(note_prompt("t", &urls, NoteFormat::Design).contains("intent は design"));
