@@ -18,9 +18,12 @@ pub fn fetch(url: &str) -> Result<Meta, String> {
     fetch_within(url, TIMEOUT)
 }
 
-/// `fetch`, given up on after `timeout`.
+/// `fetch`, given up on after `timeout`. Pages are trusted as macOS trusts
+/// them (as the browser does), so a proxy that re-signs them (a company's)
+/// does not fail them, as the bundled roots would.
 pub fn fetch_within(url: &str, timeout: Duration) -> Result<Meta, String> {
-    let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).user_agent(USER_AGENT).build();
+    let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
+    let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).user_agent(USER_AGENT).tls_config(tls).build();
     let agent = ureq::Agent::new_with_config(config);
     let mut resp = agent.get(url).header("Accept", "text/html").call().map_err(|e| e.to_string())?;
     let mut buf = Vec::new();

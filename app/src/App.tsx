@@ -3283,7 +3283,7 @@ function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
   /// One input for all the URLs typed; false when there is none.
   const add = (text: string) => {
     const input = parseInput(text);
-    if (input) run(() => addInput(input.urls, input.title));
+    if (input) run(async () => addInput(input.urls, await inputTitle(input.urls, input.title)));
     return input !== null;
   };
   return (
@@ -3352,17 +3352,24 @@ function InputsPage({ todos, resumable, run, onFocus, onDetail, onAdd }: {
 }
 
 /// An input from what was typed in the Input page: its URLs (or one bare
-/// address, `example.com`), the other words its title (else the first
-/// page's host). Null when there is no page in it.
+/// address, `example.com`), the other words its title (empty when there are
+/// none; see inputTitle). Null when there is no page in it.
 function parseInput(text: string): { title: string; urls: string[] } | null {
   const words = text.trim().split(/\s+/).filter(Boolean);
   const urls = [...new Set(words.filter((w) => /^https?:\/\//i.test(w)))];
   if (urls.length === 0) {
     const url = addressToUrl(text);
-    return url && !url.startsWith(SEARCH_URL) ? { title: hostOf(url), urls: [url] } : null;
+    return url && !url.startsWith(SEARCH_URL) ? { title: "", urls: [url] } : null;
   }
-  const title = words.filter((w) => !/^https?:\/\//i.test(w)).join(" ");
-  return { title: title || hostOf(urls[0]), urls };
+  return { title: words.filter((w) => !/^https?:\/\//i.test(w)).join(" "), urls };
+}
+
+/// What an input is called: the words given with it, else its first page's
+/// own title (OGP), else that page's host.
+async function inputTitle(urls: string[], given: string) {
+  if (given.trim()) return given.trim();
+  const title = await api.pageTitle(urls[0]).catch(() => null);
+  return title || hostOf(urls[0]);
 }
 
 /// Adds an input todo with `urls` as its links, in that order; it comes back
@@ -3576,9 +3583,13 @@ function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo }:
   );
 }
 
+/// How long the pages typed in AddInputDialog rest before their title is read.
+const TITLE_LOOKUP_MS = 400;
+
 /// Adds input todos as AddTodoDialog adds todos: the pages to read (one or
 /// more, one per line) and a title (else the words among them, or the first
-/// page's host). One just added opens in the Input mode.
+/// page's own title, read as they are typed). One just added opens in the
+/// Input mode.
 function AddInputDialog({ run, onClose, onOpen }: { run: (f: () => Promise<unknown>) => void; onClose: () => void; onOpen: (todo: Todo) => void }) {
   const [title, setTitle] = useState("");
   const [pages, setPages] = useState("");
@@ -3586,10 +3597,25 @@ function AddInputDialog({ run, onClose, onOpen }: { run: (f: () => Promise<unkno
   const pagesRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => pagesRef.current?.focus(), []);
   const input = parseInput(pages);
+  // The first page's own title, read once the pages stop changing: the title
+  // an input without one gets (undefined while it is read).
+  const first = input?.urls[0];
+  const [read, setRead] = useState<{ url: string; title: string | null } | null>(null);
+  useEffect(() => {
+    if (!first) return;
+    const t = setTimeout(
+      () => api.pageTitle(first).then((title) => setRead({ url: first, title }), () => setRead({ url: first, title: null })),
+      TITLE_LOOKUP_MS,
+    );
+    return () => clearTimeout(t);
+  }, [first]);
+  const pageTitle = read && read.url === first ? read.title : undefined;
   const submit = () => {
     if (!input) return;
     run(async () => {
-      const todo = await addInput(input.urls, title.trim() || input.title);
+      const given = title.trim() || input.title;
+      const name = given || pageTitle || (pageTitle === undefined ? await inputTitle(input.urls, "") : hostOf(input.urls[0]));
+      const todo = await addInput(input.urls, name);
       setAdded((prev) => [todo, ...prev]);
       setTitle("");
       setPages("");
@@ -3625,8 +3651,13 @@ function AddInputDialog({ run, onClose, onOpen }: { run: (f: () => Promise<unkno
         />
       </label>
       <label className="field">
-        <span>タイトル（任意。空ならページの名前）</span>
-        <input value={title} placeholder={input?.title ?? "何を読む？"} onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && submit()} />
+        <span>タイトル（任意。空ならページのタイトル）</span>
+        <input
+          value={title}
+          placeholder={!first ? "何を読む？" : input?.title || pageTitle || (pageTitle === undefined ? "ページのタイトルを読み込み中…" : hostOf(first))}
+          onChange={(e) => setTitle(e.target.value)}
+          onKeyDown={(e) => isEnter(e) && submit()}
+        />
       </label>
       {added.length > 0 && (
         <div className="added">

@@ -245,6 +245,8 @@ export const api = {
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
   addLink: (todoId: number, url: string) => invoke<Link>("add_link", { todoId, url }),
+  /// A page's own title (og:title, else <title>), when it has one.
+  pageTitle: (url: string) => invoke<string | null>("page_title", { url }),
   removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),

@@ -1321,6 +1321,19 @@ fn set_focus_allow(app: AppHandle, state: State<AppState>, tab: String, allow: O
 
 /// The page's title is waited for this long before asking without it.
 const JUDGE_TITLE_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long an input added without a title waits for its page's.
+const PAGE_TITLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A page's own title (og:title, else <title>), for an input added without one.
+#[tauri::command]
+async fn page_title(url: String) -> Result<Option<String>, String> {
+    if !is_web_url(&url) {
+        return Err(format!("開けない URL です: {url}"));
+    }
+    tauri::async_runtime::spawn_blocking(move || cts_core::ogp::fetch_within(&url, PAGE_TITLE_TIMEOUT).map(|m| m.title))
+        .await
+        .map_err(err)?
+}
 
 /// How much a page a focus mode page asked to open (or one typed in) fits the
 /// focus mode's work, asked of Jev (cts_core::relevance) once the page's title
@@ -2139,6 +2152,7 @@ fn main() {
             set_in_app_terminal,
             start_note,
             note_url,
+            page_title,
             terminal::term_open,
             terminal::term_write,
             terminal::term_resize,
