@@ -32,6 +32,10 @@ export type Action =
   | "parent"
   | "add"
   | "dismiss"
+  | "editTitle"
+  | "editMemo"
+  | "addSubtask"
+  | "start"
   | "search"
   | "help"
   | "paletteDown"
@@ -84,6 +88,15 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     ],
   },
   {
+    group: "todo のシート",
+    items: [
+      ["editTitle", "タイトルを編集"],
+      ["editMemo", "メモを編集"],
+      ["addSubtask", "サブタスクを追加"],
+      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ）"],
+    ],
+  },
+  {
     group: "⌘K のメニュー",
     items: [
       ["paletteDown", "下へ"],
@@ -121,6 +134,10 @@ export const DEFAULT_KEYS: Record<Action, string> = {
   parent: "u",
   add: "c",
   dismiss: "x",
+  editTitle: "e",
+  editMemo: "m",
+  addSubtask: "a",
+  start: "cmd+Enter",
   search: "/",
   help: "?",
   paletteDown: "ctrl+j",

@@ -1,8 +1,8 @@
 // Keyboard for the Todo kanban and list: a cursor over the cards (or rows),
 // moved with j k / h l (or the arrows; the keys are keymap.ts's, which the
 // user may change), and keys acting on the todo under it:
-// Enter its panel, s its status, ⇧h ⇧l (kanban) the column it is in, o and
-// ⌥Enter its session, p its PR, u its parent; c adds a todo there, / searches,
+// Enter its sheet, s its status, ⇧h ⇧l (kanban) the column it is in, o and
+// ⌥Enter its session (o and ⌘Enter, without one, the launch sheet), p its PR, u its parent; c adds a todo there, / searches,
 // ? lists the keys. The browser's tab keys (⌘⇧[ ⌘⇧]) go to the lane (a
 // repository's, a parent's) before or after.
 // It reads the page's elements, so the pages only mark them:
@@ -28,6 +28,8 @@ export interface TodoKeyActions {
   parent: (todoId: number) => void;
   /// p: the todo's PR (or issue).
   link: (todoId: number) => void;
+  /// ⌘Enter, and o without a session: the launch sheet.
+  start: (todoId: number) => void;
   /// ?: the list of these keys.
   help: () => void;
   /// Esc: closes the panel.
@@ -43,7 +45,7 @@ const TODO_ROW = "todo:";
 /// Lanes of a parent todo when grouped by parent (App.tsx's buildLanes).
 const PARENT_LANE = "parent:";
 /// Keys typed here are text, not commands.
-const TYPING = "input, textarea, select, [contenteditable], [role=menu], [role=dialog], .xterm";
+export const TYPING = "input, textarea, select, [contenteditable], [role=menu], [role=dialog], .xterm";
 
 const todoId = (row: string) => (row.startsWith(TODO_ROW) ? Number(row.slice(TODO_ROW.length)) : null);
 const laneOf = (el: Element) => el.closest<HTMLElement>("[data-lane]")?.dataset.lane ?? null;
@@ -113,7 +115,8 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
       }
       // The session opens as its "開く" does (⌥Enter: its menu); the PR, the parent.
       const onTodo: [boolean, () => void][] = [
-        [matches(e, "session"), () => at!.querySelector<HTMLButtonElement>(".open-main")?.click()],
+        [matches(e, "session"), () => (at!.querySelector<HTMLButtonElement>(".open-main") ?? { click: () => actions.start(id!) }).click()],
+        [matches(e, "start"), () => actions.start(id!)],
         [e.key === "Enter" && e.altKey && !e.metaKey && !e.ctrlKey, () => at!.querySelector<HTMLButtonElement>(".open-caret")?.click()],
         [matches(e, "link"), () => actions.link(id!)],
         [matches(e, "parent"), () => actions.parent(id!)],

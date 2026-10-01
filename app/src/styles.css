@@ -376,6 +376,31 @@ a:hover {
   box-shadow: var(--shadow);
 }
 
+.sheet-start {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+/* The launch sheet's subtasks (StartDialog). */
+.start-subtasks {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.start-subtasks h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
 .content {
   flex-grow: 1;
   min-height: 0;

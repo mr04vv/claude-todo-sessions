@@ -61,7 +61,7 @@ import {
   type Status,
   type Todo,
 } from "./api";
-import { useTodoKeys } from "./todoKeys";
+import { TYPING, useTodoKeys } from "./todoKeys";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
 import { closeTerminal, focusTerminal, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
@@ -1412,6 +1412,8 @@ function MemoEditor({ value, report, onSave }: { value: string; report: (e: unkn
         rows={6}
         defaultValue={value}
         aria-label="メモ"
+        // Esc keeps what was written and leaves the field, as clicking out does.
+        onKeyDown={(e) => e.key === "Escape" && e.currentTarget.blur()}
         onBlur={(e) => {
           if (e.currentTarget.value !== value) onSave(e.currentTarget.value);
           setEditing(false);
@@ -1493,8 +1495,9 @@ function withSkill(prompt: string, name: string) {
 }
 
 /// The first prompt, the skill it starts with, where it runs and with which
-/// model: everything a new session needs, in the panel instead of a dialog.
-function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f: () => Promise<unknown>) => void }) {
+/// model: everything a new session needs (the launch sheet's). The keys work
+/// from anywhere in it: ⌘1〜⌘5 pick where it runs, ⌘Enter starts.
+function Composer({ todo, skills, run, onStarted }: { todo: Todo; skills: Skill[]; run: (f: () => Promise<unknown>) => void; onStarted: () => void }) {
   // An orchestrator plans locally (its session registers child todos over the local MCP server).
   const cloudOk = !todo.is_orchestrator;
   const [choice, setChoiceState] = useState<StartChoice>(() => loadJson(START_KEY, DEFAULT_START));
@@ -1534,6 +1537,7 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
         else if (target === "desktop") await api.startDesktop(todo.id);
         else if (target === "terminal") terminal ? terminal.open(await terminalApi.start(todo.id, options)) : await api.startTerminal(todo.id, options);
         else await api.enqueue(todo.id, choice.runner);
+        onStarted();
       } catch (e) {
         finish?.(null);
         throw e;
@@ -1542,22 +1546,27 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
       }
     });
   };
+  const keysRef = useRef({ start, setChoice });
+  keysRef.current = { start, setChoice };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return;
+      const n = e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey ? Number(e.key) : NaN;
+      const pick = TARGETS[n - 1];
+      if (pick && !(isCloudTarget(pick.key) && !cloudOk)) {
+        e.preventDefault();
+        keysRef.current.setChoice({ target: pick.key });
+      } else if (matches(e, "start")) {
+        e.preventDefault();
+        keysRef.current.start();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cloudOk]);
   return (
     <div className="composer">
-      <textarea
-        ref={ref}
-        rows={3}
-        value={prompt}
-        aria-label="最初のプロンプト"
-        placeholder={todo.prompt_preview}
-        onChange={(e) => setPrompt(e.target.value)}
-        onKeyDown={(e) => {
-          if (isEnter(e) && e.metaKey) {
-            e.preventDefault();
-            start();
-          }
-        }}
-      />
+      <textarea ref={ref} autoFocus rows={3} value={prompt} aria-label="最初のプロンプト" placeholder={todo.prompt_preview} onChange={(e) => setPrompt(e.target.value)} />
       {skills.length > 0 && (
         <div className="skills">
           <span className="muted">スキル</span>
@@ -1580,13 +1589,13 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
       )}
       <div className="composer-foot">
         <div className="segmented" role="group" aria-label="起動先">
-          {TARGETS.map((t) => (
+          {TARGETS.map((t, i) => (
             <button
               key={t.key}
               className={target === t.key ? "on" : ""}
               aria-pressed={target === t.key}
               disabled={isCloudTarget(t.key) && !cloudOk}
-              title={isCloudTarget(t.key) && !cloudOk ? "計画用の todo は Local で始めます" : undefined}
+              title={isCloudTarget(t.key) && !cloudOk ? "計画用の todo は Local で始めます" : `⌘${i + 1}`}
               onClick={() => setChoice({ target: t.key })}
             >
               {t.key === "terminal" && terminal ? "ターミナル" : t.label}
@@ -1626,7 +1635,7 @@ function Composer({ todo, skills, run }: { todo: Todo; skills: Skill[]; run: (f:
         </button>
       </div>
       <p className="muted hint">
-        [todo:{todo.id}] は自動で付きます · 空ならタイトルとメモから作ります
+        ⌘1〜⌘{TARGETS.length} で起動先 · Tab でモデルと effort · [todo:{todo.id}] は自動で付きます · 空ならタイトルとメモから作ります
         {todo.cwd ? ` · ${tildify(todo.cwd)}` : ""}
       </p>
     </div>
@@ -2459,21 +2468,81 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
   );
 }
 
-function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStatus, onOpenTodo, onFocus, onClose }: {
+/// A subtask of `todo`, in its repository (and folder) when it has just one.
+const createSubtask = (todo: Todo, title: string) =>
+  api.createTodo({ title, parent_id: todo.id, repos: todo.repos.length === 1 && !todo.repos_derived ? todo.repos : [], cwd: todo.repos.length === 1 ? (todo.cwd ?? undefined) : undefined });
+
+/// The launch sheet (⌘Enter, or o without a session): the first prompt, where
+/// it runs and the subtasks, all from the keyboard; ⌘⇧N goes to adding a subtask.
+function StartDialog({ todo, allTodos, skills, run, onClose }: { todo: Todo; allTodos: Todo[]; skills: Skill[]; run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
+  const children = allTodos.filter((c) => c.parent_id === todo.id);
+  const subtask = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || !e.shiftKey || e.key.toLowerCase() !== "n") return;
+      e.preventDefault();
+      subtask.current?.querySelector("input")?.focus();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return (
+    <Modal title={`#${todo.id} ${todo.title}`} wide onClose={onClose}>
+      <Composer todo={todo} skills={skills} run={run} onStarted={onClose} />
+      {!todo.parent_id && (
+        <section className="start-subtasks" ref={subtask}>
+          <h3>
+            サブタスク {children.length > 0 && <span className="muted">{children.length}</span>} <span className="kbd">⌘⇧N</span>
+          </h3>
+          {children.length > 0 && (
+            <ul className="rows compact">
+              {children.map((c) => (
+                <li key={c.id} className="row">
+                  <StatusIcon status={c.status} />
+                  <span className="row-title">{c.title}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <SubmitInput placeholder="サブタスクのタイトルを入力して Enter" onSubmit={(title) => run(() => createSubtask(todo, title))} />
+        </section>
+      )}
+    </Modal>
+  );
+}
+
+function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOpenTodo, onFocus, onStart, onClose }: {
   todo: Todo;
   allTodos: Todo[];
   local: LocalRepo[];
   groups: string[];
-  skills: Skill[];
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   setStatus: (todo: Todo, status: Status) => void;
   onOpenTodo: (id: number) => void;
   /// The focus mode, with the todo's page on the left.
   onFocus: () => void;
+  /// The launch sheet.
+  onStart: () => void;
   onClose: () => void;
 }) {
   const browse = useOpenLink(report);
+  // e m a: its title, memo and a new subtask (the other keys are todoKeys.ts's).
+  const root = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .app.focus, .app[data-zone=sidebar]")) return;
+      const el = root.current;
+      const title = matches(e, "editTitle") && el?.querySelector<HTMLInputElement>(".panel-title");
+      const target = title || (matches(e, "editMemo") && el?.querySelector<HTMLElement>(".memo.editable")) || (matches(e, "addSubtask") && el?.querySelector<HTMLElement>(".add-inline"));
+      if (!target) return;
+      e.preventDefault();
+      if (title) title.focus();
+      else target.click();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // Every field saves as soon as it is left.
   const update = (u: Parameters<typeof api.updateTodo>[1]) => run(() => api.updateTodo(todo.id, u));
   const children = allTodos.filter((c) => c.parent_id === todo.id);
@@ -2486,10 +2555,9 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
     setMenu(false);
   }, [todo.id]);
   const gh = githubTarget(todo);
-  const addChild = (title: string) =>
-    run(() => api.createTodo({ title, parent_id: todo.id, repos: todo.repos.length === 1 && !todo.repos_derived ? todo.repos : [], cwd: todo.repos.length === 1 ? (todo.cwd ?? undefined) : undefined }));
+  const addChild = (title: string) => run(() => createSubtask(todo, title));
   return (
-    <aside className="panel" aria-label={`#${todo.id} ${todo.title}`} onClick={stop}>
+    <aside ref={root} className="panel" aria-label={`#${todo.id} ${todo.title}`} onClick={stop}>
       <header className="panel-head">
         {parent && (
           <>
@@ -2661,10 +2729,15 @@ function TodoPanel({ todo, allTodos, local, groups, skills, run, report, setStat
           )}
         </section>
 
-        <section>
-          <h3>新しいセッション</h3>
-          <Composer todo={todo} skills={skills} run={run} />
-        </section>
+        <div className="sheet-start">
+          <button className="primary" onClick={onStart}>
+            セッションを始める <span className="kbd">{keyLabel(keyOf("start"))}</span>
+          </button>
+          <span className="muted hint">
+            {keyLabel(keyOf("editTitle"))} タイトル · {keyLabel(keyOf("editMemo"))} メモ · {keyLabel(keyOf("addSubtask"))} サブタスク · {keyLabel(keyOf("status"))} ステータス ·{" "}
+            {keyLabel(keyOf("session"))} セッション · {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} 前後の todo · Esc 閉じる
+          </span>
+        </div>
 
         <section>
           <h3>メモ</h3>
@@ -2805,7 +2878,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
               ループを動かす
             </label>
           </div>
-          {queued.length === 0 && <p className="muted hint pad">todo のパネルで起動先に「キュー」を選ぶと、ここに並びます。</p>}
+          {queued.length === 0 && <p className="muted hint pad">todo の起動シートで起動先に「キュー」を選ぶと、ここに並びます。</p>}
           <ul className="rows">
             {queued.map((t, i) => (
               <li key={t.id} className="row" onClick={() => onOpenTodo(t.id)}>
@@ -4199,7 +4272,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | null;
+type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | null;
 
 /// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
@@ -4241,9 +4314,9 @@ function ExitFocusDialog({ onExit, onStay }: { onExit: () => void; onStay: () =>
 /// Keys that stay as they are, shown under the ones that can change.
 const FIXED_KEYS: [string, string][] = [
   ["↑↓←→", "一覧・カンバンの移動（変えたキーと一緒に使えます）"],
-  ["Enter", "開く（Todo のパネル、セッション、メニューの項目）"],
+  ["Enter", "開く（todo のシート、セッション、メニューの項目）"],
   ["⌥Enter", "開き方を選ぶ（セッション）/ PR を開く（PR・通知）"],
-  ["Esc", "パネルやメニューを閉じる（Input モードでは終えるか聞く）"],
+  ["Esc", "シートやパネル、メニューを閉じる（Input モードでは終えるか聞く）"],
 ];
 
 /// Every shortcut, and changing one: its key's button, then the new key
@@ -5313,6 +5386,11 @@ export default function App() {
       const next = todo && COLUMNS[COLUMNS.findIndex((c) => c.status === todo.status) + delta];
       if (todo && next) setStatus(todo, next.status);
     },
+    // Over the todo's sheet, which shows the session once it starts.
+    start: (id) => {
+      openTodo(id);
+      setDialog("start");
+    },
     close: () => setSelection(null),
     toggleLane,
     isCollapsed: (lane) => collapsed.has(lane),
@@ -5692,12 +5770,12 @@ export default function App() {
                 allTodos={allTodos}
                 local={local}
                 groups={groups}
-                skills={skillsByCwd[skillsKey] ?? []}
                 run={run}
                 report={report}
                 setStatus={setStatus}
                 onOpenTodo={openTodo}
                 onFocus={() => focusTodo(selectedTodo)}
+                onStart={() => setDialog("start")}
                 onClose={() => setSelection(null)}
               />
             </div>
@@ -5825,6 +5903,9 @@ export default function App() {
           </div>
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+        {dialog === "start" && selectedTodo && (
+          <StartDialog todo={selectedTodo} allTodos={allTodos} skills={skillsByCwd[skillsKey] ?? []} run={run} onClose={() => setDialog(null)} />
+        )}
         {dialog === "focusPick" && (
           <FocusPicker
             adding={focusPicking === "add"}
