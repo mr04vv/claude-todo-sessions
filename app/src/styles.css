@@ -2047,6 +2047,20 @@ input.panel-title:focus-visible {
   overflow: hidden;
 }
 
+.palette-crumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.palette-crumb .muted {
+  margin-left: auto;
+  font-size: 11px;
+}
+
 .palette > input {
   height: 46px;
   padding: 0 16px;

@@ -4130,6 +4130,8 @@ interface Command {
   label: string;
   hint?: string;
   run: () => void;
+  /// A list of its own, which picking it opens in the same box (Esc, or ⌫ on an empty query, goes back).
+  items?: () => Command[];
 }
 
 /// Other words a command is found by, for a word in its label: "プルリク"
@@ -4175,8 +4177,13 @@ function CommandPalette({ commands, todos, inputs, onOpenTodo, onOpenInput, onCl
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  // The lists opened from one another (a command's items), the last shown.
+  const [stack, setStack] = useState<Command[]>([]);
+  const page = stack.at(-1);
   const q = query.trim().toLowerCase();
-  const items: Command[] = [
+  const items: Command[] = page
+    ? (page.items?.() ?? []).filter((c) => commandMatches(`${c.label} ${c.hint ?? ""}`, q))
+    : [
     ...commands.filter((c) => commandMatches(c.label, q)),
     ...(q
       ? todos
@@ -4192,24 +4199,42 @@ function CommandPalette({ commands, todos, inputs, onOpenTodo, onOpenInput, onCl
           .map((i) => ({ key: `input:${i.id}`, label: `input: ${i.title}`, hint: i.done ? "読み終わった" : undefined, run: () => onOpenInput(i) }))
       : []),
   ];
-  useEffect(() => setActive(0), [query]);
+  useEffect(() => setActive(0), [query, stack.length]);
+  const back = () => {
+    setStack((s) => s.slice(0, -1));
+    setQuery("");
+  };
   // Keep the picked row in sight as the keys move it.
   const list = useRef<HTMLUListElement>(null);
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [active]);
   const pick = (c: Command) => {
+    if (c.items) {
+      setStack((s) => [...s, c]);
+      return setQuery("");
+    }
     onClose();
     c.run();
   };
   return (
     <div className="modal-backdrop palette-backdrop" onClick={onClose}>
       <div className="palette" role="dialog" aria-label="コマンド" onClick={stop}>
+        {page && (
+          <div className="palette-crumb">
+            <button className="ghost small" onClick={back}>
+              <Icon name="back" size={12} /> 戻る
+            </button>
+            <span>{page.label}</span>
+            <span className="muted">Esc で戻る</span>
+          </div>
+        )}
         <input
+          key={page?.key ?? "root"}
           autoFocus
           value={query}
-          placeholder="操作を選ぶ、または todo や input を検索"
-          aria-label="操作を選ぶ、または todo や input を検索"
+          placeholder={page ? `${page.label}を絞り込む` : "操作を選ぶ、または todo や input を検索"}
+          aria-label={page ? `${page.label}を絞り込む` : "操作を選ぶ、または todo や input を検索"}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             // ⌃J ⌃K (as set) move too, as in fzf.
@@ -4225,7 +4250,11 @@ function CommandPalette({ commands, todos, inputs, onOpenTodo, onOpenInput, onCl
               e.preventDefault();
               if (items[active]) pick(items[active]);
             } else if (e.key === "Escape") {
-              onClose();
+              if (page) back();
+              else onClose();
+            } else if (e.key === "Backspace" && page && query === "") {
+              e.preventDefault();
+              back();
             }
           }}
         />
@@ -4245,6 +4274,7 @@ function CommandPalette({ commands, todos, inputs, onOpenTodo, onOpenInput, onCl
             >
               <span className="ellipsis">{c.label}</span>
               {c.hint && <span className="muted">{c.hint}</span>}
+              {c.items && <Icon name="chevronRight" size={12} />}
             </li>
           ))}
         </ul>
@@ -5462,7 +5492,19 @@ export default function App() {
   ];
 
   // ⌘K lists the sidebar's entries first, in its order, then the actions.
+  // The live sessions, the most urgent first, each opened as its "開く" does.
+  const sessionCommands = (): Command[] =>
+    (board ? sessionItemsOf(board) : [])
+      .filter(({ session: s }) => s.state !== "ended")
+      .sort((a, b) => STATE_ORDER.indexOf(a.session.state) - STATE_ORDER.indexOf(b.session.state) || b.session.state_at - a.session.state_at)
+      .map(({ session: s, todo }) => ({
+        key: `session:${s.session_id}`,
+        label: todo ? `${sessionLabel(s)} · #${todo.id} ${todo.title}` : sessionLabel(s),
+        hint: `${STATE_LABEL[shownState(s.state, todo)]} · ${isCloud(s) ? "Cloud" : "Local"} · ${ago(s.state_at)}`,
+        run: () => (isCloud(s) ? openCloud(s.session_id) : openLocal(inAppTerminal, s.session_id, report, true)),
+      }));
   const commands: Command[] = [
+    { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands },
     ...nav.map((n) => ({ key: `nav:${n.key}`, label: n.label, run: n.go })),
     { key: "browser", label: browserShown ? "作業スペースを隠す" : "作業スペース", run: toggleBrowser },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
