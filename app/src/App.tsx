@@ -3016,13 +3016,15 @@ type SessionItem = import("./sessionTree").SessionItem;
 /// The status as the kanban names it.
 const statusLabel = (status: Status) => COLUMNS.find((c) => c.status === status)?.label ?? status;
 
-/// A todo in the sessions table: its status, number and title.
+/// A todo in the sessions table: its status, number, title and repository.
 function TodoCell({ todo, onOpen }: { todo: Todo; onOpen: (id: number) => void }) {
+  const repo = todo.repos[0];
   return (
-    <button className="link-button todo-cell" title={`${statusLabel(todo.status)} · #${todo.id} ${todo.title}`} onClick={(e) => (e.stopPropagation(), onOpen(todo.id))}>
+    <button className="link-button todo-cell" title={`${statusLabel(todo.status)} · #${todo.id} ${todo.title}${repo ? ` · ${repo}` : ""}`} onClick={(e) => (e.stopPropagation(), onOpen(todo.id))}>
       <StatusIcon status={todo.status} />
       <span className="mono">#{todo.id}</span>
       <span className="ellipsis">{todo.title}</span>
+      {repo && <span className="tag">{repoName(repo)}</span>}
     </button>
   );
 }
@@ -3217,6 +3219,13 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                     <StatusIcon status={r.todo.status} />
                     <span className="mono muted">#{r.todo.id}</span>
                     <span className="row-title ellipsis">{r.todo.title}</span>
+                    <span className="repos">
+                      {r.todo.repos.map((repo) => (
+                        <span key={repo} className="tag" title={repo}>
+                          {repoName(repo)}
+                        </span>
+                      ))}
+                    </span>
                     <span className="muted">{statusLabel(r.todo.status)}</span>
                     <span className="tag" title="サブタスクのうち Done になったもの">
                       子 {r.done}/{r.total} Done
@@ -3273,7 +3282,14 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                 >
                   <StateBadge state={shownState(s.state, todo)} />
                   <span className="ellipsis">{sessionLabel(s)}</span>
-                  {todo ? <TodoCell todo={todo} onOpen={onOpenTodo} /> : <span className="tag">未紐づけ</span>}
+                  {todo ? (
+                    <TodoCell todo={todo} onOpen={onOpenTodo} />
+                  ) : (
+                    <span className="todo-cell">
+                      <span className="tag">未紐づけ</span>
+                      {s.repos?.[0] && <span className="tag">{repoName(s.repos[0])}</span>}
+                    </span>
+                  )}
                   <span className="muted ellipsis">
                     {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
                   </span>

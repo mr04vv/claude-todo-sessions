@@ -1363,6 +1363,42 @@ button.lane-toggle:hover .lane-name {
   text-align: left;
 }
 
+/* The todo cell: its status, number, title and repository, cut to the column. */
+.sessions-grid .todo-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.todo-cell .status-icon,
+.todo-cell .mono,
+.todo-cell .tag {
+  flex-shrink: 0;
+}
+
+.todo-cell .ellipsis {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sessions-grid > .ellipsis,
+.sessions-grid > .muted {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row.session-group .repos {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .show-ended {
   align-self: flex-start;
   margin-top: 8px;
