@@ -4133,6 +4133,10 @@ interface Command {
   label: string;
   hint?: string;
   run: () => void;
+  /// Shown before the label (a session's state).
+  icon?: React.ReactNode;
+  /// Words it is also found by.
+  keywords?: string;
   /// A list of its own, which picking it opens in the same box (Esc, or ⌫ on an empty query, goes back).
   items?: () => Command[];
 }
@@ -4187,7 +4191,7 @@ function CommandPalette({ commands, todos, inputs, start, onOpenTodo, onOpenInpu
   const page = stack.at(-1);
   const q = query.trim().toLowerCase();
   const items: Command[] = page
-    ? (page.items?.() ?? []).filter((c) => commandMatches(`${c.label} ${c.hint ?? ""}`, q))
+    ? (page.items?.() ?? []).filter((c) => commandMatches(`${c.label} ${c.hint ?? ""} ${c.keywords ?? ""}`, q))
     : [
     ...commands.filter((c) => commandMatches(c.label, q)),
     ...(q
@@ -4225,7 +4229,7 @@ function CommandPalette({ commands, todos, inputs, start, onOpenTodo, onOpenInpu
   };
   return (
     <div className="modal-backdrop palette-backdrop" onClick={onClose}>
-      <div className="palette" role="dialog" aria-label="コマンド" onClick={stop}>
+      <div className={`palette${page ? " wide" : ""}`} role="dialog" aria-label="コマンド" onClick={stop}>
         {page && (
           <div className="palette-crumb">
             <button className="ghost small" onClick={back}>
@@ -4278,6 +4282,7 @@ function CommandPalette({ commands, todos, inputs, start, onOpenTodo, onOpenInpu
                 pick(c);
               }}
             >
+              {c.icon}
               <span className="ellipsis">{c.label}</span>
               {c.hint && <span className="muted">{c.hint}</span>}
               {c.items && <Icon name="chevronRight" size={12} />}
@@ -5549,8 +5554,10 @@ export default function App() {
       .sort((a, b) => STATE_ORDER.indexOf(a.session.state) - STATE_ORDER.indexOf(b.session.state) || b.session.state_at - a.session.state_at)
       .map(({ session: s, todo }) => ({
         key: `session:${s.session_id}`,
+        icon: <StateBadge state={shownState(s.state, todo)} />,
         label: todo ? `${sessionLabel(s)} · #${todo.id} ${todo.title}` : sessionLabel(s),
-        hint: `${STATE_LABEL[shownState(s.state, todo)]} · ${isCloud(s) ? "Cloud" : "Local"} · ${ago(s.state_at)}`,
+        hint: `${isCloud(s) ? "Cloud" : "Local"} · ${ago(s.state_at)}`,
+        keywords: STATE_LABEL[shownState(s.state, todo)],
         run: () => (isCloud(s) ? openCloud(s.session_id) : openLocal(inAppTerminal, s.session_id, report, true)),
       }));
   const sessionsCommand: Command = { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands };

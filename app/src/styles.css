@@ -2075,12 +2075,26 @@ input.panel-title:focus-visible {
   outline: none;
 }
 
+/* A list opened inside (the sessions, a terminal's links): room for long rows. */
+.palette.wide {
+  width: min(840px, calc(100vw - 32px));
+}
+
+.palette.wide .palette-list {
+  max-height: 480px;
+}
+
 .palette-list {
   list-style: none;
   margin: 0;
   padding: 6px;
   max-height: 360px;
   overflow-y: auto;
+}
+
+.palette-list li .state {
+  flex-shrink: 0;
+  width: 72px;
 }
 
 .palette-list li {
