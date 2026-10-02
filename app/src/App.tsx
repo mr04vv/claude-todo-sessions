@@ -177,6 +177,7 @@ const TerminalContext = createContext<InAppTerminal | null>(null);
 /// `main` is "開く": with herdr it falls back to Desktop, and with the
 /// in-app terminal a session Desktop knows opens there.
 function openLocal(terminal: InAppTerminal | null, sessionId: string, report: (e: unknown) => void, main = false) {
+  api.markSessionSeen(sessionId).catch(report);
   if (!terminal) return void api.openSession(sessionId, main ? undefined : "herdr").catch(report);
   if (terminal.focus(sessionId)) return;
   terminalApi.resume(sessionId, main).then((r) => r && terminal.open(r), report);
@@ -190,24 +191,23 @@ const COLUMNS: { status: Status; label: string }[] = [
   { status: "done", label: "Done" },
 ];
 
-/// A session's state as shown: once its turn is over (or it ended), where
-/// its todo's PR stands — opened with no reviewer asked yet, waiting for a
-/// review, approved, or merged.
-type ShownState = SessionState | "pr_open" | "review" | "changes" | "approved" | "merged";
-const STATE_LABEL: Record<ShownState, string> = {
+const STATE_LABEL: Record<SessionState, string> = {
   running: "実行中",
   needs_input: "入力待ち",
   idle: "待機中",
   ended: "終了",
-  pr_open: "レビュー未依頼",
-  review: "レビュー待ち",
-  changes: "修正依頼",
-  approved: "承認済み",
-  merged: "マージ済み",
 };
-const PR_SHOWN: Partial<Record<PrState, ShownState>> = { open: "pr_open", review_requested: "review", changes_requested: "changes", approved: "approved", merged: "merged" };
-const shownState = (state: SessionState, todo: Todo | undefined): ShownState =>
-  (state === "idle" || state === "ended") && todo?.pr_state ? (PR_SHOWN[todo.pr_state] ?? state) : state;
+/// Where a todo's PR stands, apart from its sessions: its badge's class and name.
+const PR_STAGE: Record<PrState, [string, string]> = {
+  draft: ["draft", "Draft"],
+  open: ["pr_open", "レビュー未依頼"],
+  review_requested: ["review", "レビュー待ち"],
+  changes_requested: ["changes", "修正依頼"],
+  approved: ["approved", "承認済み"],
+  merged: ["merged", "マージ済み"],
+  closed: ["ended", "closed"],
+};
+const prStageLabel = (todo: Todo | undefined) => (todo?.pr_state ? PR_STAGE[todo.pr_state][1] : null);
 
 /// The state that needs the user comes first.
 const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle", "ended"];
@@ -604,11 +604,25 @@ function StatusIcon({ status }: { status: Status }) {
   );
 }
 
-function StateBadge({ state }: { state: ShownState }) {
+/// A session's state, after a dot when its ended turn is unread (as herdr marks it).
+function StateBadge({ state, unread }: { state: SessionState; unread?: boolean }) {
   return (
     <span className={`state state-${state}`}>
+      {unread !== undefined && <span className={`unread-dot${unread ? " on" : ""}`} title={unread ? "作業が終わってから、まだ見ていません" : undefined} />}
       <i />
       {STATE_LABEL[state]}
+    </span>
+  );
+}
+
+/// Where the todo's PR stands (none: a dash, or nothing with `bare`).
+function PrBadge({ todo, bare }: { todo: Todo | undefined; bare?: boolean }) {
+  if (!todo?.pr_state) return bare ? null : <span className="muted">—</span>;
+  const [cls, label] = PR_STAGE[todo.pr_state];
+  return (
+    <span className={`state state-${cls}`} title={todo.pr_url ?? undefined}>
+      <i />
+      {label}
     </span>
   );
 }
@@ -792,6 +806,7 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
   const cloud = isCloud(session);
   const go = (target?: "desktop" | "herdr" | "web") => {
     setOpen(false);
+    api.markSessionSeen(session.session_id).catch(report);
     if (target === "web" && openInBrowser) openInBrowser(cloudWebUrl(session.session_id));
     else if (target === "herdr") openLocal(terminal, session.session_id, report);
     else api.openSession(session.session_id, target === "web" ? "desktop" : target).catch(report);
@@ -979,7 +994,7 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
     >
       <div className="card-head">
         <span className="mono">{todoRef(todo)}</span>
-        {urgent && <StateBadge state={shownState(urgent, todo)} />}
+        {urgent && <StateBadge state={urgent} unread={todo.sessions.some((s) => s.unread) || undefined} />}
       </div>
       <div className="card-title">{todo.title}</div>
       {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner) && (
@@ -1302,7 +1317,7 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
                 <StatusIcon status={t.status} />
                 <span className="mono muted ref">{todoRef(t)}</span>
                 <span className="row-title">{t.title}</span>
-                {urgent && <StateBadge state={shownState(urgent, t)} />}
+                {urgent && <StateBadge state={urgent} unread={t.sessions.some((s) => s.unread) || undefined} />}
                 <GhChip todo={t} report={report} />
                 {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
                 {t.repos[0] && !lane.repo && (
@@ -2933,12 +2948,13 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
           {todo.sessions.length === 0 && <p className="muted hint">まだありません。下から始めるか、セッション画面で既存のものを紐づけます。</p>}
           <ul className="sessions">
             {todo.sessions.map((s) => (
-              <li key={s.session_id} className={`session-row state-bg-${shownState(s.state, todo)}`}>
-                <span className={`dot state-${shownState(s.state, todo)}`} />
+              <li key={s.session_id} className={`session-row state-bg-${s.state}`}>
+                <span className={`unread-dot${s.unread ? " on" : ""}`} title={s.unread ? "作業が終わってから、まだ見ていません" : undefined} />
+                <span className={`dot state-${s.state}`} />
                 <span className="session-main">
                   <span className="ellipsis">{sessionLabel(s)}</span>
                   <span className="muted">
-                    {STATE_LABEL[shownState(s.state, todo)]} · {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
+                    {STATE_LABEL[s.state]} · {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
                   </span>
                 </span>
                 <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
@@ -3053,7 +3069,7 @@ function sessionItemsOf(board: Board): SessionItem[] {
   return [...board.todos.flatMap((todo) => todo.sessions.map((session) => ({ session, todo }))), ...board.inbox.map((session) => ({ session }))];
 }
 
-type SessionFilter = "all" | "needs_input" | "running" | "unlinked";
+type SessionFilter = "all" | "unread" | "needs_input" | "running" | "unlinked";
 
 function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, onOpenTodo, onStartTodo, onQuick }: {
   board: Board;
@@ -3082,17 +3098,20 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   const live = all.filter((i) => i.session.state !== "ended");
   const counts: Record<SessionFilter, number> = {
     all: live.length,
+    unread: live.filter((i) => i.session.unread).length,
     needs_input: live.filter((i) => i.session.state === "needs_input").length,
     running: live.filter((i) => i.session.state === "running").length,
     unlinked: live.filter((i) => !i.todo).length,
   };
   const FILTERS: { key: SessionFilter; label: string }[] = [
     { key: "all", label: "すべて" },
+    { key: "unread", label: "未読" },
     { key: "needs_input", label: "入力待ち" },
     { key: "running", label: "実行中" },
     { key: "unlinked", label: "未紐づけ" },
   ];
-  const pass = (i: SessionItem) => filter === "all" || (filter === "unlinked" ? !i.todo : i.session.state === filter);
+  const pass = (i: SessionItem) =>
+    filter === "all" || (filter === "unlinked" ? !i.todo : filter === "unread" ? i.session.unread : i.session.state === filter);
   // Todos with subtasks head groups (sessionTree.ts); a folded group shows its head only.
   const { groups, flat } = sessionTree((showEnded ? all : live).filter(pass), all, board.todos, showEnded);
   const [folded, setFolded] = useState<Set<number>>(new Set());
@@ -3138,7 +3157,12 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
         <h1>セッション</h1>
         <div className="segmented" role="group" aria-label="絞り込み">
           {FILTERS.map((f) => (
-            <button key={f.key} className={`${filter === f.key ? "on" : ""}${f.key === "needs_input" && counts.needs_input > 0 ? " warn" : ""}`} aria-pressed={filter === f.key} onClick={() => setFilter(f.key)}>
+            <button
+              key={f.key}
+              className={`${filter === f.key ? "on" : ""}${(f.key === "needs_input" || f.key === "unread") && counts[f.key] > 0 ? " warn" : ""}`}
+              aria-pressed={filter === f.key}
+              onClick={() => setFilter(f.key)}
+            >
               {f.label} {counts[f.key]}
             </button>
           ))}
@@ -3218,6 +3242,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
         <section>
           <div className="table-head sessions-grid">
             <span>状態</span>
+            <span>PR</span>
             <span>セッション</span>
             <span>todo</span>
             <span>リポジトリ</span>
@@ -3249,8 +3274,6 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
               const tree = `${r.child ? " child" : ""}${r.last ? " last" : ""}`;
               if (r.kind === "todo") {
                 const [state, says] = TODO_ROW[r.state];
-                // Where its PR stands comes first, as for a session.
-                const pr = r.todo.pr_state && PR_SHOWN[r.todo.pr_state];
                 return (
                   <li
                     key={r.id}
@@ -3259,14 +3282,12 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                     title={r.todo.pr_url ? "PR を開く" : undefined}
                     onClick={() => (setCursor(r.id), openTodoRow(r.todo))}
                   >
-                    {pr ? (
-                      <StateBadge state={pr} />
-                    ) : (
-                      <span className={`state ${r.state === "queued" ? "state-idle" : "state-ended"}`}>
-                        <i />
-                        {state}
-                      </span>
-                    )}
+                    <span className={`state ${r.state === "queued" ? "state-idle" : "state-ended"}`}>
+                      <span className="unread-dot" />
+                      <i />
+                      {state}
+                    </span>
+                    <PrBadge todo={r.todo} />
                     <span className="muted ellipsis">{says}</span>
                     <TodoCell todo={r.todo} onOpen={onOpenTodo} />
                     <RepoTags repos={r.todo.repos} />
@@ -3280,10 +3301,11 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                 <li
                   key={r.id}
                   data-row={r.id}
-                  className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}`}
+                  className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}${s.unread ? " unread" : ""}`}
                   onClick={() => (setCursor(r.id), open(s))}
                 >
-                  <StateBadge state={shownState(s.state, todo)} />
+                  <StateBadge state={s.state} unread={s.unread} />
+                  <PrBadge todo={todo} />
                   <span className="ellipsis">{sessionLabel(s)}</span>
                   {todo ? <TodoCell todo={todo} onOpen={onOpenTodo} /> : <span className="tag">未紐づけ</span>}
                   <RepoTags repos={todo?.repos ?? s.repos ?? []} />
@@ -3350,7 +3372,8 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
   return (
     <aside className="panel" aria-label={sessionLabel(s)}>
       <header className="panel-head">
-        <StateBadge state={shownState(s.state, item.todo)} />
+        <StateBadge state={s.state} unread={s.unread} />
+        <PrBadge todo={item.todo} bare />
         <span className="muted">{ago(s.state_at)}から</span>
         <span className="grow" />
         <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
@@ -5467,8 +5490,10 @@ export default function App() {
   const setTabUrl = (id: string, url: string) => setTabs((prev) => prev.map((t) => (t.id === id && t.url !== url ? { ...t, url } : t)));
   const openRef = useRef(openInBrowser);
   openRef.current = openInBrowser;
-  const openCloud = (sessionId: string) =>
-    cloudTarget === "desktop" ? api.openSession(sessionId, "desktop").catch(report) : openInBrowser(cloudWebUrl(sessionId));
+  const openCloud = (sessionId: string) => {
+    api.markSessionSeen(sessionId).catch(report);
+    return cloudTarget === "desktop" ? api.openSession(sessionId, "desktop").catch(report) : openInBrowser(cloudWebUrl(sessionId));
+  };
   const openCloudRef = useRef(openCloud);
   openCloudRef.current = openCloud;
   useEffect(() => {
@@ -5834,6 +5859,12 @@ export default function App() {
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
   const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? [])];
+  // A session whose page or terminal the pane shows (the app in front) is looked at.
+  const watchedSession = browserShown && typingSide !== null && activeTab ? (activeTab.term?.session ?? cloudIdOfPage(activeTab.url)) : null;
+  const watchedUnread = !!watchedSession && allSessions.some((s) => s.session_id === watchedSession && s.unread);
+  useEffect(() => {
+    if (watchedSession && watchedUnread && pageVisible()) api.markSessionSeen(watchedSession).then(refresh, report);
+  }, [watchedSession, watchedUnread]); // eslint-disable-line react-hooks/exhaustive-deps
   const waiting = allSessions.filter((s) => s.state === "needs_input");
   const openTodoCount = allTodos.filter((t) => t.status !== "done").length;
   const colCounts = Object.fromEntries(COLUMNS.map((c) => [c.status, visibleTodos.filter((t) => t.status === c.status).length])) as Record<Status, number>;
@@ -5938,10 +5969,10 @@ export default function App() {
       .sort((a, b) => STATE_ORDER.indexOf(a.session.state) - STATE_ORDER.indexOf(b.session.state) || b.session.state_at - a.session.state_at)
       .map(({ session: s, todo }) => ({
         key: `session:${s.session_id}`,
-        icon: <StateBadge state={shownState(s.state, todo)} />,
+        icon: <StateBadge state={s.state} unread={s.unread} />,
         label: todo ? `${sessionLabel(s)} · #${todo.id} ${todo.title}` : sessionLabel(s),
-        hint: `${isCloud(s) ? "Cloud" : "Local"} · ${ago(s.state_at)}`,
-        keywords: STATE_LABEL[shownState(s.state, todo)],
+        hint: [prStageLabel(todo), isCloud(s) ? "Cloud" : "Local", ago(s.state_at)].filter(Boolean).join(" · "),
+        keywords: [STATE_LABEL[s.state], s.unread ? "未読" : ""].join(" "),
         run: () => (isCloud(s) ? openCloud(s.session_id) : openLocal(inAppTerminal, s.session_id, report, true)),
       }));
   const sessionsCommand: Command = { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands };

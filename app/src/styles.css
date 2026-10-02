@@ -697,6 +697,24 @@ a:hover {
   background: var(--st-review);
 }
 
+/* A session whose ended turn has not been looked at: its title stands out. */
+.row.unread > .ellipsis {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.state .unread-dot {
+  margin-right: 2px;
+}
+
+.state-draft {
+  color: var(--text-3);
+}
+
+.state-draft i {
+  background: var(--text-3);
+}
+
 /* A PR opened with no reviewer asked yet: the user's move. */
 .state-pr_open {
   color: var(--waiting-text);
@@ -1298,7 +1316,7 @@ button.lane-toggle:hover .lane-name {
 
 .sessions-grid {
   display: grid;
-  grid-template-columns: 84px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 150px) 110px 28px;
+  grid-template-columns: 96px 96px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 150px) 110px 28px;
   column-gap: 12px;
 }
 

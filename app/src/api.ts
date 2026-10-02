@@ -13,6 +13,8 @@ export interface Session {
   state_at: number;
   /** `owner/repo` list; the first is where the session pushes. Present on inbox sessions. */
   repos?: string[];
+  /** Its turn ended after it was last looked at (in the app, or its herdr pane). */
+  unread: boolean;
 }
 
 export interface Todo {
@@ -329,6 +331,8 @@ export const api = {
   startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),
   /** Marks one notification read, or all with no id. */
   readNotifications: (id?: number) => invoke<void>("read_notifications", { id: id ?? null }),
+  /// The session was looked at now: its ended turn is read.
+  markSessionSeen: (sessionId: string) => invoke<void>("mark_session_seen", { sessionId }),
   setParent: (todoId: number, parentId: number | null) => invoke<Todo>("set_parent", { todoId, parentId }),
   sessionDetail: (sessionId: string) => invoke<SessionDetail>("session_detail", { sessionId }),
   usage: () => invoke<Limit[]>("usage"),
