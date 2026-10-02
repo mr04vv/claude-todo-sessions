@@ -17,6 +17,7 @@ export type Action =
   | "archive"
   | "toInput"
   | "focusUrl"
+  | "terminalLinks"
   | "back"
   | "forward"
   | "down"
@@ -61,6 +62,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["prevTab", "前のタブ（Input モードでは入力先の側のタブ、Todo では前のレーン）"],
       ["nextTab", "次のタブ（Input モードでは入力先の側のタブ、Todo では次のレーン）"],
       ["focusUrl", "アドレス欄へ"],
+      ["terminalLinks", "ターミナルに出ているリンクを選んで開く（⌘ クリックで後ろのタブ、⌘⇧ クリックで前に開く）"],
       ["back", "戻る"],
       ["forward", "進む"],
       ["archive", "Cloud セッションのページをアーカイブ"],
@@ -119,6 +121,7 @@ export const DEFAULT_KEYS: Record<Action, string> = {
   // As Safari's "Add to Reading List".
   toInput: "cmd+shift+d",
   focusUrl: "cmd+l",
+  terminalLinks: "cmd+shift+l",
   back: "cmd+[",
   forward: "cmd+]",
   down: "j",

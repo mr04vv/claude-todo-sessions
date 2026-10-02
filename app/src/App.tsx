@@ -63,7 +63,7 @@ import {
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
-import { closeTerminal, focusTerminal, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
+import { closeTerminal, focusTerminal, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
 /// The usage API answers 429 when asked often (status lines poll it too), so
@@ -4167,8 +4167,10 @@ function commandMatches(label: string, query: string) {
 }
 
 /// ⌘K: the actions that used to crowd the sidebar, the screens, and a jump to any todo.
-function CommandPalette({ commands, todos, inputs, onOpenTodo, onOpenInput, onClose }: {
+function CommandPalette({ commands, todos, inputs, start, onOpenTodo, onOpenInput, onClose }: {
   commands: Command[];
+  /// A list to open on (a terminal's links), which Esc closes from.
+  start?: Command;
   todos: Todo[];
   inputs: Input[];
   onOpenTodo: (id: number) => void;
@@ -4178,7 +4180,7 @@ function CommandPalette({ commands, todos, inputs, onOpenTodo, onOpenInput, onCl
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   // The lists opened from one another (a command's items), the last shown.
-  const [stack, setStack] = useState<Command[]>([]);
+  const [stack, setStack] = useState<Command[]>(start ? [start] : []);
   const page = stack.at(-1);
   const q = query.trim().toLowerCase();
   const items: Command[] = page
@@ -4201,6 +4203,7 @@ function CommandPalette({ commands, todos, inputs, onOpenTodo, onOpenInput, onCl
   ];
   useEffect(() => setActive(0), [query, stack.length]);
   const back = () => {
+    if (start && stack.length === 1) return onClose();
     setStack((s) => s.slice(0, -1));
     setQuery("");
   };
@@ -4494,8 +4497,9 @@ export default function App() {
   };
   /// In the pane, a page already open in a tab comes to the front and anything
   /// else gets a new tab; with Dia chosen, pages go there instead.
-  /// `keys` gives the page the keyboard (one typed into the new tab page).
-  const openInBrowser = (url: string, keys = false) => {
+  /// `keys` gives the page the keyboard (one typed into the new tab page);
+  /// `behind` leaves the tab shown as it is.
+  const openInBrowser = (url: string, keys = false, behind = false) => {
     if (linkTarget === "dia") {
       api.openInDia(url).catch(report);
       return;
@@ -4508,7 +4512,7 @@ export default function App() {
     const id = `t${nextTab.current++}`;
     if (keys) keysInto = id;
     setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
-    setActiveTabId(id);
+    if (!behind) setActiveTabId(id);
   };
   const beginWeb: BeginWeb = () => {
     if (linkTarget === "dia") return (sessionId) => sessionId && api.openInDia(cloudWebUrl(sessionId)).catch(report);
@@ -4593,8 +4597,8 @@ export default function App() {
   const focusLefts = space.lefts.map((id) => tabs.find((t) => t.id === id)).filter((t): t is BrowserTab => t !== undefined);
   const focusLeft = space.newTab ? null : (focusLefts.find((t) => t.id === space.active) ?? focusLefts[0] ?? null);
   /// Puts items on the left of space `key` (the one shown, by default), the
-  /// first of them shown; gives their tab ids.
-  const addToFocus = (items: FocusItem[], key = spaceKey) => {
+  /// first of them shown unless `behind`; gives their tab ids.
+  const addToFocus = (items: FocusItem[], key = spaceKey, behind = false) => {
     const ids = items.map((item) => {
       if ("terminal" in item) return item.terminal;
       const id = `f${nextTab.current++}`;
@@ -4605,8 +4609,8 @@ export default function App() {
       ...s,
       pages: [...s.pages, ...items.flatMap((item) => ("url" in item ? [item.url] : []))],
       lefts: [...s.lefts, ...ids.filter((id) => !s.lefts.includes(id))],
-      active: ids[0] ?? s.active,
-      newTab: ids.length === 0 && s.newTab,
+      active: behind ? s.active : (ids[0] ?? s.active),
+      newTab: (behind || ids.length === 0) && s.newTab,
     }));
     return ids;
   };
@@ -4791,6 +4795,31 @@ export default function App() {
   // neither while the app's other parts or another app have it.
   const [focusTyping, setFocusTyping] = useState<"left" | "right" | null>("right");
   /// ⌘K: the commands, leaving the Input mode (a todo's pages stay) on the way.
+  // A terminal's links open in a new tab, in front (with the keyboard) or
+  // behind; in the Input mode, on its left.
+  const openTerminalLink = (url: string, front: boolean) => {
+    if (!focusModeRef.current) return openInBrowser(url, front, !front);
+    const [id] = addToFocus([{ url }], spaceKey, !front);
+    if (front && id) keysInto = id;
+  };
+  const openTerminalLinkRef = useRef(openTerminalLink);
+  openTerminalLinkRef.current = openTerminalLink;
+  useEffect(() => {
+    setTerminalLinkOpener((url, front) => openTerminalLinkRef.current(url, front));
+    return () => setTerminalLinkOpener(null);
+  }, []);
+  /// ⌘⇧L in terminal `id`: the addresses it shows, to pick one from in ⌘K's box.
+  const [paletteStart, setPaletteStart] = useState<{ command: Command; terminal: string } | null>(null);
+  const pickTerminalLink = (id: string) => {
+    const links = terminalLinks(id);
+    setPaletteStart({
+      terminal: id,
+      command: { key: "terminalLinks", label: "ターミナルのリンク", run: () => {}, items: () => links.map((url) => ({ key: url, label: url, run: () => openTerminalLink(url, true) })) },
+    });
+    setDialog("palette");
+  };
+  const pickTerminalLinkRef = useRef(pickTerminalLink);
+  pickTerminalLinkRef.current = pickTerminalLink;
   const togglePalette = () => {
     if (focusModeRef.current) {
       exitFocus();
@@ -5092,6 +5121,10 @@ export default function App() {
   const [dragging, setDragging] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
+  // ⌘K opens on its own list again.
+  useEffect(() => {
+    if (dialog !== "palette") setPaletteStart(null);
+  }, [dialog]);
   const dialogRef = useRef(dialog);
   dialogRef.current = dialog;
   const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "notices"] as const, "todos"));
@@ -5269,6 +5302,13 @@ export default function App() {
   // sides' keys to this.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // ⌘⇧L in a terminal: the links it shows, to pick one.
+      const terminal = matches(e, "terminalLinks") ? (e.target as HTMLElement).closest<HTMLElement>("[data-terminal]")?.dataset.terminal : undefined;
+      if (terminal) {
+        e.preventDefault();
+        pickTerminalLinkRef.current(terminal);
+        return;
+      }
       if (matches(e, "sideApp") || matches(e, "sidePane")) {
         e.preventDefault();
         // A selection in the focus mode's terminal goes along to the right.
@@ -5996,7 +6036,22 @@ export default function App() {
             }}
           />
         )}
-        {dialog === "palette" && <CommandPalette commands={commands} todos={allTodos} inputs={allInputs} onOpenTodo={goTodo} onOpenInput={focusInput} onClose={() => setDialog(null)} />}
+        {dialog === "palette" && (
+          <CommandPalette
+            commands={commands}
+            todos={allTodos}
+            inputs={allInputs}
+            start={paletteStart?.command}
+            onOpenTodo={goTodo}
+            onOpenInput={focusInput}
+            onClose={() => {
+              setDialog(null);
+              // Back to the terminal the links were picked from (a link picked takes the keyboard after).
+              const from = paletteStart?.terminal;
+              if (from) requestAnimationFrame(() => focusTerminal(from));
+            }}
+          />
+        )}
       </div>
     </TerminalContext.Provider>
     </OpenCloudContext.Provider>

@@ -5,11 +5,12 @@
 import { useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Terminal, type ITerminalOptions, type ITheme } from "@xterm/xterm";
+import { Terminal, type IBufferLine, type ITerminalOptions, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import { allKeys, matches, matchesCombo } from "./keymap";
 import { KittyFlags, kittyChord } from "./kitty";
+import { findUrls } from "./links";
 
 /// A command to run, where, and what to call its tab (`TerminalRun` in main.rs).
 export interface TerminalRun {
@@ -109,6 +110,39 @@ interface Entry {
 }
 const entries = new Map<string, Entry>();
 
+/// Opens a link from a terminal in the browser, in front (`front`) or behind.
+let linkOpener: ((url: string, front: boolean) => void) | null = null;
+export const setTerminalLinkOpener = (open: typeof linkOpener) => void (linkOpener = open);
+/// ⌘-click opens a link in a new tab behind, ⌘⇧-click in front, as a browser does.
+const openClicked = (ev: MouseEvent, url: string) => ev.metaKey && linkOpener?.(url, ev.shiftKey);
+
+/// A row's text, and the column each of its characters is in (a wide one takes two).
+function rowText(line: IBufferLine) {
+  let text = "";
+  const cols: number[] = [];
+  for (let x = 0; x < line.length; x++) {
+    const cell = line.getCell(x);
+    if (!cell || cell.getWidth() === 0) continue;
+    const chars = cell.getChars() || " ";
+    text += chars;
+    for (let i = 0; i < chars.length; i++) cols.push(x);
+  }
+  return { text, cols };
+}
+
+/// The addresses terminal `id` shows now, the lowest (latest) first.
+export function terminalLinks(id: string): string[] {
+  const term = entries.get(id)?.term;
+  if (!term) return [];
+  const buffer = term.buffer.active;
+  const urls: string[] = [];
+  for (let y = buffer.viewportY + term.rows - 1; y >= buffer.viewportY; y--) {
+    const line = buffer.getLine(y);
+    if (line) urls.push(...findUrls(rowText(line).text).map((l) => l.url).reverse());
+  }
+  return [...new Set(urls)];
+}
+
 const decode = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
 void listen<{ id: string; data: string }>(OUTPUT_EVENT, ({ payload }) => entries.get(payload.id)?.term.write(decode(payload.data)));
 void listen<{ id: string }>(EXIT_EVENT, ({ payload }) => entries.get(payload.id)?.term.write(EXITED_NOTE));
@@ -200,7 +234,20 @@ const look: Promise<Look> = invoke<[string, string][]>("ghostty_config")
 function entryFor(id: string, look: Look): Entry {
   let e = entries.get(id);
   if (!e) {
-    const term = new Terminal({ ...look.options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true });
+    // Links a program marks (OSC 8, as Claude Code's) and addresses in the text open on ⌘-click.
+    const term = new Terminal({ ...look.options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true, linkHandler: { activate: openClicked } });
+    term.registerLinkProvider({
+      provideLinks(y, callback) {
+        const line = term.buffer.active.getLine(y - 1);
+        const { text, cols } = line ? rowText(line) : { text: "", cols: [] };
+        const links = findUrls(text).map(({ url, index }) => ({
+          text: url,
+          range: { start: { x: cols[index] + 1, y }, end: { x: cols[index + url.length - 1] + 1, y } },
+          activate: (ev: MouseEvent) => openClicked(ev, url),
+        }));
+        callback(links.length > 0 ? links : undefined);
+      },
+    });
     const fit = new FitAddon();
     term.loadAddon(fit);
     const write = (data: string) => void invoke("term_write", { id, data }).catch(() => {});
@@ -251,6 +298,7 @@ function entryFor(id: string, look: Look): Entry {
     term.onResize(({ cols, rows }) => void invoke("term_resize", { id, cols, rows }).catch(() => {}));
     const host = document.createElement("div");
     host.className = "terminal-host";
+    host.dataset.terminal = id;
     e = { term, fit, host, started: false, look };
     entries.set(id, e);
   }
