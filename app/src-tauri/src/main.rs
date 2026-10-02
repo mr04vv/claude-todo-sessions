@@ -1693,51 +1693,58 @@ fn discover_pr(db: &Db, todo: &Todo, branch_prs: &mut HashMap<String, serde_json
 
 /// Records the state of every linked issue and PR with batched GraphQL
 /// queries. A closed issue or a merged PR marks its todo done.
-fn refresh_states(db: &Db, todos: &[Todo]) {
-    let mut by_url: HashMap<String, (i64, bool)> = HashMap::new();
+/// The todos each issue / PR URL belongs to, with whether it is their PR.
+fn todos_by_url(todos: &[Todo]) -> HashMap<String, Vec<(i64, bool)>> {
+    let mut by_url: HashMap<String, Vec<(i64, bool)>> = HashMap::new();
     for t in todos {
         if let Some(u) = t.issue_url.clone().filter(|u| u.contains("/issues/")) {
-            by_url.insert(u, (t.id, false));
+            by_url.entry(u).or_default().push((t.id, false));
         }
         if let Some(u) = t.pr_url.clone() {
-            by_url.insert(u, (t.id, true));
+            by_url.entry(u).or_default().push((t.id, true));
         }
     }
+    by_url
+}
+
+fn refresh_states(db: &Db, todos: &[Todo]) {
+    let by_url = todos_by_url(todos);
     let urls: Vec<String> = by_url.keys().cloned().collect();
     for chunk in urls.chunks(cts_core::github::BATCH_SIZE) {
         let query = cts_core::github::status_query(chunk);
         let Ok(json) = gh(&["api", "graphql", "-f", &format!("query={query}")]) else { continue };
         let Ok(resp) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
         for (url, now) in cts_core::github::parse_statuses(&resp, chunk) {
-            let Some(&(id, is_pr)) = by_url.get(&url) else { continue };
-            let Some(todo) = todos.iter().find(|t| t.id == id) else { continue };
-            let before = if is_pr { db.set_pr_state(id, &now) } else { db.set_issue_state(id, &now) };
-            let finished = if is_pr { now == "merged" } else { now == "closed" };
-            let just_finished = match &before {
-                Ok(b) => finished && b.as_deref() != Some(now.as_str()) && (b.is_some() || is_pr),
-                Err(e) => {
-                    eprintln!("{e}");
-                    false
-                }
-            };
-            // A PR under review moves its todo to Review; one sent back for changes returns it to Doing.
-            if is_pr && todo.status != Status::Done && matches!(before, Ok(ref b) if b.as_deref() != Some(now.as_str())) {
-                let next = match now.as_str() {
-                    "review_requested" | "approved" => Some(Status::Review),
-                    "changes_requested" => Some(Status::Doing),
-                    _ => None,
+            for &(id, is_pr) in by_url.get(&url).into_iter().flatten() {
+                let Some(todo) = todos.iter().find(|t| t.id == id) else { continue };
+                let before = if is_pr { db.set_pr_state(id, &now) } else { db.set_issue_state(id, &now) };
+                let finished = if is_pr { now == "merged" } else { now == "closed" };
+                let just_finished = match &before {
+                    Ok(b) => finished && b.as_deref() != Some(now.as_str()) && (b.is_some() || is_pr),
+                    Err(e) => {
+                        eprintln!("{e}");
+                        false
+                    }
                 };
-                if let Some(next) = next.filter(|n| *n != todo.status) {
-                    let _ = db.update_todo(todo.id, TodoPatch { status: Some(next), ..Default::default() });
+                // A PR under review moves its todo to Review; one sent back for changes returns it to Doing.
+                if is_pr && todo.status != Status::Done && matches!(before, Ok(ref b) if b.as_deref() != Some(now.as_str())) {
+                    let next = match now.as_str() {
+                        "review_requested" | "approved" => Some(Status::Review),
+                        "changes_requested" => Some(Status::Doing),
+                        _ => None,
+                    };
+                    if let Some(next) = next.filter(|n| *n != todo.status) {
+                        let _ = db.update_todo(todo.id, TodoPatch { status: Some(next), ..Default::default() });
+                    }
                 }
-            }
-            if just_finished {
-                mark_done(db, todo);
-                // Backstop for a PR that did not say "Closes …": close its todo's issue too.
-                if is_pr {
-                    if let Some(issue) = todo.issue_url.as_deref().filter(|u| u.contains("/issues/")) {
-                        if todo.issue_state.as_deref() != Some("closed") && gh(&["issue", "close", issue, "--comment", &format!("{url} のマージで完了しました。")]).is_ok() {
-                            let _ = db.set_issue_state(todo.id, "closed");
+                if just_finished {
+                    mark_done(db, todo);
+                    // Backstop for a PR that did not say "Closes …": close its todo's issue too.
+                    if is_pr {
+                        if let Some(issue) = todo.issue_url.as_deref().filter(|u| u.contains("/issues/")) {
+                            if todo.issue_state.as_deref() != Some("closed") && gh(&["issue", "close", issue, "--comment", &format!("{url} のマージで完了しました。")]).is_ok() {
+                                let _ = db.set_issue_state(todo.id, "closed");
+                            }
                         }
                     }
                 }
@@ -2257,6 +2264,28 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_todo_with_the_same_url_is_synced() {
+        let db = Db::open(std::path::Path::new(":memory:")).unwrap();
+        let pr = "https://github.com/o/r/pull/1";
+        let issue = "https://github.com/o/r/issues/2";
+        let mut ids = Vec::new();
+        for title in ["a", "b"] {
+            let t = db.create_todo(NewTodo { title: title.into(), issue_url: Some(issue.into()), ..Default::default() }).unwrap();
+            db.update_todo(t.id, TodoPatch { pr_url: Some(pr.into()), ..Default::default() }).unwrap();
+            ids.push(t.id);
+        }
+        let todos = db.list_todos(None).unwrap();
+        let by_url = todos_by_url(&todos);
+        let mut got = by_url[pr].clone();
+        got.sort();
+        assert_eq!(got, ids.iter().map(|&id| (id, true)).collect::<Vec<_>>(), "both todos have the PR");
+        let mut got = by_url[issue].clone();
+        got.sort();
+        assert_eq!(got, ids.iter().map(|&id| (id, false)).collect::<Vec<_>>(), "both todos have the issue");
+        assert_eq!(by_url.len(), 2, "each URL is asked about once");
+    }
 
     #[test]
     fn drops_the_variables_of_the_claude_code_session_it_was_opened_from() {
