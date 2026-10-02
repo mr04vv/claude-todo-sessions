@@ -707,6 +707,23 @@ a:hover {
   margin-right: 2px;
 }
 
+/* Unread dot, session state and PR glyph, side by side (StateMarks). */
+.state-marks {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.state-marks .unread-dot {
+  width: 6px;
+  height: 6px;
+}
+
+.state-marks .state-approved,
+.state-marks .state-merged {
+  color: var(--st-done);
+}
+
 .state-draft {
   color: var(--text-3);
 }
@@ -1316,7 +1333,7 @@ button.lane-toggle:hover .lane-name {
 
 .sessions-grid {
   display: grid;
-  grid-template-columns: 96px 96px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 150px) 110px 28px;
+  grid-template-columns: 52px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 150px) 110px 28px;
   column-gap: 12px;
 }
 
