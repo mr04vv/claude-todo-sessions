@@ -2678,10 +2678,6 @@ body.resizing {
   gap: 8px;
 }
 
-.slack-name {
-  width: 160px;
-}
-
 .slack-message pre {
   margin: 0;
   padding: 8px 10px;
