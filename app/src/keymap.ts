@@ -34,6 +34,7 @@ export type Action =
   | "parent"
   | "add"
   | "dismiss"
+  | "dismissAll"
   | "editTitle"
   | "editMemo"
   | "addSubtask"
@@ -87,6 +88,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["parent", "親の todo を開く"],
       ["add", "その場所に todo を追加"],
       ["dismiss", "通知：選んでいる通知を消す"],
+      ["dismissAll", "通知：すべて消す"],
       ["search", "絞り込み欄へ"],
       ["help", "キーの一覧"],
     ],
@@ -140,6 +142,7 @@ export const DEFAULT_KEYS: Record<Action, string> = {
   parent: "u",
   add: "c",
   dismiss: "x",
+  dismissAll: "cmd+shift+x",
   editTitle: "e",
   editMemo: "m",
   addSubtask: "a",

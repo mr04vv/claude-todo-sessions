@@ -3641,12 +3641,14 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
   const { startReview, starting } = useReviewStarter(local, run);
   // ↑↓ or j k pick a notice, Enter opens its session (for a review request,
   // the choice of submitting on its own or asking first), ⌥Enter its row,
-  // x dismisses it (the cursor going on to the next).
+  // x dismisses it (the cursor going on to the next), ⌘⇧X all of them.
   const ids = rows.map((n) => String(n.id));
+  const readAll = () => run(() => api.readNotifications());
   const { cursorId, setCursor, list } = useRowCursor(
     ids,
     (_, alt, row) => (alt ? row : (row.querySelector<HTMLButtonElement>(".open-caret, .notice-open") ?? row)).click(),
     (e, id) => {
+      if (matches(e, "dismissAll")) return (readAll(), true);
       const n = rows.find((n) => String(n.id) === id);
       if (!n || !matches(e, "dismiss")) return false;
       const i = ids.indexOf(id);
@@ -3666,8 +3668,8 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
         <h1>通知</h1>
         <span className="muted">{rows.length}</span>
         <span className="grow" />
-        <button disabled={rows.length === 0} onClick={() => run(() => api.readNotifications())}>
-          <Icon name="check" size={13} /> すべて消す
+        <button disabled={rows.length === 0} onClick={readAll}>
+          <Icon name="check" size={13} /> すべて消す <span className="kbd">{keyLabel(keyOf("dismissAll"))}</span>
         </button>
       </header>
       <div className="content" ref={list}>
