@@ -3223,12 +3223,18 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
               const tree = `${r.child ? " child" : ""}${r.last ? " last" : ""}`;
               if (r.kind === "todo") {
                 const [state, says] = TODO_ROW[r.state];
+                // Where its PR stands comes first, as for a session.
+                const pr = r.todo.pr_state && PR_SHOWN[r.todo.pr_state];
                 return (
                   <li key={r.id} data-row={r.id} className={`row sessions-grid${tree}${cursor}${r.todo.status === "done" ? " done" : ""}`} onClick={() => (setCursor(r.id), onOpenTodo(r.todo.id))}>
-                    <span className={`state ${r.state === "queued" ? "state-idle" : "state-ended"}`}>
-                      <i />
-                      {state}
-                    </span>
+                    {pr ? (
+                      <StateBadge state={pr} />
+                    ) : (
+                      <span className={`state ${r.state === "queued" ? "state-idle" : "state-ended"}`}>
+                        <i />
+                        {state}
+                      </span>
+                    )}
                     <span className="muted ellipsis">{says}</span>
                     <TodoCell todo={r.todo} onOpen={onOpenTodo} />
                     <span className="muted">—</span>

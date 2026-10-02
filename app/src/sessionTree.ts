@@ -3,7 +3,7 @@
 // first and its children's under them; a child not started yet is a row of
 // its own, to start there. Sessions of todos without parent or children,
 // and unlinked ones, follow flat.
-import type { Session, SessionState, Todo } from "./api";
+import type { PrState, Session, SessionState, Todo } from "./api";
 
 export interface SessionItem {
   session: Session;
@@ -21,6 +21,8 @@ export type TreeRow =
 /// How much a state asks for the user (sessions sort by it).
 const STATE_RANK: Record<SessionState, number> = { needs_input: 0, running: 1, idle: 2, ended: 3 };
 const TODO_RANK = 4;
+/// A PR still on its way: a subtask with one stays in sight when its sessions are over.
+const PR_UNDER_WAY: PrState[] = ["open", "review_requested", "changes_requested", "approved"];
 
 export const groupRowId = (todoId: number) => `g:${todoId}`;
 export const todoRowId = (todoId: number) => `t:${todoId}`;
@@ -46,8 +48,9 @@ export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Tod
       }
       const ever = all.some((i) => i.todo?.id === kid.id);
       const state = kid.queue_runner ? "queued" : ever ? "ended" : "none";
-      // A subtask over (or done) is only shown when the hidden ones are.
-      if (!showIdleChildren && (state === "ended" || kid.status === "done")) continue;
+      // A subtask done, or over with no PR under way, is only shown when the hidden ones are.
+      const prUnderWay = kid.pr_state !== null && PR_UNDER_WAY.includes(kid.pr_state);
+      if (!showIdleChildren && (kid.status === "done" || (state === "ended" && !prUnderWay))) continue;
       under.push({ kind: "todo", id: todoRowId(kid.id), todo: kid, group: parent.id, child: true, state });
     }
     const tail = under[under.length - 1];
