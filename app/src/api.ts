@@ -325,6 +325,8 @@ export const FOCUS_APP_EVENT = "focus-app";
 export const PAGE_FOCUSED_EVENT = "page-focused";
 /** When a page's ⌘K asks for the app's commands. */
 export const OPEN_PALETTE_EVENT = "open-palette";
+/** When a page's ⌘⇧K asks for the list of sessions. */
+export const OPEN_SESSIONS_EVENT = "open-sessions";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
 /** `{tab}` when a page asks to go into an input (⌘⇧D). */

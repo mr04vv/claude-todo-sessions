@@ -6,6 +6,7 @@ import { useSyncExternalStore } from "react";
 
 export type Action =
   | "palette"
+  | "sessions"
   | "newTodo"
   | "newTab"
   | "closeTab"
@@ -48,6 +49,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     group: "どこでも",
     items: [
       ["palette", "コマンド（⌘K のメニュー）"],
+      ["sessions", "セッション一覧（⌘K の一番上）"],
       ["newTodo", "新しい todo（Input の画面では input）"],
       ["reload", "今の画面を取り直す（ページでは再読み込み）"],
       ["sideApp", "入力先を Todo 側へ（Input モードでは左へ）"],
@@ -109,6 +111,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
 
 export const DEFAULT_KEYS: Record<Action, string> = {
   palette: "cmd+k",
+  sessions: "cmd+shift+k",
   newTodo: "cmd+n",
   newTab: "cmd+t",
   closeTab: "cmd+w",

@@ -39,6 +39,7 @@
   const ARCHIVE = "todo-sessions://archive";
   const TO_INPUT = "todo-sessions://to-input";
   const PALETTE = "todo-sessions://palette";
+  const SESSIONS = "todo-sessions://sessions";
   const FOCUS_APP = "todo-sessions://focus-app";
   const FOCUS_PANE = "todo-sessions://focus-pane";
   const FOCUS_EXIT = "todo-sessions://focus-exit";
@@ -83,6 +84,7 @@
       location.href = text ? `${FOCUS_PANE}?text=${encodeURIComponent(text)}` : FOCUS_PANE;
     }],
     ["palette", () => (location.href = PALETTE)],
+    ["sessions", () => (location.href = SESSIONS)],
     ["focusUrl", () => (location.href = FOCUS_URL)],
     ["newTab", () => (location.href = NEW_TAB)],
     ["closeTab", () => (location.href = CLOSE_TAB)],

@@ -24,6 +24,7 @@ import {
   BROWSER_ARCHIVE_EVENT,
   BROWSER_TO_INPUT_EVENT,
   OPEN_PALETTE_EVENT,
+  OPEN_SESSIONS_EVENT,
   FOCUS_APP_EVENT,
   PAGE_FOCUSED_EVENT,
   FOCUS_PANE_EVENT,
@@ -4809,7 +4810,8 @@ export default function App() {
     return () => setTerminalLinkOpener(null);
   }, []);
   /// ⌘⇧L in terminal `id`: the addresses it shows, to pick one from in ⌘K's box.
-  const [paletteStart, setPaletteStart] = useState<{ command: Command; terminal: string } | null>(null);
+  /// ⌘K opened on a list of its own: a terminal's links (back to `terminal` on Esc), or the sessions.
+  const [paletteStart, setPaletteStart] = useState<{ command: Command; terminal?: string } | null>(null);
   const pickTerminalLink = (id: string) => {
     const links = terminalLinks(id);
     setPaletteStart({
@@ -5109,6 +5111,7 @@ export default function App() {
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
       listen<{ tab: string }>(BROWSER_TO_INPUT_EVENT, () => !focusModeRef.current && toInputRef.current()),
       listen(OPEN_PALETTE_EVENT, () => paletteRef.current()),
+      listen(OPEN_SESSIONS_EVENT, () => openSessionsRef.current()),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
@@ -5307,6 +5310,11 @@ export default function App() {
       if (terminal) {
         e.preventDefault();
         pickTerminalLinkRef.current(terminal);
+        return;
+      }
+      if (matches(e, "sessions")) {
+        e.preventDefault();
+        openSessionsRef.current();
         return;
       }
       if (matches(e, "sideApp") || matches(e, "sidePane")) {
@@ -5543,8 +5551,17 @@ export default function App() {
         hint: `${STATE_LABEL[shownState(s.state, todo)]} · ${isCloud(s) ? "Cloud" : "Local"} · ${ago(s.state_at)}`,
         run: () => (isCloud(s) ? openCloud(s.session_id) : openLocal(inAppTerminal, s.session_id, report, true)),
       }));
+  const sessionsCommand: Command = { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands };
+  /// ⌘⇧K: ⌘K's list of sessions straight away (leaving the Input mode, as ⌘K does).
+  const openSessions = () => {
+    if (focusModeRef.current) exitFocus();
+    setPaletteStart({ command: sessionsCommand });
+    setDialog("palette");
+  };
+  const openSessionsRef = useRef(openSessions);
+  openSessionsRef.current = openSessions;
   const commands: Command[] = [
-    { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands },
+    sessionsCommand,
     ...nav.map((n) => ({ key: `nav:${n.key}`, label: n.label, run: n.go })),
     { key: "browser", label: browserShown ? "作業スペースを隠す" : "作業スペース", run: toggleBrowser },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
