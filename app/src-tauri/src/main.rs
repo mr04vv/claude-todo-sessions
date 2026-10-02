@@ -1707,8 +1707,18 @@ fn todos_by_url(todos: &[Todo]) -> HashMap<String, Vec<(i64, bool)>> {
     by_url
 }
 
+/// The issue to close as the todo's PR merges: its own, unless known to be
+/// closed or closed already in this sync (`closed`, for todos sharing it).
+fn issue_to_close<'a>(todo: &'a Todo, closed: &HashSet<String>) -> Option<&'a str> {
+    todo.issue_url
+        .as_deref()
+        .filter(|u| u.contains("/issues/") && todo.issue_state.as_deref() != Some("closed") && !closed.contains(*u))
+}
+
 fn refresh_states(db: &Db, todos: &[Todo]) {
     let by_url = todos_by_url(todos);
+    // Issues closed in this sync: a todo sharing one only records it.
+    let mut closed: HashSet<String> = HashSet::new();
     let urls: Vec<String> = by_url.keys().cloned().collect();
     for chunk in urls.chunks(cts_core::github::BATCH_SIZE) {
         let query = cts_core::github::status_query(chunk);
@@ -1741,10 +1751,13 @@ fn refresh_states(db: &Db, todos: &[Todo]) {
                     mark_done(db, todo);
                     // Backstop for a PR that did not say "Closes …": close its todo's issue too.
                     if is_pr {
-                        if let Some(issue) = todo.issue_url.as_deref().filter(|u| u.contains("/issues/")) {
-                            if todo.issue_state.as_deref() != Some("closed") && gh(&["issue", "close", issue, "--comment", &format!("{url} のマージで完了しました。")]).is_ok() {
+                        if let Some(issue) = issue_to_close(todo, &closed) {
+                            if gh(&["issue", "close", issue, "--comment", &format!("{url} のマージで完了しました。")]).is_ok() {
+                                closed.insert(issue.to_string());
                                 let _ = db.set_issue_state(todo.id, "closed");
                             }
+                        } else if todo.issue_url.as_ref().is_some_and(|u| closed.contains(u)) {
+                            let _ = db.set_issue_state(todo.id, "closed");
                         }
                     }
                 }
@@ -2264,6 +2277,22 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_issue_shared_by_todos_is_closed_once() {
+        let db = Db::open(std::path::Path::new(":memory:")).unwrap();
+        let issue = "https://github.com/o/r/issues/2";
+        for title in ["a", "b"] {
+            db.create_todo(NewTodo { title: title.into(), issue_url: Some(issue.into()), ..Default::default() }).unwrap();
+        }
+        let todos = db.list_todos(None).unwrap();
+        let mut closed = HashSet::new();
+        assert_eq!(issue_to_close(&todos[0], &closed), Some(issue));
+        closed.insert(issue.to_string());
+        assert_eq!(issue_to_close(&todos[1], &closed), None, "closed already in this sync");
+        let done = db.set_issue_state(todos[1].id, "closed").map(|_| db.get_todo(todos[1].id).unwrap().unwrap()).unwrap();
+        assert_eq!(issue_to_close(&done, &HashSet::new()), None, "known to be closed");
+    }
 
     #[test]
     fn every_todo_with_the_same_url_is_synced() {
