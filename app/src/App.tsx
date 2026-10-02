@@ -3016,16 +3016,29 @@ type SessionItem = import("./sessionTree").SessionItem;
 /// The status as the kanban names it.
 const statusLabel = (status: Status) => COLUMNS.find((c) => c.status === status)?.label ?? status;
 
-/// A todo in the sessions table: its status, number, title and repository.
+/// A todo in the sessions table: its status, number and title.
 function TodoCell({ todo, onOpen }: { todo: Todo; onOpen: (id: number) => void }) {
-  const repo = todo.repos[0];
   return (
-    <button className="link-button todo-cell" title={`${statusLabel(todo.status)} · #${todo.id} ${todo.title}${repo ? ` · ${repo}` : ""}`} onClick={(e) => (e.stopPropagation(), onOpen(todo.id))}>
+    <button className="link-button todo-cell" title={`${statusLabel(todo.status)} · #${todo.id} ${todo.title}`} onClick={(e) => (e.stopPropagation(), onOpen(todo.id))}>
       <StatusIcon status={todo.status} />
       <span className="mono">#{todo.id}</span>
       <span className="ellipsis">{todo.title}</span>
-      {repo && <span className="tag">{repoName(repo)}</span>}
     </button>
+  );
+}
+/// Repositories as tags, the first few and how many more.
+const REPO_TAGS_MAX = 3;
+function RepoTags({ repos }: { repos: string[] }) {
+  if (repos.length === 0) return <span className="muted">—</span>;
+  return (
+    <span className="repos" title={repos.join("\n")}>
+      {repos.slice(0, REPO_TAGS_MAX).map((repo) => (
+        <span key={repo} className="tag ellipsis">
+          {repoName(repo)}
+        </span>
+      ))}
+      {repos.length > REPO_TAGS_MAX && <span className="muted">+{repos.length - REPO_TAGS_MAX}</span>}
+    </span>
   );
 }
 /// What a subtask row without a session says.
@@ -3057,6 +3070,10 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   const [filter, setFilter] = useState<SessionFilter>("all");
   const [showEnded, setShowEnded] = useState(false);
   const openInBrowser = useContext(BrowserContext);
+  const openCloud = useContext(OpenCloudContext);
+  const terminal = useContext(TerminalContext);
+  // A row opens its session as 開く does (the ways to open are in its details).
+  const open = (s: Session) => (isCloud(s) && openCloud ? openCloud(s.session_id) : openLocal(terminal, s.session_id, report, true));
   const all = sessionItemsOf(board).filter(
     (i) => repoFilter === null || laneKey(i.todo?.repos ?? i.session.repos) === repoFilter,
   );
@@ -3090,8 +3107,8 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
   const [confirmArchive, setConfirmArchive] = useState(false);
   // ↑↓ or j k pick a row, Enter opens it as "開く" does (a group's head its
-  // todo, a subtask not started its launch sheet), ⌥Enter opens its menu of
-  // ways; h folds the group the row is in, l opens it.
+  // todo, a subtask not started its launch sheet), ⌥Enter its details; h
+  // folds the group the row is in, l opens it.
   const startable = (r: TreeRow) => r.kind === "todo" && r.state !== "ended" && r.todo.status !== "done";
   // A subtask row with no session: its PR when it has one, else its sheet.
   const openTodoRow = (todo: Todo) => (todo.pr_url && openInBrowser ? openInBrowser(todo.pr_url) : onOpenTodo(todo.id));
@@ -3101,7 +3118,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
       const r = rows.find((x) => x.id === id);
       if (r?.kind === "group") return onOpenTodo(r.todo.id);
       if (r?.kind === "todo") return openTodoRow(r.todo);
-      row.querySelector<HTMLButtonElement>(choose ? ".open-caret" : ".open-main")?.click();
+      if (r?.kind === "session") choose ? onSelect(r.id) : open(r.session);
     },
     (e, id) => {
       const r = rows.find((x) => x.id === id);
@@ -3201,8 +3218,8 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
             <span>状態</span>
             <span>セッション</span>
             <span>todo</span>
+            <span>リポジトリ</span>
             <span>場所</span>
-            <span />
             <span />
           </div>
           {rows.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
@@ -3219,13 +3236,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                     <StatusIcon status={r.todo.status} />
                     <span className="mono muted">#{r.todo.id}</span>
                     <span className="row-title ellipsis">{r.todo.title}</span>
-                    <span className="repos">
-                      {r.todo.repos.map((repo) => (
-                        <span key={repo} className="tag" title={repo}>
-                          {repoName(repo)}
-                        </span>
-                      ))}
-                    </span>
+                    {r.todo.repos.length > 0 && <RepoTags repos={r.todo.repos} />}
                     <span className="muted">{statusLabel(r.todo.status)}</span>
                     <span className="tag" title="サブタスクのうち Done になったもの">
                       子 {r.done}/{r.total} Done
@@ -3256,18 +3267,8 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                     )}
                     <span className="muted ellipsis">{says}</span>
                     <TodoCell todo={r.todo} onOpen={onOpenTodo} />
-                    <span className="muted">—</span>
-                    {r.todo.pr_url ? (
-                      <button className="small" title="PR を開く" onClick={(e) => (e.stopPropagation(), openTodoRow(r.todo))}>
-                        PR
-                      </button>
-                    ) : startable(r) ? (
-                      <button className="small" title="起動シートを開く" onClick={(e) => (e.stopPropagation(), onStartTodo(r.todo.id))}>
-                        開始
-                      </button>
-                    ) : (
-                      <span />
-                    )}
+                    <RepoTags repos={r.todo.repos} />
+                    <span className="muted">{r.todo.pr_url ? "Enter で PR" : startable(r) ? "Enter で開始" : "—"}</span>
                     <span />
                   </li>
                 );
@@ -3278,23 +3279,16 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                   key={r.id}
                   data-row={r.id}
                   className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}`}
-                  onClick={(e) => (setCursor(r.id), e.currentTarget.querySelector<HTMLButtonElement>(".open-main")?.click())}
+                  onClick={() => (setCursor(r.id), open(s))}
                 >
                   <StateBadge state={shownState(s.state, todo)} />
                   <span className="ellipsis">{sessionLabel(s)}</span>
-                  {todo ? (
-                    <TodoCell todo={todo} onOpen={onOpenTodo} />
-                  ) : (
-                    <span className="todo-cell">
-                      <span className="tag">未紐づけ</span>
-                      {s.repos?.[0] && <span className="tag">{repoName(s.repos[0])}</span>}
-                    </span>
-                  )}
+                  {todo ? <TodoCell todo={todo} onOpen={onOpenTodo} /> : <span className="tag">未紐づけ</span>}
+                  <RepoTags repos={todo?.repos ?? s.repos ?? []} />
                   <span className="muted ellipsis">
                     {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
                   </span>
-                  <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
-                  <button className="ghost icon" aria-label={`${sessionLabel(s)} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onSelect(s.session_id))}>
+                  <button className="ghost icon" aria-label={`${sessionLabel(s)} の詳細`} title="詳細（⌥Enter）" onClick={(e) => (e.stopPropagation(), onSelect(s.session_id))}>
                     <Icon name="more" size={14} />
                   </button>
                 </li>
@@ -3357,6 +3351,7 @@ function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
         <StateBadge state={shownState(s.state, item.todo)} />
         <span className="muted">{ago(s.state_at)}から</span>
         <span className="grow" />
+        <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
         <button className="ghost icon" onClick={onClose} aria-label="閉じる">
           <Icon name="close" size={14} />
         </button>
