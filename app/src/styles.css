@@ -1270,6 +1270,56 @@ button.lane-toggle:hover .lane-name {
   column-gap: 12px;
 }
 
+/* A todo with subtasks heading its sessions and theirs (sessionTree.ts). */
+.row.session-group {
+  gap: 8px;
+  background: var(--sidebar);
+}
+
+.row.session-group .row-title {
+  font-weight: 600;
+}
+
+/* A subtask's row, under its parent's: a line down from the head, a tick to the row. */
+.row.child {
+  position: relative;
+  padding-left: 30px;
+}
+
+.row.child::before {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: 0;
+  bottom: 0;
+  border-left: 1px solid var(--border-2);
+}
+
+.row.child.last::before {
+  bottom: 50%;
+}
+
+.row.child::after {
+  content: "";
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  width: 8px;
+  border-top: 1px solid var(--border-2);
+}
+
+.todo-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.todo-cell .ellipsis {
+  min-width: 0;
+}
+
 .sessions-grid .open-menu {
   justify-self: end;
 }

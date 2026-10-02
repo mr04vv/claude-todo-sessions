@@ -68,6 +68,7 @@ import {
   type PageText,
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
+import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
 import { closeTerminal, focusTerminal, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
@@ -3005,10 +3006,27 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
   );
 }
 
-interface SessionItem {
-  session: Session;
-  todo?: Todo;
+type SessionItem = import("./sessionTree").SessionItem;
+
+/// The status as the kanban names it.
+const statusLabel = (status: Status) => COLUMNS.find((c) => c.status === status)?.label ?? status;
+
+/// A todo in the sessions table: its status, number and title.
+function TodoCell({ todo, onOpen }: { todo: Todo; onOpen: (id: number) => void }) {
+  return (
+    <button className="link-button todo-cell" title={`${statusLabel(todo.status)} · #${todo.id} ${todo.title}`} onClick={(e) => (e.stopPropagation(), onOpen(todo.id))}>
+      <StatusIcon status={todo.status} />
+      <span className="mono">#{todo.id}</span>
+      <span className="ellipsis">{todo.title}</span>
+    </button>
+  );
 }
+/// What a subtask row without a session says.
+const TODO_ROW: Record<"none" | "queued" | "ended", [string, string]> = {
+  none: ["未起動", "まだ始めていません"],
+  queued: ["キュー待ち", "キューで起動を待っています"],
+  ended: ["終了", "セッションは終わりました"],
+};
 
 /// Every session the board knows, with the todo it belongs to.
 function sessionItemsOf(board: Board): SessionItem[] {
@@ -3017,7 +3035,7 @@ function sessionItemsOf(board: Board): SessionItem[] {
 
 type SessionFilter = "all" | "needs_input" | "running" | "unlinked";
 
-function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, onOpenTodo, onQuick }: {
+function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, onOpenTodo, onStartTodo, onQuick }: {
   board: Board;
   repoFilter: string | null;
   selectedId: string | null;
@@ -3025,6 +3043,8 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   report: (e: unknown) => void;
   onSelect: (id: string) => void;
   onOpenTodo: (id: number) => void;
+  /// A subtask not started: its launch sheet.
+  onStartTodo: (id: number) => void;
   onQuick: () => void;
 }) {
   const [filter, setFilter] = useState<SessionFilter>("all");
@@ -3046,16 +3066,41 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
     { key: "unlinked", label: "未紐づけ" },
   ];
   const pass = (i: SessionItem) => filter === "all" || (filter === "unlinked" ? !i.todo : i.session.state === filter);
-  const rank = (s: Session) => STATE_ORDER.indexOf(s.state);
-  const rows = (showEnded ? all : live).filter(pass).sort((a, b) => rank(a.session) - rank(b.session) || b.session.state_at - a.session.state_at);
+  // Todos with subtasks head groups (sessionTree.ts); a folded group shows its head only.
+  const { groups, flat } = sessionTree((showEnded ? all : live).filter(pass), all, board.todos, showEnded);
+  const [folded, setFolded] = useState<Set<number>>(new Set());
+  const fold = (id: number, on?: boolean) =>
+    setFolded((prev) => {
+      const next = new Set(prev);
+      if (on ?? !next.has(id)) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const rows: TreeRow[] = [...groups.flatMap((g) => g.filter((r) => r.kind === "group" || !folded.has(r.group ?? -1))), ...flat];
   const ended = all.length - live.length;
   // Cloud sessions done with their turn, which the bulk archive takes.
   const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
   const [confirmArchive, setConfirmArchive] = useState(false);
-  // ↑↓ or j k pick a row, Enter opens it as "開く" does, ⌥Enter opens its menu of ways.
+  // ↑↓ or j k pick a row, Enter opens it as "開く" does (a group's head its
+  // todo, a subtask not started its launch sheet), ⌥Enter opens its menu of
+  // ways; h folds the group the row is in, l opens it.
+  const startable = (r: TreeRow) => r.kind === "todo" && r.state !== "ended" && r.todo.status !== "done";
   const { cursorId, setCursor, list: listRef } = useRowCursor(
-    rows.map((i) => i.session.session_id),
-    (_, choose, row) => row.querySelector<HTMLButtonElement>(choose ? ".open-caret" : ".open-main")?.click(),
+    rows.map((r) => r.id),
+    (id, choose, row) => {
+      const r = rows.find((x) => x.id === id);
+      if (r?.kind === "group") return onOpenTodo(r.todo.id);
+      if (r?.kind === "todo") return startable(r) ? onStartTodo(r.todo.id) : onOpenTodo(r.todo.id);
+      row.querySelector<HTMLButtonElement>(choose ? ".open-caret" : ".open-main")?.click();
+    },
+    (e, id) => {
+      const r = rows.find((x) => x.id === id);
+      const group = r?.kind === "group" ? r.todo.id : r?.group;
+      if (group === undefined || !(matches(e, "left") || matches(e, "right"))) return false;
+      fold(group, matches(e, "left"));
+      if (matches(e, "left")) setCursor(groupRowId(group));
+      return true;
+    },
   );
   const queued = board.todos.filter((t) => t.queue_runner).sort((a, b) => (a.queue_pos ?? 0) - (b.queue_pos ?? 0) || a.id - b.id);
   return (
@@ -3152,31 +3197,69 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
           </div>
           {rows.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
           <ul className="rows">
-            {rows.map(({ session: s, todo }) => (
-              <li
-                key={s.session_id}
-                data-row={s.session_id}
-                className={`row sessions-grid${s.session_id === selectedId ? " selected" : ""}${s.session_id === cursorId ? " cursor" : ""}${s.state === "ended" ? " done" : ""}`}
-                onClick={(e) => (setCursor(s.session_id), e.currentTarget.querySelector<HTMLButtonElement>(".open-main")?.click())}
-              >
-                <StateBadge state={shownState(s.state, todo)} />
-                <span className="ellipsis">{sessionLabel(s)}</span>
-                {todo ? (
-                  <button className="link-button ellipsis" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))}>
-                    #{todo.id} {todo.title}
+            {rows.map((r) => {
+              const cursor = r.id === cursorId ? " cursor" : "";
+              if (r.kind === "group") {
+                const open = !folded.has(r.todo.id);
+                return (
+                  <li key={r.id} data-row={r.id} className={`row session-group${cursor}`} onClick={() => (setCursor(r.id), onOpenTodo(r.todo.id))}>
+                    <button className="ghost icon" aria-label={open ? "畳む" : "開く"} aria-expanded={open} onClick={(e) => (e.stopPropagation(), fold(r.todo.id))}>
+                      <Icon name={open ? "chevron" : "chevronRight"} size={12} />
+                    </button>
+                    <StatusIcon status={r.todo.status} />
+                    <span className="mono muted">#{r.todo.id}</span>
+                    <span className="row-title ellipsis">{r.todo.title}</span>
+                    <span className="muted">{statusLabel(r.todo.status)}</span>
+                    <span className="tag" title="サブタスクのうち Done になったもの">
+                      子 {r.done}/{r.total} Done
+                    </span>
+                  </li>
+                );
+              }
+              const tree = `${r.child ? " child" : ""}${r.last ? " last" : ""}`;
+              if (r.kind === "todo") {
+                const [state, says] = TODO_ROW[r.state];
+                return (
+                  <li key={r.id} data-row={r.id} className={`row sessions-grid${tree}${cursor}${r.todo.status === "done" ? " done" : ""}`} onClick={() => (setCursor(r.id), onOpenTodo(r.todo.id))}>
+                    <span className={`state ${r.state === "queued" ? "state-idle" : "state-ended"}`}>
+                      <i />
+                      {state}
+                    </span>
+                    <span className="muted ellipsis">{says}</span>
+                    <TodoCell todo={r.todo} onOpen={onOpenTodo} />
+                    <span className="muted">—</span>
+                    {startable(r) ? (
+                      <button className="small" title="起動シートを開く" onClick={(e) => (e.stopPropagation(), onStartTodo(r.todo.id))}>
+                        開始
+                      </button>
+                    ) : (
+                      <span />
+                    )}
+                    <span />
+                  </li>
+                );
+              }
+              const { session: s, todo } = r;
+              return (
+                <li
+                  key={r.id}
+                  data-row={r.id}
+                  className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}`}
+                  onClick={(e) => (setCursor(r.id), e.currentTarget.querySelector<HTMLButtonElement>(".open-main")?.click())}
+                >
+                  <StateBadge state={shownState(s.state, todo)} />
+                  <span className="ellipsis">{sessionLabel(s)}</span>
+                  {todo ? <TodoCell todo={todo} onOpen={onOpenTodo} /> : <span className="tag">未紐づけ</span>}
+                  <span className="muted ellipsis">
+                    {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
+                  </span>
+                  <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
+                  <button className="ghost icon" aria-label={`${sessionLabel(s)} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onSelect(s.session_id))}>
+                    <Icon name="more" size={14} />
                   </button>
-                ) : (
-                  <span className="tag">未紐づけ</span>
-                )}
-                <span className="muted ellipsis">
-                  {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
-                </span>
-                <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
-                <button className="ghost icon" aria-label={`${sessionLabel(s)} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onSelect(s.session_id))}>
-                  <Icon name="more" size={14} />
-                </button>
-              </li>
-            ))}
+                </li>
+              );
+            })}
           </ul>
           {ended > 0 && (
             <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
@@ -6153,6 +6236,10 @@ export default function App() {
               report={report}
               onSelect={(id) => setSelection({ kind: "session", id })}
               onOpenTodo={goTodo}
+              onStartTodo={(id) => {
+                openTodo(id);
+                setDialog("start");
+              }}
               onQuick={() => setDialog("quick")}
             />
           )}
