@@ -193,7 +193,7 @@ const COLUMNS: { status: Status; label: string }[] = [
 /// A session's state as shown: once its turn is over (or it ended), where
 /// its todo's PR stands — opened with no reviewer asked yet, waiting for a
 /// review, approved, or merged.
-type ShownState = SessionState | "pr_open" | "review" | "approved" | "merged";
+type ShownState = SessionState | "pr_open" | "review" | "changes" | "approved" | "merged";
 const STATE_LABEL: Record<ShownState, string> = {
   running: "実行中",
   needs_input: "入力待ち",
@@ -201,10 +201,11 @@ const STATE_LABEL: Record<ShownState, string> = {
   ended: "終了",
   pr_open: "レビュー未依頼",
   review: "レビュー待ち",
+  changes: "修正依頼",
   approved: "承認済み",
   merged: "マージ済み",
 };
-const PR_SHOWN: Partial<Record<PrState, ShownState>> = { open: "pr_open", review_requested: "review", approved: "approved", merged: "merged" };
+const PR_SHOWN: Partial<Record<PrState, ShownState>> = { open: "pr_open", review_requested: "review", changes_requested: "changes", approved: "approved", merged: "merged" };
 const shownState = (state: SessionState, todo: Todo | undefined): ShownState =>
   (state === "idle" || state === "ended") && todo?.pr_state ? (PR_SHOWN[todo.pr_state] ?? state) : state;
 
@@ -3053,6 +3054,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
 }) {
   const [filter, setFilter] = useState<SessionFilter>("all");
   const [showEnded, setShowEnded] = useState(false);
+  const openInBrowser = useContext(BrowserContext);
   const all = sessionItemsOf(board).filter(
     (i) => repoFilter === null || laneKey(i.todo?.repos ?? i.session.repos) === repoFilter,
   );
@@ -3089,12 +3091,14 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   // todo, a subtask not started its launch sheet), ⌥Enter opens its menu of
   // ways; h folds the group the row is in, l opens it.
   const startable = (r: TreeRow) => r.kind === "todo" && r.state !== "ended" && r.todo.status !== "done";
+  // A subtask row with no session: its PR when it has one, else its sheet.
+  const openTodoRow = (todo: Todo) => (todo.pr_url && openInBrowser ? openInBrowser(todo.pr_url) : onOpenTodo(todo.id));
   const { cursorId, setCursor, list: listRef } = useRowCursor(
     rows.map((r) => r.id),
     (id, choose, row) => {
       const r = rows.find((x) => x.id === id);
       if (r?.kind === "group") return onOpenTodo(r.todo.id);
-      if (r?.kind === "todo") return startable(r) ? onStartTodo(r.todo.id) : onOpenTodo(r.todo.id);
+      if (r?.kind === "todo") return openTodoRow(r.todo);
       row.querySelector<HTMLButtonElement>(choose ? ".open-caret" : ".open-main")?.click();
     },
     (e, id) => {
@@ -3226,7 +3230,13 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                 // Where its PR stands comes first, as for a session.
                 const pr = r.todo.pr_state && PR_SHOWN[r.todo.pr_state];
                 return (
-                  <li key={r.id} data-row={r.id} className={`row sessions-grid${tree}${cursor}${r.todo.status === "done" ? " done" : ""}`} onClick={() => (setCursor(r.id), onOpenTodo(r.todo.id))}>
+                  <li
+                    key={r.id}
+                    data-row={r.id}
+                    className={`row sessions-grid${tree}${cursor}${r.todo.status === "done" ? " done" : ""}`}
+                    title={r.todo.pr_url ? "PR を開く" : undefined}
+                    onClick={() => (setCursor(r.id), openTodoRow(r.todo))}
+                  >
                     {pr ? (
                       <StateBadge state={pr} />
                     ) : (
@@ -3238,7 +3248,11 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                     <span className="muted ellipsis">{says}</span>
                     <TodoCell todo={r.todo} onOpen={onOpenTodo} />
                     <span className="muted">—</span>
-                    {startable(r) ? (
+                    {r.todo.pr_url ? (
+                      <button className="small" title="PR を開く" onClick={(e) => (e.stopPropagation(), openTodoRow(r.todo))}>
+                        PR
+                      </button>
+                    ) : startable(r) ? (
                       <button className="small" title="起動シートを開く" onClick={(e) => (e.stopPropagation(), onStartTodo(r.todo.id))}>
                         開始
                       </button>
