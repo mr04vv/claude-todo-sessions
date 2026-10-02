@@ -1,4 +1,4 @@
-use cts_core::{parse_todo_marker, Db, Error, InputPatch, NewTodo, NoticeKind, SessionState, Status, TodoPatch};
+use cts_core::{parse_todo_marker, Db, Error, InputPatch, NewTodo, NoticeKind, SessionState, Status, Subject, TodoPatch};
 
 fn open() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -754,4 +754,78 @@ fn cloud_sessions_of_done_todos_are_the_ones_to_archive() {
     ids.sort();
     // A running session is left to finish its turn; ended ones are archived already.
     assert_eq!(ids, ["cse_idle", "cse_wait"]);
+}
+
+#[test]
+fn feynman_points_and_attempts_are_kept_per_subject() {
+    use cts_core::feynman::{Grade, PointVerdict, Verdict};
+    let (_d, db) = open();
+    let input = db.create_input("article", None).unwrap();
+    let subject = Subject::Input(input.id);
+    let points = db.set_feynman_points(subject, &["a".into(), "b".into()]).unwrap();
+    assert_eq!(points.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    // Made again, the old ones go.
+    db.set_feynman_points(subject, &["c".into()]).unwrap();
+    assert_eq!(db.feynman_points(subject).unwrap().len(), 1);
+    assert!(db.feynman_points(Subject::Todo(input.id)).unwrap().is_empty());
+    let grade = Grade {
+        verdicts: vec![PointVerdict { point: 0, verdict: Verdict::Vague, note: "ほぼ".into() }],
+        mistakes: vec![],
+        jargon: vec!["API".into()],
+        questions: vec!["なぜ？".into()],
+    };
+    let first = db.add_feynman_attempt(subject, "説明", &grade, 50).unwrap();
+    let second = db.add_feynman_attempt(subject, "説明2", &grade, 100).unwrap();
+    let attempts = db.feynman_attempts(subject).unwrap();
+    assert_eq!(attempts.iter().map(|a| a.id).collect::<Vec<_>>(), [second.id, first.id], "newest first");
+    assert_eq!(attempts[1].grade, grade);
+    let summaries = db.feynman_summaries().unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!((summaries[0].subject, summaries[0].score), (subject, 100));
+    assert_eq!(summaries[0].due_at, second.created_at + 7 * 86_400, "a high score waits a week");
+}
+
+#[test]
+fn feynman_review_is_due_once_per_attempt_and_not_for_finished_subjects() {
+    use cts_core::feynman::Grade;
+    let (_d, db) = open();
+    let input = db.create_input("article", None).unwrap();
+    let todo = db.create_todo(new_todo("t")).unwrap();
+    let (a, b) = (Subject::Input(input.id), Subject::Todo(todo.id));
+    let low = db.add_feynman_attempt(a, "x", &Grade::default(), 30).unwrap();
+    db.add_feynman_attempt(b, "x", &Grade::default(), 90).unwrap();
+    let day = 86_400;
+    assert!(db.feynman_due(low.created_at).unwrap().is_empty(), "not yet");
+    let due = db.feynman_due(low.created_at + day).unwrap();
+    assert_eq!(due.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [a], "a low score is due the next day, a high one not yet");
+    assert_eq!(due[0].1, "article");
+    db.add_study_notice(a, "article").unwrap();
+    assert!(db.feynman_due(low.created_at + day).unwrap().is_empty(), "noticed once");
+    assert_eq!(db.notifications().unwrap()[0].kind, NoticeKind::Study);
+    assert_eq!(db.notifications().unwrap()[0].input_id, Some(input.id));
+    // Done with, it is not asked about again.
+    db.update_input(input.id, InputPatch { done: Some(true), ..Default::default() }).unwrap();
+    db.add_feynman_attempt(a, "x", &Grade::default(), 30).unwrap();
+    db.update_todo(todo.id, TodoPatch { status: Some(Status::Done), ..Default::default() }).unwrap();
+    assert!(db.feynman_due(low.created_at + 30 * day).unwrap().is_empty());
+}
+
+#[test]
+fn feynman_works_on_databases_made_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE notifications (id INTEGER PRIMARY KEY, session_id TEXT NOT NULL,
+         todo_id INTEGER, kind TEXT NOT NULL, title TEXT NOT NULL, created_at INTEGER NOT NULL, read_at INTEGER, url TEXT);
+         INSERT INTO notifications VALUES (1, 's1', NULL, 'finished', 'done', 0, NULL, NULL);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.notifications().unwrap()[0].input_id, None);
+    let input = db.create_input("article", None).unwrap();
+    db.set_feynman_points(Subject::Input(input.id), &["a".into()]).unwrap();
+    db.add_study_notice(Subject::Input(input.id), "article").unwrap();
+    assert_eq!(db.notifications().unwrap().len(), 2);
 }

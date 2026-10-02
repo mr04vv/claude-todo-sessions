@@ -31,6 +31,18 @@ pub fn fetch_within(url: &str, timeout: Duration) -> Result<Meta, String> {
     Ok(parse(&String::from_utf8_lossy(&buf)))
 }
 
+/// The page's readable text (feynman::text_of_html), for a page the app has
+/// no tab of; one behind a login comes back as its sign-in page.
+pub fn fetch_text(url: &str, timeout: Duration) -> Result<String, String> {
+    let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
+    let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).user_agent(USER_AGENT).tls_config(tls).build();
+    let agent = ureq::Agent::new_with_config(config);
+    let mut resp = agent.get(url).header("Accept", "text/html").call().map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    resp.body_mut().as_reader().take(MAX_BYTES).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    Ok(crate::feynman::text_of_html(&String::from_utf8_lossy(&buf)))
+}
+
 /// `og:title` and `og:image` from a page's HTML, with <title> as the
 /// fallback title.
 pub fn parse(html: &str) -> Meta {
@@ -81,7 +93,7 @@ fn attr(tag: &str, name: &str) -> Option<String> {
 }
 
 /// The few entities that show up in titles.
-fn decode(s: &str) -> String {
+pub(crate) fn decode(s: &str) -> String {
     s.replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&#x27;", "'")

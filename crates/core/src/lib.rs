@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod cloud;
 pub mod desktop;
+pub mod feynman;
 pub mod github;
 pub mod herdr;
 pub mod launch;
@@ -271,6 +272,8 @@ pub enum NoticeKind {
     NeedsInput,
     /// Someone asked for the user's review on a PR (`url`).
     ReviewRequested,
+    /// Time to explain an input (or a todo's pages) again (`input_id` or `todo_id`).
+    Study,
 }
 
 impl NoticeKind {
@@ -279,12 +282,14 @@ impl NoticeKind {
             NoticeKind::Finished => "finished",
             NoticeKind::NeedsInput => "needs_input",
             NoticeKind::ReviewRequested => "review_requested",
+            NoticeKind::Study => "study",
         }
     }
     fn parse(s: &str) -> NoticeKind {
         match s {
             "needs_input" => NoticeKind::NeedsInput,
             "review_requested" => NoticeKind::ReviewRequested,
+            "study" => NoticeKind::Study,
             _ => NoticeKind::Finished,
         }
     }
@@ -304,6 +309,59 @@ pub struct Notice {
     /// The PR a review request is for; session notices have none (and an
     /// empty `session_id` goes with one).
     pub url: Option<String>,
+    /// The input a study notice is for (a todo's is in `todo_id`).
+    pub input_id: Option<i64>,
+}
+
+/// What the Input mode is open for: a todo (its pages) or an input.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
+#[serde(tag = "kind", content = "id", rename_all = "lowercase")]
+pub enum Subject {
+    Todo(i64),
+    Input(i64),
+}
+
+impl Subject {
+    fn kind(self) -> &'static str {
+        match self {
+            Subject::Todo(_) => "todo",
+            Subject::Input(_) => "input",
+        }
+    }
+    fn id(self) -> i64 {
+        match self {
+            Subject::Todo(id) | Subject::Input(id) => id,
+        }
+    }
+    fn from_row(kind: &str, id: i64) -> Subject {
+        if kind == "todo" { Subject::Todo(id) } else { Subject::Input(id) }
+    }
+}
+
+/// A key point of what a subject's pages say (feynman.rs).
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct FeynmanPoint {
+    pub id: i64,
+    pub text: String,
+}
+
+/// One explanation of a subject and its grading.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct FeynmanAttempt {
+    pub id: i64,
+    pub explanation: String,
+    pub grade: feynman::Grade,
+    pub score: u8,
+    pub created_at: i64,
+}
+
+/// A subject's latest attempt, and when to explain again.
+#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
+pub struct FeynmanSummary {
+    pub subject: Subject,
+    pub score: u8,
+    pub attempted_at: i64,
+    pub due_at: i64,
 }
 
 /// Notifications kept for the in-app list, newest first.
@@ -373,7 +431,25 @@ CREATE TABLE IF NOT EXISTS notifications (
     title TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     read_at INTEGER,
-    url TEXT
+    url TEXT,
+    input_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS feynman_points (
+    id INTEGER PRIMARY KEY,
+    subject_kind TEXT NOT NULL,
+    subject_id INTEGER NOT NULL,
+    position INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feynman_attempts (
+    id INTEGER PRIMARY KEY,
+    subject_kind TEXT NOT NULL,
+    subject_id INTEGER NOT NULL,
+    explanation TEXT NOT NULL,
+    grade TEXT NOT NULL,
+    score INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS links (
     id INTEGER PRIMARY KEY,
@@ -515,7 +591,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -524,7 +600,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if !exists {
             // Integer columns keep integer affinity; older builds added them as TEXT,
             // which TODO_COLS casts back when reading.
-            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at") { "INTEGER" } else { "TEXT" };
+            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at" | "input_id") { "INTEGER" } else { "TEXT" };
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
@@ -945,7 +1021,7 @@ impl Db {
 
     pub fn notifications(&self) -> Result<Vec<Notice>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, session_id, todo_id, kind, title, created_at, read_at IS NOT NULL, url FROM notifications ORDER BY id DESC LIMIT ?1",
+            "SELECT id, session_id, todo_id, kind, title, created_at, read_at IS NOT NULL, url, input_id FROM notifications ORDER BY id DESC LIMIT ?1",
         )?;
         let rows = stmt.query_map([NOTICES_LIMIT], |r| {
             Ok(Notice {
@@ -957,9 +1033,115 @@ impl Db {
                 created_at: r.get(5)?,
                 read: r.get(6)?,
                 url: r.get(7)?,
+                input_id: r.get(8)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Records that it is time to explain the subject again, for the in-app list.
+    pub fn add_study_notice(&self, subject: Subject, title: &str) -> Result<i64> {
+        let (todo_id, input_id) = match subject {
+            Subject::Todo(id) => (Some(id), None),
+            Subject::Input(id) => (None, Some(id)),
+        };
+        self.conn.execute(
+            "INSERT INTO notifications (session_id, todo_id, input_id, kind, title, created_at) VALUES ('', ?1, ?2, ?3, ?4, ?5)",
+            params![todo_id, input_id, NoticeKind::Study.as_str(), title, now()],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// The subject's key points, replacing the ones it had.
+    pub fn set_feynman_points(&self, subject: Subject, points: &[String]) -> Result<Vec<FeynmanPoint>> {
+        self.conn.execute("DELETE FROM feynman_points WHERE subject_kind = ?1 AND subject_id = ?2", params![subject.kind(), subject.id()])?;
+        let at = now();
+        for (i, text) in points.iter().enumerate() {
+            self.conn.execute(
+                "INSERT INTO feynman_points (subject_kind, subject_id, position, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![subject.kind(), subject.id(), i as i64, text, at],
+            )?;
+        }
+        self.feynman_points(subject)
+    }
+
+    pub fn feynman_points(&self, subject: Subject) -> Result<Vec<FeynmanPoint>> {
+        let mut stmt = self.conn.prepare("SELECT id, text FROM feynman_points WHERE subject_kind = ?1 AND subject_id = ?2 ORDER BY position")?;
+        let rows = stmt.query_map(params![subject.kind(), subject.id()], |r| Ok(FeynmanPoint { id: r.get(0)?, text: r.get(1)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn add_feynman_attempt(&self, subject: Subject, explanation: &str, grade: &feynman::Grade, score: u8) -> Result<FeynmanAttempt> {
+        let at = now();
+        // Strings and enums only: it always serializes.
+        let grade_json = serde_json::to_string(grade).expect("a grade serializes");
+        self.conn.execute(
+            "INSERT INTO feynman_attempts (subject_kind, subject_id, explanation, grade, score, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![subject.kind(), subject.id(), explanation, grade_json, score as i64, at],
+        )?;
+        Ok(FeynmanAttempt { id: self.conn.last_insert_rowid(), explanation: explanation.into(), grade: grade.clone(), score, created_at: at })
+    }
+
+    /// The subject's attempts, newest first.
+    pub fn feynman_attempts(&self, subject: Subject) -> Result<Vec<FeynmanAttempt>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, explanation, grade, score, created_at FROM feynman_attempts WHERE subject_kind = ?1 AND subject_id = ?2 ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map(params![subject.kind(), subject.id()], |r| {
+            let grade: String = r.get(2)?;
+            Ok(FeynmanAttempt {
+                id: r.get(0)?,
+                explanation: r.get(1)?,
+                grade: serde_json::from_str(&grade).unwrap_or_default(),
+                score: r.get::<_, i64>(3)? as u8,
+                created_at: r.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Every subject's latest attempt.
+    pub fn feynman_summaries(&self) -> Result<Vec<FeynmanSummary>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT subject_kind, subject_id, score, created_at FROM feynman_attempts a
+             WHERE id = (SELECT MAX(id) FROM feynman_attempts WHERE subject_kind = a.subject_kind AND subject_id = a.subject_id)",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let (kind, id, score, at): (String, i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+            let score = score as u8;
+            Ok(FeynmanSummary { subject: Subject::from_row(&kind, id), score, attempted_at: at, due_at: at + feynman::review_after_days(score) * 86_400 })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The subjects to explain again by `now` (with their titles): their
+    /// review is due, they are not done with, and no study notice went out
+    /// since their last attempt.
+    pub fn feynman_due(&self, now: i64) -> Result<Vec<(Subject, String)>> {
+        let mut due = Vec::new();
+        for s in self.feynman_summaries()? {
+            if s.due_at > now {
+                continue;
+            }
+            let title = match s.subject {
+                Subject::Input(id) => self.get_input(id)?.filter(|i| !i.done).map(|i| i.title),
+                Subject::Todo(id) => self.get_todo(id)?.filter(|t| t.status != Status::Done).map(|t| t.title),
+            };
+            let Some(title) = title else { continue };
+            let (todo_id, input_id) = match s.subject {
+                Subject::Todo(id) => (Some(id), None),
+                Subject::Input(id) => (None, Some(id)),
+            };
+            let noticed: bool = self.conn.query_row(
+                "SELECT EXISTS (SELECT 1 FROM notifications WHERE kind = 'study' AND created_at >= ?1 AND ((?2 IS NOT NULL AND todo_id = ?2) OR (?3 IS NOT NULL AND input_id = ?3)))",
+                params![s.attempted_at, todo_id, input_id],
+                |r| r.get(0),
+            )?;
+            if !noticed {
+                due.push((s.subject, title));
+            }
+        }
+        Ok(due)
     }
 
     /// Records a review request on the PR unless one was recorded before, and
