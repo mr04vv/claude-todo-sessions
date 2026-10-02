@@ -69,6 +69,7 @@ import {
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
+import { allInOneMessage, reviewMessages, type ReviewRequest } from "./slackMessages";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
 import { closeTerminal, focusTerminal, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
@@ -3631,7 +3632,9 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
 type PrFilter = "all" | "review" | "mine";
 type PrRow = Pr & { kind: "review" | "mine" };
 
-function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUrl, run, onRefresh, onOpenTodo }: {
+function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUrl, run, onRefresh, onOpenTodo, onSlack }: {
+  /// The Slack messages asking for the reviews of the user's PRs.
+  onSlack: () => void;
   prs: PrLists | null;
   /// While the PRs are being taken again, so ↻ turns.
   prsLoading: boolean;
@@ -3691,6 +3694,9 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
           </button>
         </div>
         <span className="grow" />
+        <button onClick={onSlack} title="自分の PR のレビュー依頼を、レビュアーごとの Slack の文面にします">
+          Slack 依頼文
+        </button>
         <select className="select compact" value={reviewRunner} aria-label="/review を始める場所" title="/review を始める場所" onChange={(e) => setReviewRunner(e.target.value as Target)}>
           <option value="web">/review は Cloud・Web</option>
           <option value="cloud">/review は Cloud・Desktop</option>
@@ -4726,7 +4732,93 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | { kind: "session"; id: string } | null;
-type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | null;
+type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | "slack" | null;
+
+/// How each reviewer is written in Slack (@name), by GitHub login; kept as typed.
+const SLACK_NAMES_KEY = "slackNames";
+
+/// Slack messages asking for the reviews the user's open PRs wait on (slackMessages.ts):
+/// one per reviewer and one for all, copied with a key (1〜9, a) or a click.
+function SlackReviewDialog({ onClose }: { onClose: () => void }) {
+  const [prs, setPrs] = useState<ReviewRequest[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [names, setNamesState] = useState<Record<string, string>>(() => loadJson(SLACK_NAMES_KEY, {}));
+  const [copied, setCopied] = useState<string | null>(null);
+  useEffect(() => void api.reviewRequests().then(setPrs, (e) => setError(String(e))), []);
+  const setName = (login: string, name: string) => {
+    const next = { ...names, [login]: name.trim().replace(/^@/, "") };
+    remember(SLACK_NAMES_KEY, JSON.stringify(next));
+    setNamesState(next);
+  };
+  const mention = (login: string) => `@${names[login] || login}`;
+  const messages = prs ? reviewMessages(prs, mention) : [];
+  const all = prs && prs.length > 0 ? allInOneMessage(prs, mention) : null;
+  const copy = (key: string, text: string) =>
+    navigator.clipboard.writeText(text).then(
+      () => setCopied(key),
+      (e) => setError(String(e)),
+    );
+  const copyRef = useRef({ messages, all, copy });
+  copyRef.current = { messages, all, copy };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest("input, textarea") || e.metaKey || e.ctrlKey || e.altKey) return;
+      const { messages, all, copy } = copyRef.current;
+      const m = messages[Number(e.key) - 1];
+      if (m) {
+        e.preventDefault();
+        copy(m.reviewer, m.text);
+      } else if (e.key === "a" && all) {
+        e.preventDefault();
+        copy("all", all);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return (
+    <Modal title="レビュー依頼の Slack 文面" wide onClose={onClose}>
+      {error && <p className="error-text">{error}</p>}
+      {!prs && !error && <p className="muted">自分の PR を調べています…</p>}
+      {prs?.length === 0 && <p className="muted">レビューを待っている自分の PR はありません（Draft は除きます）。</p>}
+      {all && (
+        <div className="slack-message">
+          <div className="slack-head">
+            <b>まとめて1通</b>
+            <span className="muted">{prs!.length} 件の PR</span>
+            <span className="grow" />
+            <button className={copied === "all" ? "" : "primary"} onClick={() => copy("all", all)}>
+              {copied === "all" ? "コピーしました" : "コピー"} <span className="kbd">A</span>
+            </button>
+          </div>
+          <pre>{all}</pre>
+        </div>
+      )}
+      {messages.map((m, i) => (
+        <div key={m.reviewer} className="slack-message">
+          <div className="slack-head">
+            <span className="mono muted">{m.reviewer}</span>
+            <span className="muted">Slack では @</span>
+            <input
+              className="slack-name"
+              defaultValue={names[m.reviewer] ?? ""}
+              placeholder={m.reviewer}
+              aria-label={`${m.reviewer} の Slack の名前`}
+              onBlur={(e) => setName(m.reviewer, e.currentTarget.value)}
+              onKeyDown={(e) => isEnter(e) && e.currentTarget.blur()}
+            />
+            <span className="grow" />
+            <button className={copied === m.reviewer ? "" : "primary"} onClick={() => copy(m.reviewer, m.text)}>
+              {copied === m.reviewer ? "コピーしました" : "コピー"} {i < 9 && <span className="kbd">{i + 1}</span>}
+            </button>
+          </div>
+          <pre>{m.text}</pre>
+        </div>
+      ))}
+      {prs && prs.length > 0 && <p className="muted hint">Slack の名前は GitHub の名前ごとに覚えます（空なら GitHub の名前のまま）。貼るときは Slack の入力欄で @ の候補を選び直すと、確実に通知されます。</p>}
+    </Modal>
+  );
+}
 
 /// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
@@ -6007,6 +6099,7 @@ export default function App() {
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
     { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
+    { key: "slack", label: "レビュー依頼の Slack 文面を作る（自分の PR、レビュアーごと）", run: () => setDialog("slack") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },
     ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned
@@ -6339,7 +6432,7 @@ export default function App() {
           )}
           {view === "notices" && board && <NoticesPage board={board} local={local} report={report} onOpenTodo={goTodo} onOpenStudy={openStudy} run={run} />}
           {view === "prs" && (
-            <PrsPage prs={prs} prsLoading={prsLoading} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} />
+            <PrsPage prs={prs} prsLoading={prsLoading} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} onSlack={() => setDialog("slack")} />
           )}
           {panel === "todo" && selectedTodo && (
             // A sheet over the Todo page, not a dialog: the pane stays, and j k go on to the next todo.
@@ -6484,6 +6577,7 @@ export default function App() {
           </div>
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+        {dialog === "slack" && <SlackReviewDialog onClose={() => setDialog(null)} />}
         {dialog === "start" && selectedTodo && (
           <StartDialog todo={selectedTodo} allTodos={allTodos} skills={skillsByCwd[skillsKey] ?? []} run={run} onClose={() => setDialog(null)} />
         )}

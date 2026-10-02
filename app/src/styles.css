@@ -2663,6 +2663,35 @@ body.resizing {
   font-size: 12px;
 }
 
+/* SlackReviewDialog: a message to copy, under whom it asks. */
+.slack-message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.slack-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.slack-name {
+  width: 160px;
+}
+
+.slack-message pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--input);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
 /* The Input mode's 「説明する」 (ExplainPanel). */
 .explain {
   flex-grow: 1;

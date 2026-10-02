@@ -1300,6 +1300,14 @@ fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
         .collect())
 }
 
+/// The user's open PRs and the reviewers each still waits on, for the Slack messages asking them.
+#[tauri::command(async)]
+fn review_requests() -> Result<Vec<cts_core::github::ReviewRequest>, String> {
+    let json = gh(&["api", "graphql", "-f", &format!("query={}", cts_core::github::REVIEW_REQUESTS_QUERY)])?;
+    let resp: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("gh output: {e}"))?;
+    Ok(cts_core::github::parse_review_requests(&resp))
+}
+
 #[tauri::command]
 async fn gh_prs() -> Result<PrLists, String> {
     tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: search_prs("--review-requested")?, mine: search_prs("--author")? }))
@@ -2254,6 +2262,7 @@ fn main() {
             remove_input_link,
             page_title,
             mark_session_seen,
+            review_requests,
             feynman::browser_text,
             feynman::page_text,
             feynman::feynman_state,
