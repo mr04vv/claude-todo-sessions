@@ -271,6 +271,8 @@ pub struct Session {
     /// When the session was first recorded; a PR from its branch made
     /// before then is not its work.
     pub started_at: i64,
+    /// Its turn ended (it is idle) after it was last looked at.
+    pub unread: bool,
 }
 
 /// Why the app notified about a session.
@@ -433,6 +435,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS session_seen (
+    session_id TEXT PRIMARY KEY,
+    seen_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS notifications (
     id INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -491,7 +497,8 @@ const INPUT_COLS: &str = "id, title, memo, done, updated_at";
 const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER)";
-const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at)";
+const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at),
+    (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0))";
 
 impl Status {
     fn as_str(self) -> &'static str {
@@ -581,6 +588,7 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         repos: split_repos(r.get(6)?),
         branch: r.get(7)?,
         started_at: r.get(8)?,
+        unread: r.get(9)?,
     })
 }
 
@@ -616,6 +624,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     }
     // Sessions recorded before start times were kept: their last state change is the best guess.
     conn.execute("UPDATE sessions SET started_at = state_at WHERE started_at IS NULL", [])?;
+    // Before sessions could be unread, every one counts as seen.
+    // ponytail: an empty table looks like a new one, so one emptied seeds again.
+    conn.execute(
+        "INSERT INTO session_seen (session_id, seen_at) SELECT session_id, ?1 FROM sessions WHERE NOT EXISTS (SELECT 1 FROM session_seen)",
+        [now()],
+    )?;
     // The status CHECK predates 'review' or 'pending'; SQLite cannot alter a CHECK,
     // so the table is rebuilt (which also gives migrated integer columns their type).
     let todos_sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE name = 'todos'", [], |r| r.get(0))?;
@@ -891,6 +905,15 @@ impl Db {
         let mut stmt = self.conn.prepare(&format!("SELECT {LINK_COLS} FROM links WHERE todo_id = ?1 ORDER BY id"))?;
         let rows = stmt.query_map([todo_id], link_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The session was looked at as of `at`: a turn that ended before then is read.
+    pub fn mark_session_seen(&self, id: &str, at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO session_seen (session_id, seen_at) VALUES (?1, ?2) ON CONFLICT(session_id) DO UPDATE SET seen_at = ?2",
+            params![id, at],
+        )?;
+        Ok(())
     }
 
     pub fn record_session(&self, id: &str, cwd: &str, state: SessionState) -> Result<()> {

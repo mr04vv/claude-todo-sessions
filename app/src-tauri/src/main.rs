@@ -481,6 +481,13 @@ fn window_focused() -> bool {
     objc2_app_kit::NSRunningApplication::currentApplication().isActive()
 }
 
+/// The session was looked at now (opened from the app, or its page or tab shown).
+#[tauri::command]
+fn mark_session_seen(state: State<AppState>, session_id: String) -> Result<(), String> {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(err)?.as_secs() as i64;
+    state.db.lock().map_err(err)?.mark_session_seen(&session_id, now).map_err(err)
+}
+
 /// Archives cloud sessions, as archiving them on claude.ai does.
 #[tauri::command(async)]
 fn archive_sessions(ids: Vec<String>) -> Result<(), String> {
@@ -1942,11 +1949,16 @@ fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
         for name in cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)) {
             let Ok(out) = cli("herdr").args(["--session", &name, "agent", "list"]).output() else { continue };
             let Ok(agents) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
-            for (id, cwd, state) in cts_core::herdr::agent_states(&agents) {
+            for cts_core::herdr::AgentState { session_id: id, cwd, state, unseen } in cts_core::herdr::agent_states(&agents) {
                 let known = db.get_session(&id).map_err(err)?;
+                let unread = known.as_ref().is_some_and(|k| k.unread);
                 if known.as_ref().is_none_or(|k| k.state != state) {
                     let cwd = known.map(|k| k.cwd).filter(|c| !c.is_empty()).unwrap_or(cwd);
                     db.record_session(&id, &cwd, state).map_err(err)?;
+                }
+                // herdr knows when its pane was looked at: "idle", not "done".
+                if unread && state == SessionState::Idle && !unseen {
+                    db.mark_session_seen(&id, now).map_err(err)?;
                 }
                 in_herdr.insert(id);
             }
@@ -2221,6 +2233,7 @@ fn main() {
             add_input_link,
             remove_input_link,
             page_title,
+            mark_session_seen,
             feynman::browser_text,
             feynman::page_text,
             feynman::feynman_state,

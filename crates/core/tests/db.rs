@@ -845,3 +845,39 @@ fn feynman_works_on_databases_made_before_it() {
     db.add_study_notice(Subject::Input(input.id), "article").unwrap();
     assert_eq!(db.notifications().unwrap().len(), 2);
 }
+
+#[test]
+fn a_session_done_with_its_turn_is_unread_until_seen() {
+    let (_d, db) = open();
+    let unread = |db: &Db| db.get_session("s1").unwrap().unwrap().unread;
+    db.record_session("s1", "/r", SessionState::Running).unwrap();
+    assert!(!unread(&db), "still working");
+    db.record_session("s1", "/r", SessionState::Idle).unwrap();
+    assert!(unread(&db), "its turn ended");
+    let at = db.get_session("s1").unwrap().unwrap().state_at;
+    db.mark_session_seen("s1", at).unwrap();
+    assert!(!unread(&db), "looked at since");
+    assert!(!db.unlinked_sessions().unwrap()[0].unread, "the lists say so too");
+    // Seen before it ended (an earlier turn), it is unread again.
+    db.mark_session_seen("s1", at - 10).unwrap();
+    assert!(unread(&db));
+    db.record_session("s1", "/r", SessionState::NeedsInput).unwrap();
+    assert!(!unread(&db), "waiting for input is its own state, not unread");
+}
+
+#[test]
+fn sessions_known_before_unread_existed_are_seen() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    {
+        let db = Db::open(&path).unwrap();
+        db.record_session("old", "/r", SessionState::Idle).unwrap();
+    }
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch("DROP TABLE session_seen;").unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert!(!db.get_session("old").unwrap().unwrap().unread, "not a flood of unread on the first start");
+    db.record_session("new", "/r", SessionState::Idle).unwrap();
+    assert!(db.get_session("new").unwrap().unwrap().unread);
+}
