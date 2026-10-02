@@ -190,19 +190,23 @@ const COLUMNS: { status: Status; label: string }[] = [
   { status: "done", label: "Done" },
 ];
 
-/// A session's state as shown: "review" once its turn is over (or it ended)
-/// while its todo's PR waits for a review.
-type ShownState = SessionState | "review";
+/// A session's state as shown: once its turn is over (or it ended), where
+/// its todo's PR stands — opened with no reviewer asked yet, waiting for a
+/// review, approved, or merged.
+type ShownState = SessionState | "pr_open" | "review" | "approved" | "merged";
 const STATE_LABEL: Record<ShownState, string> = {
   running: "実行中",
   needs_input: "入力待ち",
   idle: "待機中",
   ended: "終了",
+  pr_open: "レビュー未依頼",
   review: "レビュー待ち",
+  approved: "承認済み",
+  merged: "マージ済み",
 };
-const REVIEW_PRS: PrState[] = ["review_requested", "approved"];
+const PR_SHOWN: Partial<Record<PrState, ShownState>> = { open: "pr_open", review_requested: "review", approved: "approved", merged: "merged" };
 const shownState = (state: SessionState, todo: Todo | undefined): ShownState =>
-  (state === "idle" || state === "ended") && todo?.pr_state && REVIEW_PRS.includes(todo.pr_state) ? "review" : state;
+  (state === "idle" || state === "ended") && todo?.pr_state ? (PR_SHOWN[todo.pr_state] ?? state) : state;
 
 /// The state that needs the user comes first.
 const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle", "ended"];

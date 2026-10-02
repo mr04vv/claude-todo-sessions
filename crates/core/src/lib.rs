@@ -73,6 +73,11 @@ pub enum Kind {
 /// Skill that drills into the details before implementing.
 const GRILLING_COMMAND: &str = "/grilling";
 const RESEARCH_INSTRUCTIONS: &str = "調査を始める前に、完了条件（何が分かれば終わりか）と出力条件（成果物の形式・保存先・粒度）を私に質問して確認してから進めてください。";
+/// Every session the app starts asks its questions through the tool, so
+/// the answers are picked instead of typed (and the app can tell it waits).
+const ASK_INSTRUCTIONS: &str = "質問はすべて AskUserQuestion ツールで聞いてください（本文に質問を書いて待たない）。";
+/// Implementation work ends in a PR, whose reviewer the user picks.
+const REVIEWER_INSTRUCTIONS: &str = "PR を作ったら、レビューを誰に頼むかを AskUserQuestion で聞いてください（候補は、このリポジトリの最近の PR をレビューした人を `gh` で調べて挙げる）。選ばれた人に `gh pr edit <PR> --add-reviewer <user>` で依頼します。";
 
 impl Kind {
     fn as_str(self) -> &'static str {
@@ -138,15 +143,20 @@ impl Todo {
         self.repos.iter().filter(|r| r.contains('/')).count() > 1
     }
 
-    /// First prompt, plus — for implementation work on an issue — a request
-    /// that the PR closes the issue, so GitHub closes it on merge.
+    /// First prompt, plus — for implementation work — what its PR should do
+    /// (close the issue, so GitHub closes it on merge; ask whom to review),
+    /// and for every todo that questions go through AskUserQuestion.
     pub fn prompt_body(&self) -> String {
         let mut body = self.base_prompt();
-        if let (Kind::Implementation, Some(url), false) = (self.kind, self.issue_url.as_deref(), self.is_orchestrator()) {
-            if url.contains("/issues/") {
-                body.push_str(&format!("\n\nPR を作るときは、本文に `Closes {url}` を入れてください。"));
+        if self.kind == Kind::Implementation && !self.is_orchestrator() {
+            body.push_str("\n\n");
+            if let Some(url) = self.issue_url.as_deref().filter(|u| u.contains("/issues/")) {
+                body.push_str(&format!("PR を作るときは、本文に `Closes {url}` を入れてください。"));
             }
+            body.push_str(REVIEWER_INSTRUCTIONS);
         }
+        body.push_str("\n\n");
+        body.push_str(ASK_INSTRUCTIONS);
         body
     }
 

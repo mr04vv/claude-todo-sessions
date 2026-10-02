@@ -697,6 +697,28 @@ a:hover {
   background: var(--st-review);
 }
 
+/* A PR opened with no reviewer asked yet: the user's move. */
+.state-pr_open {
+  color: var(--waiting-text);
+}
+
+.state-pr_open i,
+.dot.state-pr_open {
+  background: var(--waiting);
+}
+
+.state-approved,
+.state-merged {
+  color: var(--text-2);
+}
+
+.state-approved i,
+.dot.state-approved,
+.state-merged i,
+.dot.state-merged {
+  background: var(--st-done);
+}
+
 .state-idle {
   color: var(--text-2);
 }

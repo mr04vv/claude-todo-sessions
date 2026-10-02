@@ -299,10 +299,11 @@ fn todo_prompt_is_stored_and_cleared() {
     let (_d, db) = open();
     let t = db.create_todo(new_todo("Fix login")).unwrap();
     assert_eq!(t.prompt, None);
-    assert_eq!(cts_core::launch::start_prompt(t.id, &t.prompt_body()), format!("/grilling Fix login [todo:{}]", t.id));
+    let start = cts_core::launch::start_prompt(t.id, &t.prompt_body());
+    assert!(start.starts_with("/grilling Fix login") && start.ends_with(&format!(" [todo:{}]", t.id)), "{start}");
     let u = db.update_todo(t.id, TodoPatch { prompt: Some("まず計画を立てて".into()), ..Default::default() }).unwrap();
     assert_eq!(u.prompt.as_deref(), Some("まず計画を立てて"));
-    assert_eq!(u.prompt_body(), "まず計画を立てて");
+    assert!(u.prompt_body().starts_with("まず計画を立てて"), "{}", u.prompt_body());
     let u = db.update_todo(t.id, TodoPatch { prompt: Some("  ".into()), ..Default::default() }).unwrap();
     assert_eq!(u.prompt, None);
 }
@@ -356,7 +357,7 @@ fn kind_picks_the_default_prompt() {
     let (_d, db) = open();
     let t = db.create_todo(NewTodo { title: "Fix login".into(), memo: Some("see logs".into()), ..Default::default() }).unwrap();
     assert_eq!(t.kind, cts_core::Kind::Implementation);
-    assert_eq!(t.prompt_body(), "/grilling Fix login\n\nsee logs");
+    assert!(t.prompt_body().starts_with("/grilling Fix login\n\nsee logs"), "{}", t.prompt_body());
     let r = db.update_todo(t.id, TodoPatch { kind: Some(cts_core::Kind::Research), ..Default::default() }).unwrap();
     assert_eq!(r.kind, cts_core::Kind::Research);
     let body = r.prompt_body();
@@ -364,7 +365,22 @@ fn kind_picks_the_default_prompt() {
     assert!(body.contains("完了条件") && body.contains("出力条件"), "{body}");
     // A custom prompt wins over the kind's default.
     let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
-    assert_eq!(c.prompt_body(), "自由に");
+    assert!(c.prompt_body().starts_with("自由に"), "{}", c.prompt_body());
+}
+
+#[test]
+fn prompts_ask_through_ask_user_question_and_implementation_asks_whom_to_review() {
+    let (_d, db) = open();
+    let asks = |body: &str| body.contains("AskUserQuestion");
+    let reviewer = |body: &str| body.contains("レビューを誰に頼むか") && body.contains("--add-reviewer");
+    let t = db.create_todo(new_todo("fix")).unwrap();
+    assert!(asks(&t.prompt_body()) && reviewer(&t.prompt_body()), "{}", t.prompt_body());
+    let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
+    assert!(asks(&c.prompt_body()) && reviewer(&c.prompt_body()), "a custom prompt too: {}", c.prompt_body());
+    let r = db.update_todo(t.id, TodoPatch { kind: Some(cts_core::Kind::Research), prompt: Some(String::new()), ..Default::default() }).unwrap();
+    assert!(asks(&r.prompt_body()) && !reviewer(&r.prompt_body()), "research makes no PR: {}", r.prompt_body());
+    let p = db.create_todo(NewTodo { title: "横断".into(), repos: vec!["o/a".into(), "o/b".into()], ..Default::default() }).unwrap();
+    assert!(asks(&p.prompt_body()) && !reviewer(&p.prompt_body()), "an orchestrator makes no PR: {}", p.prompt_body());
 }
 
 #[test]
