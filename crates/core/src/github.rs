@@ -33,9 +33,68 @@ pub fn parse_statuses(response: &Value, urls: &[String]) -> Vec<(String, String)
         .collect()
 }
 
+/// The user's open PRs and the reviewers each still waits on (a review
+/// given takes a reviewer off), for the Slack messages asking them.
+pub const REVIEW_REQUESTS_QUERY: &str = "query { search(query: \"is:pr is:open author:@me\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number title url isDraft repository { nameWithOwner } reviewRequests(first: 30) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } } } } } }";
+
+/// An open PR of the user's, and whom it waits on (a user's login or a team's slug).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ReviewRequest {
+    pub repo: String,
+    pub number: i64,
+    pub title: String,
+    pub url: String,
+    pub reviewers: Vec<String>,
+}
+
+/// The PRs of REVIEW_REQUESTS_QUERY's response that wait on someone; drafts are not asked about yet.
+pub fn parse_review_requests(response: &Value) -> Vec<ReviewRequest> {
+    response["data"]["search"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|n| n["isDraft"] != true)
+        .filter_map(|n| {
+            let reviewers: Vec<String> = n["reviewRequests"]["nodes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r["requestedReviewer"]["login"].as_str().or_else(|| r["requestedReviewer"]["slug"].as_str()).map(Into::into))
+                .collect();
+            (!reviewers.is_empty()).then_some(())?;
+            Some(ReviewRequest {
+                repo: n["repository"]["nameWithOwner"].as_str()?.into(),
+                number: n["number"].as_i64()?,
+                title: n["title"].as_str()?.into(),
+                url: n["url"].as_str()?.into(),
+                reviewers,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_requests_are_the_open_prs_reviewers_not_yet_heard_from() {
+        let resp = serde_json::json!({"data": {"search": {"nodes": [
+            {"number": 1, "title": "Fix", "url": "https://github.com/o/a/pull/1", "isDraft": false, "repository": {"nameWithOwner": "o/a"},
+             "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "alice"}}, {"requestedReviewer": {"slug": "core"}}]}},
+            {"number": 2, "title": "Draft", "url": "https://github.com/o/a/pull/2", "isDraft": true, "repository": {"nameWithOwner": "o/a"},
+             "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "bob"}}]}},
+            {"number": 3, "title": "Nobody", "url": "https://github.com/o/b/pull/3", "isDraft": false, "repository": {"nameWithOwner": "o/b"},
+             "reviewRequests": {"nodes": []}},
+            {}
+        ]}}});
+        let got = parse_review_requests(&resp);
+        assert_eq!(got, vec![ReviewRequest {
+            repo: "o/a".into(), number: 1, title: "Fix".into(), url: "https://github.com/o/a/pull/1".into(),
+            reviewers: vec!["alice".into(), "core".into()],
+        }], "drafts and PRs asking no one are left out; a team goes by its slug");
+        assert!(REVIEW_REQUESTS_QUERY.contains("author:@me") && REVIEW_REQUESTS_QUERY.contains("is:open"));
+    }
     use serde_json::json;
 
     #[test]
