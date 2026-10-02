@@ -2,7 +2,8 @@
 // locally, its children running on Cloud) heads a group, its own sessions
 // first and its children's under them; a child not started yet is a row of
 // its own, to start there. Sessions of todos without parent or children,
-// and unlinked ones, follow flat.
+// and unlinked ones, follow flat. Todos set aside (pending) are left out,
+// with their sessions.
 import type { PrState, Session, SessionState, Todo } from "./api";
 
 export interface SessionItem {
@@ -31,8 +32,9 @@ export const todoRowId = (todoId: number) => `t:${todoId}`;
 /// session the board knows, to tell a subtask never started from one whose
 /// sessions are just hidden.
 export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Todo[], showIdleChildren: boolean): { groups: TreeRow[][]; flat: TreeRow[] } {
+  const aside = (todo: Todo | undefined) => todo?.status === "pending";
   const children = (parent: Todo) => todos.filter((t) => t.parent_id === parent.id).sort((a, b) => a.id - b.id);
-  const parents = todos.filter((t) => !t.parent_id && children(t).length > 0);
+  const parents = todos.filter((t) => !t.parent_id && !aside(t) && children(t).length > 0);
   const sessionsOf = (todo: Todo) => items.filter((i) => i.todo?.id === todo.id).sort(bySession);
   const groups: TreeRow[][] = [];
   for (const parent of parents) {
@@ -41,6 +43,7 @@ export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Tod
     for (const { session, todo } of sessionsOf(parent)) rows.push({ kind: "session", id: session.session_id, session, todo, group: parent.id });
     const under: TreeRow[] = [];
     for (const kid of kids) {
+      if (aside(kid)) continue;
       const shown = sessionsOf(kid);
       if (shown.length > 0) {
         for (const { session, todo } of shown) under.push({ kind: "session", id: session.session_id, session, todo, group: parent.id, child: true });
@@ -62,9 +65,10 @@ export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Tod
   const urgency = (rows: TreeRow[]) => Math.min(...rows.map((r) => (r.kind === "session" ? STATE_RANK[r.session.state] : TODO_RANK)));
   const latest = (rows: TreeRow[]) => Math.max(0, ...rows.map((r) => (r.kind === "session" ? r.session.state_at : 0)));
   groups.sort((a, b) => urgency(a) - urgency(b) || latest(b) - latest(a));
-  const inTree = new Set(parents.flatMap((p) => [p.id, ...children(p).map((c) => c.id)]));
+  // A pending parent takes its subtasks out with it.
+  const inTree = new Set(todos.filter((t) => !t.parent_id && children(t).length > 0).flatMap((p) => [p.id, ...children(p).map((c) => c.id)]));
   const flat: TreeRow[] = items
-    .filter((i) => !i.todo || !inTree.has(i.todo.id))
+    .filter((i) => !aside(i.todo) && (!i.todo || !inTree.has(i.todo.id)))
     .sort(bySession)
     .map(({ session, todo }) => ({ kind: "session", id: session.session_id, session, todo }));
   return { groups, flat };

@@ -3074,8 +3074,10 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   const terminal = useContext(TerminalContext);
   // A row opens its session as 開く does (the ways to open are in its details).
   const open = (s: Session) => (isCloud(s) && openCloud ? openCloud(s.session_id) : openLocal(terminal, s.session_id, report, true));
+  // Todos set aside (pending), and the subtasks of one, are out with their sessions.
+  const aside = new Set(board.todos.filter((t) => t.status === "pending" || board.todos.find((p) => p.id === t.parent_id)?.status === "pending").map((t) => t.id));
   const all = sessionItemsOf(board).filter(
-    (i) => repoFilter === null || laneKey(i.todo?.repos ?? i.session.repos) === repoFilter,
+    (i) => (repoFilter === null || laneKey(i.todo?.repos ?? i.session.repos) === repoFilter) && !(i.todo && aside.has(i.todo.id)),
   );
   const live = all.filter((i) => i.session.state !== "ended");
   const counts: Record<SessionFilter, number> = {
