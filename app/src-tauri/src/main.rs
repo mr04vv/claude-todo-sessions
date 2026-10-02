@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod feynman;
 mod terminal;
 
 use std::collections::{HashMap, HashSet};
@@ -10,7 +11,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use cts_core::launch::StartOptions;
-use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
+use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, SessionState, Status, Subject, Todo, TodoPatch};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -29,6 +30,8 @@ const HERDR_EVERY_TICKS: u32 = 3;
 /// `claude agents --json` runs every this many watch ticks: it starts Node
 /// (about 0.4 s), and hooks and herdr already report most state changes.
 const AGENTS_EVERY_TICKS: u32 = 10;
+/// How often (in watch ticks) the 「説明する」 reviews due are looked for.
+const STUDY_EVERY_TICKS: u32 = 20;
 /// A local session missing from `claude agents` is ended only after this long
 /// without a state change, so one just started by a hook is not cut off.
 const DISCOVER_GRACE_SECS: i64 = 60;
@@ -146,6 +149,8 @@ struct Board {
     inbox: Vec<SessionView>,
     /// Notifications posted, newest first, for the in-app list.
     notifications: Vec<cts_core::Notice>,
+    /// Each subject's latest 「説明する」 attempt (feynman.rs).
+    feynman: Vec<cts_core::FeynmanSummary>,
     sync_status: String,
     loop_enabled: bool,
 }
@@ -219,7 +224,7 @@ struct TodoUpdate {
 
 #[tauri::command(async)]
 fn board(state: State<AppState>) -> Result<Board, String> {
-    let (todos, inputs, inbox, notifications) = {
+    let (todos, inputs, inbox, notifications, feynman) = {
         let db = state.db.lock().map_err(err)?;
         let (mut sessions, mut links) = (db.sessions_by_todo().map_err(err)?, db.links_by_todo().map_err(err)?);
         let todos = db
@@ -235,7 +240,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             .into_iter()
             .filter(|s| s.state != SessionState::Ended && !archived.contains(&s.session_id))
             .collect();
-        (todos, db.list_inputs().map_err(err)?, inbox, db.notifications().map_err(err)?)
+        (todos, db.list_inputs().map_err(err)?, inbox, db.notifications().map_err(err)?, db.feynman_summaries().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -255,7 +260,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, inputs, inbox, notifications, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
+    Ok(Board { todos, inputs, inbox, notifications, feynman, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
 }
 
 #[tauri::command(async)]
@@ -816,14 +821,6 @@ fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions, body: Optio
 struct NoteStart {
     session: String,
     run: Option<TerminalRun>,
-}
-
-/// What the Input mode is open for: a todo (its pages) or an input.
-#[derive(Deserialize, Clone, Copy)]
-#[serde(tag = "kind", content = "id", rename_all = "lowercase")]
-enum Subject {
-    Todo(i64),
-    Input(i64),
 }
 
 /// Starts a session that turns `urls` into a note (in `format`) for the
@@ -1988,6 +1985,11 @@ fn watch_loop(app: AppHandle) {
                 eprintln!("{e}");
             }
         }
+        if tick % STUDY_EVERY_TICKS == 0 {
+            if let Err(e) = feynman::notify_study_due(&app, &db) {
+                eprintln!("{e}");
+            }
+        }
         tick = tick.wrapping_add(1);
         if let Ok(mut waiting) = db.linked_needs_input() {
             // Sessions archived in Claude Desktop stay out of the inbox and notifications.
@@ -2219,6 +2221,11 @@ fn main() {
             add_input_link,
             remove_input_link,
             page_title,
+            feynman::browser_text,
+            feynman::page_text,
+            feynman::feynman_state,
+            feynman::feynman_make_points,
+            feynman::feynman_grade,
             terminal::term_open,
             terminal::term_write,
             terminal::term_resize,

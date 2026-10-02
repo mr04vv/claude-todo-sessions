@@ -25,7 +25,7 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 
 3つのバイナリが1つの SQLite（WAL）を共有する。DB は `~/Library/Application Support/claude-todo-sessions/db.sqlite`（`CTS_DB` で変更可）。
 
-- `crates/core`（`cts-core`）: DB と外部連携のロジック。`lib.rs` が todo / input / session / link / notification のスキーマ・マイグレーション・クエリ、`cloud.rs` がクラウドセッション API（使用量と events も）、`launch.rs` が Desktop のディープリンク・起動プロンプト・モデルと effort（`StartOptions`）、`usage.rs` が使用量の解釈、`transcript.rs` がセッションの最後のメッセージ・コンテキスト・直近の操作の抽出（ローカルの jsonl とクラウドの events で共通。Input モードのノートの URL もここで探す）、`skills.rs` がスキルの発見と並び替え、`herdr.rs` / `agents.rs` / `desktop.rs` がローカルセッションの発見、`github.rs` が GraphQL の一括状態取得、`ogp.rs` がリンクの OGP 取得。
+- `crates/core`（`cts-core`）: DB と外部連携のロジック。`lib.rs` が todo / input / session / link / notification のスキーマ・マイグレーション・クエリ、`cloud.rs` がクラウドセッション API（使用量と events も）、`launch.rs` が Desktop のディープリンク・起動プロンプト・モデルと effort（`StartOptions`）、`usage.rs` が使用量の解釈、`transcript.rs` がセッションの最後のメッセージ・コンテキスト・直近の操作の抽出（ローカルの jsonl とクラウドの events で共通。Input モードのノートの URL もここで探す）、`skills.rs` がスキルの発見と並び替え、`herdr.rs` / `agents.rs` / `desktop.rs` がローカルセッションの発見、`github.rs` が GraphQL の一括状態取得、`ogp.rs` がリンクの OGP 取得（`fetch_text` はページ本文のフォールバック）、`feynman.rs` が Input モードの「説明する」（要点と採点のプロンプト・JSON スキーマ・答えの解釈・理解度と復習間隔）。
 - `crates/cts`: Claude Code プラグインから呼ばれる CLI。`cts mcp`（rmcp の stdio MCP サーバー。todo の CRUD と紐づけ）、`cts hook <event>`（セッション状態の記録と `[todo:N]` マーカーでの紐づけ）、`cts cloud sync`。
 - `app/src-tauri`（`todo-sessions-app`）: Tauri 2 のアプリ本体。`main.rs` 1ファイルに Tauri コマンドとバックグラウンドスレッドがある。
   - `sync_loop`: クラウドセッションの同期
@@ -53,6 +53,13 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 - input は todo ではない。`inputs` / `input_links` テーブル（`Db::create_input` など）にあり、ステータス・親子・セッションの紐づけを持たない（`done` だけ）。昔は kind が `input` の todo だったので、`migrate` の最後で id のまま移す。
 - Input モードは subject（`Subject`：input か、f で開いた todo）ごとに「スペース」（`InputSpace`。左のタブと ⌘T の新しいタブ、右のページ）を持つ。キーは `subjectKey`（`i<id>` / `t<id>`、どちらでもないときは `FREE_SPACE`）。タブは `BrowserTab.focus` と `space` で（ノートを作るターミナルもスペースのもので、ペインのタブには出さない）、右のページは `kind` と `rightTabId(space, kind)` の id。終えても subject のスペースは隠すだけで残し、subject なしのものだけ閉じる。
 - スペースは localStorage の `inputSpaces`（`SavedSpace`。左右のページの URL）に保存し、再起動後に開いたときは保存した URL から開き直す。開くときに subject のページで足りないものは左に足す。
+
+### Input モードの「説明する」（ファインマン・テクニック）
+
+- 右の `EXPLAIN_TAB`（`ExplainPanel`）。アプリの `feynman.rs` が `claude -p --output-format json --json-schema … --tools "" --no-session-persistence --strict-mcp-config` をホームで1回呼ぶ（プロンプトは stdin。要点は既定のモデル、採点は sonnet。`structured_output` を読む）。
+- 要点は `feynman_make_points`（左のページの本文は `browser_text` が WKWebView の `evaluateJavaScript` で読む。タブにページがなければ `page_text` が取りに行く）、採点は `feynman_grade`。DB は `feynman_points` / `feynman_attempts`（subject_kind / subject_id。`Subject` は core にある）。`Board.feynman` が subject ごとの最新を返す。
+- 復習どき（`feynman::review_after_days`）は `watch_loop` が `STUDY_EVERY_TICKS` ごとに `feynman_due` で見て、`notifications` に kind `study`（`input_id` 列。todo なら `todo_id`）を1回記録して macOS に出す。クリックは `open-study` イベントで、フロントが Input モードを「説明する」で開く。
+- `src-tauri/Info.plist` にマイクの許可説明がある（右の ChatGPT の音声モード用。WebView はページのマイク許可を通す作り）。
 
 ### Input モードのノート
 

@@ -3954,9 +3954,13 @@ name = "todo-sessions-app"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "block2",
  "cts-core",
  "mac-notification-sys",
+ "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "portable-pty",
  "serde",
  "serde_json",

@@ -78,6 +78,46 @@ export interface InputLink {
 /** What the Input mode is open for: a todo's pages, or an input. */
 export type Subject = { kind: "todo"; id: number } | { kind: "input"; id: number };
 
+/** The Input mode's 「説明する」 (feynman.rs): a key point of the subject's pages. */
+export interface FeynmanPoint {
+  id: number;
+  text: string;
+}
+export type FeynmanVerdict = "said" | "vague" | "missing";
+export interface FeynmanGrade {
+  verdicts: { point: number; verdict: FeynmanVerdict; note: string }[];
+  mistakes: string[];
+  jargon: string[];
+  questions: string[];
+}
+/** One explanation and its grading. */
+export interface FeynmanAttempt {
+  id: number;
+  explanation: string;
+  grade: FeynmanGrade;
+  /** Percent. */
+  score: number;
+  created_at: number;
+}
+/** A subject's latest attempt, and when to explain again (seconds). */
+export interface FeynmanSummary {
+  subject: Subject;
+  score: number;
+  attempted_at: number;
+  due_at: number;
+}
+export interface FeynmanState {
+  points: FeynmanPoint[];
+  /** Newest first. */
+  attempts: FeynmanAttempt[];
+}
+/** A page's text, as read from its tab (or fetched). */
+export interface PageText {
+  url: string;
+  title: string | null;
+  text: string;
+}
+
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
 export type Runner = "auto" | "cloud" | "local";
@@ -88,12 +128,14 @@ export interface Notice {
   id: number;
   session_id: string;
   todo_id: number | null;
-  kind: "finished" | "needs_input" | "review_requested";
+  kind: "finished" | "needs_input" | "review_requested" | "study";
   title: string;
   created_at: number;
   read: boolean;
   /// The PR of a review request; its session_id is empty.
   url: string | null;
+  /// The input a study notice (time to explain again) is for; a todo's is in todo_id.
+  input_id: number | null;
 }
 
 export interface Board {
@@ -102,6 +144,8 @@ export interface Board {
   inbox: Session[];
   /** Newest first. */
   notifications: Notice[];
+  /** Each subject's latest 「説明する」 attempt. */
+  feynman: FeynmanSummary[];
   sync_status: string;
   loop_enabled: boolean;
 }
@@ -268,6 +312,13 @@ export const api = {
   startNote: (subject: Subject, urls: string[], format: NoteFormat, cloud: boolean) => invoke<NoteStart>("start_note", { subject, urls, format, cloud }),
   /// The note the session published, once it has (kept as a link of the todo).
   noteUrl: (subject: Subject, sessionId: string) => invoke<string | null>("note_url", { subject, sessionId }),
+  /// The text of a tab's page; null when the tab has no page open.
+  browserText: (tab: string) => invoke<string | null>("browser_text", { tab }),
+  /// A page's text fetched afresh (one behind a login comes back as its sign-in page).
+  pageText: (url: string) => invoke<string>("page_text", { url }),
+  feynmanState: (subject: Subject) => invoke<FeynmanState>("feynman_state", { subject }),
+  feynmanMakePoints: (subject: Subject, title: string, pages: PageText[]) => invoke<FeynmanPoint[]>("feynman_make_points", { subject, title, pages }),
+  feynmanGrade: (subject: Subject, title: string, explanation: string) => invoke<FeynmanAttempt>("feynman_grade", { subject, title, explanation }),
   createInput: (title: string) => invoke<Input>("create_input", { title }),
   updateInput: (id: number, update: { title?: string; memo?: string; done?: boolean }) => invoke<Input>("update_input", { id, update }),
   deleteInput: (id: number) => invoke<void>("delete_input", { id }),
@@ -327,6 +378,8 @@ export const PAGE_FOCUSED_EVENT = "page-focused";
 export const OPEN_PALETTE_EVENT = "open-palette";
 /** When a page's ⌘⇧K asks for the list of sessions. */
 export const OPEN_SESSIONS_EVENT = "open-sessions";
+/** `{subject}` when a notification says it is time to explain the subject again. */
+export const OPEN_STUDY_EVENT = "open-study";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
 /** `{tab}` when a page asks to go into an input (⌘⇧D). */

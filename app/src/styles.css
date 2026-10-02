@@ -2499,6 +2499,132 @@ body.resizing {
   font-size: 12px;
 }
 
+/* The Input mode's 「説明する」 (ExplainPanel). */
+.explain {
+  flex-grow: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 16px 20px 32px;
+  line-height: 1.6;
+}
+
+.explain section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.explain h3 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.explain h4 {
+  margin: 6px 0 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.explain p,
+.explain ul {
+  margin: 0;
+}
+
+.explain ul {
+  padding-left: 18px;
+}
+
+.explain-start {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.explain-points {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.explain-points li {
+  display: flex;
+  gap: 8px;
+}
+
+.explain-points .mark {
+  flex-shrink: 0;
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+  color: var(--text-3);
+}
+
+.explain-points .note {
+  display: block;
+  font-size: 12px;
+}
+
+.explain-points .verdict-said .mark {
+  color: var(--st-done);
+}
+
+.explain-points .verdict-vague .mark {
+  color: var(--waiting-text);
+}
+
+.explain-points .verdict-missing .mark {
+  color: var(--danger);
+}
+
+.explain textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.explain-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.explain-result h3 b {
+  font-size: 16px;
+  color: var(--text);
+}
+
+.explain-history {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.explain-history li {
+  display: flex;
+  gap: 10px;
+}
+
+.tag.due {
+  color: var(--waiting-text);
+}
+
 /* The focus mode's page picker (FocusPicker). */
 .focus-picker {
   display: flex;

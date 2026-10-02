@@ -25,6 +25,7 @@ import {
   BROWSER_TO_INPUT_EVENT,
   OPEN_PALETTE_EVENT,
   OPEN_SESSIONS_EVENT,
+  OPEN_STUDY_EVENT,
   FOCUS_APP_EVENT,
   PAGE_FOCUSED_EVENT,
   FOCUS_PANE_EVENT,
@@ -61,6 +62,10 @@ import {
   type StartOptions,
   type Status,
   type Todo,
+  type FeynmanState,
+  type FeynmanSummary,
+  type FeynmanVerdict,
+  type PageText,
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
@@ -383,7 +388,16 @@ interface NoteSession {
 /// How often a note being made is looked for in its session.
 const NOTE_POLL_MS = 5000;
 /// The right pages a space may show.
-const RIGHT_KINDS = [NOTE_TAB, "pinchatgpt", "pinclaude", "pinnotion"];
+/// The right's 「説明する」 (ExplainPanel), the app's own, not a page.
+const EXPLAIN_TAB = "fexplain";
+const RIGHT_KINDS = [NOTE_TAB, EXPLAIN_TAB, "pinchatgpt", "pinclaude", "pinnotion"];
+/// The explanation being written, by subjectKey.
+const FEYNMAN_DRAFTS_KEY = "feynmanDrafts";
+const DAY_S = 86_400;
+/// After how many days to explain again, by the last score (as feynman.rs decides it).
+const reviewAfterDays = (score: number) => (score < 60 ? 1 : score < 85 ? 3 : 7);
+const VERDICT_MARK: Record<FeynmanVerdict, string> = { said: "✓", vague: "△", missing: "✗" };
+const VERDICT_LABEL: Record<FeynmanVerdict, string> = { said: "言えた", vague: "あいまい", missing: "抜けている" };
 /// A space's tab for a right page (ids are letters and digits only).
 const rightTabId = (space: string, kind: string) => `s${space}${kind}`;
 const newSpace = (right: string): InputSpace => ({ lefts: [], active: null, right, pages: [], rightUrls: {} });
@@ -2179,9 +2193,189 @@ function NoteStart({ note }: { note: FocusNote }) {
   );
 }
 
+/// The Input mode's 「説明する」 (the Feynman technique; feynman.rs behind
+/// it): the key points of the left's pages, made once; the user's own
+/// explanation of them, graded point by point; and when to explain again.
+function ExplainPanel({ subject, title, pages, report, onAskByVoice }: {
+  subject: Subject | null;
+  title: string;
+  /// The left's pages (their tabs), read for the points.
+  pages: BrowserTab[];
+  report: (e: unknown) => void;
+  /// Hands a prompt to ChatGPT on the right, to be questioned by voice.
+  onAskByVoice: (prompt: string) => void;
+}) {
+  const key = subjectKey(subject);
+  const [state, setState] = useState<FeynmanState | null>(null);
+  const [busy, setBusy] = useState<"points" | "grade" | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraftState] = useState(() => loadJson<Record<string, string>>(FEYNMAN_DRAFTS_KEY, {})[key] ?? "");
+  const setDraft = (text: string) => {
+    setDraftState(text);
+    remember(FEYNMAN_DRAFTS_KEY, JSON.stringify({ ...loadJson<Record<string, string>>(FEYNMAN_DRAFTS_KEY, {}), [key]: text }));
+  };
+  useEffect(() => {
+    if (subject) api.feynmanState(subject).then(setState, report);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!subject) return <p className="muted empty pad">「説明する」は、input か todo から開いた Input モードで使えます。</p>;
+  const points = state?.points ?? [];
+  const attempts = state?.attempts ?? [];
+  const latest = attempts[0];
+  const work = async (what: "points" | "grade", f: () => Promise<void>) => {
+    setBusy(what);
+    setError(null);
+    try {
+      await f();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+  // Each page's text from its tab, else fetched (a tab never shown has no page).
+  const makePoints = () =>
+    work("points", async () => {
+      const texts: PageText[] = [];
+      for (const t of pages) {
+        const fromTab = await api.browserText(t.id).catch(() => null);
+        const text = fromTab?.trim() ? fromTab : await api.pageText(t.url).catch(() => "");
+        texts.push({ url: t.url, title: t.title, text });
+      }
+      const made = await api.feynmanMakePoints(subject, title, texts);
+      setState((s) => ({ points: made, attempts: s?.attempts ?? [] }));
+    });
+  const grade = () =>
+    work("grade", async () => {
+      const attempt = await api.feynmanGrade(subject, title, draft);
+      setState((s) => ({ points: s?.points ?? [], attempts: [attempt, ...(s?.attempts ?? [])] }));
+    });
+  const verdictOf = (i: number) => latest?.grade.verdicts.find((v) => v.point === i);
+  const voicePrompt = () =>
+    `「${title}」を読みました。ファインマン・テクニックで理解を確かめたいので、先生役をお願いします。\n` +
+    `下の要点について1つずつ質問してください。私が自分の言葉で答えるので、曖昧なところや間違いがあれば「なぜ？」「どうなる？」と掘り下げてください。` +
+    `要点そのものは私に見せず、質問だけしてください。最後に、要点ごとに言えたかどうかと、理解度を100点満点で教えてください。\n\n要点:\n${points.map((p) => `- ${p.text}`).join("\n")}`;
+  const due = latest && latest.created_at + reviewAfterDays(latest.score) * DAY_S;
+  const dueLabel = due && (due * 1000 <= Date.now() ? "復習どきです" : `次は ${new Date(due * 1000).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" })}`);
+  return (
+    <div className="explain">
+      <section>
+        <h3>
+          要点 {points.length > 0 && <span className="muted">{points.length}</span>}
+          <span className="grow" />
+          {points.length > 0 && (
+            <button className="ghost small" disabled={busy !== null || pages.length === 0} title="左のページからもう一度作ります（採点の履歴は残ります）" onClick={makePoints}>
+              {busy === "points" ? "作っています…" : "要点を作り直す"}
+            </button>
+          )}
+        </h3>
+        {points.length === 0 ? (
+          <div className="explain-start">
+            <p className="muted">左のページを読んで「自分の言葉で説明できるべき要点」を Claude が作ります。そのあと、何も見ずに説明して採点してもらいます。</p>
+            <button className="primary" disabled={busy !== null || pages.length === 0} onClick={makePoints}>
+              {busy === "points" && <span className="spinner" />}
+              {busy === "points" ? "作っています…" : "要点を作る"}
+            </button>
+            {pages.length === 0 && <p className="muted hint">左にページを開いてください。</p>}
+          </div>
+        ) : (
+          <ol className="explain-points">
+            {points.map((p, i) => {
+              const v = verdictOf(i);
+              return (
+                <li key={p.id} className={v ? `verdict-${v.verdict}` : ""} title={v ? VERDICT_LABEL[v.verdict] : undefined}>
+                  <span className="mark">{v ? VERDICT_MARK[v.verdict] : "・"}</span>
+                  <span>
+                    {p.text}
+                    {v?.note && <span className="muted note">{v.note}</span>}
+                  </span>
+                </li>
+              );
+            })}
+          </ol>
+        )}
+      </section>
+      <section>
+        <h3>自分の言葉で説明する</h3>
+        <textarea
+          rows={8}
+          value={draft}
+          aria-label="説明"
+          placeholder="何も見ずに、子どもに教えるつもりで書きます。fn キーを2回押すと macOS の音声入力で話せます"
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (isEnter(e) && e.metaKey && points.length > 0 && busy === null) {
+              e.preventDefault();
+              grade();
+            }
+          }}
+        />
+        <div className="explain-actions">
+          <button className="primary" disabled={busy !== null || points.length === 0 || !draft.trim()} onClick={grade}>
+            {busy === "grade" && <span className="spinner" />}
+            {busy === "grade" ? "採点しています…" : "採点"} {busy === null && <span className="kbd">⌘↵</span>}
+          </button>
+          <button className="ghost" disabled={points.length === 0} title="右の ChatGPT に、要点について質問してもらうプロンプトを入れます（音声モードは ChatGPT の画面で押します）" onClick={() => onAskByVoice(voicePrompt())}>
+            声で質問される（ChatGPT）
+          </button>
+        </div>
+        {error && <p className="error-text">{error}</p>}
+      </section>
+      {latest && (
+        <section className="explain-result">
+          <h3>
+            理解度 <b>{latest.score}%</b>
+            <span className="muted">
+              {ago(latest.created_at)} · {dueLabel}
+            </span>
+          </h3>
+          {latest.grade.mistakes.length > 0 && (
+            <>
+              <h4>間違っているところ</h4>
+              <ul>
+                {latest.grade.mistakes.map((m) => (
+                  <li key={m}>{m}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {latest.grade.jargon.length > 0 && (
+            <>
+              <h4>説明せずに使った言葉</h4>
+              <p>{latest.grade.jargon.join("、")}</p>
+            </>
+          )}
+          {latest.grade.questions.length > 0 && (
+            <>
+              <h4>答えてみる</h4>
+              <ul>
+                {latest.grade.questions.map((q) => (
+                  <li key={q}>{q}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
+      )}
+      {attempts.length > 1 && (
+        <section>
+          <h3>これまで</h3>
+          <ul className="explain-history">
+            {attempts.map((a) => (
+              <li key={a.id}>
+                <span className="muted">{new Date(a.created_at * 1000).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
+                <b>{a.score}%</b>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+    </div>
+  );
+}
+
 /// The focus mode: its own pages (and terminals) on the left and a pinned
-/// page (ChatGPT, Claude Code or Notion) or the note on the right, nothing else.
-function FocusMode({ lefts, left, right, rightKind, note, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onExit }: {
+/// page (ChatGPT, Claude Code or Notion), the note or 「説明する」 on the right, nothing else.
+function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onExit }: {
   /// The left side's tabs (its own pages, and terminals), and the one shown
   /// (none for a new tab).
   lefts: BrowserTab[];
@@ -2191,6 +2385,8 @@ function FocusMode({ lefts, left, right, rightKind, note, onRemakeNote, covered,
   rightKind: string;
   /// Set while the note is shown and not yet published.
   note: FocusNote | null;
+  /// The right's 「説明する」 (ExplainPanel).
+  explain: React.ReactNode;
   /// Set while a published note is shown: leaves it to make another.
   onRemakeNote?: () => void;
   covered: boolean;
@@ -2253,6 +2449,9 @@ function FocusMode({ lefts, left, right, rightKind, note, onRemakeNote, covered,
               <button className={noteShown ? "on" : ""} aria-pressed={noteShown} onClick={() => onRight(NOTE_TAB)}>
                 <Icon name="list" size={12} /> ノート
               </button>
+              <button className={rightKind === EXPLAIN_TAB ? "on" : ""} aria-pressed={rightKind === EXPLAIN_TAB} onClick={() => onRight(EXPLAIN_TAB)}>
+                <Icon name="check" size={12} /> 説明する
+              </button>
               {FOCUS_PAGES.map((p) => (
                 <button key={p.id} className={rightKind === p.id ? "on" : ""} aria-pressed={rightKind === p.id} onClick={() => onRight(p.id)}>
                   <Icon name={p.icon} size={12} /> {p.label}
@@ -2270,7 +2469,9 @@ function FocusMode({ lefts, left, right, rightKind, note, onRemakeNote, covered,
             </button>
           </div>
           {right && note && <NoteMaking note={note} />}
-          {right?.term ? (
+          {rightKind === EXPLAIN_TAB ? (
+            explain
+          ) : right?.term ? (
             <TerminalView key={right.id} id={right.id} run={right.term} report={report} />
           ) : right ? (
             <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} noDia />
@@ -2286,8 +2487,10 @@ function FocusMode({ lefts, left, right, rightKind, note, onRemakeNote, covered,
 /// One tab's page: its webview laid over a placeholder that follows the
 /// layout. `covered` hides it while a dialog is up, since a native webview
 /// draws above everything in the page.
-/// A tab to give the typing to (its page's text box) once it is shown.
+/// A tab to give the typing to (its page's text box) once it is shown, and
+/// text to type into it.
 let typeInto: string | null = null;
+let typeText: string | null = null;
 /// A tab to give the keyboard to (the page, not its text box) once it is shown.
 let keysInto: string | null = null;
 /// Gives the tab coming up the keyboard, as a browser does: a page once it is
@@ -2335,7 +2538,9 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
         }
         if (typeInto !== active.id) return;
         typeInto = null;
-        return api.browserFocus(active.id, true);
+        const text = typeText;
+        typeText = null;
+        return api.browserFocus(active.id, true, text ?? undefined);
       })
       .catch(report);
   // Switching tabs or coming back from under a dialog shows the page the tab
@@ -2528,8 +2733,10 @@ function StartDialog({ todo, allTodos, skills, run, onClose }: { todo: Todo; all
   );
 }
 
-function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOpenTodo, onFocus, onStart, onClose }: {
+function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setStatus, onOpenTodo, onFocus, onStart, onClose }: {
   todo: Todo;
+  /// Its latest 「説明する」 attempt.
+  feynman: FeynmanSummary | undefined;
   allTodos: Todo[];
   local: LocalRepo[];
   groups: string[];
@@ -2586,6 +2793,7 @@ function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOp
         )}
         <span className="mono">#{todo.id}</span>
         <span className="grow" />
+        <StudyTags summary={feynman} />
         <button className="ghost small" title={`Input モードで開く（${keyLabel(keyOf("focusTodo"))}）：添付の URL を左、ChatGPT を右に`} onClick={onFocus}>
           Input モード
         </button>
@@ -3396,18 +3604,40 @@ const NOTICE_LABEL: Record<Notice["kind"], string> = {
   finished: "作業が終わりました",
   needs_input: "入力待ち",
   review_requested: "レビュー依頼",
+  study: "復習どき",
 };
 const NOTICE_STATE: Record<Notice["kind"], string> = {
   finished: "state-running",
   needs_input: "state-needs_input",
   review_requested: "state-review",
+  study: "state-review",
 };
+/// A subject's understanding (its last 「説明する」 score) and whether it is time to explain again.
+function StudyTags({ summary }: { summary: FeynmanSummary | undefined }) {
+  if (!summary) return null;
+  return (
+    <>
+      <span className="tag" title={`最後の採点 ${ago(summary.attempted_at)}`}>
+        理解度 {summary.score}%
+      </span>
+      {summary.due_at * 1000 <= Date.now() && (
+        <span className="tag due" title="もう一度、自分の言葉で説明してみる時期です">
+          復習どき
+        </span>
+      )}
+    </>
+  );
+}
+/// The subject a study notice is for.
+const studySubjectOf = (n: Notice): Subject | null => (n.input_id !== null ? { kind: "input", id: n.input_id } : n.todo_id !== null ? { kind: "todo", id: n.todo_id } : null);
 
 /// The inputs: reading material, apart from the todos, each opening in the
 /// Input mode with its pages on the left. A URL here, the dialog, or
 /// ⌥-clicking a link in the browser adds one.
-function InputsPage({ inputs: all, resumable, run, onFocus, onDetail, onAdd }: {
+function InputsPage({ inputs: all, feynman, resumable, run, onFocus, onDetail, onAdd }: {
   inputs: Input[];
+  /// Each subject's latest 「説明する」 attempt, by subjectKey.
+  feynman: Map<string, FeynmanSummary>;
   /// The dialog adding one.
   onAdd: () => void;
   /// Inputs whose Input mode pages are kept, to go on where they were left.
@@ -3488,6 +3718,7 @@ function InputsPage({ inputs: all, resumable, run, onFocus, onDetail, onAdd }: {
                 {pages[0] && <span className="muted mono ellipsis">{hostOf(pages[0].url)}</span>}
                 {pages.length > 1 && <span className="tag">{pages.length} ページ</span>}
                 {i.links.some((l) => NOTE_PAGE.test(l.url)) && <span className="tag">ノート</span>}
+                <StudyTags summary={feynman.get(subjectKey({ kind: "input", id: i.id }))} />
                 {resumable.has(i.id) && (
                   <span className="tag" title="開くと、前に開いていたページの続きから始まります">
                     続き
@@ -3625,11 +3856,13 @@ function reviewTargetOf(n: Notice): ReviewTarget | null {
   return { url: n.url, repo: m[1], title: n.title.replace(`${m[1]}#${m[2]} `, "") };
 }
 
-function NoticesPage({ board, local, report, onOpenTodo, run }: {
+function NoticesPage({ board, local, report, onOpenTodo, onOpenStudy, run }: {
   board: Board;
   local: LocalRepo[];
   report: (e: unknown) => void;
   onOpenTodo: (id: number) => void;
+  /// A study notice: the subject's Input mode on 「説明する」.
+  onOpenStudy: (subject: Subject) => void;
   run: (f: () => Promise<unknown>) => void;
 }) {
   const openCloud = useContext(OpenCloudContext);
@@ -3646,7 +3879,7 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
   const readAll = () => run(() => api.readNotifications());
   const { cursorId, setCursor, list } = useRowCursor(
     ids,
-    (_, alt, row) => (alt ? row : (row.querySelector<HTMLButtonElement>(".open-caret, .notice-open") ?? row)).click(),
+    (_, alt, row) => (alt ? row : (row.querySelector<HTMLButtonElement>(".open-caret, .notice-open, .notice-study") ?? row)).click(),
     (e, id) => {
       if (matches(e, "dismissAll")) return (readAll(), true);
       const n = rows.find((n) => String(n.id) === id);
@@ -3678,6 +3911,7 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
           {rows.map((n) => {
             const todo = todoOf(n);
             const review = reviewTargetOf(n);
+            const study = n.kind === "study" ? studySubjectOf(n) : null;
             return (
               <li
                 key={n.id}
@@ -3686,8 +3920,9 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
                 onClick={() => {
                   setCursor(String(n.id));
                   read(n);
-                  // A review request's row shows its PR; others open their todo.
+                  // A review request's row shows its PR, a study notice its 「説明する」; others open their todo.
                   if (n.url) openInBrowser?.(n.url);
+                  else if (study) onOpenStudy(study);
                   else if (todo) onOpenTodo(todo.id);
                 }}
               >
@@ -3701,6 +3936,10 @@ function NoticesPage({ board, local, report, onOpenTodo, run }: {
                 <span className="muted when">{ago(n.created_at)}</span>
                 {review ? (
                   <ReviewButton accent={false} busy={starting.has(review.url)} onStart={(submit) => (read(n), startReview(review, submit))} />
+                ) : study ? (
+                  <button className="small notice-study" title="Input モードの「説明する」を開く" onClick={(e) => (e.stopPropagation(), read(n), onOpenStudy(study))}>
+                    説明する
+                  </button>
                 ) : (
                   <button className="small notice-open" title="セッションを開く" onClick={(e) => (e.stopPropagation(), openSession(n))}>
                     開く
@@ -4786,6 +5025,30 @@ export default function App() {
   const focusTodo = (todo: Todo) =>
     focusOn({ kind: "todo", id: todo.id }, [...new Set([...pagesOf(todo).map((l) => l.url), todo.pr_url, todo.issue_url].filter((u): u is string => !!u))]);
   const focusInput = (input: Input) => focusOn({ kind: "input", id: input.id }, pagesOf(input).map((l) => l.url));
+  /// By subjectKey: each subject's latest 「説明する」 attempt.
+  const feynmanOf = new Map((board?.feynman ?? []).map((s) => [subjectKey(s.subject), s]));
+  /// The subject's Input mode on 「説明する」 (a study notice).
+  const openStudy = (subject: Subject) => {
+    if (subject.kind === "input") {
+      const input = board?.inputs.find((i) => i.id === subject.id);
+      if (!input) return;
+      focusInput(input);
+    } else {
+      const todo = board?.todos.find((t) => t.id === subject.id);
+      if (!todo) return;
+      focusTodo(todo);
+    }
+    remember(FOCUS_RIGHT_KEY, EXPLAIN_TAB);
+    setFocusRightPref(EXPLAIN_TAB);
+    patchSpace(subjectKey(subject), (s) => ({ ...s, right: EXPLAIN_TAB }));
+  };
+  const openStudyRef = useRef(openStudy);
+  openStudyRef.current = openStudy;
+  /// 「声で質問される」: ChatGPT on the right, with the prompt typed into it.
+  const askByVoice = (prompt: string) => {
+    typeText = prompt;
+    setFocusRight("pinchatgpt");
+  };
   const savedSpaces = () => loadJson<Record<string, SavedSpace>>(INPUT_SPACES_KEY, {});
   /// ⌘⇧[ ⌘⇧] in the Input mode: the previous or next tab of the side that has
   /// the keyboard, the left's own or the right's pages (which take the typing).
@@ -5119,6 +5382,7 @@ export default function App() {
       listen<{ tab: string }>(BROWSER_TO_INPUT_EVENT, () => !focusModeRef.current && toInputRef.current()),
       listen(OPEN_PALETTE_EVENT, () => paletteRef.current()),
       listen(OPEN_SESSIONS_EVENT, () => openSessionsRef.current()),
+      listen<{ subject: Subject }>(OPEN_STUDY_EVENT, ({ payload }) => openStudyRef.current(payload.subject)),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
@@ -5895,6 +6159,7 @@ export default function App() {
           {view === "inputs" && board && (
             <InputsPage
               inputs={allInputs}
+              feynman={feynmanOf}
               resumable={new Set([...Object.keys(spaces), ...Object.keys(savedSpaces())].filter((k) => k.startsWith("i")).map((k) => Number(k.slice(1))))}
               run={run}
               onFocus={focusInput}
@@ -5902,7 +6167,7 @@ export default function App() {
               onAdd={() => setDialog("addInput")}
             />
           )}
-          {view === "notices" && board && <NoticesPage board={board} local={local} report={report} onOpenTodo={goTodo} run={run} />}
+          {view === "notices" && board && <NoticesPage board={board} local={local} report={report} onOpenTodo={goTodo} onOpenStudy={openStudy} run={run} />}
           {view === "prs" && (
             <PrsPage prs={prs} prsLoading={prsLoading} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} />
           )}
@@ -5912,6 +6177,7 @@ export default function App() {
               <TodoPanel
                 todo={selectedTodo}
                 allTodos={allTodos}
+                feynman={feynmanOf.get(subjectKey({ kind: "todo", id: selectedTodo.id }))}
                 local={local}
                 groups={groups}
                 run={run}
@@ -5947,6 +6213,7 @@ export default function App() {
             onOpenLeft={(url) => (keysInto = addToFocus([{ url }])[0] ?? null)}
             right={focusRightTab}
             rightKind={focusRight}
+            explain={<ExplainPanel subject={focusSubject} title={subjectItem?.title ?? ""} pages={focusLefts.filter((t) => !t.term)} report={report} onAskByVoice={askByVoice} />}
             note={
               focusRight !== NOTE_TAB || noteUrl
                 ? null
