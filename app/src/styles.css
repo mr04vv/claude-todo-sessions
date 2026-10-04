@@ -2846,6 +2846,13 @@ body.resizing {
   font-size: 12px;
 }
 
+.toast.login-ask {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 640px;
+}
+
 /* The sidebar with the keyboard (⌃h from the Todo side): its entry under the cursor. */
 .app[data-zone="sidebar"] .sidebar {
   box-shadow: inset -3px 0 0 var(--accent);

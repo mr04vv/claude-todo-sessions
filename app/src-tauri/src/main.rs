@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod feynman;
+mod logins;
 mod terminal;
 
 use std::collections::{HashMap, HashSet};
@@ -75,6 +76,10 @@ struct AppState {
     /// The focus mode is on: pages' Esc asks about leaving it, and macOS
     /// notifications wait (the in-app list still gets them).
     focus_mode: AtomicBool,
+    /// Logins kept per host (logins.rs), as read from the Keychain this run (None: none kept).
+    logins: Mutex<HashMap<String, Option<logins::Login>>>,
+    /// A login a page just sent, asked about before it is kept: its host and the login.
+    pending_login: Mutex<Option<(String, logins::Login)>>,
     /// The app's keys for the pages, as JSON (see `set_page_keys`).
     page_keys: Mutex<String>,
     /// Tabs whose page should focus its text box once it loads, and since when.
@@ -1397,6 +1402,41 @@ const FOCUS_PANE_EVENT: &str = "focus-pane";
 /// (switching and closing tabs, ⌃l to the Input mode's right), not the app.
 const KEYS_HANDED_ON: [&str; 4] = ["tab-prev", "tab-next", "close-tab", "focus-pane"];
 
+/// `{host, user}` when a page sent a login not kept yet: asked whether to keep it.
+const LOGIN_CAPTURED_EVENT: &str = "login-captured";
+
+#[derive(Clone, Serialize)]
+struct LoginAsk {
+    host: String,
+    user: String,
+}
+
+/// The login kept for `host`, read from the Keychain once a run.
+fn kept_login(state: &AppState, host: &str) -> Option<logins::Login> {
+    let mut cache = state.logins.lock().ok()?;
+    cache.entry(host.to_string()).or_insert_with(|| logins::load(host)).clone()
+}
+
+/// The answer to LOGIN_CAPTURED_EVENT: keep the login the page sent, or let it go.
+#[tauri::command(async)]
+fn answer_login(state: State<'_, AppState>, keep: bool) -> Result<(), String> {
+    let Some((host, login)) = state.pending_login.lock().map_err(err)?.take() else { return Ok(()) };
+    if !keep {
+        return Ok(());
+    }
+    logins::save(&host, &login)?;
+    state.logins.lock().map_err(err)?.insert(host, Some(login));
+    Ok(())
+}
+
+/// Takes the login kept for `host` out (the Keychain's item too).
+#[tauri::command(async)]
+fn forget_login(state: State<'_, AppState>, host: String) -> Result<(), String> {
+    logins::delete(&host)?;
+    state.logins.lock().map_err(err)?.insert(host, None);
+    Ok(())
+}
+
 /// `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo.
 const ADD_INPUT_EVENT: &str = "add-input";
 
@@ -1519,6 +1559,23 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             if url.scheme() != APP_SCHEME {
                 return true;
             }
+            // A login the page sent: asked about (by host and user only) unless it is the one kept.
+            if url.host_str() == Some("login-captured") {
+                let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
+                let host = tab_label(&focus_tab).ok().and_then(|l| on_focus.get_webview(&l)).and_then(|v| v.url().ok()).and_then(|u| u.host_str().map(String::from));
+                if let Some(host) = host {
+                    let login = logins::Login { user: param("u"), password: param("p") };
+                    let state = on_focus.state::<AppState>();
+                    if !login.user.is_empty() && !login.password.is_empty() && kept_login(&state, &host).as_ref() != Some(&login) {
+                        let user = login.user.clone();
+                        if let Ok(mut pending) = state.pending_login.lock() {
+                            *pending = Some((host.clone(), login));
+                        }
+                        let _ = on_focus.emit(LOGIN_CAPTURED_EVENT, LoginAsk { host, user });
+                    }
+                }
+                return false;
+            }
             // Only telling: the page keeps the keyboard.
             if url.host_str() == Some("page-focused") {
                 let _ = on_focus.emit(PAGE_FOCUSED_EVENT, TabOnly { tab: focus_tab.clone() });
@@ -1558,6 +1615,13 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             let loading = matches!(payload.event(), tauri::webview::PageLoadEvent::Started);
             // A page asked to take the typing (see `browser_focus`) once it has loaded.
             if !loading {
+                // A site with a kept login has it filled in (and sent) by the page's script.
+                if let Some(host) = payload.url().host_str() {
+                    if let Some(login) = kept_login(&on_load.state::<AppState>(), host) {
+                        let args = serde_json::to_string(&(host, &login.user, &login.password)).unwrap_or_default();
+                        let _ = view.eval(format!("window.__todoSessionsFill?.(...{args})"));
+                    }
+                }
                 let state = on_load.state::<AppState>();
                 if state.focus_mode.load(Ordering::Relaxed) {
                     let _ = view.eval(focus_mode_script(true));
@@ -2156,6 +2220,8 @@ fn main() {
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
             focus_mode: AtomicBool::new(false),
+            logins: Mutex::new(HashMap::new()),
+            pending_login: Mutex::new(None),
             page_keys: Mutex::new("{}".into()),
             archived: Mutex::new(HashSet::new()),
             browser_lock: Mutex::new(()),
@@ -2278,6 +2344,8 @@ fn main() {
             remove_input_link,
             page_title,
             mark_session_seen,
+            answer_login,
+            forget_login,
             review_requests,
             auto_merge,
             feynman::browser_text,

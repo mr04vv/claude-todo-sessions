@@ -74,6 +74,7 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 - 使用量は `GET /api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`）の `limits`。頻繁に呼ぶと 429 になるので、フロントは取れたら5分おきに取り直す。
 - アーカイブは `POST /v1/code/sessions/{cse_…}/archive`（CLI と同じ。アーカイブ済みでも 200 か 409）。sync のあと、Done の todo の Cloud セッションをターンが終わっていればアーカイブする（`Db::cloud_sessions_to_archive`）。Desktop の Local セッションは外からアーカイブする手段がない（Desktop が自分のファイルをメモリに持っている）ので扱わない。
 - PR のレビューは todo を作らない。Cloud なら `create_review_session`（紐づけなし、ブランチは `claude/review-…`）、Local は `quick_run` にリポジトリのフォルダを渡す。
+- アプリ内ブラウザのログイン保存（`logins.rs`）も Keychain（service `todo-sessions-login`、account はホスト）に `/usr/bin/security` で置く。秘密は `security -i` の標準入力で渡し、引数に出さない。ページのスクリプトは送信時に `todo-sessions://login-captured` で知らせ、`on_page_load` が保存済みのホストにだけ `__todoSessionsFill` を呼ぶ。
 - 認証情報は Keychain の "Claude Code-credentials" を `/usr/bin/security` 経由で読み書きする。Security.framework を直接使うと、再ビルドのたびに Keychain の許可ダイアログが出る。
 
 ### GitHub 連携の自動化（`issue_sync_loop`）

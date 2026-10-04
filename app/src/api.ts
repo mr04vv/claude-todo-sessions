@@ -337,6 +337,10 @@ export const api = {
   autoMerge: (url: string) => invoke<"merged" | "auto">("auto_merge", { url }),
   /// The user's open PRs and whom each still waits on (logins, team slugs).
   reviewRequests: () => invoke<import("./slackMessages").ReviewRequest[]>("review_requests"),
+  /// Keeps (in the Keychain) the login a page just sent, or lets it go.
+  answerLogin: (keep: boolean) => invoke<void>("answer_login", { keep }),
+  /// Takes out the login kept for a site.
+  forgetLogin: (host: string) => invoke<void>("forget_login", { host }),
   /// The session was looked at now: its ended turn is read.
   markSessionSeen: (sessionId: string) => invoke<void>("mark_session_seen", { sessionId }),
   setParent: (todoId: number, parentId: number | null) => invoke<Todo>("set_parent", { todoId, parentId }),
@@ -386,6 +390,8 @@ export const FOCUS_APP_EVENT = "focus-app";
 export const PAGE_FOCUSED_EVENT = "page-focused";
 /** When a page's ⌘K asks for the app's commands. */
 export const OPEN_PALETTE_EVENT = "open-palette";
+/** `{host, user}` when a page sent a login not kept yet: asked whether to keep it (answerLogin). */
+export const LOGIN_CAPTURED_EVENT = "login-captured";
 /** When a page's ⌘⇧K asks for the list of sessions. */
 export const OPEN_SESSIONS_EVENT = "open-sessions";
 /** `{subject}` when a notification says it is time to explain the subject again. */

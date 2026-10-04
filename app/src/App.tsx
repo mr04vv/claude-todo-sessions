@@ -26,6 +26,7 @@ import {
   OPEN_PALETTE_EVENT,
   OPEN_SESSIONS_EVENT,
   OPEN_STUDY_EVENT,
+  LOGIN_CAPTURED_EVENT,
   FOCUS_APP_EVENT,
   PAGE_FOCUSED_EVENT,
   FOCUS_PANE_EVENT,
@@ -5300,6 +5301,21 @@ export default function App() {
     setFocusRightPref(EXPLAIN_TAB);
     patchSpace(subjectKey(subject), (s) => ({ ...s, right: EXPLAIN_TAB }));
   };
+  // A login a page sent, asked about before the app keeps it.
+  const [loginAsk, setLoginAsk] = useState<{ host: string; user: string } | null>(null);
+  useEffect(() => {
+    const off = listen<{ host: string; user: string }>(LOGIN_CAPTURED_EVENT, ({ payload }) => setLoginAsk(payload));
+    return () => void off.then((f) => f());
+  }, []);
+  const answerLogin = (keep: boolean) => {
+    setLoginAsk(null);
+    api.answerLogin(keep).catch(report);
+  };
+  /// ⌘K: the login kept for the site the pane shows, taken out.
+  const forgetShownLogin = () => {
+    const host = activeTab && !activeTab.term ? hostOf(activeTab.url) : null;
+    if (host) api.forgetLogin(host).catch(report);
+  };
   const openStudyRef = useRef(openStudy);
   openStudyRef.current = openStudy;
   /// 「声で質問される」: ChatGPT on the right, with the prompt typed into it.
@@ -6107,6 +6123,7 @@ export default function App() {
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
     { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
+    { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "slack", label: "レビュー依頼中の PR のリンク（レビュアーごと、Slack 用）", run: () => setDialog("slack") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },
@@ -6582,6 +6599,19 @@ export default function App() {
         {addedInput && (
           <div className="toast" role="status">
             input に追加しました：{addedInput}
+          </div>
+        )}
+        {loginAsk && (
+          <div className="toast login-ask" role="alertdialog" aria-label="ログインの保存">
+            <span>
+              <b>{loginAsk.host}</b> のログイン（{loginAsk.user}）を Keychain に保存しますか？次から自動で入力して送信します
+            </span>
+            <button className="primary small" onClick={() => answerLogin(true)}>
+              保存
+            </button>
+            <button className="ghost small" onClick={() => answerLogin(false)}>
+              しない
+            </button>
           </div>
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}

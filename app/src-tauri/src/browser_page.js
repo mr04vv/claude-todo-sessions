@@ -212,6 +212,79 @@
     tryFocus();
   };
 
+  // Logins: one a form sends is offered to the app to keep (in the Keychain,
+  // asked first; the app ignores the one it keeps), and a kept one is filled
+  // in and sent as the app asks (__todoSessionsFill). Sites asking for the
+  // user and the password in steps of their own (OneLogin) are followed
+  // through the steps.
+  const LOGIN_CAPTURED = "todo-sessions://login-captured";
+  const USER_FIELDS =
+    'input[type=email], input[autocomplete~=username], input[name*=user i], input[name*=email i], input[name*=login i], input[id*=user i], input[id*=email i]';
+  const shown = (el) => el && el.offsetParent !== null && !el.disabled && !el.readOnly;
+  const userField = () => [...document.querySelectorAll(USER_FIELDS)].find((el) => shown(el) && el.type !== "password" && el.type !== "hidden");
+  const passField = () => [...document.querySelectorAll("input[type=password]")].find(shown);
+  /// The user typed in a step before the password's.
+  const LOGIN_USER_KEY = "__todoSessionsLoginUser";
+  const offerLogin = () => {
+    const user = userField()?.value;
+    if (user) sessionStorage.setItem(LOGIN_USER_KEY, user);
+    const pass = passField()?.value;
+    const who = user || sessionStorage.getItem(LOGIN_USER_KEY);
+    if (!pass || !who) return;
+    location.href = `${LOGIN_CAPTURED}?u=${encodeURIComponent(who)}&p=${encodeURIComponent(pass)}`;
+  };
+  window.addEventListener("submit", offerLogin, true);
+  window.addEventListener(
+    "keydown",
+    (e) => e.key === "Enter" && !e.isComposing && e.target instanceof HTMLInputElement && (e.target.type === "password" || e.target === userField()) && offerLogin(),
+    true,
+  );
+  window.addEventListener("click", (e) => e.target instanceof Element && e.target.closest('button, input[type=submit], [role=button]') && (passField() || userField()) && offerLogin(), true);
+
+  const LOGIN_SENT_KEY = "__todoSessionsLoginSent";
+  /// A login sent again this soon (the site asking once more: a wrong password) is only filled in.
+  const RESEND_AFTER_MS = 60000;
+  const FILL_EVERY_MS = 400;
+  const FILL_FOR_MS = 30000;
+  /// As typing would: the page's own handlers (React's) see it.
+  const type = (el, value) => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+  const sendFrom = (el) => {
+    const scope = el.form ?? document;
+    const button = [...scope.querySelectorAll('button[type=submit], input[type=submit], button:not([type])')].find(shown);
+    if (button) button.click();
+    else if (el.form) el.form.requestSubmit();
+  };
+  window.__todoSessionsFill = (host, user, password) => {
+    if (location.hostname !== host) return;
+    const resent = Date.now() - Number(sessionStorage.getItem(LOGIN_SENT_KEY) || 0) < RESEND_AFTER_MS;
+    let userDone = false;
+    let passDone = false;
+    const fill = () => {
+      const p = passField();
+      const u = userField();
+      if (p && !passDone) {
+        passDone = true;
+        if (u && !u.value) type(u, user);
+        if (!p.value) type(p, password);
+        if (!resent) {
+          sessionStorage.setItem(LOGIN_SENT_KEY, String(Date.now()));
+          setTimeout(() => sendFrom(p), FILL_EVERY_MS);
+        }
+      } else if (u && !p && !userDone && !u.value) {
+        userDone = true;
+        type(u, user);
+        if (!resent) setTimeout(() => sendFrom(u), FILL_EVERY_MS);
+      }
+    };
+    fill();
+    const timer = setInterval(fill, FILL_EVERY_MS);
+    setTimeout(() => clearInterval(timer), FILL_FOR_MS);
+  };
+
   // ⌥ + click keeps the link as an input instead of following it.
   window.addEventListener(
     "click",
