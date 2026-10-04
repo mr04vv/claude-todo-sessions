@@ -2018,6 +2018,14 @@ input.panel-title:focus-visible {
   color: var(--text-2);
 }
 
+/* The program's window title over the terminal, as Ghostty shows it. */
+.terminal-title {
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
 .terminal-slot {
   /* Padding and background come from Ghostty's settings (Terminal.tsx). */
   flex-grow: 1;

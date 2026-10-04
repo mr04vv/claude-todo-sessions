@@ -1813,7 +1813,9 @@ function addressToUrl(text: string): string | null {
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
-function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove, onArchive, onToInput }: {
+function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove, onArchive, onToInput, onStrip }: {
+  /// A click on the tab strip: the page shown (the tab picked) takes the keyboard.
+  onStrip: () => void;
   /// Puts the shown page in an input (AddToInputDialog).
   onToInput: () => void;
   tabs: BrowserTab[];
@@ -1859,7 +1861,8 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
   };
   return (
     <section className="browser" aria-label="ブラウザ">
-      <div className="browser-tabs" role="tablist">
+      {/* A click around the tabs leaves the keyboard with the page shown (a tab's own click gives it to its page). */}
+      <div className="browser-tabs" role="tablist" onMouseUp={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onStrip()}>
         {PINNED_PAGES.map((p) => {
           const t = tabs.find((x) => x.id === p.id);
           return (
@@ -2423,7 +2426,9 @@ function ExplainPanel({ subject, title, pages, report, onAskByVoice }: {
 
 /// The focus mode: its own pages (and terminals) on the left and a pinned
 /// page (ChatGPT, Claude Code or Notion), the note or 「説明する」 on the right, nothing else.
-function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onExit }: {
+function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit }: {
+  /// A click on the left's tab strip: its page shown (the tab picked) takes the keyboard.
+  onLeftStrip: () => void;
   /// The left side's tabs (its own pages, and terminals), and the one shown
   /// (none for a new tab).
   lefts: BrowserTab[];
@@ -2457,7 +2462,7 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
   return (
     <div className="focus-mode">
       <section className="browser focus-left" aria-label="Input モードの左側">
-        <div className="browser-tabs" role="tablist">
+        <div className="browser-tabs" role="tablist" onMouseUp={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onLeftStrip()}>
           {lefts.map((t) => (
             <span key={t.id} className={`browser-tab${t.id === left?.id ? " on" : ""}`}>
               <button role="tab" aria-selected={t.id === left?.id} className="browser-tab-main" title={t.term?.command ?? t.url} onClick={() => onSelectLeft(t.id)}>
@@ -6495,7 +6500,11 @@ export default function App() {
           <FocusMode
             lefts={focusLefts}
             left={focusLeft}
-            onSelectLeft={(id) => patchSpace(spaceKey, (s) => ({ ...s, active: id, newTab: false }))}
+            onSelectLeft={(id) => {
+              keysToTab(tabs.find((t) => t.id === id) ?? null, focusLeft?.id, report);
+              patchSpace(spaceKey, (s) => ({ ...s, active: id, newTab: false }));
+            }}
+            onLeftStrip={() => focusLeft && keysToTab(focusLeft, focusLeft.id, report)}
             onCloseLeft={removeFromFocus}
             onAddLeft={() => pickFocus("add")}
             onOpenLeft={(url) => (keysInto = addToFocus([{ url }])[0] ?? null)}
@@ -6525,7 +6534,11 @@ export default function App() {
               active={activeTab}
               covered={covered}
               report={report}
-              onSelect={setActiveTabId}
+              onSelect={(id) => {
+                keysToTab(tabs.find((t) => t.id === id) ?? null, activeTab?.id, report);
+                setActiveTabId(id);
+              }}
+              onStrip={() => activeTab && keysToTab(activeTab, activeTab.id, report)}
               onPinned={showPinned}
               onArchive={() => archiveShownRef.current()}
               onClose={closeTab}

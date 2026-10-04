@@ -2,7 +2,7 @@
 // pseudo-terminal (`app/src-tauri/src/terminal.rs`) and draws it with xterm.js.
 // An experiment next to herdr in Ghostty; to drop it, remove this file,
 // terminal.rs and the places in App.tsx that use them.
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal, type IBufferLine, type ITerminalOptions, type ITheme } from "@xterm/xterm";
@@ -107,6 +107,8 @@ interface Entry {
   host: HTMLDivElement;
   started: boolean;
   look: Look;
+  /// The window title the program set (OSC 0 / 2), as Ghostty shows it.
+  title: string;
 }
 const entries = new Map<string, Entry>();
 
@@ -299,7 +301,9 @@ function entryFor(id: string, look: Look): Entry {
     const host = document.createElement("div");
     host.className = "terminal-host";
     host.dataset.terminal = id;
-    e = { term, fit, host, started: false, look };
+    e = { term, fit, host, started: false, look, title: "" };
+    const entry = e;
+    term.onTitleChange((title) => (entry.title = title));
     entries.set(id, e);
   }
   return e;
@@ -327,13 +331,18 @@ export function closeTerminal(id: string) {
 /// at the size it has then.
 export function TerminalView({ id, run, report }: { id: string; run: TerminalRun; report: (e: unknown) => void }) {
   const slot = useRef<HTMLDivElement>(null);
+  // The title the program sets (Claude Code: what it is doing), over the terminal as Ghostty shows it.
+  const [title, setTitle] = useState(() => entries.get(id)?.title ?? "");
   useEffect(() => {
     let e: Entry | null = null;
     let ro: ResizeObserver | null = null;
+    let off: { dispose: () => void } | null = null;
     let gone = false;
     look.then((l) => {
       if (gone || !slot.current) return;
       e = show(entryFor(id, l), slot.current);
+      setTitle(e.title);
+      off = e.term.onTitleChange(setTitle);
       const fit = e.fit;
       ro = new ResizeObserver(() => fit.fit());
       ro.observe(slot.current);
@@ -341,6 +350,7 @@ export function TerminalView({ id, run, report }: { id: string; run: TerminalRun
     return () => {
       gone = true;
       ro?.disconnect();
+      off?.dispose();
       e?.host.remove();
     };
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -371,10 +381,8 @@ export function TerminalView({ id, run, report }: { id: string; run: TerminalRun
   };
   return (
     <>
-      <div className="browser-bar">
-        <span className="muted mono ellipsis" title={run.command}>
-          {run.cwd} $ {run.command}
-        </span>
+      <div className="browser-bar terminal-title" title={`${run.cwd} $ ${run.command}`}>
+        <span className="ellipsis">{title || run.title}</span>
       </div>
       <div className="terminal-slot" ref={slot} />
     </>
