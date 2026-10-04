@@ -48,11 +48,26 @@ pub fn desktop_new_url(cwd: Option<&str>, prompt: &str) -> String {
 pub struct StartOptions {
     pub model: Option<String>,
     pub effort: Option<String>,
+    /// The session sets its PR to merge once approved (GitHub's auto-merge).
+    #[serde(default)]
+    pub auto_merge: bool,
 }
+
+/// What an auto-merging session is asked to do with its PR.
+const AUTO_MERGE_INSTRUCTIONS: &str = "PR を作ってレビューを依頼したら、`gh pr merge <PR> --auto --merge` で、承認されて CI が通ったら自動でマージされるようにしてください（承認済みでマージできる状態なら、そのまま `gh pr merge <PR> --merge` でマージします）。";
 
 impl StartOptions {
     fn given(v: &Option<String>) -> Option<&str> {
         v.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    }
+
+    /// The first prompt's body, with what the options ask of the session.
+    pub fn body(&self, body: String) -> String {
+        if self.auto_merge {
+            format!("{body}\n\n{AUTO_MERGE_INSTRUCTIONS}")
+        } else {
+            body
+        }
     }
 
     pub fn model(&self) -> Option<&str> {
@@ -263,6 +278,15 @@ pub fn herdr_pane_id(created: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn auto_merge_asks_the_session_to_set_it_on_its_pr() {
+        let plain = StartOptions::default();
+        assert_eq!(plain.body("作業".into()), "作業");
+        let merge = StartOptions { auto_merge: true, ..Default::default() };
+        let body = merge.body("作業".into());
+        assert!(body.starts_with("作業\n\n") && body.contains("gh pr merge") && body.contains("--auto --merge"), "{body}");
+    }
+
     use super::*;
     use serde_json::json;
 
@@ -288,9 +312,9 @@ mod tests {
 
     #[test]
     fn start_options_become_cli_flags() {
-        let o = StartOptions { model: Some("claude-fable-5-1".into()), effort: Some("xhigh".into()) };
+        let o = StartOptions { model: Some("claude-fable-5-1".into()), effort: Some("xhigh".into()), ..Default::default() };
         assert_eq!(o.claude_args(), ["--model", "claude-fable-5-1", "--effort", "xhigh"]);
-        let blank = StartOptions { model: Some(" ".into()), effort: None };
+        let blank = StartOptions { model: Some(" ".into()), effort: None, ..Default::default() };
         assert!(blank.claude_args().is_empty());
     }
 

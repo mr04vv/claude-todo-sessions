@@ -791,7 +791,7 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: O
     let flags: String = opts.claude_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
     let command = format!(
         "claude --session-id {session_id}{flags} {}",
-        shell_quote(&launch::start_prompt(todo.id, &body.unwrap_or_else(|| todo.prompt_body())))
+        shell_quote(&launch::start_prompt(todo.id, &opts.body(body.unwrap_or_else(|| todo.prompt_body()))))
     );
     Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: Some(session_id), herdr: None })
 }
@@ -819,7 +819,7 @@ fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions, body: Optio
     // Without a GitHub repository the session runs with no checkout, which is fine for research.
     let repos = launch::github_repos(&repos_of_todo(state, &todo));
     let db = state.db.lock().map_err(err)?;
-    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &body.unwrap_or_else(|| todo.prompt_body()), opts)
+    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &opts.body(body.unwrap_or_else(|| todo.prompt_body())), opts)
 }
 
 /// A note session (the focus mode's "ノート"): where it runs, and the command
@@ -1298,6 +1298,22 @@ fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
             is_draft: p.is_draft,
         })
         .collect())
+}
+
+/// Merges the PR once it is approved (and its checks pass): at once when it
+/// is ready now, else through GitHub's auto-merge. "merged" or "auto".
+#[tauri::command(async)]
+fn auto_merge(url: String) -> Result<String, String> {
+    if !is_web_url(&url) {
+        return Err(format!("開けない URL です: {url}"));
+    }
+    let view: serde_json::Value = serde_json::from_str(&gh(&["pr", "view", &url, "--json", "state,reviewDecision,mergeStateStatus"])?).map_err(|e| format!("gh output: {e}"))?;
+    if cts_core::github::merge_now(&view) {
+        gh(&["pr", "merge", &url, "--merge"])?;
+        return Ok("merged".into());
+    }
+    gh(&["pr", "merge", &url, "--auto", "--merge"])?;
+    Ok("auto".into())
 }
 
 /// The user's open PRs and the reviewers each still waits on, for the Slack messages asking them.
@@ -2263,6 +2279,7 @@ fn main() {
             page_title,
             mark_session_seen,
             review_requests,
+            auto_merge,
             feynman::browser_text,
             feynman::page_text,
             feynman::feynman_state,

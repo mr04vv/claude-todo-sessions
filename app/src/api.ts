@@ -247,6 +247,8 @@ export interface HerdrSessions {
 export interface StartOptions {
   model?: string;
   effort?: string;
+  /** The session sets its PR to merge once approved (GitHub's auto-merge). */
+  auto_merge?: boolean;
 }
 
 export const MODELS: { id: string; label: string }[] = [
@@ -331,6 +333,8 @@ export const api = {
   startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),
   /** Marks one notification read, or all with no id. */
   readNotifications: (id?: number) => invoke<void>("read_notifications", { id: id ?? null }),
+  /// Merges the PR once approved: now when it is ready ("merged"), else by GitHub's auto-merge ("auto").
+  autoMerge: (url: string) => invoke<"merged" | "auto">("auto_merge", { url }),
   /// The user's open PRs and whom each still waits on (logins, team slugs).
   reviewRequests: () => invoke<import("./slackMessages").ReviewRequest[]>("review_requests"),
   /// The session was looked at now: its ended turn is read.

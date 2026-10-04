@@ -1547,6 +1547,8 @@ interface StartChoice {
   runner: Runner;
   model: string;
   effort: string;
+  /// The session sets its PR to merge once approved.
+  autoMerge?: boolean;
 }
 
 const DEFAULT_START: StartChoice = { target: "web", runner: "auto", model: "", effort: "" };
@@ -1584,7 +1586,7 @@ function Composer({ todo, skills, run, onStarted }: { todo: Todo; skills: Skill[
     ref.current?.focus();
   };
   const cliOptions = target === "terminal" || isCloudTarget(target);
-  const options: StartOptions = cliOptions ? { model: choice.model || undefined, effort: choice.effort || undefined } : {};
+  const options: StartOptions = cliOptions ? { model: choice.model || undefined, effort: choice.effort || undefined, auto_merge: !!choice.autoMerge } : {};
   const beginWeb = useContext(BeginWebContext);
   const terminal = useContext(TerminalContext);
   const [starting, setStarting] = useState(false);
@@ -1689,6 +1691,10 @@ function Composer({ todo, skills, run, onStarted }: { todo: Todo; skills: Skill[
                 </option>
               ))}
             </select>
+            <label className="toggle" title={cliOptions ? "PR を作ってレビューを依頼したら、承認されて CI が通ったら自動でマージされるようにセッションに頼みます（merge commit）" : "Desktop では選べません"}>
+              <input type="checkbox" checked={cliOptions && !!choice.autoMerge} disabled={!cliOptions} onChange={(e) => setChoice({ autoMerge: e.target.checked })} />
+              承認されたらマージ
+            </label>
           </>
         )}
         <span className="grow" />
@@ -2927,6 +2933,15 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
                   {issueRef(todo.pr_url) ?? todo.pr_url}
                 </button>
                 {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+                {todo.pr_state !== "merged" && todo.pr_state !== "closed" && (
+                  <button
+                    className="ghost small"
+                    title="承認されて CI が通ったらマージします（今マージできるならすぐ。merge commit）"
+                    onClick={() => run(() => api.autoMerge(todo.pr_url!).then(() => api.syncNow(todo.id)))}
+                  >
+                    承認されたらマージ
+                  </button>
+                )}
                 <button className="ghost icon" onClick={() => update({ pr_url: "" })} aria-label="PR を外す" title="外す">
                   <Icon name="close" size={12} />
                 </button>
@@ -3659,6 +3674,19 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
   const byRepo = (p: Pr) => repoFilter === null || p.repo === repoFilter;
   const review = (prs?.review ?? []).filter(byRepo).map((p) => ({ ...p, kind: "review" as const }));
   const mine = (prs?.mine ?? []).filter(byRepo).map((p) => ({ ...p, kind: "mine" as const }));
+  // The user's PRs shown (drafts aside), set to merge once approved, all at once.
+  const mergeable = mine.filter((p) => !p.is_draft);
+  const [confirmMerge, setConfirmMerge] = useState(false);
+  const mergeAll = () => {
+    setConfirmMerge(false);
+    run(async () => {
+      const failed: string[] = [];
+      for (const p of mergeable) await api.autoMerge(p.url).catch((e) => failed.push(`${p.repo}#${p.number}: ${e}`));
+      await api.syncNow();
+      onRefresh();
+      if (failed.length > 0) throw new Error(`マージを設定できなかった PR があります\n${failed.join("\n")}`);
+    });
+  };
   const todoOf = (p: Pr) => todos.find((t) => t.pr_url === p.url);
   const cwdOf = (p: Pr) => local.find((r) => r.key === p.repo)?.path;
   // A PR becomes a todo that ships as it, so its state keeps the todo current.
@@ -3694,6 +3722,23 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
           </button>
         </div>
         <span className="grow" />
+        {confirmMerge ? (
+          <span className="inline-confirm">
+            {repoFilter ?? "すべてのリポジトリ"}の自分の PR {mergeable.length} 件を、承認されたらマージしますか？（今マージできるものはすぐ）
+            <button className="primary small" onClick={mergeAll}>
+              マージを設定
+            </button>
+            <button className="ghost small" onClick={() => setConfirmMerge(false)}>
+              やめる
+            </button>
+          </span>
+        ) : (
+          mergeable.length > 0 && (
+            <button onClick={() => setConfirmMerge(true)} title="表示中の自分の PR（Draft 以外）を、承認されて CI が通ったらマージします（merge commit）">
+              承認されたらマージ {mergeable.length}
+            </button>
+          )
+        )}
         <button onClick={onSlack} title="レビュー依頼中の自分の PR のリンクを、レビュアーごとに並べます">
           Slack 依頼文
         </button>

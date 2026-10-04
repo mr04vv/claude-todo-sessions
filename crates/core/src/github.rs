@@ -73,9 +73,24 @@ pub fn parse_review_requests(response: &Value) -> Vec<ReviewRequest> {
         .collect()
 }
 
+/// Whether a PR (`gh pr view --json state,reviewDecision,mergeStateStatus`)
+/// can merge at once; otherwise GitHub's auto-merge waits for it.
+pub fn merge_now(view: &Value) -> bool {
+    view["state"] == "OPEN" && view["reviewDecision"] == "APPROVED" && view["mergeStateStatus"] == "CLEAN"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_approved_pr_ready_to_go_merges_now_and_others_wait_for_it() {
+        let view = |decision: &str, merge: &str| serde_json::json!({"state": "OPEN", "reviewDecision": decision, "mergeStateStatus": merge});
+        assert!(merge_now(&view("APPROVED", "CLEAN")));
+        assert!(!merge_now(&view("APPROVED", "BLOCKED")), "checks not through yet");
+        assert!(!merge_now(&view("REVIEW_REQUIRED", "BLOCKED")));
+        assert!(!merge_now(&serde_json::json!({"state": "MERGED", "reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN"})));
+    }
 
     #[test]
     fn review_requests_are_the_open_prs_reviewers_not_yet_heard_from() {

@@ -666,7 +666,7 @@ mod tests {
         let mut b = create_body("env_1", &[], "claude/x", "p", "t", "u");
         apply_options(&mut b, &StartOptions::default());
         assert!(b["session_context"].get("model").is_none() && b["session_context"].get("effort_level").is_none());
-        apply_options(&mut b, &StartOptions { model: Some("claude-opus-5-5".into()), effort: Some("high".into()) });
+        apply_options(&mut b, &StartOptions { model: Some("claude-opus-5-5".into()), effort: Some("high".into()), ..Default::default() });
         assert_eq!(b["session_context"]["model"], "claude-opus-5-5");
         assert_eq!(b["session_context"]["effort_level"], "high");
     }
