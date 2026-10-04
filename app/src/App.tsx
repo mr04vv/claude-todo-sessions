@@ -1861,8 +1861,8 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
   };
   return (
     <section className="browser" aria-label="ブラウザ">
-      {/* A click around the tabs leaves the keyboard with the page shown (a tab's own click gives it to its page). */}
-      <div className="browser-tabs" role="tablist" onMouseUp={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onStrip()}>
+      {/* A press around the tabs leaves the keyboard with the page shown (a tab's own click gives it to its page). */}
+      <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onStrip()}>
         {PINNED_PAGES.map((p) => {
           const t = tabs.find((x) => x.id === p.id);
           return (
@@ -2462,7 +2462,7 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
   return (
     <div className="focus-mode">
       <section className="browser focus-left" aria-label="Input モードの左側">
-        <div className="browser-tabs" role="tablist" onMouseUp={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onLeftStrip()}>
+        <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onLeftStrip()}>
           {lefts.map((t) => (
             <span key={t.id} className={`browser-tab${t.id === left?.id ? " on" : ""}`}>
               <button role="tab" aria-selected={t.id === left?.id} className="browser-tab-main" title={t.term?.command ?? t.url} onClick={() => onSelectLeft(t.id)}>
@@ -5559,8 +5559,17 @@ export default function App() {
     // This page has it: its fields and terminals by where they are (the
     // pane's address bar is the pane's). Nothing focused in it leaves the
     // Input mode's side to the key that is moving the typing.
+    // A press on the pane's own parts (its tab strip) gives this page the
+    // keyboard for a moment, which goes on to the page or terminal shown: the
+    // pane keeps the mark meanwhile.
+    let pressedInPane = false;
+    const press = (e: PointerEvent) => {
+      const t = e.target as HTMLElement;
+      pressedInPane = !!t.closest(".browser-tabs") && !t.closest("input");
+    };
     const here = () => {
       const el = document.activeElement;
+      if (pressedInPane && (!el || el === document.body)) return;
       setTypingSide(el?.closest(".xterm, .browser-dock") ? "pane" : "app");
       if (!el || el === document.body) return;
       const side = el.closest(".focus-left, .focus-right");
@@ -5587,6 +5596,7 @@ export default function App() {
         }, () => {});
       }, FOCUS_SETTLE_MS);
     };
+    window.addEventListener("pointerdown", press, true);
     window.addEventListener("focus", here);
     document.addEventListener("focusin", here);
     window.addEventListener("blur", lost);
@@ -5601,6 +5611,7 @@ export default function App() {
     return () => {
       clearTimeout(timer);
       offs.forEach((off) => void off.then((f) => f()));
+      window.removeEventListener("pointerdown", press, true);
       window.removeEventListener("focus", here);
       document.removeEventListener("focusin", here);
       window.removeEventListener("blur", lost);
