@@ -15,7 +15,12 @@ export interface Session {
   repos?: string[];
   /** Its turn ended after it was last looked at (in the app, or its herdr pane). */
   unread: boolean;
+  /** What runs it. */
+  agent: Agent;
 }
+
+/** The program a session runs: Claude Code, or Codex (local, in herdr). */
+export type Agent = "claude" | "codex";
 
 export interface Todo {
   id: number;
@@ -249,6 +254,8 @@ export interface StartOptions {
   effort?: string;
   /** The session sets its PR to merge once approved (GitHub's auto-merge). */
   auto_merge?: boolean;
+  /** What runs a terminal session (Cloud and Desktop are Claude's). */
+  agent?: Agent;
 }
 
 export const MODELS: { id: string; label: string }[] = [

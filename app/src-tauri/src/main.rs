@@ -440,9 +440,10 @@ fn resume_run(state: &AppState, session_id: &str) -> Result<TerminalRun, String>
     if !std::path::Path::new(&session.cwd).is_dir() {
         return Err(format!("作業フォルダ {} がもうないので再開できません", session.cwd));
     }
+    let program = if session.agent == cts_core::Agent::Codex { "codex resume" } else { "claude --resume" };
     Ok(TerminalRun {
         title: session.title.clone().unwrap_or_else(|| session_id.chars().take(8).collect()),
-        command: format!("claude --resume {session_id}"),
+        command: format!("{program} {session_id}"),
         cwd: session.cwd,
         session: Some(session_id.to_string()),
         herdr: None,
@@ -782,6 +783,13 @@ struct TerminalRun {
 /// returns the `claude --session-id` command that runs it, with `body` (else
 /// the todo's own) as its first prompt.
 fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: Option<String>) -> Result<TerminalRun, String> {
+    if opts.agent == cts_core::Agent::Codex {
+        // Codex picks its own session id: herdr finds the session, and its first prompt's marker links it.
+        let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
+        let prompt = launch::start_prompt(todo.id, &launch::codex_body(&opts.body(body.unwrap_or_else(|| todo.prompt_body()))));
+        let command = format!("codex {}", shell_quote(&prompt));
+        return Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: None, herdr: None });
+    }
     let (todo, session_id) = {
         let db = state.db.lock().map_err(err)?;
         let todo = todo_or_err(&db, todo_id)?;
@@ -2066,12 +2074,26 @@ fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
         for name in cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)) {
             let Ok(out) = cli("herdr").args(["--session", &name, "agent", "list"]).output() else { continue };
             let Ok(agents) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
-            for cts_core::herdr::AgentState { session_id: id, cwd, state, unseen, .. } in cts_core::herdr::agent_states(&agents) {
+            for cts_core::herdr::AgentState { session_id: id, agent, cwd, state, unseen, .. } in cts_core::herdr::agent_states(&agents) {
                 let known = db.get_session(&id).map_err(err)?;
                 let unread = known.as_ref().is_some_and(|k| k.unread);
+                let new = known.is_none();
                 if known.as_ref().is_none_or(|k| k.state != state) {
                     let cwd = known.map(|k| k.cwd).filter(|c| !c.is_empty()).unwrap_or(cwd);
                     db.record_session(&id, &cwd, state).map_err(err)?;
+                }
+                // Codex has no hooks: its rollout's first prompt names it and links it ([todo:N]).
+                if agent == cts_core::Agent::Codex {
+                    if new {
+                        db.set_session_agent(&id, agent).map_err(err)?;
+                    }
+                    if !db.marker_checked(&id).map_err(err)? {
+                        let rollout = cts_core::codex::rollout_path(&home().join(cts_core::codex::SESSIONS_DIR), &id);
+                        if let Some(prompt) = rollout.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| cts_core::codex::first_prompt(&t)) {
+                            db.name_from_prompt(&id, &prompt).map_err(err)?;
+                            db.mark_marker_checked(&id).map_err(err)?;
+                        }
+                    }
                 }
                 // herdr knows when its pane was looked at: "idle", not "done".
                 if unread && state == SessionState::Idle && !unseen {

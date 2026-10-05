@@ -112,6 +112,7 @@ pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" &&
   - issue / PR のリンクはアプリ内ブラウザで開きます。シート右上の ↗ は PR、issue、リポジトリの順にいつものブラウザで GitHub を開きます
   - 「セッションを始める」（⌘Enter。セッションのない todo では o でも）で起動シートを開き、最初のプロンプトを書いて、スキル（過去によく使ったものが先）・起動先（⌘1〜⌘5）・モデルと effort（Tab で移る）を選び、⌘Enter で始めます。サブタスクも起動シートで足せます（⌘⇧N で入力欄へ）
   - 起動先は Cloud・Web（claude.ai をアプリ内ブラウザで開く。既定）/ Cloud・Desktop / Local・Desktop / herdr / キューです。モデルと effort は Cloud と herdr で効きます
+  - 起動先が herdr（ターミナル）のときは、「Claude / Codex」で Codex でも始められます（`codex '<最初のプロンプト>'`。/grilling などの Claude のスキルと AskUserQuestion の指示は外します）。Codex のセッションは herdr が状態を返すのでセッション一覧に「Codex」の印付きで出て、最初のプロンプトの `[todo:N]` で todo に紐づきます。閉じたものは `codex resume` で再開します
   - 紐づいたセッションの「開く」は、Cloud ならアプリ内の Web、Local なら herdr の pane（なければ Desktop）で開きます。▾ でほかの開き方を選べます。閉じたセッションは、herdr では `claude --resume` で再開します
 - 「issue を取り込む」（⌘K）で、自分に割り当てられた GitHub issue（`gh search issues --assignee @me`）を todo にします。作業フォルダは ghq の配置（`<ghq root>/github.com/<owner>/<repo>`）にあれば自動で入ります
 - 「ちょっと Claude」（⌘K、セッション画面）で、todo に紐づけずに herdr でホームフォルダの claude を開きます

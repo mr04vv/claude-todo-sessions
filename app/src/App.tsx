@@ -63,6 +63,7 @@ import {
   type StartOptions,
   type Status,
   type Todo,
+  type Agent,
   type FeynmanState,
   type FeynmanSummary,
   type FeynmanVerdict,
@@ -1550,6 +1551,8 @@ interface StartChoice {
   effort: string;
   /// The session sets its PR to merge once approved.
   autoMerge?: boolean;
+  /// What runs a terminal session.
+  agent?: Agent;
 }
 
 const DEFAULT_START: StartChoice = { target: "web", runner: "auto", model: "", effort: "" };
@@ -1586,8 +1589,14 @@ function Composer({ todo, skills, run, onStarted }: { todo: Todo; skills: Skill[
     setPrompt((p) => withSkill(p || base, name));
     ref.current?.focus();
   };
-  const cliOptions = target === "terminal" || isCloudTarget(target);
-  const options: StartOptions = cliOptions ? { model: choice.model || undefined, effort: choice.effort || undefined, auto_merge: !!choice.autoMerge } : {};
+  // Codex runs in the terminal only, with its own models (the Claude ones are not offered).
+  const codex = target === "terminal" && choice.agent === "codex";
+  const cliOptions = !codex && (target === "terminal" || isCloudTarget(target));
+  const options: StartOptions = codex
+    ? { agent: "codex", auto_merge: !!choice.autoMerge }
+    : cliOptions
+      ? { model: choice.model || undefined, effort: choice.effort || undefined, auto_merge: !!choice.autoMerge }
+      : {};
   const beginWeb = useContext(BeginWebContext);
   const terminal = useContext(TerminalContext);
   const [starting, setStarting] = useState(false);
@@ -1668,6 +1677,15 @@ function Composer({ todo, skills, run, onStarted }: { todo: Todo; skills: Skill[
             </button>
           ))}
         </div>
+        {target === "terminal" && (
+          <div className="segmented" role="group" aria-label="動かすもの">
+            {(["claude", "codex"] as const).map((a) => (
+              <button key={a} className={(choice.agent ?? "claude") === a ? "on" : ""} aria-pressed={(choice.agent ?? "claude") === a} onClick={() => setChoice({ agent: a })}>
+                {a === "claude" ? "Claude" : "Codex"}
+              </button>
+            ))}
+          </div>
+        )}
         {target === "queue" ? (
           <select className="select compact" value={choice.runner} aria-label="キューからの起動方法" onChange={(e) => setChoice({ runner: e.target.value as Runner })}>
             {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
@@ -1692,8 +1710,8 @@ function Composer({ todo, skills, run, onStarted }: { todo: Todo; skills: Skill[
                 </option>
               ))}
             </select>
-            <label className="toggle" title={cliOptions ? "PR を作ってレビューを依頼したら、承認されて CI が通ったら自動でマージされるようにセッションに頼みます（merge commit）" : "Desktop では選べません"}>
-              <input type="checkbox" checked={cliOptions && !!choice.autoMerge} disabled={!cliOptions} onChange={(e) => setChoice({ autoMerge: e.target.checked })} />
+            <label className="toggle" title={cliOptions || codex ? "PR を作ってレビューを依頼したら、承認されて CI が通ったら自動でマージされるようにセッションに頼みます（merge commit）" : "Desktop では選べません"}>
+              <input type="checkbox" checked={(cliOptions || codex) && !!choice.autoMerge} disabled={!cliOptions && !codex} onChange={(e) => setChoice({ autoMerge: e.target.checked })} />
               承認されたらマージ
             </label>
           </>
@@ -3343,7 +3361,10 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                   onClick={() => (setCursor(r.id), open(s))}
                 >
                   <StateMarks state={s.state} label={STATE_LABEL[s.state]} unread={s.unread} todo={todo} />
-                  <span className="ellipsis">{sessionLabel(s)}</span>
+                  <span className="ellipsis">
+                    {s.agent === "codex" && <span className="tag agent-tag">Codex</span>}
+                    {sessionLabel(s)}
+                  </span>
                   {todo ? <TodoCell todo={todo} onOpen={onOpenTodo} /> : <span className="tag">未紐づけ</span>}
                   <RepoTags repos={todo?.repos ?? s.repos ?? []} />
                   <span className="muted ellipsis">
@@ -6120,7 +6141,7 @@ export default function App() {
         key: `session:${s.session_id}`,
         icon: <StateBadge state={s.state} unread={s.unread} />,
         label: todo ? `${sessionLabel(s)} · #${todo.id} ${todo.title}` : sessionLabel(s),
-        hint: [prStageLabel(todo), isCloud(s) ? "Cloud" : "Local", ago(s.state_at)].filter(Boolean).join(" · "),
+        hint: [prStageLabel(todo), s.agent === "codex" ? "Codex" : isCloud(s) ? "Cloud" : "Local", ago(s.state_at)].filter(Boolean).join(" · "),
         keywords: [STATE_LABEL[s.state], s.unread ? "未読" : ""].join(" "),
         run: () => (isCloud(s) ? openCloud(s.session_id) : openLocal(inAppTerminal, s.session_id, report, true)),
       }));
