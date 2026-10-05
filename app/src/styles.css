@@ -697,10 +697,24 @@ a:hover {
   background: var(--st-review);
 }
 
-/* A session whose ended turn has not been looked at: its title stands out. */
+/* A session whose ended turn has not been looked at, or that waits for
+   input: the whole row stands out. */
+.row.unread {
+  background: var(--accent-soft);
+}
+
 .row.unread > .ellipsis {
   color: var(--text);
   font-weight: 600;
+}
+
+.row.needs-input {
+  background: var(--waiting-soft);
+}
+
+.row.unread:hover,
+.row.needs-input:hover {
+  filter: brightness(1.15);
 }
 
 .state .unread-dot {

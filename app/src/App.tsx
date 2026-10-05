@@ -3154,7 +3154,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   const pass = (i: SessionItem) =>
     filter === "all" || (filter === "unlinked" ? !i.todo : filter === "unread" ? i.session.unread : i.session.state === filter);
   // Todos with subtasks head groups (sessionTree.ts); a folded group shows its head only.
-  const { groups, flat } = sessionTree((showEnded ? all : live).filter(pass), all, board.todos, showEnded);
+  const { groups, flat } = sessionTree((showEnded ? all : live).filter(pass), all, board.todos, showEnded, filter === "all");
   const [folded, setFolded] = useState<Set<number>>(new Set());
   const fold = (id: number, on?: boolean) =>
     setFolded((prev) => {
@@ -3339,7 +3339,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                 <li
                   key={r.id}
                   data-row={r.id}
-                  className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}${s.unread ? " unread" : ""}`}
+                  className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}${s.unread ? " unread" : ""}${s.state === "needs_input" ? " needs-input" : ""}`}
                   onClick={() => (setCursor(r.id), open(s))}
                 >
                   <StateMarks state={s.state} label={STATE_LABEL[s.state]} unread={s.unread} todo={todo} />

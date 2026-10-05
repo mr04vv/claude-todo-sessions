@@ -30,8 +30,9 @@ export const todoRowId = (todoId: number) => `t:${todoId}`;
 
 /// `items` are the sessions to show (filtered already). `all` is every
 /// session the board knows, to tell a subtask never started from one whose
-/// sessions are just hidden.
-export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Todo[], showIdleChildren: boolean): { groups: TreeRow[][]; flat: TreeRow[] } {
+/// sessions are just hidden. Without `withTodos` (a filter is on) only
+/// sessions show: no rows of subtasks without one, no group without a session.
+export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Todo[], showIdleChildren: boolean, withTodos = true): { groups: TreeRow[][]; flat: TreeRow[] } {
   const aside = (todo: Todo | undefined) => todo?.status === "pending";
   const children = (parent: Todo) => todos.filter((t) => t.parent_id === parent.id).sort((a, b) => a.id - b.id);
   const parents = todos.filter((t) => !t.parent_id && !aside(t) && children(t).length > 0);
@@ -49,6 +50,7 @@ export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Tod
         for (const { session, todo } of shown) under.push({ kind: "session", id: session.session_id, session, todo, group: parent.id, child: true });
         continue;
       }
+      if (!withTodos) continue;
       const ever = all.some((i) => i.todo?.id === kid.id);
       const state = kid.queue_runner ? "queued" : ever ? "ended" : "none";
       // A subtask done, or over with no PR under way, is only shown when the hidden ones are.
