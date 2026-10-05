@@ -398,8 +398,8 @@ pub fn create_loose_session(db: &Db, title: &str, prompt: &str) -> Result<String
 }
 
 /// Creates a cloud session reviewing a PR of `repo`, linked to no todo.
-pub fn create_review_session(db: &Db, repo: &str, title: &str, prompt: &str) -> Result<String, String> {
-    create_unlinked(db, &[repo.to_string()], title, prompt, "review", &StartOptions::default())
+pub fn create_review_session(db: &Db, repo: &str, title: &str, prompt: &str, opts: &StartOptions) -> Result<String, String> {
+    create_unlinked(db, &[repo.to_string()], title, prompt, "review", opts)
 }
 
 /// Creates a cloud session with `prompt` first, pushing to a

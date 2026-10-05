@@ -103,6 +103,18 @@ impl StartOptions {
         }
         args
     }
+
+    /// `codex` flags: its model, and its reasoning effort as a config value.
+    pub fn codex_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(m) = self.model() {
+            args.extend(["-m".to_string(), m.into()]);
+        }
+        if let Some(e) = self.effort() {
+            args.extend(["-c".to_string(), format!("model_reasoning_effort=\"{e}\"")]);
+        }
+        args
+    }
 }
 
 /// A todo's repo list may hold free group names ("調査"); only `owner/repo`
@@ -292,6 +304,13 @@ pub fn herdr_pane_id(created: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_takes_the_model_and_effort_as_its_own_flags() {
+        let o = StartOptions { model: Some("gpt-5.5".into()), effort: Some("high".into()), ..Default::default() };
+        assert_eq!(o.codex_args(), ["-m", "gpt-5.5", "-c", "model_reasoning_effort=\"high\""]);
+        assert!(StartOptions::default().codex_args().is_empty());
+    }
+
     #[test]
     fn codex_starts_with_the_prompt_less_what_only_claude_reads() {
         let body = "/grilling 直す\n\nメモ\n\n質問はすべて AskUserQuestion ツールで聞いてください（本文に質問を書いて待たない）。";

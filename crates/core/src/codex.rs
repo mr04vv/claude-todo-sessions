@@ -5,6 +5,34 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
+/// Where Codex keeps the models it offers (fetched by itself).
+pub const MODELS_CACHE: &str = ".codex/models_cache.json";
+
+/// A model Codex offers, and the reasoning efforts it takes.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Model {
+    pub id: String,
+    pub label: String,
+    pub efforts: Vec<String>,
+}
+
+/// The models Codex lists (the hidden ones aside), from its cache.
+pub fn models(cache: &Value) -> Vec<Model> {
+    cache["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"] == "list")
+        .filter_map(|m| {
+            Some(Model {
+                id: m["slug"].as_str()?.into(),
+                label: m["display_name"].as_str().or(m["slug"].as_str())?.into(),
+                efforts: m["supported_reasoning_levels"].as_array().into_iter().flatten().filter_map(|e| e["effort"].as_str().map(Into::into)).collect(),
+            })
+        })
+        .collect()
+}
+
 /// Where Codex keeps its rollouts: `<dir>/YYYY/MM/DD/rollout-<time>-<id>.jsonl`.
 pub const SESSIONS_DIR: &str = ".codex/sessions";
 
@@ -56,6 +84,17 @@ mod tests {
         ];
         assert_eq!(first_prompt(&lines.join("\n")).as_deref(), Some("[todo:7] 直して"));
         assert_eq!(first_prompt(lines[0]), None);
+    }
+
+    #[test]
+    fn models_are_the_listed_ones_with_their_efforts() {
+        let cache = serde_json::json!({"models": [
+            {"slug": "gpt-5.5", "display_name": "GPT-5.5", "default_reasoning_level": "medium", "visibility": "list",
+             "supported_reasoning_levels": [{"effort": "low"}, {"effort": "high"}]},
+            {"slug": "hidden", "display_name": "Hidden", "visibility": "hide", "supported_reasoning_levels": []}
+        ]});
+        assert_eq!(models(&cache), vec![Model { id: "gpt-5.5".into(), label: "GPT-5.5".into(), efforts: vec!["low".into(), "high".into()] }]);
+        assert!(models(&serde_json::json!({})).is_empty());
     }
 
     #[test]
