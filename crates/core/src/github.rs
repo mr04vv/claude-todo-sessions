@@ -73,6 +73,14 @@ pub fn parse_review_requests(response: &Value) -> Vec<ReviewRequest> {
         .collect()
 }
 
+/// Whether a review session's work is over: the PR (`gh pr view --json
+/// state,reviews`) got a review from `me` submitted since `since` (ISO
+/// 8601, as GitHub writes it), or it is merged or closed.
+pub fn review_done(view: &Value, me: &str, since: &str) -> bool {
+    view["state"] != "OPEN"
+        || view["reviews"].as_array().into_iter().flatten().any(|r| r["author"]["login"] == me && r["submittedAt"].as_str().is_some_and(|at| at >= since))
+}
+
 /// Whether a PR (`gh pr view --json state,reviewDecision,mergeStateStatus`)
 /// can merge at once; otherwise GitHub's auto-merge waits for it.
 pub fn merge_now(view: &Value) -> bool {
@@ -82,6 +90,17 @@ pub fn merge_now(view: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_review_is_done_once_the_user_submits_one_or_the_pr_closes() {
+        let view = |state: &str, reviews: serde_json::Value| serde_json::json!({"state": state, "reviews": reviews});
+        let mine = serde_json::json!([{"author": {"login": "me"}, "submittedAt": "2026-10-05T10:00:00Z"}]);
+        assert!(review_done(&view("OPEN", mine.clone()), "me", "2026-10-05T09:00:00Z"));
+        assert!(!review_done(&view("OPEN", mine.clone()), "me", "2026-10-05T11:00:00Z"), "a review from before the session is not its");
+        assert!(!review_done(&view("OPEN", serde_json::json!([{"author": {"login": "you"}, "submittedAt": "2026-10-05T10:00:00Z"}])), "me", "2026-10-05T09:00:00Z"));
+        assert!(review_done(&view("MERGED", serde_json::json!([])), "me", "2026-10-05T09:00:00Z"));
+        assert!(review_done(&view("CLOSED", serde_json::json!([])), "me", "2026-10-05T09:00:00Z"));
+    }
 
     #[test]
     fn an_approved_pr_ready_to_go_merges_now_and_others_wait_for_it() {

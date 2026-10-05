@@ -296,6 +296,10 @@ pub struct Session {
     /// Its turn ended (it is idle) after it was last looked at.
     pub unread: bool,
     pub agent: Agent,
+    /// The PR it reviews, when the app started it as a review.
+    pub review_url: Option<String>,
+    /// Taken off the session lists (a Local one, which cannot be archived from here).
+    pub hidden: bool,
 }
 
 /// Why the app notified about a session.
@@ -459,6 +463,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS review_sessions (
+    session_id TEXT PRIMARY KEY,
+    pr_url TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_hidden (
+    session_id TEXT PRIMARY KEY,
+    hidden_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS session_seen (
     session_id TEXT PRIMARY KEY,
     seen_at INTEGER NOT NULL
@@ -523,7 +535,9 @@ const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER)";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at),
     (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0)),
-    COALESCE(agent, 'claude')";
+    COALESCE(agent, 'claude'),
+    (SELECT pr_url FROM review_sessions WHERE review_sessions.session_id = sessions.session_id),
+    EXISTS (SELECT 1 FROM session_hidden WHERE session_hidden.session_id = sessions.session_id)";
 
 impl Status {
     fn as_str(self) -> &'static str {
@@ -615,6 +629,8 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         started_at: r.get(8)?,
         unread: r.get(9)?,
         agent: Agent::parse(&r.get::<_, String>(10)?),
+        review_url: r.get(11)?,
+        hidden: r.get(12)?,
     })
 }
 
@@ -1345,6 +1361,18 @@ impl Db {
     pub fn set_session_repos(&self, id: &str, repos: &[String]) -> Result<()> {
         self.conn
             .execute("UPDATE sessions SET repos = ?2 WHERE session_id = ?1", params![id, join_repos(repos)])?;
+        Ok(())
+    }
+
+    /// The session reviews the PR at `url` (the app started it so).
+    pub fn record_review_session(&self, id: &str, url: &str) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO review_sessions (session_id, pr_url) VALUES (?1, ?2)", params![id, url])?;
+        Ok(())
+    }
+
+    /// Takes the session off the lists.
+    pub fn hide_session(&self, id: &str) -> Result<()> {
+        self.conn.execute("INSERT OR IGNORE INTO session_hidden (session_id, hidden_at) VALUES (?1, ?2)", params![id, now()])?;
         Ok(())
     }
 

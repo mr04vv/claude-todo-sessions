@@ -917,3 +917,16 @@ fn agents_work_on_databases_made_before_them() {
     let db = Db::open(&path).unwrap();
     assert_eq!(db.get_session("s1").unwrap().unwrap().agent, cts_core::Agent::Claude);
 }
+
+#[test]
+fn a_review_session_keeps_its_pr_and_a_session_can_be_hidden() {
+    let (_d, db) = open();
+    db.record_session("r1", "/r", SessionState::Running).unwrap();
+    db.record_review_session("r1", "https://github.com/o/r/pull/1").unwrap();
+    let s = db.get_session("r1").unwrap().unwrap();
+    assert_eq!(s.review_url.as_deref(), Some("https://github.com/o/r/pull/1"));
+    assert!(!s.hidden);
+    db.hide_session("r1").unwrap();
+    assert!(db.get_session("r1").unwrap().unwrap().hidden);
+    assert!(db.unlinked_sessions().unwrap()[0].hidden, "the lists say so too");
+}
