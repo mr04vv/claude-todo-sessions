@@ -3344,7 +3344,8 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                   </li>
                 );
               }
-              const tree = `${r.child ? " child" : ""}${r.last ? " last" : ""}`;
+              // In a group: its parent's own sessions one step in, its subtasks' two.
+              const tree = `${r.group !== undefined ? " in-group" : ""}${r.child ? " child" : ""}${r.last ? " last" : ""}`;
               if (r.kind === "todo") {
                 const [state, says] = TODO_ROW[r.state];
                 return (
