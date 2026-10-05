@@ -3591,6 +3591,14 @@ const codexReviewPrompt = (url: string, submit: ReviewSubmit) =>
 /// Where reviews start: a session target, or Codex in the terminal (herdr).
 type ReviewRunner = Target | "codex";
 const REVIEW_RUNNERS = ["web", "cloud", "desktop", "terminal", "codex"] as const;
+/// The model and effort reviews start with, Claude's and Codex's apart.
+const REVIEW_OPTIONS_KEY = "reviewOptions";
+type ReviewOptions = Record<"claude" | "codex", { model: string; effort: string }>;
+const NO_REVIEW_OPTIONS: ReviewOptions = { claude: { model: "", effort: "" }, codex: { model: "", effort: "" } };
+const reviewOptionsFor = (runner: ReviewRunner): StartOptions => {
+  const picked = { ...NO_REVIEW_OPTIONS, ...loadJson<Partial<ReviewOptions>>(REVIEW_OPTIONS_KEY, {}) }[runner === "codex" ? "codex" : "claude"];
+  return { model: picked.model || undefined, effort: picked.effort || undefined };
+};
 
 /// "/review で開始" asks before submitting the review; the caret picks, per
 /// PR, whether the session may submit on its own.
@@ -3664,11 +3672,12 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
       // A review is its own session, not a todo; the PR list is where it is followed.
       const title = `${REVIEW_TITLE_PREFIX}${p.title}`;
       const prompt = runner === "codex" ? codexReviewPrompt(p.url, submit) : reviewPrompt(p.url, submit);
+      const opts = reviewOptionsFor(runner);
       try {
-        if (runner === "codex") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title, "codex")) : await api.quickClaude(prompt, cwd, title, "codex");
+        if (runner === "codex") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title, "codex", opts)) : await api.quickClaude(prompt, cwd, title, "codex", opts);
         else if (runner === "desktop") await api.startDesktopPrompt(cwd, prompt);
-        else if (runner === "terminal") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title)) : await api.quickClaude(prompt, cwd, title);
-        else finish?.(await api.startReviewCloud(p.repo, title, prompt, runner === "cloud"));
+        else if (runner === "terminal") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title, undefined, opts)) : await api.quickClaude(prompt, cwd, title, undefined, opts);
+        else finish?.(await api.startReviewCloud(p.repo, title, prompt, runner === "cloud", opts));
       } catch (e) {
         finish?.(null);
         throw e;
@@ -3703,6 +3712,19 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
   const [filter, setFilter] = useState<PrFilter>("review");
   const [reviewRunner, setReviewRunnerState] = useState<ReviewRunner>(() => load(REVIEW_RUNNER_KEY, REVIEW_RUNNERS, "web"));
   const openInBrowser = useContext(BrowserContext);
+  // The model and effort reviews start with (Codex's from its own list).
+  const [reviewOptions, setReviewOptionsState] = useState<ReviewOptions>(() => ({ ...NO_REVIEW_OPTIONS, ...loadJson<Partial<ReviewOptions>>(REVIEW_OPTIONS_KEY, {}) }));
+  const reviewAgent = reviewRunner === "codex" ? "codex" : "claude";
+  const setReviewOption = (patch: Partial<{ model: string; effort: string }>) => {
+    const next = { ...reviewOptions, [reviewAgent]: { ...reviewOptions[reviewAgent], ...patch } };
+    remember(REVIEW_OPTIONS_KEY, JSON.stringify(next));
+    setReviewOptionsState(next);
+  };
+  const [codexModels, setCodexModels] = useState<{ id: string; label: string; efforts: string[] }[]>([]);
+  useEffect(() => void api.codexModels().then(setCodexModels, () => {}), []);
+  const picked = reviewOptions[reviewAgent];
+  const modelChoices = reviewAgent === "codex" ? [{ id: "", label: "Codex の既定のモデル" }, ...codexModels] : MODELS;
+  const effortChoices = reviewAgent === "codex" ? ["", ...(codexModels.find((m) => m.id === picked.model)?.efforts ?? ["low", "medium", "high", "xhigh"])] : EFFORTS;
   const setReviewRunner = (t: ReviewRunner) => {
     remember(REVIEW_RUNNER_KEY, t);
     setReviewRunnerState(t);
@@ -3784,6 +3806,34 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
           <option value="desktop">/review は Local・Desktop</option>
           <option value="terminal">/review は {terminal ? "ターミナル" : "herdr"}</option>
           <option value="codex">レビューは Codex（{terminal ? "ターミナル" : "herdr"}）</option>
+        </select>
+        <select
+          className="select compact"
+          value={picked.model}
+          disabled={reviewRunner === "desktop"}
+          aria-label="レビューのモデル"
+          title={reviewRunner === "desktop" ? "Desktop ではモデルを選べません" : "レビューのモデル"}
+          onChange={(e) => setReviewOption({ model: e.target.value })}
+        >
+          {modelChoices.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="select compact"
+          value={picked.effort}
+          disabled={reviewRunner === "desktop"}
+          aria-label="レビューの effort"
+          title={reviewRunner === "desktop" ? "Desktop では effort を選べません" : "レビューの effort"}
+          onChange={(e) => setReviewOption({ effort: e.target.value })}
+        >
+          {effortChoices.map((x) => (
+            <option key={x} value={x}>
+              {x ? `effort: ${x}` : "既定の effort"}
+            </option>
+          ))}
         </select>
         <button className={`ghost icon${prsLoading ? " turning" : ""}`} aria-label="PR を取り直す（⌘R）" title="PR を取り直す（⌘R）" aria-busy={prsLoading} onClick={onRefresh}>
           <Icon name="sync" size={14} />

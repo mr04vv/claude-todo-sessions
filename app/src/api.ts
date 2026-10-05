@@ -295,9 +295,13 @@ export const api = {
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
   /// A plain claude in herdr, at home unless `cwd` is given.
-  quickClaude: (prompt: string, cwd?: string, title?: string, agent?: Agent) => invoke<void>("quick_claude", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null }),
+  quickClaude: (prompt: string, cwd?: string, title?: string, agent?: Agent, options?: StartOptions) =>
+    invoke<void>("quick_claude", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null, options: options ?? null }),
   /// A PR review in a cloud session linked to no todo; returns its id.
-  startReviewCloud: (repo: string, title: string, prompt: string, desktop: boolean) => invoke<string>("start_review_cloud", { repo, title, prompt, desktop }),
+  startReviewCloud: (repo: string, title: string, prompt: string, desktop: boolean, options?: StartOptions) =>
+    invoke<string>("start_review_cloud", { repo, title, prompt, desktop, options: options ?? null }),
+  /// The models Codex offers and the efforts each takes (Codex's own cache).
+  codexModels: () => invoke<{ id: string; label: string; efforts: string[] }[]>("codex_models"),
   startDesktopPrompt: (cwd: string | undefined, prompt: string) => invoke<void>("start_desktop_prompt", { cwd: cwd ?? null, prompt }),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openLink: (url: string) => invoke<void>("open_link", { url }),

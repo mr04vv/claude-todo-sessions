@@ -29,8 +29,8 @@ export const terminalApi = {
   start: (todoId: number, options?: { model?: string; effort?: string }) =>
     invoke<TerminalRun>("terminal_start", { todoId, options: options ?? null }),
   /// `agent` "codex" runs Codex instead of Claude (a PR review).
-  quick: (prompt: string, cwd?: string, title?: string, agent?: "claude" | "codex") =>
-    invoke<TerminalRun>("terminal_quick", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null }),
+  quick: (prompt: string, cwd?: string, title?: string, agent?: "claude" | "codex", options?: { model?: string; effort?: string }) =>
+    invoke<TerminalRun>("terminal_quick", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null, options: options ?? null }),
   /// A session running in herdr comes back as attaching herdr (its pane
   /// focused); null when (with `desktop`) Claude Desktop knows it and opens it.
   resume: (sessionId: string, desktop: boolean) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop }),

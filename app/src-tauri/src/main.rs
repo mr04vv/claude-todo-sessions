@@ -349,8 +349,8 @@ fn focus_herdr_pane(session_id: &str) -> Option<String> {
 /// Opens a new herdr workspace running a plain `claude`, outside any todo:
 /// a quick question at home, or a PR review in its repository's folder.
 #[tauri::command(async)]
-fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>) -> Result<(), String> {
-    let TerminalRun { cwd, title: label, command, .. } = quick_agent_run(prompt.as_deref(), cwd, title, agent);
+fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> Result<(), String> {
+    let TerminalRun { cwd, title: label, command, .. } = quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default());
     match start_in_herdr(&state, &cwd, &label, &command, true) {
         // The new workspace is focused inside herdr; bring its terminal forward too.
         Ok(()) => cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err),
@@ -361,14 +361,18 @@ fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<Stri
 /// A plain `claude` (at home unless `cwd` is given), with the prompt if one
 /// is given. Its session id is picked here so the in-app terminal can find
 /// its tab again.
-/// A quick run with Codex instead of Claude when asked (a PR review): Codex
-/// picks its own session id, which herdr reports.
-fn quick_agent_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>) -> TerminalRun {
+/// A quick run with Codex instead of Claude when asked (a PR review), with
+/// the model and effort picked: Codex picks its own session id, which herdr reports.
+fn quick_agent_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, opts: &StartOptions) -> TerminalRun {
     let mut run = quick_run(prompt, cwd, title);
-    if agent == Some(cts_core::Agent::Codex) {
-        let first = prompt.map(str::trim).filter(|p| !p.is_empty()).map(|p| format!(" {}", shell_quote(p))).unwrap_or_default();
-        run.command = format!("codex{first}");
+    let codex = agent == Some(cts_core::Agent::Codex);
+    let flags: String = (if codex { opts.codex_args() } else { opts.claude_args() }).iter().map(|a| format!(" {}", shell_quote(a))).collect();
+    let first = prompt.map(str::trim).filter(|p| !p.is_empty()).map(|p| format!(" {}", shell_quote(p))).unwrap_or_default();
+    if codex {
+        run.command = format!("codex{flags}{first}");
         run.session = None;
+    } else if let Some(session) = &run.session {
+        run.command = format!("claude --session-id {session}{flags}{first}");
     }
     run
 }
@@ -394,8 +398,8 @@ fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOpt
 }
 
 #[tauri::command(async)]
-fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>) -> TerminalRun {
-    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent))
+fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> TerminalRun {
+    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()))
 }
 
 /// The in-app terminal's sessions run in herdr when one runs (so they go on
@@ -688,8 +692,8 @@ fn terminal_cwd(todo: &Todo) -> String {
 /// Reviews a PR in a cloud session linked to no todo; `desktop` opens it in
 /// Claude Desktop, else the page shows it.
 #[tauri::command(async)]
-fn start_review_cloud(repo: String, title: String, prompt: String, desktop: bool) -> Result<String, String> {
-    let id = cts_core::cloud::create_review_session(&open_db()?, &repo, &title, &prompt)?;
+fn start_review_cloud(repo: String, title: String, prompt: String, desktop: bool, options: Option<StartOptions>) -> Result<String, String> {
+    let id = cts_core::cloud::create_review_session(&open_db()?, &repo, &title, &prompt, &options.unwrap_or_default())?;
     if desktop {
         open_url(&launch::jump_url(&id, None))?;
     }
@@ -799,7 +803,8 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: O
         // Codex picks its own session id: herdr finds the session, and its first prompt's marker links it.
         let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
         let prompt = launch::start_prompt(todo.id, &launch::codex_body(&opts.body(body.unwrap_or_else(|| todo.prompt_body()))));
-        let command = format!("codex {}", shell_quote(&prompt));
+        let flags: String = opts.codex_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
+        let command = format!("codex{flags} {}", shell_quote(&prompt));
         return Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: None, herdr: None });
     }
     let (todo, session_id) = {
@@ -1323,6 +1328,16 @@ fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
             is_draft: p.is_draft,
         })
         .collect())
+}
+
+/// The models Codex offers (its own cache), for picking one to start it with.
+#[tauri::command(async)]
+fn codex_models() -> Vec<cts_core::codex::Model> {
+    std::fs::read_to_string(home().join(cts_core::codex::MODELS_CACHE))
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())
+        .map(|v| cts_core::codex::models(&v))
+        .unwrap_or_default()
 }
 
 /// The Claude session herdr session `name` shows (its focused pane), for the
@@ -2391,6 +2406,7 @@ fn main() {
             forget_login,
             review_requests,
             herdr_focused,
+            codex_models,
             auto_merge,
             feynman::browser_text,
             feynman::page_text,

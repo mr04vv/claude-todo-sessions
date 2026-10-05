@@ -104,7 +104,7 @@ todo に紐づいたものも、紐づいていないものも、すべてのセ
 自分へのレビュー依頼と、自分の PR を並べます（`gh` で取得します）。
 
 - j / k で選んで Enter を押すと、「提出前に確認して開始」か「自動で提出まで行う」を選んでレビューを始めます。todo は作りません
-- レビューを始める場所（Cloud・Web / Cloud・Desktop / Local・Desktop / ターミナル / Codex）は、上のプルダウンで選びます。Codex を選ぶと、herdr（アプリ内ならターミナル）で Codex が PR を gh で読んでレビューし、提出方法を聞くか自分で提出します
+- レビューを始める場所（Cloud・Web / Cloud・Desktop / Local・Desktop / ターミナル / Codex）は、上のプルダウンで選びます。Codex を選ぶと、herdr（アプリ内ならターミナル）で Codex が PR を gh で読んでレビューし、提出方法を聞くか自分で提出します。その横でモデルと effort も選べます（Claude と Codex で別々に覚えます。Codex のモデルは Codex 自身が持つ一覧から。Desktop では選べません）
 - 選んだ PR は右のペインで開きます。自分の PR は「todo にする」で todo にできます
 
 ![/review の様子](images/pr-review.png)
