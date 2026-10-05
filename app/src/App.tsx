@@ -234,6 +234,12 @@ const NO_REPO_LANE = "リポジトリなし";
 const ORPHAN_LANE = "親なし";
 /// The title of a session reviewing a PR.
 const REVIEW_TITLE_PREFIX = "レビュー: ";
+/// A PR review's session (started from the PR page; linked to no todo), by
+/// its title: the app's, Claude's /review prompt, or Codex's review prompt.
+const isReviewSession = (s: Session) =>
+  s.todo_id === null && !!s.title && (s.title.startsWith(REVIEW_TITLE_PREFIX) || s.title.startsWith("/review ") || /^PR https:\/\/github\.com\/\S+\/pull\/\d+ をレビュー/.test(s.title));
+/// Review sessions stay out of the session lists unless they wait for input.
+const listedSession = (s: Session) => !isReviewSession(s) || s.state === "needs_input";
 
 /// Lanes that start folded, and the ones already folded once on this machine
 /// (so a lane added to the list later folds too, and stays open once opened).
@@ -3151,7 +3157,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   // Todos set aside (pending), and the subtasks of one, are out with their sessions.
   const aside = new Set(board.todos.filter((t) => t.status === "pending" || board.todos.find((p) => p.id === t.parent_id)?.status === "pending").map((t) => t.id));
   const all = sessionItemsOf(board).filter(
-    (i) => (repoFilter === null || laneKey(i.todo?.repos ?? i.session.repos) === repoFilter) && !(i.todo && aside.has(i.todo.id)),
+    (i) => (repoFilter === null || laneKey(i.todo?.repos ?? i.session.repos) === repoFilter) && !(i.todo && aside.has(i.todo.id)) && listedSession(i.session),
   );
   const live = all.filter((i) => i.session.state !== "ended");
   const counts: Record<SessionFilter, number> = {
@@ -6195,7 +6201,7 @@ export default function App() {
   // The live sessions, the one that changed last first, each opened as its "開く" does.
   const sessionCommands = (): Command[] =>
     (board ? sessionItemsOf(board) : [])
-      .filter(({ session: s }) => s.state !== "ended")
+      .filter(({ session: s }) => s.state !== "ended" && listedSession(s))
       .sort((a, b) => b.session.state_at - a.session.state_at)
       .map(({ session: s, todo }) => ({
         key: `session:${s.session_id}`,
