@@ -697,25 +697,7 @@ a:hover {
   background: var(--st-review);
 }
 
-/* A session whose ended turn has not been looked at, or that waits for
-   input: the whole row stands out. */
-.row.unread {
-  background: var(--accent-soft);
-}
 
-.row.unread > .ellipsis {
-  color: var(--text);
-  font-weight: 600;
-}
-
-.row.needs-input {
-  background: var(--waiting-soft);
-}
-
-.row.unread:hover,
-.row.needs-input:hover {
-  filter: brightness(1.15);
-}
 
 .state .unread-dot {
   margin-right: 2px;
@@ -2952,4 +2934,40 @@ body.resizing {
   max-height: 260px;
   overflow-y: auto;
   margin-top: 8px;
+}
+
+/* A session's state as its row's colour (after .row.cursor, which it wins
+   over; the cursor then shows as an outline): waiting for input, unread,
+   running. */
+.row.needs-input {
+  background: var(--waiting-soft);
+  box-shadow: inset 3px 0 0 var(--waiting);
+}
+
+.row.unread {
+  background: var(--accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.row.unread > .ellipsis {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.row.running {
+  background: var(--running-soft);
+  box-shadow: inset 3px 0 0 var(--running);
+}
+
+.row.needs-input.cursor,
+.row.unread.cursor,
+.row.running.cursor {
+  outline: 1px solid var(--accent-line);
+  outline-offset: -1px;
+}
+
+.row.needs-input:hover,
+.row.unread:hover,
+.row.running:hover {
+  filter: brightness(1.15);
 }

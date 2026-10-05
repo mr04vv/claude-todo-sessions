@@ -618,16 +618,12 @@ function StateBadge({ state, unread }: { state: SessionState; unread?: boolean }
   );
 }
 
-/// The sessions table's state cell, as marks only (the names on hover): the
-/// unread dot, the session's state, and its todo's PR stage as a PR glyph.
-function StateMarks({ state, label, unread, todo }: { state: string; label: string; unread?: boolean; todo: Todo | undefined }) {
+/// The sessions table's PR cell: the todo's PR stage as a PR glyph in its
+/// colour (its name on hover). The session's state is the row's colour.
+function StateMarks({ todo }: { todo: Todo | undefined }) {
   const pr = todo?.pr_state ? PR_STAGE[todo.pr_state] : null;
   return (
     <span className="state-marks">
-      <span className={`unread-dot${unread ? " on" : ""}`} title={unread ? "作業が終わってから、まだ見ていません" : undefined} />
-      <span className={`state state-${state}`} title={label}>
-        <i />
-      </span>
       {pr && (
         <span className={`state state-${pr[0]}`} title={`PR：${pr[1]}`}>
           <Icon name="pr" size={13} />
@@ -3116,6 +3112,9 @@ function RepoTags({ repos }: { repos: string[] }) {
     </span>
   );
 }
+/// A session row's colour: waiting for input, else unread, else running (idle and ended have none).
+const rowState = (s: Session) => (s.state === "needs_input" ? " needs-input" : s.unread ? " unread" : s.state === "running" ? " running" : "");
+
 /// What a subtask row without a session says.
 const TODO_ROW: Record<"none" | "queued" | "ended", [string, string]> = {
   none: ["未起動", "まだ始めていません"],
@@ -3300,7 +3299,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
 
         <section>
           <div className="table-head sessions-grid">
-            <span title="未読・セッションの状態・PR（マウスを重ねると名前）">状態</span>
+            <span title="PR の段階（色。マウスを重ねると名前）。セッションの状態は行の色：緑は実行中、橙は入力待ち、青は未読">PR</span>
             <span>セッション</span>
             <span>todo</span>
             <span>リポジトリ</span>
@@ -3340,7 +3339,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                     title={r.todo.pr_url ? "PR を開く" : undefined}
                     onClick={() => (setCursor(r.id), openTodoRow(r.todo))}
                   >
-                    <StateMarks state={r.state === "queued" ? "idle" : "ended"} label={state} todo={r.todo} />
+                    <StateMarks todo={r.todo} />
                     <span className="muted ellipsis" title={says}>
                       {state}
                       {r.todo.pr_state && ` · PR ${PR_STAGE[r.todo.pr_state][1]}`}
@@ -3357,10 +3356,11 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                 <li
                   key={r.id}
                   data-row={r.id}
-                  className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}${s.unread ? " unread" : ""}${s.state === "needs_input" ? " needs-input" : ""}`}
+                  className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}${rowState(s)}`}
+                  title={`${STATE_LABEL[s.state]}${s.unread ? "・未読" : ""}`}
                   onClick={() => (setCursor(r.id), open(s))}
                 >
-                  <StateMarks state={s.state} label={STATE_LABEL[s.state]} unread={s.unread} todo={todo} />
+                  <StateMarks todo={todo} />
                   <span className="ellipsis">
                     {s.agent === "codex" && <span className="tag agent-tag">Codex</span>}
                     {sessionLabel(s)}
