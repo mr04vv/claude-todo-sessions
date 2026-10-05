@@ -6192,11 +6192,11 @@ export default function App() {
   ];
 
   // ⌘K lists the sidebar's entries first, in its order, then the actions.
-  // The live sessions, the most urgent first, each opened as its "開く" does.
+  // The live sessions, the one that changed last first, each opened as its "開く" does.
   const sessionCommands = (): Command[] =>
     (board ? sessionItemsOf(board) : [])
       .filter(({ session: s }) => s.state !== "ended")
-      .sort((a, b) => STATE_ORDER.indexOf(a.session.state) - STATE_ORDER.indexOf(b.session.state) || b.session.state_at - a.session.state_at)
+      .sort((a, b) => b.session.state_at - a.session.state_at)
       .map(({ session: s, todo }) => ({
         key: `session:${s.session_id}`,
         icon: <StateBadge state={s.state} unread={s.unread} />,

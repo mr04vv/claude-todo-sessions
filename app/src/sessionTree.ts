@@ -4,7 +4,7 @@
 // its own, to start there. Sessions of todos without parent or children,
 // and unlinked ones, follow flat. Todos set aside (pending) are left out,
 // with their sessions.
-import type { PrState, Session, SessionState, Todo } from "./api";
+import type { PrState, Session, Todo } from "./api";
 
 export interface SessionItem {
   session: Session;
@@ -19,9 +19,6 @@ export type TreeRow =
   /// A subtask with no session to show: not started, queued, or over.
   | { kind: "todo"; id: string; todo: Todo; group: number; child: true; last?: boolean; state: "none" | "queued" | "ended" };
 
-/// How much a state asks for the user (sessions sort by it).
-const STATE_RANK: Record<SessionState, number> = { needs_input: 0, running: 1, idle: 2, ended: 3 };
-const TODO_RANK = 4;
 /// A PR still on its way: a subtask with one stays in sight when its sessions are over.
 const PR_UNDER_WAY: PrState[] = ["open", "review_requested", "changes_requested", "approved"];
 
@@ -64,9 +61,9 @@ export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Tod
     // A group with nothing but its head is not shown.
     if (rows.length > 1) groups.push(rows);
   }
-  const urgency = (rows: TreeRow[]) => Math.min(...rows.map((r) => (r.kind === "session" ? STATE_RANK[r.session.state] : TODO_RANK)));
+  // The group whose session changed last first.
   const latest = (rows: TreeRow[]) => Math.max(0, ...rows.map((r) => (r.kind === "session" ? r.session.state_at : 0)));
-  groups.sort((a, b) => urgency(a) - urgency(b) || latest(b) - latest(a));
+  groups.sort((a, b) => latest(b) - latest(a));
   // A pending parent takes its subtasks out with it.
   const inTree = new Set(todos.filter((t) => !t.parent_id && children(t).length > 0).flatMap((p) => [p.id, ...children(p).map((c) => c.id)]));
   const flat: TreeRow[] = items
@@ -76,4 +73,5 @@ export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Tod
   return { groups, flat };
 }
 
-const bySession = (a: SessionItem, b: SessionItem) => STATE_RANK[a.session.state] - STATE_RANK[b.session.state] || b.session.state_at - a.session.state_at;
+/// The session that changed last first.
+const bySession = (a: SessionItem, b: SessionItem) => b.session.state_at - a.session.state_at;
