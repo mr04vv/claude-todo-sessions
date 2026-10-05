@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod cloud;
+pub mod codex;
 pub mod desktop;
 pub mod feynman;
 pub mod github;
@@ -75,7 +76,7 @@ const GRILLING_COMMAND: &str = "/grilling";
 const RESEARCH_INSTRUCTIONS: &str = "調査を始める前に、完了条件（何が分かれば終わりか）と出力条件（成果物の形式・保存先・粒度）を私に質問して確認してから進めてください。";
 /// Every session the app starts asks its questions through the tool, so
 /// the answers are picked instead of typed (and the app can tell it waits).
-const ASK_INSTRUCTIONS: &str = "質問はすべて AskUserQuestion ツールで聞いてください（本文に質問を書いて待たない）。";
+pub(crate) const ASK_INSTRUCTIONS: &str = "質問はすべて AskUserQuestion ツールで聞いてください（本文に質問を書いて待たない）。";
 /// Implementation work ends in a PR, whose reviewer the user picks.
 const REVIEWER_INSTRUCTIONS: &str = "PR を作ったら、レビューを誰に頼むかを AskUserQuestion で聞いてください（候補は、このリポジトリの最近の PR をレビューした人を `gh` で調べて挙げる）。選ばれた人に `gh pr edit <PR> --add-reviewer <user>` で依頼します。";
 
@@ -256,6 +257,27 @@ pub struct TodoPatch {
     pub kind: Option<Kind>,
 }
 
+/// The program a session runs.
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Agent {
+    #[default]
+    Claude,
+    Codex,
+}
+
+impl Agent {
+    fn as_str(self) -> &'static str {
+        match self {
+            Agent::Claude => "claude",
+            Agent::Codex => "codex",
+        }
+    }
+    fn parse(s: &str) -> Agent {
+        if s == "codex" { Agent::Codex } else { Agent::Claude }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Session {
     pub session_id: String,
@@ -273,6 +295,7 @@ pub struct Session {
     pub started_at: i64,
     /// Its turn ended (it is idle) after it was last looked at.
     pub unread: bool,
+    pub agent: Agent,
 }
 
 /// Why the app notified about a session.
@@ -430,7 +453,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT,
     repos TEXT,
     branch TEXT,
-    started_at INTEGER
+    started_at INTEGER,
+    agent TEXT
 );
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
@@ -498,7 +522,8 @@ const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER)";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at),
-    (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0))";
+    (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0)),
+    COALESCE(agent, 'claude')";
 
 impl Status {
     fn as_str(self) -> &'static str {
@@ -589,6 +614,7 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         branch: r.get(7)?,
         started_at: r.get(8)?,
         unread: r.get(9)?,
+        agent: Agent::parse(&r.get::<_, String>(10)?),
     })
 }
 
@@ -609,7 +635,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -1322,6 +1348,20 @@ impl Db {
         Ok(())
     }
 
+    pub fn set_session_agent(&self, id: &str, agent: Agent) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET agent = ?2 WHERE session_id = ?1", params![id, agent.as_str()])?;
+        Ok(())
+    }
+
+    /// Names a session after its first prompt (unless it has a name) and links
+    /// it by the prompt's `[todo:<id>]` marker. Returns the todo id it linked to.
+    pub fn name_from_prompt(&self, id: &str, prompt: &str) -> Result<Option<i64>> {
+        if let Some(title) = title_from_prompt(prompt) {
+            self.conn.execute("UPDATE sessions SET title = ?2 WHERE session_id = ?1 AND title IS NULL", params![id, title])?;
+        }
+        self.link_by_marker(id, prompt)
+    }
+
     pub fn set_session_title(&self, id: &str, title: &str) -> Result<()> {
         self.conn
             .execute("UPDATE sessions SET title = ?2 WHERE session_id = ?1", params![id, title])?;
@@ -1360,12 +1400,6 @@ impl Db {
     /// `[todo:<id>]` marker. Returns the todo id it linked to, if any.
     pub fn on_prompt(&self, id: &str, cwd: &str, prompt: &str) -> Result<Option<i64>> {
         self.record_session(id, cwd, SessionState::Running)?;
-        if let Some(title) = title_from_prompt(prompt) {
-            self.conn.execute(
-                "UPDATE sessions SET title = ?2 WHERE session_id = ?1 AND title IS NULL",
-                params![id, title],
-            )?;
-        }
-        self.link_by_marker(id, prompt)
+        self.name_from_prompt(id, prompt)
     }
 }

@@ -51,6 +51,20 @@ pub struct StartOptions {
     /// The session sets its PR to merge once approved (GitHub's auto-merge).
     #[serde(default)]
     pub auto_merge: bool,
+    /// What runs it (a terminal session; Cloud and Desktop are Claude's).
+    #[serde(default)]
+    pub agent: crate::Agent,
+}
+
+/// A todo's first prompt for Codex: without a leading Claude skill
+/// (`/grilling …`) and the AskUserQuestion sentence, which only Claude reads.
+pub fn codex_body(body: &str) -> String {
+    let body = body.replace(crate::ASK_INSTRUCTIONS, "").replace("AskUserQuestion で", "");
+    let body = match body.strip_prefix('/') {
+        Some(rest) => rest.split_once(char::is_whitespace).map_or("", |(_, r)| r).to_string(),
+        None => body,
+    };
+    body.trim().to_string()
 }
 
 /// What an auto-merging session is asked to do with its PR.
@@ -278,6 +292,13 @@ pub fn herdr_pane_id(created: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn codex_starts_with_the_prompt_less_what_only_claude_reads() {
+        let body = "/grilling 直す\n\nメモ\n\n質問はすべて AskUserQuestion ツールで聞いてください（本文に質問を書いて待たない）。";
+        assert_eq!(codex_body(body), "直す\n\nメモ");
+        assert_eq!(codex_body("自由に"), "自由に");
+    }
+
     #[test]
     fn auto_merge_asks_the_session_to_set_it_on_its_pr() {
         let plain = StartOptions::default();

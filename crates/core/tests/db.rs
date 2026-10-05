@@ -881,3 +881,39 @@ fn sessions_known_before_unread_existed_are_seen() {
     db.record_session("new", "/r", SessionState::Idle).unwrap();
     assert!(db.get_session("new").unwrap().unwrap().unread);
 }
+
+#[test]
+fn a_session_says_which_agent_runs_it() {
+    let (_d, db) = open();
+    db.record_session("c1", "/r", SessionState::Running).unwrap();
+    assert_eq!(db.get_session("c1").unwrap().unwrap().agent, cts_core::Agent::Claude, "Claude unless told");
+    db.set_session_agent("c1", cts_core::Agent::Codex).unwrap();
+    assert_eq!(db.get_session("c1").unwrap().unwrap().agent, cts_core::Agent::Codex);
+}
+
+#[test]
+fn a_codex_prompt_names_and_links_its_session() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("fix")).unwrap();
+    db.record_session("x1", "/r", SessionState::Running).unwrap();
+    let linked = db.name_from_prompt("x1", &format!("[todo:{}] fix the login", t.id)).unwrap();
+    assert_eq!(linked, Some(t.id));
+    let s = db.get_session("x1").unwrap().unwrap();
+    assert_eq!((s.todo_id, s.title.as_deref()), (Some(t.id), Some("fix the login")));
+}
+
+#[test]
+fn agents_work_on_databases_made_before_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, todo_id INTEGER, cwd TEXT NOT NULL,
+         state TEXT NOT NULL CHECK (state IN ('running', 'needs_input', 'idle', 'ended')), state_at INTEGER NOT NULL);
+         INSERT INTO sessions VALUES ('s1', NULL, '/r', 'idle', 0);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.get_session("s1").unwrap().unwrap().agent, cts_core::Agent::Claude);
+}

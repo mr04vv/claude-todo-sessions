@@ -47,6 +47,7 @@ pub fn find_pane(agents: &Value, session_id: &str) -> Option<String> {
 /// A Claude agent herdr hosts, as `herdr agent list` reports it.
 pub struct AgentState {
     pub session_id: String,
+    pub agent: crate::Agent,
     pub cwd: String,
     pub state: crate::SessionState,
     /// herdr's "done": the turn ended and the pane has not been looked at since.
@@ -61,7 +62,7 @@ pub fn agent_states(agents: &Value) -> Vec<AgentState> {
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|a| a["agent"] == "claude")
+        .filter(|a| a["agent"] == "claude" || a["agent"] == "codex")
         .filter_map(|a| {
             let id = a["agent_session"]["value"].as_str()?;
             let status = a["agent_status"].as_str()?;
@@ -71,7 +72,8 @@ pub fn agent_states(agents: &Value) -> Vec<AgentState> {
                 "blocked" | "waiting" => NeedsInput,
                 _ => return None,
             };
-            Some(AgentState { session_id: id.to_string(), cwd: a["cwd"].as_str().unwrap_or_default().to_string(), state, unseen: status == "done", focused: a["focused"] == true })
+            let agent = if a["agent"] == "codex" { crate::Agent::Codex } else { crate::Agent::Claude };
+            Some(AgentState { session_id: id.to_string(), agent, cwd: a["cwd"].as_str().unwrap_or_default().to_string(), state, unseen: status == "done", focused: a["focused"] == true })
         })
         .collect()
 }
@@ -106,11 +108,21 @@ mod tests {
             {"agent": "claude", "agent_status": "working"}
         ]}});
         let got: Vec<(String, crate::SessionState, bool)> = agent_states(&agents).into_iter().map(|a| (a.session_id, a.state, a.unseen)).collect();
-        // "done" is a finished turn not looked at yet, "idle" one looked at.
+        // "done" is a finished turn not looked at yet, "idle" one looked at; Codex's agents too.
         assert_eq!(
             got,
-            vec![("a".into(), Running, false), ("b".into(), Idle, false), ("c".into(), NeedsInput, false), ("d".into(), NeedsInput, false), ("g".into(), Idle, true)]
+            vec![
+                ("a".into(), Running, false),
+                ("b".into(), Idle, false),
+                ("c".into(), NeedsInput, false),
+                ("d".into(), NeedsInput, false),
+                ("g".into(), Idle, true),
+                ("f".into(), Running, false)
+            ]
         );
+        let agents_of: Vec<crate::Agent> = agent_states(&agents).into_iter().map(|a| a.agent).collect();
+        assert_eq!(agents_of[5], crate::Agent::Codex);
+        assert_eq!(agents_of[0], crate::Agent::Claude);
         let focused: Vec<String> = agent_states(&agents).into_iter().filter(|a| a.focused).map(|a| a.session_id).collect();
         assert_eq!(focused, vec!["g".to_string()], "the pane herdr shows");
     }
