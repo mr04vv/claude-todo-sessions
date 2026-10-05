@@ -1324,8 +1324,9 @@ struct PrLists {
     mine: Vec<PrView>,
 }
 
+/// Open PRs, leaving out archived repositories' (they can no longer move).
 fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
-    let json = gh(&["search", "prs", filter, "@me", "--state", "open", "--limit", GH_PR_LIMIT, "--json", GH_PR_FIELDS])?;
+    let json = gh(&["search", "prs", filter, "@me", "--state", "open", "--archived=false", "--limit", GH_PR_LIMIT, "--json", GH_PR_FIELDS])?;
     let prs: Vec<GhPr> = serde_json::from_str(&json).map_err(|e| format!("gh output: {e}"))?;
     Ok(prs
         .into_iter()
