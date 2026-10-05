@@ -503,6 +503,12 @@ fn window_focused() -> bool {
     objc2_app_kit::NSRunningApplication::currentApplication().isActive()
 }
 
+/// Takes a session off the lists (⌘⇧A on a Local one, which cannot be archived from here).
+#[tauri::command]
+fn hide_session(state: State<AppState>, session_id: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.hide_session(&session_id).map_err(err)
+}
+
 /// The session was looked at now (opened from the app, or its page or tab shown).
 #[tauri::command]
 fn mark_session_seen(state: State<AppState>, session_id: String) -> Result<(), String> {
@@ -692,8 +698,13 @@ fn terminal_cwd(todo: &Todo) -> String {
 /// Reviews a PR in a cloud session linked to no todo; `desktop` opens it in
 /// Claude Desktop, else the page shows it.
 #[tauri::command(async)]
-fn start_review_cloud(repo: String, title: String, prompt: String, desktop: bool, options: Option<StartOptions>) -> Result<String, String> {
-    let id = cts_core::cloud::create_review_session(&open_db()?, &repo, &title, &prompt, &options.unwrap_or_default())?;
+fn start_review_cloud(repo: String, title: String, prompt: String, desktop: bool, options: Option<StartOptions>, url: Option<String>) -> Result<String, String> {
+    let db = open_db()?;
+    let id = cts_core::cloud::create_review_session(&db, &repo, &title, &prompt, &options.unwrap_or_default())?;
+    // Its PR, for putting it away once the review is in (clean_reviews).
+    if let Some(url) = url {
+        db.record_review_session(&id, &url).map_err(err)?;
+    }
     if desktop {
         open_url(&launch::jump_url(&id, None))?;
     }
@@ -1898,6 +1909,72 @@ fn refresh_states(db: &Db, todos: &[Todo]) {
     }
 }
 
+/// The PR a review session reviews: the one the app recorded, else the one its
+/// first prompt names (Claude's `/review <url>`, Codex's `PR <url> をレビュー…`).
+fn review_pr(s: &cts_core::Session) -> Option<String> {
+    if let Some(url) = &s.review_url {
+        return Some(url.clone());
+    }
+    let title = s.title.as_deref()?;
+    let rest = title.strip_prefix("/review ").or_else(|| title.strip_prefix("PR ").filter(|r| r.contains("をレビュー")))?;
+    let url = rest.split_whitespace().next()?;
+    (url.starts_with("https://github.com/") && url.contains("/pull/")).then(|| url.to_string())
+}
+
+/// `secs` since the epoch as GitHub writes times (UTC, ISO 8601).
+fn iso_utc(secs: i64) -> String {
+    // Days to a civil date (Howard Hinnant's algorithm).
+    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
+}
+
+/// The user's GitHub login, asked once a run.
+fn github_login() -> Option<String> {
+    static LOGIN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    LOGIN.get_or_init(|| gh(&["api", "user", "--jq", ".login"]).ok().filter(|l| !l.is_empty())).clone()
+}
+
+/// Review sessions whose work is over (the user's review is in, or the PR is
+/// merged or closed) and whose turn has ended: a Cloud one is archived, and
+/// every one leaves the session lists.
+fn clean_reviews(db: &Db) {
+    let Some(me) = github_login() else { return };
+    let Ok(sessions) = db.unlinked_sessions() else { return };
+    for s in sessions.iter().filter(|s| s.state == SessionState::Idle && !s.hidden) {
+        let Some(url) = review_pr(s) else { continue };
+        let Ok(json) = gh(&["pr", "view", &url, "--json", "state,reviews"]) else { continue };
+        let Ok(view) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
+        if !cts_core::github::review_done(&view, &me, &iso_utc(s.started_at)) {
+            continue;
+        }
+        if launch::is_cloud_session(&s.session_id) {
+            match cts_core::cloud::archive_sessions(db, std::slice::from_ref(&s.session_id)) {
+                Ok(errors) if errors.is_empty() => {}
+                Ok(errors) => {
+                    eprintln!("{}", errors.join("; "));
+                    continue;
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    continue;
+                }
+            }
+        }
+        if let Err(e) = db.hide_session(&s.session_id) {
+            eprintln!("{e}");
+        }
+    }
+}
+
 /// One GitHub sync: all todos, or just `only`.
 fn sync_github(db: &Db, only: Option<i64>) {
     let todos: Vec<Todo> = db
@@ -1916,6 +1993,9 @@ fn sync_github(db: &Db, only: Option<i64>) {
     }
     let todos: Vec<Todo> = todos.iter().filter_map(|t| db.get_todo(t.id).ok().flatten()).collect();
     refresh_states(db, &todos);
+    if only.is_none() {
+        clean_reviews(db);
+    }
 }
 
 /// Syncs GitHub every ISSUE_SYNC_INTERVAL, and at once when woken: `Some(id)`
@@ -2402,6 +2482,7 @@ fn main() {
             remove_input_link,
             page_title,
             mark_session_seen,
+            hide_session,
             answer_login,
             forget_login,
             review_requests,
@@ -2431,6 +2512,26 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_review_session_names_its_pr_by_record_or_title() {
+        let session = |title: Option<&str>, url: Option<&str>| cts_core::Session {
+            session_id: "s".into(), title: title.map(Into::into), todo_id: None, cwd: "/".into(), state: SessionState::Idle, state_at: 0,
+            repos: vec![], branch: None, started_at: 0, unread: false, agent: cts_core::Agent::Claude, review_url: url.map(Into::into), hidden: false,
+        };
+        let pr = "https://github.com/o/r/pull/12";
+        assert_eq!(review_pr(&session(Some("レビュー: x"), Some(pr))).as_deref(), Some(pr));
+        assert_eq!(review_pr(&session(Some(&format!("/review {pr} レビューは日本語で")), None)).as_deref(), Some(pr));
+        assert_eq!(review_pr(&session(Some(&format!("PR {pr} をレビューしてください。")), None)).as_deref(), Some(pr));
+        assert_eq!(review_pr(&session(Some(&format!("{pr} を見て")), None)), None, "not a review");
+        assert_eq!(review_pr(&session(None, None)), None);
+    }
+
+    #[test]
+    fn writes_times_as_github_does() {
+        assert_eq!(iso_utc(0), "1970-01-01T00:00:00Z");
+        assert_eq!(iso_utc(1_791_159_530), "2026-10-05T00:18:50Z");
+    }
 
     #[test]
     fn an_issue_shared_by_todos_is_closed_once() {

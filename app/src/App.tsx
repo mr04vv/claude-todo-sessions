@@ -237,9 +237,12 @@ const REVIEW_TITLE_PREFIX = "レビュー: ";
 /// A PR review's session (started from the PR page; linked to no todo), by
 /// its title: the app's, Claude's /review prompt, or Codex's review prompt.
 const isReviewSession = (s: Session) =>
-  s.todo_id === null && !!s.title && (s.title.startsWith(REVIEW_TITLE_PREFIX) || s.title.startsWith("/review ") || /^PR https:\/\/github\.com\/\S+\/pull\/\d+ をレビュー/.test(s.title));
-/// Review sessions stay out of the session lists unless they wait for input.
-const listedSession = (s: Session) => !isReviewSession(s) || s.state === "needs_input";
+  s.todo_id === null &&
+  (!!s.review_url || (!!s.title && (s.title.startsWith(REVIEW_TITLE_PREFIX) || s.title.startsWith("/review ") || /^PR https:\/\/github\.com\/\S+\/pull\/\d+ をレビュー/.test(s.title))));
+/// The session lists leave out a review while it runs (it shows once it is
+/// done or asks), and sessions put away (⌘⇧A, or a review once it is in)
+/// unless they wait for input.
+const listedSession = (s: Session) => (!isReviewSession(s) || s.state !== "running") && (!s.hidden || s.state === "needs_input");
 
 /// Lanes that start folded, and the ones already folded once on this machine
 /// (so a lane added to the list later folds too, and stays open once opened).
@@ -3207,6 +3210,13 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
     },
     (e, id) => {
       const r = rows.find((x) => x.id === id);
+      // ⌘⇧A puts the session away: a Cloud one archived, a Local one off the list.
+      if (matches(e, "archive")) {
+        if (r?.kind !== "session") return false;
+        const s = r.session;
+        run(() => (isCloud(s) ? api.archiveSessions([s.session_id]) : api.hideSession(s.session_id)));
+        return true;
+      }
       const group = r?.kind === "group" ? r.todo.id : r?.group;
       if (group === undefined || !(matches(e, "left") || matches(e, "right"))) return false;
       fold(group, matches(e, "left"));
@@ -3683,7 +3693,7 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
         if (runner === "codex") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title, "codex", opts)) : await api.quickClaude(prompt, cwd, title, "codex", opts);
         else if (runner === "desktop") await api.startDesktopPrompt(cwd, prompt);
         else if (runner === "terminal") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title, undefined, opts)) : await api.quickClaude(prompt, cwd, title, undefined, opts);
-        else finish?.(await api.startReviewCloud(p.repo, title, prompt, runner === "cloud", opts));
+        else finish?.(await api.startReviewCloud(p.repo, title, prompt, runner === "cloud", opts, p.url));
       } catch (e) {
         finish?.(null);
         throw e;
@@ -6017,7 +6027,8 @@ export default function App() {
       // Todo side these keys go through the lanes (todoKeys.ts).
       if ((matches(e, "prevTab") || matches(e, "nextTab")) && typingSideRef.current !== "pane" && !(e.target as HTMLElement).closest(".browser-dock")) return;
       const run: [Action, () => unknown][] = [
-        ["archive", () => archiveShownRef.current()],
+        // The pane's page, while the pane has the typing (on the sessions page ⌘⇧A puts its row away).
+        ["archive", () => typingSideRef.current === "pane" && archiveShownRef.current()],
         ["toInput", () => toInputRef.current()],
         ["prevTab", () => switchRef.current(-1)],
         ["nextTab", () => switchRef.current(1)],

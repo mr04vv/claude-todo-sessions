@@ -68,7 +68,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["terminalLinks", "ターミナルに出ているリンクを選んで開く（⌘ クリックで後ろのタブ、⌘⇧ クリックで前に開く）"],
       ["back", "戻る"],
       ["forward", "進む"],
-      ["archive", "Cloud セッションのページをアーカイブ"],
+      ["archive", "Cloud セッションのページをアーカイブ（セッション一覧では、行のセッションを片付ける）"],
       ["toInput", "表示中のページを input に追加"],
     ],
   },

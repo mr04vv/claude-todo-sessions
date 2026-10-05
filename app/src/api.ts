@@ -17,6 +17,10 @@ export interface Session {
   unread: boolean;
   /** What runs it. */
   agent: Agent;
+  /** The PR it reviews, when the app started it as a review. */
+  review_url: string | null;
+  /** Taken off the session lists. */
+  hidden: boolean;
 }
 
 /** The program a session runs: Claude Code, or Codex (local, in herdr). */
@@ -298,8 +302,11 @@ export const api = {
   quickClaude: (prompt: string, cwd?: string, title?: string, agent?: Agent, options?: StartOptions) =>
     invoke<void>("quick_claude", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null, options: options ?? null }),
   /// A PR review in a cloud session linked to no todo; returns its id.
-  startReviewCloud: (repo: string, title: string, prompt: string, desktop: boolean, options?: StartOptions) =>
-    invoke<string>("start_review_cloud", { repo, title, prompt, desktop, options: options ?? null }),
+  /// `url` is the PR reviewed: the session is put away once the review is in.
+  startReviewCloud: (repo: string, title: string, prompt: string, desktop: boolean, options?: StartOptions, url?: string) =>
+    invoke<string>("start_review_cloud", { repo, title, prompt, desktop, options: options ?? null, url: url ?? null }),
+  /// Takes a session off the lists (a Local one, which cannot be archived from here).
+  hideSession: (sessionId: string) => invoke<void>("hide_session", { sessionId }),
   /// The models Codex offers and the efforts each takes (Codex's own cache).
   codexModels: () => invoke<{ id: string; label: string; efforts: string[] }[]>("codex_models"),
   startDesktopPrompt: (cwd: string | undefined, prompt: string) => invoke<void>("start_desktop_prompt", { cwd: cwd ?? null, prompt }),
