@@ -349,8 +349,8 @@ fn focus_herdr_pane(session_id: &str) -> Option<String> {
 /// Opens a new herdr workspace running a plain `claude`, outside any todo:
 /// a quick question at home, or a PR review in its repository's folder.
 #[tauri::command(async)]
-fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>) -> Result<(), String> {
-    let TerminalRun { cwd, title: label, command, .. } = quick_run(prompt.as_deref(), cwd, title);
+fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>) -> Result<(), String> {
+    let TerminalRun { cwd, title: label, command, .. } = quick_agent_run(prompt.as_deref(), cwd, title, agent);
     match start_in_herdr(&state, &cwd, &label, &command, true) {
         // The new workspace is focused inside herdr; bring its terminal forward too.
         Ok(()) => cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err),
@@ -361,6 +361,18 @@ fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<Stri
 /// A plain `claude` (at home unless `cwd` is given), with the prompt if one
 /// is given. Its session id is picked here so the in-app terminal can find
 /// its tab again.
+/// A quick run with Codex instead of Claude when asked (a PR review): Codex
+/// picks its own session id, which herdr reports.
+fn quick_agent_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>) -> TerminalRun {
+    let mut run = quick_run(prompt, cwd, title);
+    if agent == Some(cts_core::Agent::Codex) {
+        let first = prompt.map(str::trim).filter(|p| !p.is_empty()).map(|p| format!(" {}", shell_quote(p))).unwrap_or_default();
+        run.command = format!("codex{first}");
+        run.session = None;
+    }
+    run
+}
+
 fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -> TerminalRun {
     let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
     let session = uuid::Uuid::new_v4().to_string();
@@ -382,8 +394,8 @@ fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOpt
 }
 
 #[tauri::command(async)]
-fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>) -> TerminalRun {
-    via_herdr(&state, quick_run(prompt.as_deref(), cwd, title))
+fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>) -> TerminalRun {
+    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent))
 }
 
 /// The in-app terminal's sessions run in herdr when one runs (so they go on

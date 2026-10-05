@@ -3575,14 +3575,22 @@ const REVIEW_SUBMIT_HOW = "指摘はインラインコメントと本文にま�
 
 /// First prompt of a review session. /review answers in English unless asked
 /// otherwise; `submit` says whether it asks before posting the review.
+const reviewSubmitPrompt = (submit: ReviewSubmit, ask: string) =>
+  submit === "ask"
+    ? `レビューが終わったら、GitHub への提出方法を${ask}私に聞いてください。ブロッカー（マージ前に直すべき問題）があれば Request changes を、なければ Comment か Approve を選択肢に出し、おすすめを先頭にしてください。私が選ぶまでは提出しないでください。`
+    : "レビューが終わったら、確認せずに GitHub に提出してください。ブロッカー（マージ前に直すべき問題）があれば Request changes、なければ Approve で、ブロッカーでない指摘はコメントとして添えてください。";
 const reviewPrompt = (url: string, submit: ReviewSubmit) =>
+  [`/review ${url} レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`, reviewSubmitPrompt(submit, " AskUserQuestion で"), REVIEW_SUBMIT_HOW].join("\n\n");
+/// Codex has no /review for a PR: it is asked to read the PR with gh itself.
+const codexReviewPrompt = (url: string, submit: ReviewSubmit) =>
   [
-    `/review ${url} レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`,
-    submit === "ask"
-      ? "レビューが終わったら、GitHub への提出方法を AskUserQuestion で私に聞いてください。ブロッカー（マージ前に直すべき問題）があれば Request changes を、なければ Comment か Approve を選択肢に出し、おすすめを先頭にしてください。私が選ぶまでは提出しないでください。"
-      : "レビューが終わったら、確認せずに GitHub に提出してください。ブロッカー（マージ前に直すべき問題）があれば Request changes、なければ Approve で、ブロッカーでない指摘はコメントとして添えてください。",
+    `PR ${url} をレビューしてください。gh pr view と gh pr diff で説明と差分を読み、必要ならリポジトリのコードも読みます。レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`,
+    reviewSubmitPrompt(submit, ""),
     REVIEW_SUBMIT_HOW,
   ].join("\n\n");
+/// Where reviews start: a session target, or Codex in the terminal (herdr).
+type ReviewRunner = Target | "codex";
+const REVIEW_RUNNERS = ["web", "cloud", "desktop", "terminal", "codex"] as const;
 
 /// "/review で開始" asks before submitting the review; the caret picks, per
 /// PR, whether the session may submit on its own.
@@ -3649,15 +3657,16 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
   const startReview = (p: ReviewTarget, submit: ReviewSubmit) => {
     if (starting.has(p.url)) return;
     mark(p.url, true);
-    const runner = load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal"] as const, "web");
+    const runner = load(REVIEW_RUNNER_KEY, REVIEW_RUNNERS, "web");
     const cwd = local.find((r) => r.key === p.repo)?.path;
     run(async () => {
       const finish = runner === "web" ? beginWeb?.() : undefined;
       // A review is its own session, not a todo; the PR list is where it is followed.
       const title = `${REVIEW_TITLE_PREFIX}${p.title}`;
-      const prompt = reviewPrompt(p.url, submit);
+      const prompt = runner === "codex" ? codexReviewPrompt(p.url, submit) : reviewPrompt(p.url, submit);
       try {
-        if (runner === "desktop") await api.startDesktopPrompt(cwd, prompt);
+        if (runner === "codex") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title, "codex")) : await api.quickClaude(prompt, cwd, title, "codex");
+        else if (runner === "desktop") await api.startDesktopPrompt(cwd, prompt);
         else if (runner === "terminal") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title)) : await api.quickClaude(prompt, cwd, title);
         else finish?.(await api.startReviewCloud(p.repo, title, prompt, runner === "cloud"));
       } catch (e) {
@@ -3692,9 +3701,9 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
 }) {
   // Review requests first: they are what waits on the user.
   const [filter, setFilter] = useState<PrFilter>("review");
-  const [reviewRunner, setReviewRunnerState] = useState<Target>(() => load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal"] as const, "web"));
+  const [reviewRunner, setReviewRunnerState] = useState<ReviewRunner>(() => load(REVIEW_RUNNER_KEY, REVIEW_RUNNERS, "web"));
   const openInBrowser = useContext(BrowserContext);
-  const setReviewRunner = (t: Target) => {
+  const setReviewRunner = (t: ReviewRunner) => {
     remember(REVIEW_RUNNER_KEY, t);
     setReviewRunnerState(t);
   };
@@ -3769,11 +3778,12 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
         <button onClick={onSlack} title="レビュー依頼中の自分の PR のリンクを、レビュアーごとに並べます">
           Slack 依頼文
         </button>
-        <select className="select compact" value={reviewRunner} aria-label="/review を始める場所" title="/review を始める場所" onChange={(e) => setReviewRunner(e.target.value as Target)}>
+        <select className="select compact" value={reviewRunner} aria-label="/review を始める場所" title="/review を始める場所" onChange={(e) => setReviewRunner(e.target.value as ReviewRunner)}>
           <option value="web">/review は Cloud・Web</option>
           <option value="cloud">/review は Cloud・Desktop</option>
           <option value="desktop">/review は Local・Desktop</option>
           <option value="terminal">/review は {terminal ? "ターミナル" : "herdr"}</option>
+          <option value="codex">レビューは Codex（{terminal ? "ターミナル" : "herdr"}）</option>
         </select>
         <button className={`ghost icon${prsLoading ? " turning" : ""}`} aria-label="PR を取り直す（⌘R）" title="PR を取り直す（⌘R）" aria-busy={prsLoading} onClick={onRefresh}>
           <Icon name="sync" size={14} />
