@@ -283,6 +283,10 @@ function entryFor(id: string, look: Look): Entry {
       const chord =
         sends === null && kitty.current && !ev.isComposing && !Object.values(allKeys()).some((c) => matchesCombo(ev, c, true)) ? kittyChord(ev) : null;
       if (sends === null && chord === null) return true;
+      // The key's own action stays off xterm.js's hidden text box: ⌘← would
+      // move its caret to the start, and Japanese typed next (read from the
+      // box's end by xterm.js's IME handling) would come out wrong.
+      ev.preventDefault();
       if (ev.type === "keydown") write(sends ?? chord ?? "");
       return false;
     });
