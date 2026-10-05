@@ -775,7 +775,8 @@ function useRowCursor(
     const rowOf = (id: string) => list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(id)}"]`);
     const onKeyDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
-      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app.focus, .app[data-zone=sidebar]")) return;
+      // A todo's sheet over the list takes the keys.
+      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app.focus, .app[data-zone=sidebar], .sheet-backdrop")) return;
       const { ids, cursorId, onEnter, onKey } = state.current;
       const step = stepOf(e);
       if (step && ids.length > 0) {
@@ -6180,6 +6181,20 @@ export default function App() {
     toggleLane,
     isCollapsed: (lane) => collapsed.has(lane),
   });
+  // The sheet over the sessions page, where the Todo pages' keys are not: Esc closes it, ⌘Enter the launch sheet.
+  const sessionsSheet = view === "sessions" && selectedTodo !== null && !covered;
+  useEffect(() => {
+    if (!sessionsSheet) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest(TYPING)) return;
+      if (e.key === "Escape") setSelection(null);
+      else if (matches(e, "start")) setDialog("start");
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [sessionsSheet]);
   // The keys act on the todo the sheet shows, however it was opened.
   useEffect(() => {
     if (selection?.kind === "todo") setTodoCursor(`todo:${selection.id}`);
@@ -6259,7 +6274,8 @@ export default function App() {
   ];
 
   const selectedInput = selection?.kind === "input" ? board?.inputs.find((i) => i.id === selection.id) ?? null : null;
-  const panel = view === "todos" && selectedTodo ? "todo" : view === "inputs" && selectedInput ? "input" : view === "sessions" && selectedSession ? "session" : null;
+  // A todo picked on the sessions page opens in the same sheet, over the sessions.
+  const panel = (view === "todos" || view === "sessions") && selectedTodo ? "todo" : view === "inputs" && selectedInput ? "input" : view === "sessions" && selectedSession ? "session" : null;
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
@@ -6555,7 +6571,7 @@ export default function App() {
               run={run}
               report={report}
               onSelect={(id) => setSelection({ kind: "session", id })}
-              onOpenTodo={goTodo}
+              onOpenTodo={openTodo}
               onStartTodo={(id) => {
                 openTodo(id);
                 setDialog("start");
