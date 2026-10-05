@@ -1305,6 +1305,15 @@ fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
         .collect())
 }
 
+/// The Claude session herdr session `name` shows (its focused pane), for the
+/// title over an in-app terminal attached to it.
+#[tauri::command(async)]
+fn herdr_focused(name: String) -> Option<String> {
+    let out = cli("herdr").args(["--session", &name, "agent", "list"]).output().ok()?;
+    let agents: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    cts_core::herdr::agent_states(&agents).into_iter().find(|a| a.focused).map(|a| a.session_id)
+}
+
 /// Merges the PR once it is approved (and its checks pass): at once when it
 /// is ready now, else through GitHub's auto-merge. "merged" or "auto".
 #[tauri::command(async)]
@@ -2057,7 +2066,7 @@ fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
         for name in cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)) {
             let Ok(out) = cli("herdr").args(["--session", &name, "agent", "list"]).output() else { continue };
             let Ok(agents) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { continue };
-            for cts_core::herdr::AgentState { session_id: id, cwd, state, unseen } in cts_core::herdr::agent_states(&agents) {
+            for cts_core::herdr::AgentState { session_id: id, cwd, state, unseen, .. } in cts_core::herdr::agent_states(&agents) {
                 let known = db.get_session(&id).map_err(err)?;
                 let unread = known.as_ref().is_some_and(|k| k.unread);
                 if known.as_ref().is_none_or(|k| k.state != state) {
@@ -2347,6 +2356,7 @@ fn main() {
             answer_login,
             forget_login,
             review_requests,
+            herdr_focused,
             auto_merge,
             feynman::browser_text,
             feynman::page_text,

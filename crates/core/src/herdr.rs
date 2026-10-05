@@ -51,6 +51,8 @@ pub struct AgentState {
     pub state: crate::SessionState,
     /// herdr's "done": the turn ended and the pane has not been looked at since.
     pub unseen: bool,
+    /// The pane its herdr session shows.
+    pub focused: bool,
 }
 
 pub fn agent_states(agents: &Value) -> Vec<AgentState> {
@@ -69,7 +71,7 @@ pub fn agent_states(agents: &Value) -> Vec<AgentState> {
                 "blocked" | "waiting" => NeedsInput,
                 _ => return None,
             };
-            Some(AgentState { session_id: id.to_string(), cwd: a["cwd"].as_str().unwrap_or_default().to_string(), state, unseen: status == "done" })
+            Some(AgentState { session_id: id.to_string(), cwd: a["cwd"].as_str().unwrap_or_default().to_string(), state, unseen: status == "done", focused: a["focused"] == true })
         })
         .collect()
 }
@@ -99,7 +101,7 @@ mod tests {
             {"agent": "claude", "agent_session": {"value": "c"}, "agent_status": "blocked", "cwd": "/w/c"},
             {"agent": "claude", "agent_session": {"value": "d"}, "agent_status": "waiting", "cwd": "/w/d"},
             {"agent": "claude", "agent_session": {"value": "e"}, "agent_status": "unknown", "cwd": "/w/e"},
-            {"agent": "claude", "agent_session": {"value": "g"}, "agent_status": "done", "cwd": "/w/g"},
+            {"agent": "claude", "agent_session": {"value": "g"}, "agent_status": "done", "cwd": "/w/g", "focused": true},
             {"agent": "codex", "agent_session": {"value": "f"}, "agent_status": "working", "cwd": "/w/f"},
             {"agent": "claude", "agent_status": "working"}
         ]}});
@@ -109,6 +111,8 @@ mod tests {
             got,
             vec![("a".into(), Running, false), ("b".into(), Idle, false), ("c".into(), NeedsInput, false), ("d".into(), NeedsInput, false), ("g".into(), Idle, true)]
         );
+        let focused: Vec<String> = agent_states(&agents).into_iter().filter(|a| a.focused).map(|a| a.session_id).collect();
+        assert_eq!(focused, vec!["g".to_string()], "the pane herdr shows");
     }
 
     #[test]

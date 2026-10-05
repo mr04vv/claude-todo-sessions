@@ -2,7 +2,7 @@
 // pseudo-terminal (`app/src-tauri/src/terminal.rs`) and draws it with xterm.js.
 // An experiment next to herdr in Ghostty; to drop it, remove this file,
 // terminal.rs and the places in App.tsx that use them.
-import { useEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal, type IBufferLine, type ITerminalOptions, type ITheme } from "@xterm/xterm";
@@ -33,7 +33,12 @@ export const terminalApi = {
   resume: (sessionId: string, desktop: boolean) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop }),
   /// Lets the menu bar and notifications open local sessions through the page.
   setInApp: (on: boolean) => invoke<void>("set_in_app_terminal", { on }),
+  /// The Claude session a herdr session shows (its focused pane), if any.
+  herdrFocused: (name: string) => invoke<string | null>("herdr_focused", { name }),
 };
+
+/// Names a session as the app's lists do (null: no name known), for a terminal's title.
+export const SessionTitleContext = createContext<(sessionId: string) => string | null>(() => null);
 
 /// `{session_id}` from the menu bar or a notification, for a local session.
 export const OPEN_LOCAL_EVENT = "open-local";
@@ -329,10 +334,26 @@ export function closeTerminal(id: string) {
 
 /// Terminal `id` running `run`; the program starts the first time it is shown,
 /// at the size it has then.
+/// How often the session a herdr terminal shows is looked up (its focused pane changes with ⌥⌘[ ]).
+const HERDR_FOCUS_EVERY_MS = 2000;
+
 export function TerminalView({ id, run, report }: { id: string; run: TerminalRun; report: (e: unknown) => void }) {
   const slot = useRef<HTMLDivElement>(null);
+  const sessionTitle = useContext(SessionTitleContext);
   // The title the program sets (Claude Code: what it is doing), over the terminal as Ghostty shows it.
   const [title, setTitle] = useState(() => entries.get(id)?.title ?? "");
+  // The session it runs, or the one its herdr session shows: named as the session list names it.
+  const [herdrSession, setHerdrSession] = useState<string | null>(null);
+  useEffect(() => {
+    const name = run.herdr;
+    if (!name) return;
+    const look = () => void terminalApi.herdrFocused(name).then(setHerdrSession, () => {});
+    look();
+    const timer = setInterval(look, HERDR_FOCUS_EVERY_MS);
+    return () => clearInterval(timer);
+  }, [run.herdr]);
+  const session = run.session ?? herdrSession;
+  const named = session ? sessionTitle(session) : null;
   useEffect(() => {
     let e: Entry | null = null;
     let ro: ResizeObserver | null = null;
@@ -382,7 +403,7 @@ export function TerminalView({ id, run, report }: { id: string; run: TerminalRun
   return (
     <>
       <div className="browser-bar terminal-title" title={`${run.cwd} $ ${run.command}`}>
-        <span className="ellipsis">{title || run.title}</span>
+        <span className="ellipsis">{named || title || run.title}</span>
       </div>
       <div className="terminal-slot" ref={slot} />
     </>

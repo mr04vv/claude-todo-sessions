@@ -72,7 +72,7 @@ import { TYPING, useTodoKeys } from "./todoKeys";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { reviewMessages, type ReviewRequest } from "./slackMessages";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
-import { closeTerminal, focusTerminal, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
+import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
 /// The usage API answers 429 when asked often (status lines poll it too), so
@@ -6006,6 +6006,8 @@ export default function App() {
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
   const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? [])];
+  /// A terminal's title: the session it shows, as the session list names it.
+  const sessionTitle = (id: string) => (board ? (sessionItemsOf(board).find((i) => i.session.session_id === id)?.session.title ?? null) : null);
   // A session whose page or terminal the pane shows (the app in front) is looked at.
   const watchedSession = browserShown && typingSide !== null && activeTab ? (activeTab.term?.session ?? cloudIdOfPage(activeTab.url)) : null;
   const watchedUnread = !!watchedSession && allSessions.some((s) => s.session_id === watchedSession && s.unread);
@@ -6164,6 +6166,7 @@ export default function App() {
     <BeginWebContext.Provider value={beginWeb}>
     <OpenCloudContext.Provider value={openCloud}>
     <TerminalContext.Provider value={inAppTerminal}>
+    <SessionTitleContext.Provider value={sessionTitle}>
       <div
         className={`app${browserShown ? " with-browser" : ""}${browserShown && !focusMode && typingSide ? ` typing-${typingSide}` : ""}${focusMode ? ` focus${focusTyping ? ` typing-${focusTyping}` : ""}` : ""}`}
         data-zone={sideZone ? "sidebar" : undefined}
@@ -6672,6 +6675,7 @@ export default function App() {
           />
         )}
       </div>
+    </SessionTitleContext.Provider>
     </TerminalContext.Provider>
     </OpenCloudContext.Provider>
     </BeginWebContext.Provider>
