@@ -5464,7 +5464,7 @@ export default function App() {
     const links = terminalLinks(id);
     setPaletteStart({
       terminal: id,
-      command: { key: "terminalLinks", label: "ターミナルのリンク", run: () => {}, items: () => links.map((url) => ({ key: url, label: url, run: () => openTerminalLink(url, true) })) },
+      command: { key: "terminalLinks", label: "ターミナルのリンク", run: () => {}, items: () => links.map(({ url, text }) => ({ key: url, label: text ?? url, hint: text && url, run: () => openTerminalLink(url, true) })) },
     });
     setDialog("palette");
   };

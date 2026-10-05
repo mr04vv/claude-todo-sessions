@@ -117,7 +117,17 @@ interface Entry {
   look: Look;
   /// The window title the program set (OSC 0 / 2), as Ghostty shows it.
   title: string;
+  /// Text a program made a link (OSC 8), the latest last.
+  marked: MarkedLink[];
 }
+
+interface MarkedLink {
+  url: string;
+  text: string;
+}
+
+/// How many marked links a terminal remembers.
+const MARKED_LINKS = 200;
 const entries = new Map<string, Entry>();
 
 /// Opens a link from a terminal in the browser, in front (`front`) or behind.
@@ -140,17 +150,34 @@ function rowText(line: IBufferLine) {
   return { text, cols };
 }
 
-/// The addresses terminal `id` shows now, the lowest (latest) first.
-export function terminalLinks(id: string): string[] {
-  const term = entries.get(id)?.term;
-  if (!term) return [];
+/// The text of a row from column `from` up to (not with) `to`.
+function textBetween(line: IBufferLine, from: number, to: number) {
+  const { text, cols } = rowText(line);
+  return [...text].filter((_, i) => cols[i] >= from && cols[i] < to).join("");
+}
+
+/// The links terminal `id` shows now, the lowest (latest) first: addresses in
+/// its text, and text a program made a link (found by its text, as a program
+/// redrawing the screen moves it). `text` is the latter's.
+export function terminalLinks(id: string): { url: string; text?: string }[] {
+  const entry = entries.get(id);
+  if (!entry) return [];
+  const { term, marked } = entry;
   const buffer = term.buffer.active;
-  const urls: string[] = [];
+  const links: { url: string; text?: string; at: number }[] = [];
   for (let y = buffer.viewportY + term.rows - 1; y >= buffer.viewportY; y--) {
     const line = buffer.getLine(y);
-    if (line) urls.push(...findUrls(rowText(line).text).map((l) => l.url).reverse());
+    if (!line) continue;
+    const { text } = rowText(line);
+    const row = findUrls(text).map(({ url, index }) => ({ url, at: index }));
+    for (const m of marked) {
+      const at = text.indexOf(m.text);
+      if (at >= 0) row.push({ ...m, at });
+    }
+    links.push(...row.sort((a, b) => b.at - a.at));
   }
-  return [...new Set(urls)];
+  const seen = new Set<string>();
+  return links.filter((l) => !seen.has(l.url) && seen.add(l.url)).map(({ url, text }) => ({ url, text }));
 }
 
 const decode = (b64: string) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -247,6 +274,23 @@ function entryFor(id: string, look: Look): Entry {
     // Links a program marks (OSC 8, as Claude Code's) and addresses in the text open on ⌘-click.
     // allowProposedApi: the Unicode 11 widths (below) go through xterm.js's proposed unicode API.
     const term = new Terminal({ ...look.options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true, linkHandler: { activate: openClicked }, allowProposedApi: true });
+    // Remember what text each OSC 8 link covers, for ⌘⇧L; xterm.js handles it too (false).
+    const marked: MarkedLink[] = [];
+    let opened: { url: string; y: number; x: number } | null = null;
+    term.parser.registerOscHandler(8, (data) => {
+      const buffer = term.buffer.active;
+      const y = buffer.baseY + buffer.cursorY;
+      const line = opened && opened.y === y ? buffer.getLine(y) : undefined;
+      const text = opened && line ? textBetween(line, opened.x, buffer.cursorX).trim() : "";
+      if (opened && text && !marked.some((m) => m.url === opened?.url && m.text === text)) {
+        marked.push({ url: opened.url, text });
+        if (marked.length > MARKED_LINKS) marked.shift();
+      }
+      // "params;URI"; an empty URI closes the link.
+      const url = data.slice(data.indexOf(";") + 1);
+      opened = /^https?:\/\//.test(url) ? { url, y, x: buffer.cursorX } : null;
+      return false;
+    });
     term.registerLinkProvider({
       provideLinks(y, callback) {
         const line = term.buffer.active.getLine(y - 1);
@@ -319,7 +363,7 @@ function entryFor(id: string, look: Look): Entry {
     const host = document.createElement("div");
     host.className = "terminal-host";
     host.dataset.terminal = id;
-    e = { term, fit, host, started: false, look, title: "" };
+    e = { term, fit, host, started: false, look, title: "", marked };
     const entry = e;
     term.onTitleChange((title) => (entry.title = title));
     entries.set(id, e);
