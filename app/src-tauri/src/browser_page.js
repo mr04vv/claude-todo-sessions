@@ -31,6 +31,14 @@
     guard();
   }
 
+  // claude.ai jumps to the top when WebKit's rubber band takes a scroll
+  // past the bottom (not in Chrome, which has none): no rubber band there.
+  if (/(^|\.)claude\.ai$/.test(location.hostname)) {
+    const style = document.createElement("style");
+    style.textContent = "* { overscroll-behavior: none !important; }";
+    document.documentElement.appendChild(style);
+  }
+
   // The app cancels these navigations and acts on them instead.
   const FOCUS_URL = "todo-sessions://focus-url";
   const NEW_TAB = "todo-sessions://new-tab";
