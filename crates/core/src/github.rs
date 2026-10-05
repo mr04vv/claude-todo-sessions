@@ -34,8 +34,9 @@ pub fn parse_statuses(response: &Value, urls: &[String]) -> Vec<(String, String)
 }
 
 /// The user's open PRs and the reviewers each still waits on (a review
-/// given takes a reviewer off), for the Slack messages asking them.
-pub const REVIEW_REQUESTS_QUERY: &str = "query { search(query: \"is:pr is:open author:@me\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number title url isDraft repository { nameWithOwner } reviewRequests(first: 30) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } } } } } }";
+/// given takes a reviewer off), for the Slack messages asking them; not
+/// archived repositories' (they can no longer move).
+pub const REVIEW_REQUESTS_QUERY: &str = "query { search(query: \"is:pr is:open author:@me archived:false\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number title url isDraft repository { nameWithOwner } reviewRequests(first: 30) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } } } } } }";
 
 /// An open PR of the user's, and whom it waits on (a user's login or a team's slug).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -127,7 +128,7 @@ mod tests {
             repo: "o/a".into(), number: 1, title: "Fix".into(), url: "https://github.com/o/a/pull/1".into(),
             reviewers: vec!["alice".into(), "core".into()],
         }], "drafts and PRs asking no one are left out; a team goes by its slug");
-        assert!(REVIEW_REQUESTS_QUERY.contains("author:@me") && REVIEW_REQUESTS_QUERY.contains("is:open"));
+        assert!(REVIEW_REQUESTS_QUERY.contains("author:@me") && REVIEW_REQUESTS_QUERY.contains("is:open") && REVIEW_REQUESTS_QUERY.contains("archived:false"));
     }
     use serde_json::json;
 
