@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Terminal, type IBufferLine, type ITerminalOptions, type ITheme } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { allKeys, matches, matchesCombo } from "./keymap";
 import { KittyFlags, kittyChord } from "./kitty";
@@ -242,7 +243,8 @@ function entryFor(id: string, look: Look): Entry {
   let e = entries.get(id);
   if (!e) {
     // Links a program marks (OSC 8, as Claude Code's) and addresses in the text open on ⌘-click.
-    const term = new Terminal({ ...look.options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true, linkHandler: { activate: openClicked } });
+    // allowProposedApi: the Unicode 11 widths (below) go through xterm.js's proposed unicode API.
+    const term = new Terminal({ ...look.options, scrollback: SCROLLBACK_LINES, macOptionIsMeta: true, linkHandler: { activate: openClicked }, allowProposedApi: true });
     term.registerLinkProvider({
       provideLinks(y, callback) {
         const line = term.buffer.active.getLine(y - 1);
@@ -257,6 +259,11 @@ function entryFor(id: string, look: Look): Entry {
     });
     const fit = new FitAddon();
     term.loadAddon(fit);
+    // Character widths as programs (Claude Code) and herdr (Ghostty's) count
+    // them: with xterm.js's default (Unicode 6) a symbol or emoji counted
+    // narrow here but wide there shifts the line a program redraws.
+    term.loadAddon(new Unicode11Addon());
+    term.unicode.activeVersion = "11";
     const write = (data: string) => void invoke("term_write", { id, data }).catch(() => {});
     term.onData(write);
     const kitty = new KittyFlags();
