@@ -1359,6 +1359,17 @@ button.lane-toggle:hover .lane-name {
   border-top: 1px solid var(--border-2);
 }
 
+/* A session outside any group: its own block, as a group's head is. */
+.row.lone {
+  margin-top: 10px;
+  background: var(--sidebar);
+  border-top: 1px solid var(--border-2);
+}
+
+.row.lone > .ellipsis {
+  font-weight: 600;
+}
+
 .row.in-group {
   position: relative;
   padding-left: 28px;
