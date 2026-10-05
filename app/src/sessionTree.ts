@@ -29,7 +29,13 @@ export const todoRowId = (todoId: number) => `t:${todoId}`;
 /// session the board knows, to tell a subtask never started from one whose
 /// sessions are just hidden. Without `withTodos` (a filter is on) only
 /// sessions show: no rows of subtasks without one, no group without a session.
-export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Todo[], showIdleChildren: boolean, withTodos = true): { groups: TreeRow[][]; flat: TreeRow[] } {
+export function sessionTree(
+  items: SessionItem[],
+  all: SessionItem[],
+  todos: Todo[],
+  showIdleChildren: boolean,
+  withTodos = true,
+): { groups: TreeRow[][]; flat: TreeRow[]; ordered: TreeRow[][] } {
   const aside = (todo: Todo | undefined) => todo?.status === "pending";
   const children = (parent: Todo) => todos.filter((t) => t.parent_id === parent.id).sort((a, b) => a.id - b.id);
   const parents = todos.filter((t) => !t.parent_id && !aside(t) && children(t).length > 0);
@@ -70,7 +76,9 @@ export function sessionTree(items: SessionItem[], all: SessionItem[], todos: Tod
     .filter((i) => !aside(i.todo) && (!i.todo || !inTree.has(i.todo.id)))
     .sort(bySession)
     .map(({ session, todo }) => ({ kind: "session", id: session.session_id, session, todo }));
-  return { groups, flat };
+  // Groups and lone sessions together, the one changed last first.
+  const ordered = [...groups, ...flat.map((r) => [r])].sort((a, b) => latest(b) - latest(a));
+  return { groups, flat, ordered };
 }
 
 /// The session that changed last first.

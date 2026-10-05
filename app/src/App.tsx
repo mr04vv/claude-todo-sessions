@@ -3180,7 +3180,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   const pass = (i: SessionItem) =>
     filter === "all" || (filter === "unlinked" ? !i.todo : filter === "unread" ? i.session.unread : i.session.state === filter);
   // Todos with subtasks head groups (sessionTree.ts); a folded group shows its head only.
-  const { groups, flat } = sessionTree((showEnded ? all : live).filter(pass), all, board.todos, showEnded, filter === "all");
+  const { ordered } = sessionTree((showEnded ? all : live).filter(pass), all, board.todos, showEnded, filter === "all");
   const [folded, setFolded] = useState<Set<number>>(new Set());
   const fold = (id: number, on?: boolean) =>
     setFolded((prev) => {
@@ -3189,7 +3189,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
       else next.delete(id);
       return next;
     });
-  const rows: TreeRow[] = [...groups.flatMap((g) => g.filter((r) => r.kind === "group" || !folded.has(r.group ?? -1))), ...flat];
+  const rows: TreeRow[] = ordered.flatMap((g) => g.filter((r) => r.kind === "group" || !folded.has(r.group ?? -1)));
   const ended = all.length - live.length;
   // Cloud sessions done with their turn, which the bulk archive takes.
   const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
