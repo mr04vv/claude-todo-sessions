@@ -86,6 +86,8 @@ struct AppState {
     focus_input: Mutex<HashMap<String, std::time::Instant>>,
     /// Held while a browser tab is shown or created.
     browser_lock: Mutex<()>,
+    /// Each tab's zoom from the keys (1.0 when missing), for this run only.
+    zoom: Mutex<HashMap<String, f64>>,
     /// CLI session ids archived in Desktop. Reading every Desktop record is
     /// slow, so the watch loop refreshes this and the board only reads it.
     archived: Mutex<HashSet<String>>,
@@ -1548,6 +1550,53 @@ struct TabOnly {
     tab: String,
 }
 
+/// `{tab, zoom}` when a tab's zoom changes (1.0 is none).
+const BROWSER_ZOOM_EVENT: &str = "browser-zoom";
+/// The zooms ⌘= and ⌘- step through, as Chrome's.
+const ZOOM_STEPS: [f64; 13] = [0.5, 0.67, 0.75, 0.8, 0.9, 1.0, 1.1, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0];
+const NO_ZOOM: f64 = 1.0;
+
+#[derive(Clone, Serialize)]
+struct TabZoom {
+    tab: String,
+    zoom: f64,
+}
+
+/// The zoom after "in", "out" or "reset" from `zoom`.
+fn next_zoom(zoom: f64, action: &str) -> Option<f64> {
+    let (first, last) = (ZOOM_STEPS[0], ZOOM_STEPS[ZOOM_STEPS.len() - 1]);
+    match action {
+        "in" => Some(ZOOM_STEPS.into_iter().find(|&z| z > zoom).unwrap_or(last)),
+        "out" => Some(ZOOM_STEPS.into_iter().rev().find(|&z| z < zoom).unwrap_or(first)),
+        "reset" => Some(NO_ZOOM),
+        _ => None,
+    }
+}
+
+/// Zooms tab `tab` "in", "out" or "reset"; resetting undoes a pinch too.
+fn zoom_tab(app: &AppHandle, tab: &str, action: &str) -> Result<(), String> {
+    let view = app.get_webview(&tab_label(tab)?).ok_or("このタブは開いていません")?;
+    let state = app.state::<AppState>();
+    let mut zooms = state.zoom.lock().map_err(err)?;
+    let zoom = next_zoom(zooms.get(tab).copied().unwrap_or(NO_ZOOM), action).ok_or_else(|| format!("unknown zoom {action}"))?;
+    view.set_zoom(zoom).map_err(err)?;
+    if action == "reset" {
+        view.with_webview(|w| {
+            // SAFETY: on macOS the handle is the WKWebView, and this runs on the main thread as WebKit wants.
+            unsafe { (*(w.inner() as *const objc2_web_kit::WKWebView)).setMagnification(NO_ZOOM) };
+        })
+        .map_err(err)?;
+    }
+    zooms.insert(tab.to_string(), zoom);
+    app.emit(BROWSER_ZOOM_EVENT, TabZoom { tab: tab.to_string(), zoom }).map_err(err)
+}
+
+/// "in", "out" or "reset" the zoom of a tab.
+#[tauri::command(async)]
+fn browser_zoom(app: AppHandle, tab: String, action: String) -> Result<(), String> {
+    zoom_tab(&app, &tab, &action)
+}
+
 /// How far below the main webview's top the page starts. The main webview
 /// runs under the title bar and the page's viewport begins below it
 /// (`viewport` is the page's innerHeight), while a child webview is placed
@@ -1632,6 +1681,13 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
                 }
                 return false;
             }
+            // The page keeps the keyboard for these too.
+            if let Some(action) = url.host_str().and_then(|h| h.strip_prefix("zoom-")) {
+                if let Err(e) = zoom_tab(&on_focus, &focus_tab, action) {
+                    eprintln!("zoom: {e}");
+                }
+                return false;
+            }
             // Only telling: the page keeps the keyboard.
             if url.host_str() == Some("page-focused") {
                 let _ = on_focus.emit(PAGE_FOCUSED_EVENT, TabOnly { tab: focus_tab.clone() });
@@ -1710,10 +1766,13 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             let _ = on_new.emit(BROWSER_NEW_TAB_EVENT, NewTab { url: url.to_string() });
             tauri::webview::NewWindowResponse::Deny
         });
-    window
-        .add_child(builder, LogicalPosition::new(x, y + page_top(&app, viewport)), LogicalSize::new(width, height))
-        .map(|_| ())
-        .map_err(err)
+    let view = window.add_child(builder, LogicalPosition::new(x, y + page_top(&app, viewport)), LogicalSize::new(width, height)).map_err(err)?;
+    // A pinch zooms the page, as in Safari.
+    view.with_webview(|w| {
+        // SAFETY: on macOS the handle is the WKWebView, and this runs on the main thread as WebKit wants.
+        unsafe { (*(w.inner() as *const objc2_web_kit::WKWebView)).setAllowsMagnification(true) };
+    })
+    .map_err(err)
 }
 
 /// Follows tab `tab`'s placeholder when the layout changes.
@@ -1736,7 +1795,8 @@ fn browser_hide(app: AppHandle, tab: Option<String>) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
-fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
+fn browser_close(app: AppHandle, state: State<AppState>, tab: String) -> Result<(), String> {
+    state.zoom.lock().map_err(err)?.remove(&tab);
     match app.get_webview(&tab_label(&tab)?) {
         Some(view) => view.close().map_err(err),
         None => Ok(()),
@@ -2358,6 +2418,7 @@ fn main() {
             herdr_session: Mutex::new(None),
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
+            zoom: Mutex::new(HashMap::new()),
             focus_mode: AtomicBool::new(false),
             logins: Mutex::new(HashMap::new()),
             pending_login: Mutex::new(None),
@@ -2504,7 +2565,8 @@ fn main() {
             terminal::user_font,
             terminal::ghostty_keybinds,
             set_herdr_session,
-            browser_go
+            browser_go,
+            browser_zoom
         ])
         .run(tauri::generate_context!())
         .expect("run tauri app");
@@ -2513,6 +2575,18 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zooms_by_chromes_steps() {
+        assert_eq!(next_zoom(1.0, "in"), Some(1.1));
+        assert_eq!(next_zoom(1.0, "out"), Some(0.9));
+        assert_eq!(next_zoom(1.25, "reset"), Some(1.0));
+        assert_eq!(next_zoom(3.0, "in"), Some(3.0), "stays at the largest");
+        assert_eq!(next_zoom(0.5, "out"), Some(0.5), "stays at the smallest");
+        assert_eq!(next_zoom(1.05, "in"), Some(1.1), "off a step: the next one up");
+        assert_eq!(next_zoom(1.05, "out"), Some(1.0), "off a step: the next one down");
+        assert_eq!(next_zoom(1.0, "sideways"), None);
+    }
 
     #[test]
     fn a_review_session_names_its_pr_by_record_or_title() {

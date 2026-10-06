@@ -53,6 +53,9 @@
   const FOCUS_EXIT = "todo-sessions://focus-exit";
   const CLOSE_TAB = "todo-sessions://close-tab";
   const ADD_INPUT = "todo-sessions://add-input";
+  const ZOOM_IN = "todo-sessions://zoom-in";
+  const ZOOM_OUT = "todo-sessions://zoom-out";
+  const ZOOM_RESET = "todo-sessions://zoom-reset";
   const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
   const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
 
@@ -100,6 +103,9 @@
     ["nextTab", () => (location.href = NEXT_TAB)],
     ["archive", () => (location.href = ARCHIVE)],
     ["toInput", () => (location.href = TO_INPUT)],
+    ["zoomIn", () => (location.href = ZOOM_IN)],
+    ["zoomOut", () => (location.href = ZOOM_OUT)],
+    ["zoomReset", () => (location.href = ZOOM_RESET)],
     ["back", () => history.back()],
     ["forward", () => history.forward()],
     ["reload", () => location.reload()],

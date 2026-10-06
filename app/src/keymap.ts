@@ -21,6 +21,9 @@ export type Action =
   | "terminalLinks"
   | "back"
   | "forward"
+  | "zoomIn"
+  | "zoomOut"
+  | "zoomReset"
   | "down"
   | "up"
   | "left"
@@ -68,6 +71,9 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["terminalLinks", "ターミナルに出ているリンクを選んで開く（⌘ クリックで後ろのタブ、⌘⇧ クリックで前に開く）"],
       ["back", "戻る"],
       ["forward", "進む"],
+      ["zoomIn", "拡大"],
+      ["zoomOut", "縮小"],
+      ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
       ["archive", "Cloud セッションのページをアーカイブ（セッション一覧では、行のセッションを片付ける）"],
       ["toInput", "表示中のページを input に追加"],
     ],
@@ -129,6 +135,9 @@ export const DEFAULT_KEYS: Record<Action, string> = {
   terminalLinks: "cmd+shift+l",
   back: "cmd+[",
   forward: "cmd+]",
+  zoomIn: "cmd+=",
+  zoomOut: "cmd+-",
+  zoomReset: "cmd+0",
   down: "j",
   up: "k",
   left: "h",

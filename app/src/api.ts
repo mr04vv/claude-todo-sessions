@@ -378,6 +378,7 @@ export const api = {
   browserFocus: (tab: string, input?: boolean, text?: string) => invoke<void>("browser_focus", { tab, input: input ?? null, text: text ?? null }),
   browserUrl: (tab: string) => invoke<string | null>("browser_url", { tab }),
   browserGo: (tab: string, action: "back" | "forward" | "reload") => invoke<void>("browser_go", { tab, action }),
+  browserZoom: (tab: string, action: "in" | "out" | "reset") => invoke<void>("browser_zoom", { tab, action }),
 };
 
 /// What the note is made as (`NoteFormat` in launch.rs).
@@ -426,6 +427,8 @@ export const BROWSER_FOCUS_URL_EVENT = "browser-focus-url";
 export const BROWSER_ADDRESS_EVENT = "browser-address";
 /** `{tab, title}` when a tab's page title changes. */
 export const BROWSER_TITLE_EVENT = "browser-title";
+/** `{tab, zoom}` when a tab's zoom changes (1 is none). */
+export const BROWSER_ZOOM_EVENT = "browser-zoom";
 /** `{session_id}` of a cloud session picked in the menu bar or a notification. */
 export const OPEN_CLOUD_EVENT = "open-cloud";
 /** `{url}` for a link a page opens in a new window; it becomes a new tab. */
