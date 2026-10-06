@@ -187,6 +187,7 @@ function openLocal(terminal: InAppTerminal | null, sessionId: string, report: (e
 }
 
 const COLUMNS: { status: Status; label: string }[] = [
+  { status: "backlog", label: "Backlog" },
   { status: "todo", label: "Todo" },
   { status: "doing", label: "Doing" },
   { status: "review", label: "Review" },
@@ -216,7 +217,7 @@ const prStageLabel = (todo: Todo | undefined) => (todo?.pr_state ? PR_STAGE[todo
 const STATE_ORDER: SessionState[] = ["needs_input", "running", "idle", "ended"];
 
 /// Status order for the list: what is in progress first, done last.
-const STATUS_RANK: Record<Status, number> = { review: 0, doing: 1, todo: 2, pending: 3, done: 4 };
+const STATUS_RANK: Record<Status, number> = { review: 0, doing: 1, todo: 2, pending: 3, backlog: 4, done: 5 };
 
 const PR_LABEL: Record<PrState, string> = {
   draft: "Draft",
@@ -588,7 +589,7 @@ function Icon({ name, size = 15 }: { name: IconName; size?: number }) {
   );
 }
 
-/// Linear-style status mark: empty, half, three quarters, checked.
+/// Linear-style status mark: dashed, empty, half, three quarters, checked.
 function StatusIcon({ status }: { status: Status }) {
   if (status === "done") {
     return (
@@ -599,6 +600,13 @@ function StatusIcon({ status }: { status: Status }) {
     );
   }
   const color = `var(--st-${status})`;
+  if (status === "backlog") {
+    return (
+      <svg className="status-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="8" fill="none" stroke={color} strokeWidth="2.2" strokeDasharray="3.2 2.6" />
+      </svg>
+    );
+  }
   if (status === "pending") {
     return (
       <svg className="status-icon" width="14" height="14" viewBox="0 0 24 24" aria-hidden="true">
@@ -1328,8 +1336,33 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
   onToggle: () => void;
   onAdd: (title: string) => void;
 }) {
-  const open = lane.todos.filter((t) => t.status !== "done").sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
-  const todos = [...open, ...visibleDone(lane.todos, doneRecent)];
+  // Backlog is set aside: folded to a count until opened, then after the rest.
+  const [showBacklog, setShowBacklog] = useState(false);
+  const open = lane.todos.filter((t) => t.status !== "done" && t.status !== "backlog").sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
+  const backlog = lane.todos.filter((t) => t.status === "backlog").sort((a, b) => a.id - b.id);
+  const row = (t: Todo) => {
+    const urgent = urgentState(liveSessions(t));
+    const direct = directSession(t);
+    return (
+      <li key={t.id} data-row={`todo:${t.id}`} className={`row${t.id === selectedId ? " selected" : ""}${t.status === "done" ? " done" : ""}`} onClick={() => onSelectTodo(t.id)}>
+        <StatusIcon status={t.status} />
+        <span className="mono muted ref">{todoRef(t)}</span>
+        <span className="row-title">{t.title}</span>
+        {urgent && <StateBadge state={urgent} unread={t.sessions.some((s) => s.unread) || undefined} />}
+        <GhChip todo={t} report={report} />
+        {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
+        {t.repos[0] && !lane.repo && (
+          <span className="tag repo-tag">
+            <RepoDot repo={t.repos[0]} />
+            {repoName(t.repos[0])}
+          </span>
+        )}
+        <StatusSelect todo={t} setStatus={setStatus} />
+        <span className="muted when">{ago(t.updated_at)}</span>
+        {direct && <OpenMenu session={direct} report={report} primary={urgent === "needs_input"} />}
+      </li>
+    );
+  };
   return (
     <section className="list-lane" data-lane={lane.key}>
       <div data-row={`lane:${lane.key}`}>
@@ -1337,29 +1370,17 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
       </div>
       {!collapsed && (
         <ul className="rows">
-          {todos.map((t) => {
-            const urgent = urgentState(liveSessions(t));
-            const direct = directSession(t);
-            return (
-              <li key={t.id} data-row={`todo:${t.id}`} className={`row${t.id === selectedId ? " selected" : ""}${t.status === "done" ? " done" : ""}`} onClick={() => onSelectTodo(t.id)}>
-                <StatusIcon status={t.status} />
-                <span className="mono muted ref">{todoRef(t)}</span>
-                <span className="row-title">{t.title}</span>
-                {urgent && <StateBadge state={urgent} unread={t.sessions.some((s) => s.unread) || undefined} />}
-                <GhChip todo={t} report={report} />
-                {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
-                {t.repos[0] && !lane.repo && (
-                  <span className="tag repo-tag">
-                    <RepoDot repo={t.repos[0]} />
-                    {repoName(t.repos[0])}
-                  </span>
-                )}
-                <StatusSelect todo={t} setStatus={setStatus} />
-                <span className="muted when">{ago(t.updated_at)}</span>
-                {direct && <OpenMenu session={direct} report={report} primary={urgent === "needs_input"} />}
-              </li>
-            );
-          })}
+          {open.map(row)}
+          {backlog.length > 0 && (
+            <li className="row backlog-toggle" onClick={() => setShowBacklog(!showBacklog)} aria-expanded={showBacklog}>
+              <StatusIcon status="backlog" />
+              <span className="muted">
+                Backlog {backlog.length} 件{showBacklog ? "" : "（クリックで表示）"}
+              </span>
+            </li>
+          )}
+          {showBacklog && backlog.map(row)}
+          {visibleDone(lane.todos, doneRecent).map(row)}
         </ul>
       )}
       {!collapsed && (

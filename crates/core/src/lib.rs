@@ -53,6 +53,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
+    /// Set aside for a while; not planned yet.
+    Backlog,
     Todo,
     Doing,
     /// A PR is up and waiting on review.
@@ -429,7 +431,7 @@ const TODOS_TABLE: &str = "
 CREATE TABLE IF NOT EXISTS {name} (
     id INTEGER PRIMARY KEY,
     title TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'review', 'pending', 'done')),
+    status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('backlog', 'todo', 'doing', 'review', 'pending', 'done')),
     issue_url TEXT,
     cwd TEXT,
     memo TEXT,
@@ -542,6 +544,7 @@ const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, re
 impl Status {
     fn as_str(self) -> &'static str {
         match self {
+            Status::Backlog => "backlog",
             Status::Todo => "todo",
             Status::Doing => "doing",
             Status::Review => "review",
@@ -551,6 +554,7 @@ impl Status {
     }
     fn parse(s: &str) -> Status {
         match s {
+            "backlog" => Status::Backlog,
             "doing" => Status::Doing,
             "review" => Status::Review,
             "pending" => Status::Pending,
@@ -672,10 +676,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         "INSERT INTO session_seen (session_id, seen_at) SELECT session_id, ?1 FROM sessions WHERE NOT EXISTS (SELECT 1 FROM session_seen)",
         [now()],
     )?;
-    // The status CHECK predates 'review' or 'pending'; SQLite cannot alter a CHECK,
+    // The status CHECK predates 'review', 'pending' or 'backlog'; SQLite cannot alter a CHECK,
     // so the table is rebuilt (which also gives migrated integer columns their type).
     let todos_sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE name = 'todos'", [], |r| r.get(0))?;
-    if !todos_sql.contains("'pending'") {
+    if !todos_sql.contains("'backlog'") {
         let cols = TODO_TABLE_COLS;
         conn.execute_batch(&format!(
             "PRAGMA foreign_keys = OFF;
