@@ -36,6 +36,7 @@ import {
   BROWSER_NEW_TAB_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
+  BROWSER_ZOOM_EVENT,
   BROWSER_URL_EVENT,
   CLOUD_HOME,
   cloudWebUrl,
@@ -1786,6 +1787,8 @@ interface BrowserTab {
   nav: number;
   /// Set on an in-app terminal tab, which shows no web page.
   term?: TerminalRun;
+  /// The page's zoom from the keys, when not 1.
+  zoom?: number;
   /// One of PINNED_PAGES.
   pinned?: boolean;
   /// The Input mode's own page (on its left or right), apart from the pane's tabs.
@@ -2707,8 +2710,8 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
     }, ADDRESS_POLL_MS);
     return () => clearInterval(t);
   }, [active.id, covered]);
-  // ⌘L edits the address, ⌘R reloads and ⌘[ ⌘] go back and forward, as in a
-  // browser; a script in the page does the same when the page has focus.
+  // ⌘L edits the address, ⌘R reloads, ⌘[ ⌘] go back and forward and ⌘= ⌘- ⌘0
+  // zoom (from the address), as in a browser; a script in the page does the same when the page has focus.
   const address = useRef<HTMLInputElement>(null);
   const tabId = useRef(active.id);
   tabId.current = active.id;
@@ -2724,6 +2727,12 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
       } else if (matches(e, "focusUrl")) {
         e.preventDefault();
         focusAddress();
+      } else if (document.activeElement === address.current) {
+        // Only from its own address: the Input mode shows two of these.
+        const zoom = matches(e, "zoomIn") ? "in" : matches(e, "zoomOut") ? "out" : matches(e, "zoomReset") ? "reset" : null;
+        if (!zoom) return;
+        e.preventDefault();
+        api.browserZoom(tabId.current, zoom).catch(report);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -2764,6 +2773,11 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
             api.browserFocus(active.id).catch(report);
           }}
         />
+        {active.zoom && active.zoom !== 1 && (
+          <button className="ghost small" title={`クリックで 100% に戻す（${keyLabel(keyOf("zoomReset"))}）`} onClick={() => api.browserZoom(active.id, "reset").catch(report)}>
+            {Math.round(active.zoom * 100)}%
+          </button>
+        )}
         {onToInput && (
           <button className="ghost small" title={`このページを input に入れる（${keyLabel(keyOf("toInput"))}。先に作った input にも、新しい input にも）`} onClick={onToInput}>
             Input に追加
@@ -5775,6 +5789,9 @@ export default function App() {
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url, loading: payload.loading } : t)));
       }),
       listen<{ tab: string; url: string }>(BROWSER_ADDRESS_EVENT, ({ payload }) => setTabUrl(payload.tab, payload.url)),
+      listen<{ tab: string; zoom: number }>(BROWSER_ZOOM_EVENT, ({ payload }) =>
+        setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, zoom: payload.zoom } : t))),
+      ),
       listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => {
         const url = tabUrls.get(payload.tab);
         if (url) recordVisit(url, payload.title, false);

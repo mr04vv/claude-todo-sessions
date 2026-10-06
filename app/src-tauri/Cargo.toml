@@ -16,10 +16,10 @@ mac-notification-sys = "0.6"
 uuid = { version = "1", features = ["v4"] }
 # Whether the app is in front, which the window's focus cannot tell once a browser tab has the keyboard.
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication"] }
-# Reading a tab's page text (feynman.rs): the WKWebView's evaluateJavaScript.
+# Reading a tab's page text (feynman.rs): the WKWebView's evaluateJavaScript; its pinch zoom.
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
-objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "block2", "objc2-app-kit"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "block2", "objc2-app-kit", "objc2-core-foundation"] }
 block2 = "0.6"
 # The in-app terminal pane (terminal.rs).
 portable-pty = "0.9"
