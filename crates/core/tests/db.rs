@@ -691,6 +691,29 @@ fn pending_works_on_databases_made_before_it() {
 }
 
 #[test]
+fn backlog_works_on_databases_made_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('todo', 'doing', 'review', 'pending', 'done')),
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL, repos TEXT, prompt TEXT, issue_state TEXT,
+         pr_url TEXT, pr_state TEXT, queue_runner TEXT, queue_pos INTEGER, queue_error TEXT, kind TEXT,
+         parent_id INTEGER REFERENCES todos(id) ON DELETE SET NULL);
+         INSERT INTO todos (title, status, updated_at, parent_id) VALUES ('plan', 'pending', 5, NULL);
+         INSERT INTO todos (title, status, updated_at, parent_id) VALUES ('later', 'todo', 6, 1);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let t = db.update_todo(2, TodoPatch { status: Some(Status::Backlog), ..Default::default() }).unwrap();
+    assert_eq!((t.title.as_str(), t.status, t.parent_id), ("later", Status::Backlog, Some(1)));
+    assert_eq!(db.get_todo(1).unwrap().unwrap().status, Status::Pending);
+    assert_eq!(db.list_todos(Some(Status::Backlog)).unwrap().len(), 1);
+}
+
+#[test]
 fn sessions_and_links_come_grouped_by_todo() {
     let (_d, db) = open();
     let a = db.create_todo(new_todo("a")).unwrap();

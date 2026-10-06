@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { TerminalRun } from "./Terminal";
 
-export type Status = "todo" | "doing" | "review" | "pending" | "done";
+export type Status = "backlog" | "todo" | "doing" | "review" | "pending" | "done";
 export type SessionState = "running" | "needs_input" | "idle" | "ended";
 
 export interface Session {
