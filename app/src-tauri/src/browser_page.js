@@ -233,11 +233,13 @@
   const passField = () => [...document.querySelectorAll("input[type=password]")].find(shown);
   /// The user typed in a step before the password's.
   const LOGIN_USER_KEY = "__todoSessionsLoginUser";
+  /// The user a site remembers, kept in a hidden field beside the password (OneLogin's).
+  const hiddenUser = () => [...document.querySelectorAll(USER_FIELDS)].find((el) => el.type !== "password" && el.value)?.value;
   const offerLogin = () => {
     const user = userField()?.value;
     if (user) sessionStorage.setItem(LOGIN_USER_KEY, user);
     const pass = passField()?.value;
-    const who = user || sessionStorage.getItem(LOGIN_USER_KEY);
+    const who = user || sessionStorage.getItem(LOGIN_USER_KEY) || hiddenUser();
     if (!pass || !who) return;
     location.href = `${LOGIN_CAPTURED}?u=${encodeURIComponent(who)}&p=${encodeURIComponent(pass)}`;
   };
