@@ -1,11 +1,11 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
 // commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling (and
-// picking a Google result), as the user set them), right-click offers translation (WKWebView has no translate item),
+// picking a Google result), as the user set them), right-click offers translation (a Chromium view has no translate item),
 // ⌥ + click keeps a link as an input todo, and X shows its bookmarks only.
 // It runs in the page's frames too (a doc's editor on claude.ai is one), but
-// there only passes the app's keys up to the page (FRAME): a frame must not
-// navigate for them, which some pages (claude.ai's viewer) take as leaving.
+// there only passes the app's keys up to the page (FRAME), which tells the app.
+// The helper binary (bin/helper.rs) runs this as each page's context is made.
 (() => {
   if (window.__todoSessionsPage) return;
   window.__todoSessionsPage = true;
@@ -31,15 +31,11 @@
     guard();
   }
 
-  // claude.ai jumps to the top when WebKit's rubber band takes a scroll
-  // past the bottom (not in Chrome, which has none): no rubber band there.
-  if (/(^|\.)claude\.ai$/.test(location.hostname)) {
-    const style = document.createElement("style");
-    style.textContent = "* { overscroll-behavior: none !important; }";
-    document.documentElement.appendChild(style);
-  }
-
-  // The app cancels these navigations and acts on them instead.
+  // The app hears a page through the console: a message that is one of these
+  // URLs (todo-sessions://...) is acted on, and kept out of the console.
+  // The console as it is now, before the page can change it.
+  const tell = console.debug.bind(console);
+  const send = (url) => tell(url);
   const FOCUS_URL = "todo-sessions://focus-url";
   const NEW_TAB = "todo-sessions://new-tab";
   const PREV_TAB = "todo-sessions://tab-prev";
@@ -86,26 +82,26 @@
       (e.shiftKey === parts.includes("shift") || (symbol && !parts.includes("shift")))
     );
   };
-  // What each key does here: the app's actions go to the app as navigations
-  // it cancels; the page's own (back, forward, reload) happen here.
+  // What each key does here: the app's actions go to the app as messages
+  // on the console (see `send`); the page's own (back, forward, reload) happen here.
   const KEY_ACTIONS = [
-    ["sideApp", () => (location.href = FOCUS_APP)],
+    ["sideApp", () => send(FOCUS_APP)],
     // With text selected, it goes along (the focus mode pastes it on the right).
     ["sidePane", (text) => {
-      location.href = text ? `${FOCUS_PANE}?text=${encodeURIComponent(text)}` : FOCUS_PANE;
+      send(text ? `${FOCUS_PANE}?text=${encodeURIComponent(text)}` : FOCUS_PANE);
     }],
-    ["palette", () => (location.href = PALETTE)],
-    ["sessions", () => (location.href = SESSIONS)],
-    ["focusUrl", () => (location.href = FOCUS_URL)],
-    ["newTab", () => (location.href = NEW_TAB)],
-    ["closeTab", () => (location.href = CLOSE_TAB)],
-    ["prevTab", () => (location.href = PREV_TAB)],
-    ["nextTab", () => (location.href = NEXT_TAB)],
-    ["archive", () => (location.href = ARCHIVE)],
-    ["toInput", () => (location.href = TO_INPUT)],
-    ["zoomIn", () => (location.href = ZOOM_IN)],
-    ["zoomOut", () => (location.href = ZOOM_OUT)],
-    ["zoomReset", () => (location.href = ZOOM_RESET)],
+    ["palette", () => send(PALETTE)],
+    ["sessions", () => send(SESSIONS)],
+    ["focusUrl", () => send(FOCUS_URL)],
+    ["newTab", () => send(NEW_TAB)],
+    ["closeTab", () => send(CLOSE_TAB)],
+    ["prevTab", () => send(PREV_TAB)],
+    ["nextTab", () => send(NEXT_TAB)],
+    ["archive", () => send(ARCHIVE)],
+    ["toInput", () => send(TO_INPUT)],
+    ["zoomIn", () => send(ZOOM_IN)],
+    ["zoomOut", () => send(ZOOM_OUT)],
+    ["zoomReset", () => send(ZOOM_RESET)],
     ["back", () => history.back()],
     ["forward", () => history.forward()],
     ["reload", () => location.reload()],
@@ -117,7 +113,7 @@
   // one of its frames) taking it says so.
   const FOCUSED = "todo-sessions://page-focused";
   const FRAME_FOCUSED = "focused";
-  const tellFocused = () => window.__todoSessionsFocusMode && (location.href = FOCUSED);
+  const tellFocused = () => window.__todoSessionsFocusMode && send(FOCUSED);
   window.addEventListener("focus", () => (FRAME ? window.top.postMessage({ [FRAME_KEY]: FRAME_FOCUSED }, "*") : tellFocused()));
 
   window.addEventListener(
@@ -127,7 +123,7 @@
       if (window.__todoSessionsFocusMode && e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        location.href = FOCUS_EXIT;
+        send(FOCUS_EXIT);
         return;
       }
       // Ahead of the page's own keys (ChatGPT's ⌘K search, say).
@@ -247,7 +243,7 @@
     const pass = passField()?.value;
     const who = user || sessionStorage.getItem(LOGIN_USER_KEY) || hiddenUser();
     if (!pass || !who) return;
-    location.href = `${LOGIN_CAPTURED}?u=${encodeURIComponent(who)}&p=${encodeURIComponent(pass)}`;
+    send(`${LOGIN_CAPTURED}?u=${encodeURIComponent(who)}&p=${encodeURIComponent(pass)}`);
   };
   window.addEventListener("submit", offerLogin, true);
   window.addEventListener(
@@ -310,7 +306,7 @@
       e.preventDefault();
       e.stopImmediatePropagation();
       const text = (link.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
-      location.href = `${ADD_INPUT}?u=${encodeURIComponent(link.href)}&t=${encodeURIComponent(text || link.href)}`;
+      send(`${ADD_INPUT}?u=${encodeURIComponent(link.href)}&t=${encodeURIComponent(text || link.href)}`);
     },
     true,
   );

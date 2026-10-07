@@ -4,3 +4,4 @@ linker = "/usr/bin/cc"
 
 [env]
 CC = "/usr/bin/cc"
+CXX = "/usr/bin/c++"

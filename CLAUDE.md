@@ -12,13 +12,15 @@ cargo test -p cts-core --test db <name>      # db.rs のテストを1つ
 cargo test -p cts-core <name>                # core の unit テストを1つ
 cargo build --release -p cts                 # plugin/bin/cts はこれへのシンボリックリンク
 cd app && pnpm build                         # tsc -b で型チェック + vite build（フロントにテストはない）
-cd app && pnpm tauri dev                     # アプリを開発起動
-cd app && pnpm tauri build                   # target/release/bundle/macos/Todo Sessions.app
+cd app && pnpm tauri dev                     # アプリを開発起動（ブラウザペインは動かない。下を参照）
+cd app && pnpm tauri build                   # target/release/bundle/macos/Todo Sessions.app（まだ Chromium が入っていない）
+scripts/bundle-cef.sh                        # その .app に Chromium とヘルパーアプリを入れる（引数 debug で debug 版）
 ```
 
-- `.cargo/config.toml` でリンカと CC を `/usr/bin/cc` に固定している（nix の gcc だと `-liconv` が見つからない）。
+- アプリのビルドには `cmake` と `ninja`（cef クレートの `libcef_dll_wrapper` 用。無ければ `nix shell nixpkgs#cmake nixpkgs#ninja -c …`）と、CEF のバイナリ置き場 `CEF_PATH`（既定 `~/.local/share/cef`。cef-rs の `cargo run -p export-cef-dir -- --force $HOME/.local/share/cef` で作る。`cef` クレートと同じバージョンのもの）が要る。
+- `.cargo/config.toml` でリンカと CC・CXX を `/usr/bin/cc` に固定している（nix の gcc だと `-liconv` が見つからない）。
 - ビルドした `.app` は利用者が自分で `/Applications` に入れ替える。コマンドは `pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" && cp -R target/release/bundle/macos/"Todo Sessions.app" /Applications/ && open -a "Todo Sessions"`（`sleep 1` がないと起動時に -600 になる）。
-- アプリ（`app/`）の実装が終わったら、`cd app && pnpm tauri build` でビルドし、上の入れ替えコマンドを `cp -R` のパスを絶対パスにして `pbcopy` でクリップボードにコピーしておく。入れ替え（アプリの終了と再起動）は利用者が貼り付けて実行する。
+- アプリ（`app/`）の実装が終わったら、`cd app && pnpm tauri build` と `scripts/bundle-cef.sh` でビルドし、上の入れ替えコマンドを `cp -R` のパスを絶対パスにして `pbcopy` でクリップボードにコピーしておく。入れ替え（アプリの終了と再起動）は利用者が貼り付けて実行する。
 - `crates/cts` を変えたら `plugin/.claude-plugin/plugin.json` の version を上げる。上げないと `claude plugin update todo-sessions@claude-todo-sessions` で新しいバイナリがキャッシュに入らない。
 
 ## 全体像
@@ -32,7 +34,13 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
   - `watch_loop`: トレイ（入力待ち・待機中）、通知（`notifications` に記録してアプリ内で一覧）、`claude agents --json` と herdr からのセッション発見（herdr の状態を優先）
   - `issue_sync_loop`: PR の発見と issue / PR 状態の同期
   - `queue_loop`: キューに入った todo の自動起動
-  - アプリ内ブラウザは `tauri` の `unstable` 機能で、main ウインドウに子 WebView を重ねる。タブごとに1つ（label `browser-<tab id>`）で、表示中以外は hide。サイズ指定つきの新規ウインドウ（ログインのポップアップ）はそのまま開かせ、それ以外はタブにする。GitHub は iframe に埋め込めないため。子 WebView を足すと main は「webview window」でなくなり `get_webview_window("main")` が None を返すので、`get_window` を使う。
+  - アプリ内ブラウザは Chromium（CEF）。WKWebView（Safari と同じ WebKit）は claude.ai で一番下までスクロールできず戻る（Safari でも起きる）ので使わない。`cef_browser.rs` が、メインウインドウの contentView の上に、タブごとに CEF の NSView を重ねる（`browser_open` / `browser_bounds` が置き、`browser_hide` が隠す）。サイズ指定つきの新規ウインドウ（ログインのポップアップ）はそのまま開かせ、それ以外はタブにする。GitHub は iframe に埋め込めないため。
+    - CEF は `external_message_pump` で、Tauri のメインスレッドから動かす（`start_pump` が `on_schedule_message_pump_work` と 1/30 秒ごとに `do_message_loop_work` を呼ばせる）。他のスレッドからは `on_main` を通す。`CefApplication`（NSApplication のサブクラス）は Tauri が NSApplication を作るより前に作る必要があり、`main` の最初で `cef_browser::init()` を呼ぶ。
+    - `.app` の中に `Chromium Embedded Framework.framework` と、`todo-sessions-app Helper (GPU)` などのヘルパーアプリ（`src/bin/helper.rs` のバイナリのコピー）が要る。Tauri のバンドラーは作らないので `scripts/bundle-cef.sh` が入れる。無いとき（`cargo run` や `pnpm tauri dev`）は `init()` が false を返し、アプリは動くがブラウザペインは「Chromium が入っていません」になる。
+    - プロファイル（Cookie など。ログインが再起動後も残る）は DB と同じフォルダの `cef/`。終了時（`RunEvent::Exit`）に `cef_browser::shutdown` が閉じて書き出す。同じフォルダを2つ目のインスタンスが開くと `initialize` が失敗する（`CTS_DB` を変えれば別のフォルダになる）。
+    - ページのスクリプト（`browser_page.js`）は、ヘルパーの `on_context_created` が全ページ・全フレームで、ページのスクリプトより前に動かす。ページからアプリへの連絡は `console.debug("todo-sessions://…")` で、ブラウザプロセスの `on_console_message` が拾って `page_message` で処理する（昔はこのスキームへのナビゲーションを止めていた）。アプリからページへは `cef_browser::eval`（main frame の `execute_java_script`）。
+    - Chromium は Cookie の鍵を Keychain（"Chromium Safe Storage"）に置こうとし、ad hoc 署名のアプリは再ビルドのたびに「許可しますか」のダイアログが出て、答えるまですべてのページの読み込みが止まる。`use-mock-keychain`（`on_before_command_line_processing`、ヘルパーにも）で Keychain を使わない。代わりに Cookie の鍵は固定になる（`cef/` フォルダのファイルを読める人には読める）。
+    - ズームは ⌘= ⌘- ⌘0 だけ（`set_zoom_level`）。ページの本文は `frame.text`（`browser_text`）。
   - 端末ペイン（お試し）は `terminal.rs`（portable-pty で PTY を開き、出力を base64 の `term-output` イベントで送る）と `app/src/Terminal.tsx`（xterm.js。端末はビューより長生きするようにモジュールで持つ）。ブラウザペインのタブの1種類（`BrowserTab.term`）として出す。起動するコマンドは herdr と共通の `prepare_terminal` / `quick_run` / `resume_run` が組み立てる。シェルは `$SHELL -l -i -c` で、`.zshrc` の PATH や `claude` 関数がそのまま効く。外すときは、この2ファイルと `app/src/kitty.ts`、`main.rs` の `mod terminal` と `terminal_*` コマンド、`App.tsx` の `TerminalContext` まわりとサイドバーの「ターミナル」を消す。
     - 見た目とキーは Ghostty に合わせる。`ghostty_config` が Ghostty の設定とテーマを、`ghostty_keybinds` が `ghostty +list-keybinds` の `text:` / `esc:` / `csi:` を返す。WebKit はページにシステムのフォントしか使わせない（`~/Library/Fonts` のフォントを名前で指定しても別のフォントになる）ので、`user_font` がファイルを渡し、`FontFace` で読み込んでから端末を開く。
     - xterm.js はトラックパッドの小さな移動を 0.3 倍にし、ホイールを受け取るアプリ（Claude Code・herdr）にはイベント1回で1段しか送らないので遅い。`attachCustomWheelEventHandler` で行数を出し、1行ごとに大きな `deltaY` の合成イベントを投げ直している。
@@ -58,9 +66,9 @@ cd app && pnpm tauri build                   # target/release/bundle/macos/Todo 
 ### Input モードの「説明する」（ファインマン・テクニック）
 
 - 右の `EXPLAIN_TAB`（`ExplainPanel`）。アプリの `feynman.rs` が `claude -p --output-format json --json-schema … --tools "" --no-session-persistence --strict-mcp-config` をホームで1回呼ぶ（プロンプトは stdin。要点は既定のモデル、採点は sonnet。`structured_output` を読む）。
-- 要点は `feynman_make_points`（左のページの本文は `browser_text` が WKWebView の `evaluateJavaScript` で読む。タブにページがなければ `page_text` が取りに行く）、採点は `feynman_grade`。DB は `feynman_points` / `feynman_attempts`（subject_kind / subject_id。`Subject` は core にある）。`Board.feynman` が subject ごとの最新を返す。
+- 要点は `feynman_make_points`（左のページの本文は `browser_text` が CEF の `frame.text` で読む。タブにページがなければ `page_text` が取りに行く）、採点は `feynman_grade`。DB は `feynman_points` / `feynman_attempts`（subject_kind / subject_id。`Subject` は core にある）。`Board.feynman` が subject ごとの最新を返す。
 - 復習どき（`feynman::review_after_days`）は `watch_loop` が `STUDY_EVERY_TICKS` ごとに `feynman_due` で見て、`notifications` に kind `study`（`input_id` 列。todo なら `todo_id`）を1回記録して macOS に出す。クリックは `open-study` イベントで、フロントが Input モードを「説明する」で開く。
-- `src-tauri/Info.plist` にマイクの許可説明がある（右の ChatGPT の音声モード用。WebView はページのマイク許可を通す作り）。
+- `src-tauri/Info.plist` にマイクの許可説明がある（右の ChatGPT の音声モード用。ブラウザペインはページのマイク許可を通す作り（`PagePermission`）。ヘルパーアプリの Info.plist にも同じ説明が要る（`scripts/bundle-cef.sh`））。
 
 ### Input モードのノート
 

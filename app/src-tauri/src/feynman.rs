@@ -7,12 +7,9 @@ use std::time::{Duration, Instant};
 
 use cts_core::feynman::{self, Page};
 use cts_core::{FeynmanAttempt, FeynmanPoint, Subject};
-use objc2::runtime::AnyObject;
-use objc2_foundation::{NSError, NSString};
-use objc2_web_kit::WKWebView;
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 
 use crate::{err, AppState};
@@ -21,11 +18,7 @@ use crate::{err, AppState};
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
 /// The grading, done over and over, goes to a faster model; the points once.
 const GRADE_MODEL: &str = "sonnet";
-/// A page's text is waited for this long.
-const PAGE_TEXT_TIMEOUT: Duration = Duration::from_secs(15);
 const PAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
-/// What a page's text is read with (its frames' is not).
-const PAGE_TEXT_JS: &str = "document.body ? document.body.innerText : ''";
 /// When a notice says it is time to explain a subject again: `{subject}`.
 pub const OPEN_STUDY_EVENT: &str = "open-study";
 
@@ -81,20 +74,7 @@ fn ask_claude(prompt: &str, schema: &Value, model: Option<&str>) -> Result<Value
 /// The text of tab `tab`'s page (its body), or None when the tab has no page open.
 #[tauri::command(async)]
 pub fn browser_text(app: AppHandle, tab: String) -> Result<Option<String>, String> {
-    let Some(view) = app.get_webview(&crate::tab_label(&tab)?) else { return Ok(None) };
-    let (tx, rx) = std::sync::mpsc::channel::<Option<String>>();
-    view.with_webview(move |w| {
-        // SAFETY: on macOS the handle is the WKWebView, and this runs on the main thread as WebKit wants.
-        let web: &WKWebView = unsafe { &*(w.inner() as *const WKWebView) };
-        let done = block2::RcBlock::new(move |result: *mut AnyObject, _error: *mut NSError| {
-            // SAFETY: WebKit hands a live object (or null) to the handler.
-            let text = unsafe { result.as_ref() }.and_then(|r| r.downcast_ref::<NSString>()).map(|s| s.to_string());
-            let _ = tx.send(text);
-        });
-        unsafe { web.evaluateJavaScript_completionHandler(&NSString::from_str(PAGE_TEXT_JS), Some(&done)) };
-    })
-    .map_err(err)?;
-    rx.recv_timeout(PAGE_TEXT_TIMEOUT).map_err(|_| "ページの本文を読めませんでした".to_string())
+    crate::cef_browser::text(&app, crate::tab_id(&tab)?)
 }
 
 /// A page's text fetched afresh, for a page the app has no tab of.
