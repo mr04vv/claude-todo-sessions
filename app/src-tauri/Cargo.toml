@@ -1,26 +1,36 @@
 [package]
 name = "todo-sessions-app"
+default-run = "todo-sessions-app"
 version = "0.1.0"
 edition = "2021"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[[bin]]
+name = "todo-sessions-app"
+path = "src/main.rs"
+
+# The renderer, GPU and other processes of the in-app browser (Chromium); `scripts/bundle-cef.sh` puts it in the .app.
+[[bin]]
+name = "todo-sessions-helper"
+path = "src/bin/helper.rs"
+
 [dependencies]
 cts-core = { path = "../../crates/core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# `unstable` gives the child webview the in-app browser pane runs in.
+# `unstable` gives `get_webview` and the main webview's `bounds` (the browser pane's placement).
 tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
 mac-notification-sys = "0.6"
 uuid = { version = "1", features = ["v4"] }
 # Whether the app is in front, which the window's focus cannot tell once a browser tab has the keyboard.
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication"] }
-# Reading a tab's page text (feynman.rs): the WKWebView's evaluateJavaScript; its pinch zoom.
+# NSApplication / NSView / NSWindow: the in-app browser's Chromium view (cef_browser.rs).
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSError"] }
-objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "WKWebView", "block2", "objc2-app-kit", "objc2-core-foundation"] }
-block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSApplication", "NSEvent", "NSResponder", "NSView", "NSWindow"] }
+# The in-app browser is Chromium (CEF), not the system's WebKit, whose scrolling on claude.ai jumped back.
+cef = { version = "154.4", default-features = false }
 # The in-app terminal pane (terminal.rs).
 portable-pty = "0.9"
 base64 = "0.22"
