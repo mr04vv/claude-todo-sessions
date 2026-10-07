@@ -2717,8 +2717,10 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
   tabId.current = active.id;
   useEffect(() => {
     const focusAddress = () => {
-      address.current?.focus();
-      address.current?.select();
+      // A pinned page has no address: ⌘L from its page leaves the keyboard there.
+      if (!address.current) return void api.browserFocus(tabId.current).catch(report);
+      address.current.focus();
+      address.current.select();
     };
     const onKey = (e: KeyboardEvent) => {
       if (matches(e, "back") || matches(e, "forward")) {
@@ -2744,56 +2746,59 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
   }, [report]);
   return (
     <>
-      <div className="browser-bar">
-        <button className="ghost icon" aria-label="戻る" onClick={() => api.browserGo(active.id, "back").catch(report)}>
-          <Icon name="back" size={14} />
-        </button>
-        <button className="ghost icon" aria-label="進む" onClick={() => api.browserGo(active.id, "forward").catch(report)}>
-          <Icon name="forward" size={14} />
-        </button>
-        <button className="ghost icon" aria-label="再読み込み" onClick={() => api.browserGo(active.id, "reload").catch(report)}>
-          <Icon name="reload" size={14} />
-        </button>
-        <AddressInput
-          key={`${active.id}:${active.url}`}
-          inputRef={address}
-          defaultValue={active.url}
-          label="URL（⌘L で編集）"
-          title="⌘L で編集、Enter で移動、Esc でやめる（開いたページから候補が出ます）"
-          // What was typed is to be read (j k scroll it, pick a search result): the page takes the keyboard.
-          onGo={(url) => {
-            keysInto = active.id;
-            navigate(url, true);
-          }}
-          onSuggesting={setSuggesting}
-          // Esc puts the address back and returns to the page, as in a browser.
-          onEscape={(input) => {
-            input.value = active.url;
-            input.blur();
-            api.browserFocus(active.id).catch(report);
-          }}
-        />
-        {active.zoom && active.zoom !== 1 && (
-          <button className="ghost small" title={`クリックで 100% に戻す（${keyLabel(keyOf("zoomReset"))}）`} onClick={() => api.browserZoom(active.id, "reset").catch(report)}>
-            {Math.round(active.zoom * 100)}%
+      {/* A pinned page has no address bar: it stays on its page. */}
+      {!active.pinned && (
+        <div className="browser-bar">
+          <button className="ghost icon" aria-label="戻る" onClick={() => api.browserGo(active.id, "back").catch(report)}>
+            <Icon name="back" size={14} />
           </button>
-        )}
-        {onToInput && (
-          <button className="ghost small" title={`このページを input に入れる（${keyLabel(keyOf("toInput"))}。先に作った input にも、新しい input にも）`} onClick={onToInput}>
-            Input に追加
+          <button className="ghost icon" aria-label="進む" onClick={() => api.browserGo(active.id, "forward").catch(report)}>
+            <Icon name="forward" size={14} />
           </button>
-        )}
-        {onArchive && (
-          <button className="ghost small" title="この Cloud セッションをアーカイブしてタブを閉じる（⌘⇧A）" onClick={onArchive}>
-            アーカイブ
+          <button className="ghost icon" aria-label="再読み込み" onClick={() => api.browserGo(active.id, "reload").catch(report)}>
+            <Icon name="reload" size={14} />
           </button>
-        )}
-        {!noDia && (
-          <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
-            Dia で開く
-          </button>
-        )}
-      </div>
+          <AddressInput
+            key={`${active.id}:${active.url}`}
+            inputRef={address}
+            defaultValue={active.url}
+            label="URL（⌘L で編集）"
+            title="⌘L で編集、Enter で移動、Esc でやめる（開いたページから候補が出ます）"
+            // What was typed is to be read (j k scroll it, pick a search result): the page takes the keyboard.
+            onGo={(url) => {
+              keysInto = active.id;
+              navigate(url, true);
+            }}
+            onSuggesting={setSuggesting}
+            // Esc puts the address back and returns to the page, as in a browser.
+            onEscape={(input) => {
+              input.value = active.url;
+              input.blur();
+              api.browserFocus(active.id).catch(report);
+            }}
+          />
+          {active.zoom && active.zoom !== 1 && (
+            <button className="ghost small" title={`クリックで 100% に戻す（${keyLabel(keyOf("zoomReset"))}）`} onClick={() => api.browserZoom(active.id, "reset").catch(report)}>
+              {Math.round(active.zoom * 100)}%
+            </button>
+          )}
+          {onToInput && (
+            <button className="ghost small" title={`このページを input に入れる（${keyLabel(keyOf("toInput"))}。先に作った input にも、新しい input にも）`} onClick={onToInput}>
+              Input に追加
+            </button>
+          )}
+          {onArchive && (
+            <button className="ghost small" title="この Cloud セッションをアーカイブしてタブを閉じる（⌘⇧A）" onClick={onArchive}>
+              アーカイブ
+            </button>
+          )}
+          {!noDia && (
+            <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
+              Dia で開く
+            </button>
+          )}
+        </div>
+      )}
       <div className={`load-bar${active.loading ? " on" : ""}`} aria-hidden="true" />
       <div ref={slot} className="browser-slot">
         {dialogUp && <span className="muted">ダイアログを閉じると表示に戻ります</span>}
@@ -5109,15 +5114,17 @@ export default function App() {
   const paneTabs = tabs.filter((t) => !t.focus);
   const activeTab = newTab ? null : (paneTabs.find((t) => t.id === activeTabId) ?? paneTabs[paneTabs.length - 1] ?? null);
   const browserUrl = browserShown ? (activeTab?.url ?? null) : null;
-  /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]).
+  /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]), in the order
+  /// of the strip: the pinned pages (a page not opened yet opens), then the others.
   const switchTab = (delta: number) => {
-    // The tabs the strip shows (the focus mode's own page, Notion, is not one).
-    const shown = tabs.filter((t) => !t.focus && (!t.pinned || PINNED_PAGES.some((p) => p.id === t.id)));
+    const shown = [...PINNED_PAGES.map((p) => p.id), ...tabs.filter((t) => !t.focus && !t.pinned).map((t) => t.id)];
     if (!browserShown || shown.length === 0) return;
-    const i = activeTab ? shown.findIndex((t) => t.id === activeTab.id) : delta > 0 ? -1 : shown.length;
-    const next = shown[(i + delta + shown.length) % shown.length];
+    const i = activeTab ? shown.indexOf(activeTab.id) : delta > 0 ? -1 : shown.length;
+    const nextId = shown[(i + delta + shown.length) % shown.length];
+    if (PINNED_PAGES.some((p) => p.id === nextId)) return showPinned(nextId);
+    const next = tabs.find((t) => t.id === nextId) ?? null;
     keysToTab(next, activeTab?.id, report);
-    setActiveTabId(next.id);
+    setActiveTabId(nextId);
   };
   const switchRef = useRef(switchTab);
   switchRef.current = switchTab;
