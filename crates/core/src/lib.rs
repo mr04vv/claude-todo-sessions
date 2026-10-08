@@ -1027,9 +1027,10 @@ impl Db {
         Ok(sessions)
     }
 
-    /// Sessions waiting for the user that belong to a todo; these get notified.
-    pub fn linked_needs_input(&self) -> Result<Vec<Session>> {
-        self.query_sessions("todo_id IS NOT NULL AND state = 'needs_input'", None)
+    /// Every session waiting for the user, with a todo or not (and put away
+    /// or not: asking brings it back); these get notified.
+    pub fn needs_input_sessions(&self) -> Result<Vec<Session>> {
+        self.query_sessions("state = 'needs_input'", None)
     }
 
     /// Cloud sessions not yet ended; cloud sync re-checks any of these the
@@ -1246,11 +1247,6 @@ impl Db {
 
     pub fn mark_notification_read(&self, id: i64) -> Result<()> {
         self.conn.execute("UPDATE notifications SET read_at = ?2 WHERE id = ?1 AND read_at IS NULL", params![id, now()])?;
-        Ok(())
-    }
-
-    pub fn mark_all_notifications_read(&self) -> Result<()> {
-        self.conn.execute("UPDATE notifications SET read_at = ?1 WHERE read_at IS NULL", [now()])?;
         Ok(())
     }
 

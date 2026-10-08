@@ -203,7 +203,7 @@ fn patch_sets_and_clears_issue_url_and_cwd() {
 }
 
 #[test]
-fn linked_needs_input_lists_only_linked_waiting_sessions() {
+fn needs_input_sessions_lists_every_waiting_session_linked_or_not() {
     let (_d, db) = open();
     let t = db.create_todo(new_todo("a")).unwrap();
     db.record_session("linked-wait", "/w", SessionState::NeedsInput).unwrap();
@@ -211,8 +211,12 @@ fn linked_needs_input_lists_only_linked_waiting_sessions() {
     db.record_session("linked-run", "/w", SessionState::Running).unwrap();
     db.link_session("linked-run", t.id).unwrap();
     db.record_session("inbox-wait", "/w", SessionState::NeedsInput).unwrap();
-    let ids: Vec<String> = db.linked_needs_input().unwrap().into_iter().map(|s| s.session_id).collect();
-    assert_eq!(ids, vec!["linked-wait"]);
+    // A session put away still comes back when it asks.
+    db.record_session("hidden-wait", "/w", SessionState::NeedsInput).unwrap();
+    db.hide_session("hidden-wait").unwrap();
+    let mut ids: Vec<String> = db.needs_input_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["hidden-wait", "inbox-wait", "linked-wait"]);
 }
 
 #[test]
@@ -638,8 +642,6 @@ fn notifications_are_listed_newest_first_until_read() {
     assert_eq!((list[1].kind, list[1].title.as_str(), list[1].todo_id, list[1].read), (NoticeKind::Finished, "fix it", Some(t.id), false));
     db.mark_notification_read(a).unwrap();
     assert!(db.notifications().unwrap().iter().find(|n| n.id == a).unwrap().read);
-    db.mark_all_notifications_read().unwrap();
-    assert!(db.notifications().unwrap().iter().all(|n| n.read));
 }
 
 #[test]

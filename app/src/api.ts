@@ -350,7 +350,6 @@ export const api = {
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
   startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),
   /** Marks one notification read, or all with no id. */
-  readNotifications: (id?: number) => invoke<void>("read_notifications", { id: id ?? null }),
   /// Merges the PR once approved: now when it is ready ("merged"), else by GitHub's auto-merge ("auto").
   autoMerge: (url: string) => invoke<"merged" | "auto">("auto_merge", { url }),
   /// The user's open PRs and whom each still waits on (logins, team slugs).

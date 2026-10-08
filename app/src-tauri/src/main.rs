@@ -1266,17 +1266,6 @@ fn skills(state: State<AppState>, cwd: Option<String>) -> Result<Vec<cts_core::s
     Ok(skills::rank(all, &prompts))
 }
 
-/// Marks one notification read, or all of them with None.
-#[tauri::command(async)]
-fn read_notifications(state: State<AppState>, id: Option<i64>) -> Result<(), String> {
-    let db = state.db.lock().map_err(err)?;
-    match id {
-        Some(id) => db.mark_notification_read(id),
-        None => db.mark_all_notifications_read(),
-    }
-    .map_err(err)
-}
-
 #[tauri::command(async)]
 fn set_parent(state: State<AppState>, todo_id: i64, parent_id: Option<i64>) -> Result<Todo, String> {
     state.db.lock().map_err(err)?.set_parent(todo_id, parent_id).map_err(err)
@@ -2280,17 +2269,13 @@ fn tray_menu(app: &AppHandle, sessions: &[Session]) -> tauri::Result<Menu<tauri:
     Menu::with_items(app, &refs)
 }
 
-/// Records a notification for the in-app list, posts it, and opens the
-/// session (marking it read) when it is clicked. The thread lives until the
-/// notification is clicked or removed from Notification Center.
-fn notify_session(app: &AppHandle, db: &Db, session: Session, kind: NoticeKind) {
-    let headline = match kind {
-        NoticeKind::NeedsInput => "返事待ち",
-        _ => "作業が終わりました",
-    };
-    let id = db.add_notification(&session, kind).map_err(|e| eprintln!("{e}")).ok();
+/// Records that the session waits for a reply, posts it, and opens the
+/// session when it is clicked. The thread lives until the notification is
+/// clicked or removed from Notification Center.
+fn notify_needs_input(app: &AppHandle, db: &Db, session: Session) {
+    let id = db.add_notification(&session, NoticeKind::NeedsInput).map_err(|e| eprintln!("{e}")).ok();
     let label = session.title.clone().unwrap_or_else(|| session.session_id.clone());
-    post_banner(app, headline, label, id, move |app| open_from_outside(app, &session.session_id));
+    post_banner(app, "返事待ち", label, id, move |app| open_from_outside(app, &session.session_id));
 }
 
 /// Posts a macOS notification; clicking it reads notice `id` and runs `open`.
@@ -2444,7 +2429,7 @@ fn watch_loop(app: AppHandle) {
             }
         }
         tick = tick.wrapping_add(1);
-        if let Ok(mut waiting) = db.linked_needs_input() {
+        if let Ok(mut waiting) = db.needs_input_sessions() {
             // Sessions archived in Claude Desktop stay out of the inbox and notifications.
             let archived = records.archived_cli_ids(&desktop_dir);
             if let Ok(mut shared) = app.state::<AppState>().archived.lock() {
@@ -2455,16 +2440,16 @@ fn watch_loop(app: AppHandle) {
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
             if !first {
                 for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
-                    notify_session(&app, &db, s.clone(), NoticeKind::NeedsInput);
+                    notify_needs_input(&app, &db, s.clone());
                 }
             }
-            // A linked session that stops running has finished its turn and waits for a reply.
+            // A linked session that stops running has finished its turn: it is
+            // marked 新着 (not notified), and it often just opened a PR.
             if let Ok(linked) = db.linked_sessions() {
                 for s in linked.iter().filter(|s| !archived.contains(&s.session_id)) {
                     let before = last_state.insert(s.session_id.clone(), s.state);
                     if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
-                        notify_session(&app, &db, s.clone(), NoticeKind::Finished);
-                        // A finished turn often just opened a PR: look now.
+                        // Look for the PR now.
                         if let (Some(todo_id), Ok(tx)) = (s.todo_id, app.state::<AppState>().github_wake.lock()) {
                             let _ = tx.send(Some(todo_id));
                         }
@@ -2653,7 +2638,6 @@ fn main() {
             move_in_queue,
             set_loop_enabled,
             set_parent,
-            read_notifications,
             session_detail,
             usage,
             skills,

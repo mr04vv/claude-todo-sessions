@@ -57,7 +57,6 @@ import {
   type HerdrSessions,
   type Limit,
   type LocalRepo,
-  type Notice,
   type Pr,
   type PrLists,
   type PrState,
@@ -133,7 +132,7 @@ const HERDR_SESSION_KEY = "herdrSession";
 /// Where pages open: the app's browser pane, or Dia with its own sign-ins.
 type LinkTarget = "app" | "dia";
 
-type View = "todos" | "inputs" | "sessions" | "prs" | "notices";
+type View = "todos" | "inputs" | "sessions" | "prs";
 type Layout = "board" | "list";
 type GroupBy = "repo" | "parent";
 
@@ -585,7 +584,7 @@ function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
 
 type IconName =
   | "board" | "list" | "spark" | "pr" | "search" | "sync" | "check" | "plus" | "import" | "close" | "open"
-  | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "bell" | "chat"
+  | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "chat"
   | "globe";
 
 const ICON_PATHS: Record<IconName, string> = {
@@ -608,7 +607,6 @@ const ICON_PATHS: Record<IconName, string> = {
   back: "M15 6l-6 6 6 6",
   forward: "M9 6l6 6-6 6",
   reload: "M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6",
-  bell: "M6 16V11a6 6 0 0 1 12 0v5l2 2H4zM10 21h4",
   chat: "M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z",
   globe: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18",
 };
@@ -3983,18 +3981,6 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
   );
 }
 
-const NOTICE_LABEL: Record<Notice["kind"], string> = {
-  finished: "作業が終わりました",
-  needs_input: "返事待ち",
-  review_requested: "レビュー依頼",
-  study: "復習どき",
-};
-const NOTICE_STATE: Record<Notice["kind"], string> = {
-  finished: "state-running",
-  needs_input: "state-needs_input",
-  review_requested: "state-review",
-  study: "state-review",
-};
 /// A subject's understanding (its last 「説明する」 score) and whether it is time to explain again.
 function StudyTags({ summary }: { summary: FeynmanSummary | undefined }) {
   if (!summary) return null;
@@ -4011,9 +3997,6 @@ function StudyTags({ summary }: { summary: FeynmanSummary | undefined }) {
     </>
   );
 }
-/// The subject a study notice is for.
-const studySubjectOf = (n: Notice): Subject | null => (n.input_id !== null ? { kind: "input", id: n.input_id } : n.todo_id !== null ? { kind: "todo", id: n.todo_id } : null);
-
 /// The inputs: reading material, apart from the todos, each opening in the
 /// Input mode with its pages on the left. A URL here, the dialog, or
 /// ⌥-clicking a link in the browser adds one.
@@ -4230,114 +4213,6 @@ async function addInput(urls: string[], title: string): Promise<Input> {
   const links = [];
   for (const url of urls) links.push(await api.addInputLink(input.id, url));
   return { ...input, links };
-}
-
-/// The PR of a review request's notice: its URL, and the title it was posted with (`owner/repo#n title`).
-function reviewTargetOf(n: Notice): ReviewTarget | null {
-  const m = n.url?.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/);
-  if (!n.url || !m) return null;
-  return { url: n.url, repo: m[1], title: n.title.replace(`${m[1]}#${m[2]} `, "") };
-}
-
-function NoticesPage({ board, local, report, onOpenTodo, onOpenStudy, run }: {
-  board: Board;
-  local: LocalRepo[];
-  report: (e: unknown) => void;
-  onOpenTodo: (id: number) => void;
-  /// A study notice: the subject's Input mode on 「説明する」.
-  onOpenStudy: (subject: Subject) => void;
-  run: (f: () => Promise<unknown>) => void;
-}) {
-  const openCloud = useContext(OpenCloudContext);
-  const terminal = useContext(TerminalContext);
-  const openInBrowser = useContext(BrowserContext);
-  const rows = board.notifications.filter((n) => !n.read);
-  const todoOf = (n: Notice) => board.todos.find((t) => t.id === n.todo_id);
-  const read = (n: Notice) => !n.read && run(() => api.readNotifications(n.id));
-  const { startReview, starting } = useReviewStarter(local, run);
-  // ↑↓ or j k pick a notice, Enter opens its session (for a review request,
-  // the choice of submitting on its own or asking first), ⌥Enter its row,
-  // x dismisses it (the cursor going on to the next), ⌘⇧X all of them.
-  const ids = rows.map((n) => String(n.id));
-  const readAll = () => run(() => api.readNotifications());
-  const { cursorId, setCursor, list } = useRowCursor(
-    ids,
-    (_, alt, row) => (alt ? row : (row.querySelector<HTMLButtonElement>(".open-caret, .notice-open, .notice-study") ?? row)).click(),
-    (e, id) => {
-      if (matches(e, "dismissAll")) return (readAll(), true);
-      const n = rows.find((n) => String(n.id) === id);
-      if (!n || !matches(e, "dismiss")) return false;
-      const i = ids.indexOf(id);
-      setCursor(ids[i + 1] ?? ids[i - 1] ?? null);
-      read(n);
-      return true;
-    },
-  );
-  const openSession = (n: Notice) => {
-    read(n);
-    if (n.session_id.startsWith("cse_") && openCloud) openCloud(n.session_id);
-    else openLocal(terminal, n.session_id, report, true);
-  };
-  return (
-    <>
-      <header className="toolbar">
-        <h1>通知</h1>
-        <span className="muted">{rows.length}</span>
-        <span className="grow" />
-        <button disabled={rows.length === 0} onClick={readAll}>
-          <Icon name="check" size={13} /> すべて消す <span className="kbd">{keyLabel(keyOf("dismissAll"))}</span>
-        </button>
-      </header>
-      <div className="content" ref={list}>
-        {rows.length === 0 && <p className="muted empty">通知はありません。セッションの作業が終わる、返事待ちになる、レビューを頼まれると、ここに出ます。</p>}
-        <ul className="rows">
-          {rows.map((n) => {
-            const todo = todoOf(n);
-            const review = reviewTargetOf(n);
-            const study = n.kind === "study" ? studySubjectOf(n) : null;
-            return (
-              <li
-                key={n.id}
-                data-row={n.id}
-                className={`row notice-row${String(n.id) === cursorId ? " cursor" : ""}`}
-                onClick={() => {
-                  setCursor(String(n.id));
-                  read(n);
-                  // A review request's row shows its PR, a study notice its 「説明する」; others open their todo.
-                  if (n.url) openInBrowser?.(n.url);
-                  else if (study) onOpenStudy(study);
-                  else if (todo) onOpenTodo(todo.id);
-                }}
-              >
-                <span className="unread-dot on" aria-hidden="true" />
-                <span className={`state ${NOTICE_STATE[n.kind]}`}>
-                  <i />
-                  {NOTICE_LABEL[n.kind]}
-                </span>
-                <span className="row-title">{n.title}</span>
-                {todo && <span className="tag ellipsis notice-todo">#{todo.id} {todo.title}</span>}
-                <span className="muted when">{ago(n.created_at)}</span>
-                {review ? (
-                  <ReviewButton accent={false} busy={starting.has(review.url)} onStart={(submit) => (read(n), startReview(review, submit))} />
-                ) : study ? (
-                  <button className="small notice-study" title="Input モードの「説明する」を開く" onClick={(e) => (e.stopPropagation(), read(n), onOpenStudy(study))}>
-                    説明する
-                  </button>
-                ) : (
-                  <button className="small notice-open" title="セッションを開く" onClick={(e) => (e.stopPropagation(), openSession(n))}>
-                    開く
-                  </button>
-                )}
-                <button className="ghost icon" aria-label="この通知を消す" title={`消す（${keyLabel(keyOf("dismiss"))}）`} onClick={(e) => (e.stopPropagation(), read(n))}>
-                  <Icon name="close" size={12} />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    </>
-  );
 }
 
 function Modal({ title, onClose, children, footer, wide }: {
@@ -4775,7 +4650,6 @@ const SEARCH_ALIASES: Record<string, string[]> = {
   リスト: ["list"],
   フィルター: ["filter", "絞り込み", "view", "ビュー"],
   ショートカット: ["shortcut", "key", "keys", "キー", "keymap"],
-  通知: ["notification", "notice", "お知らせ", "bell"],
   ブラウザ: ["browser", "web", "タブ", "tab"],
   作業スペース: ["ブラウザ", "browser", "web", "タブ", "tab", "ターミナル", "terminal", "pane", "ペイン", "workspace"],
   タブ: ["tab"],
@@ -6031,7 +5905,7 @@ export default function App() {
       else (document.activeElement as HTMLElement | null)?.blur();
     }
   }, [dialogUp]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "notices"] as const, "todos"));
+  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs"] as const, "todos"));
   const viewRef = useRef(view);
   viewRef.current = view;
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
@@ -6439,7 +6313,6 @@ export default function App() {
   }, [selection]); // eslint-disable-line react-hooks/exhaustive-deps
   const draggedTodo = dragging !== null ? allTodos.find((t) => t.id === dragging) : undefined;
   const reviewCount = prs?.review.length ?? 0;
-  const unreadCount = board?.notifications.filter((n) => !n.read).length ?? 0;
 
   const nav: { key: string; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
     { key: "board", label: "Todo カンバン", icon: "board", count: openTodoCount, on: view === "todos" && layout === "board", go: () => showTodos("board") },
@@ -6460,7 +6333,6 @@ export default function App() {
     },
     { key: "inputs", label: "Input", icon: "import", count: allInputs.filter((i) => !i.done).length, on: view === "inputs", go: () => setView("inputs") },
     { key: "prs", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
-    { key: "notices", label: "通知", icon: "bell", on: view === "notices", go: () => setView("notices"), badge: unreadCount > 0 && <span className="pill accent">{unreadCount}</span> },
   ];
 
   // ⌘K lists the sidebar's entries first, in its order, then the actions.
@@ -6672,8 +6544,8 @@ export default function App() {
               {heldNotices > 0 && (
                 <div className="notice" role="status">
                   <span className="grow">Input モードのあいだに通知が {heldNotices} 件ありました。</span>
-                  <button className="primary small" onClick={() => (setHeldNotices(0), setView("notices"))}>
-                    通知を見る
+                  <button className="primary small" onClick={() => (setHeldNotices(0), setView("sessions"))}>
+                    セッションを見る
                   </button>
                   <button className="ghost icon" onClick={() => setHeldNotices(0)} aria-label="閉じる">
                     <Icon name="close" size={12} />
@@ -6828,7 +6700,6 @@ export default function App() {
               onAdd={() => setDialog("addInput")}
             />
           )}
-          {view === "notices" && board && <NoticesPage board={board} local={local} report={report} onOpenTodo={goTodo} onOpenStudy={openStudy} run={run} />}
           {view === "prs" && (
             <PrsPage prs={prs} prsLoading={prsLoading} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} onSlack={() => setDialog("slack")} />
           )}
