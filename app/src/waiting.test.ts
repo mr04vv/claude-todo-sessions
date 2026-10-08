@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { Session, Todo } from "./api.ts";
-import { REVIEW_SETTLE_SECS, isFailedReview, waitingOnYou } from "./waiting.ts";
+import { REVIEW_SETTLE_SECS, isFailedReview, isReviewAsk, waitingOnYou } from "./waiting.ts";
 
 const NOW = 10_000;
 
@@ -103,6 +103,7 @@ test("a review asked of you waits until a review session takes it", () => {
   assert.deepEqual(keys(asked), ["pr:https://github.com/o/web/pull/61"]);
   assert.deepEqual(asked[0].reasons, ["review"]);
   assert.equal(asked[0].line, "web#61 のレビュー依頼");
+  assert.ok(isReviewAsk(asked[0]), "shown as one line with the other requests");
   const running = session("r", { state: "running", review_url: pr(61).url });
   assert.deepEqual(waitingOnYou({ todos: [], inbox: [running], reviews: [pr(61)], now: NOW }), []);
 });
@@ -117,6 +118,7 @@ test("a review that stopped without submitting waits on you once it settles", ()
   const items = waitingOnYou({ todos: [], inbox: [stopped(REVIEW_SETTLE_SECS)], reviews: [pr(61)], now: NOW });
   assert.deepEqual(keys(items), ["r"], "the request is taken; the stopped session is what waits");
   assert.deepEqual(items[0].reasons, ["review_failed"]);
+  assert.ok(!isReviewAsk(items[0]), "a session, shown as one");
 });
 
 test("the newest comes first", () => {

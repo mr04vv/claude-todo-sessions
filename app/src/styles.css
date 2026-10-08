@@ -912,8 +912,35 @@ button.gh:hover:not(:disabled) {
   border-radius: 9px;
 }
 
-button.waiting-strip:hover:not(:disabled) {
-  background: var(--waiting-soft);
+.waiting-strip:hover {
+  border-color: var(--waiting);
+}
+
+.waiting-strip-main {
+  height: auto;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: 0;
+  font-size: inherit;
+  text-align: left;
+}
+
+button.waiting-strip-main:hover:not(:disabled) {
+  background: none;
+}
+
+button.waiting-item {
+  height: auto;
+  padding-right: 10px;
+}
+
+button.waiting-item:hover:not(:disabled) {
+  background: var(--card);
   border-color: var(--waiting);
 }
 

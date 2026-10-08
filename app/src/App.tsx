@@ -84,7 +84,7 @@ import { TYPING, useTodoKeys } from "./todoKeys";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
 import { addressToUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
-import { ciFailureLine, isFailedReview, prRef, waitingOnYou, type WaitItem } from "./waiting";
+import { ciFailureLine, isFailedReview, isReviewAsk, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
 import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
@@ -1240,23 +1240,33 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
   );
 }
 
-/// あなた待ち above the board; it opens the sessions page on them.
-function WaitingStrip({ items, onShow }: { items: WaitItem[]; onShow: () => void }) {
+/// あなた待ち above the board; it opens the sessions page on them, and the
+/// review requests (one chip for them all) the PR page.
+function WaitingStrip({ items, onShow, onShowPrs }: { items: WaitItem[]; onShow: () => void; onShowPrs: () => void }) {
   if (items.length === 0) return null;
+  const asks = items.filter(isReviewAsk).length;
+  const rest = items.filter((w) => !isReviewAsk(w));
   return (
-    <button className="waiting-strip" title="セッション画面のあなた待ちを開く" onClick={onShow}>
-      <span className="pill waiting">
-        <i />
-        あなた待ち {items.length}
-      </span>
-      {items.slice(0, WAITING_STRIP_MAX).map((w) => (
-        <span key={w.key} className="waiting-item">
-          <span className="ellipsis">{w.session ? sessionLabel(w.session) : (w.todo?.title ?? w.review?.title)}</span>
-          <span className="muted ellipsis">{w.line}</span>
+    <div className="waiting-strip">
+      <button className="waiting-strip-main" title="セッション画面のあなた待ちを開く" onClick={onShow}>
+        <span className="pill waiting">
+          <i />
+          あなた待ち {items.length}
         </span>
-      ))}
-      {items.length > WAITING_STRIP_MAX && <span className="muted">ほか {items.length - WAITING_STRIP_MAX} 件</span>}
-    </button>
+        {rest.slice(0, WAITING_STRIP_MAX).map((w) => (
+          <span key={w.key} className="waiting-item">
+            <span className="ellipsis">{w.session ? sessionLabel(w.session) : w.todo?.title}</span>
+            <span className="muted ellipsis">{w.line}</span>
+          </span>
+        ))}
+        {rest.length > WAITING_STRIP_MAX && <span className="muted">ほか {rest.length - WAITING_STRIP_MAX} 件</span>}
+      </button>
+      {asks > 0 && (
+        <button className="waiting-item" title="PR の画面のレビュー依頼を開く" onClick={onShowPrs}>
+          新着のレビュー依頼 {asks} 件
+        </button>
+      )}
+    </div>
   );
 }
 /// The sessions page's one line for the review requests, as its row.
@@ -3205,9 +3215,8 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
   const rows: TreeRow[] = ordered.flatMap((g) => g.filter((r) => r.kind === "group" || !folded.has(r.group ?? -1)));
   const waitsShown = filter === "all" || filter === "waiting" ? waits : [];
   // Review requests are no sessions: one line for them, which opens the PR page.
-  const isAsk = (w: WaitItem) => !!w.review && !w.session;
-  const asks = waitsShown.filter(isAsk).length;
-  const shownWaits = waitsShown.filter((w) => !isAsk(w));
+  const asks = waitsShown.filter(isReviewAsk).length;
+  const shownWaits = waitsShown.filter((w) => !isReviewAsk(w));
   const ended = all.length - live.length;
   // Cloud sessions done with their turn, which the bulk archive takes.
   const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
@@ -6298,7 +6307,7 @@ export default function App() {
                   <Icon name="plus" size={13} /> 新しい Todo <span className="kbd">⌘N</span>
                 </button>
               </header>
-              <WaitingStrip items={waiting} onShow={showWaiting} />
+              <WaitingStrip items={waiting} onShow={showWaiting} onShowPrs={() => setView("prs")} />
               <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
                 <div className="content" ref={todoPage}>
                   {layout === "board" && lanes.length > 0 && (

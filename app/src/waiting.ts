@@ -39,6 +39,10 @@ export const REVIEW_SETTLE_SECS = 150;
 export const isFailedReview = (s: Session, now: number) =>
   !!s.review_url && !s.hidden && (s.state === "idle" || s.state === "ended") && now - s.state_at >= REVIEW_SETTLE_SECS;
 
+/// A review asked of the user, not a session's: these show as one line
+/// that opens the PR page.
+export const isReviewAsk = (w: WaitItem) => !!w.review && !w.session;
+
 const PR_DONE = ["merged", "closed"];
 /// Checks named in a failure's line before "ほか".
 const CI_NAMES_SHOWN = 2;
