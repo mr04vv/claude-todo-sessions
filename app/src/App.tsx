@@ -6105,8 +6105,10 @@ export default function App() {
       >
         <aside className="sidebar" onPointerDown={() => sideZoneRef.current && setSideZone(false)}>
           <div className="brand">
-            <span className="brand-mark" />
-            <span>Todo Sessions</span>
+            <span className="brand-mark" aria-hidden="true">
+              斎
+            </span>
+            <span>Shosai</span>
           </div>
           <button className="search" onClick={() => setDialog("palette")}>
             <Icon name="search" size={13} />

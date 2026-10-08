@@ -49,7 +49,7 @@ for kind in "" " (GPU)" " (Renderer)" " (Plugin)" " (Alerts)"; do
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>LSUIElement</key><string>1</string>
   <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Input モードの右の ChatGPT で音声モードを使うときに、マイクを使います。</string>
+  <key>NSMicrophoneUsageDescription</key><string>学ぶ時間の右の ChatGPT で音声モードを使うときに、マイクを使います。</string>
   <key>NSCameraUsageDescription</key><string>$name</string>
 </dict>
 </plist>

@@ -2,7 +2,11 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CFBundleName</key>
+	<string>Shosai</string>
+	<key>CFBundleDisplayName</key>
+	<string>Shosai</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Input モードの右の ChatGPT で音声モードを使うときに、マイクを使います。</string>
+	<string>学ぶ時間の右の ChatGPT で音声モードを使うときに、マイクを使います。</string>
 </dict>
 </plist>

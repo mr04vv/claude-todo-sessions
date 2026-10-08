@@ -2179,7 +2179,7 @@ fn show_window(app: &AppHandle) {
 fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     use tauri::menu::Submenu;
     let sep = || PredefinedMenuItem::separator(app);
-    let name = Submenu::with_items(app, "Todo Sessions", true, &[
+    let name = Submenu::with_items(app, "Shosai", true, &[
         &PredefinedMenuItem::about(app, None, None)?,
         &sep()?,
         &PredefinedMenuItem::hide(app, None)?,

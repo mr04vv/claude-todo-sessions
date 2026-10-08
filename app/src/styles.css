@@ -1,93 +1,100 @@
-/* Flat, Linear-style calm density. Dark by default, light when the OS asks for it. */
+/* Shosai's design system: a quiet study. Ink-dark (or paper-light) ground,
+   one indigo for what is picked, and colour only to tell a state, always
+   with a shape and a word. Dark by default, light when the OS asks for it. */
 :root {
-  --bg: #0e0f11;
-  --sidebar: #111215;
-  --surface: #141518;
-  --card: #1a1b1f;
-  --card-hover: #1f2126;
-  --input: #17181c;
-  --border: #22242a;
-  --border-2: #2c2e34;
-  --border-strong: #3a3d44;
-  --text: #e8e9ec;
-  --text-2: #a3a6ae;
-  --text-3: #8b8e96;
-  --accent: #8b96ff;
-  --accent-fill: #5e6ad2;
-  --accent-soft: rgba(139, 150, 255, 0.12);
-  --accent-line: rgba(139, 150, 255, 0.45);
+  --bg: #101113;
+  --sidebar: #0c0d0f;
+  --surface: #16171a;
+  --card: #16171a;
+  --card-hover: #23242a;
+  --input: #101113;
+  --border: #2a2c31;
+  --border-2: #3b3e45;
+  --border-strong: #4a4d55;
+  --text: #ebe9e5;
+  --text-2: #acaba6;
+  --text-3: #8a8984;
+  --accent: #93a5ff;
+  --accent-fill: #4a5fd0;
+  --accent-soft: rgba(147, 165, 255, 0.13);
+  --accent-line: rgba(147, 165, 255, 0.45);
   --on-accent: #ffffff;
-  --waiting: #ff9a5c;
-  --waiting-text: #ffb488;
-  --waiting-soft: rgba(255, 154, 92, 0.12);
-  --waiting-line: rgba(255, 154, 92, 0.45);
+  --waiting: #ff9d61;
+  --waiting-text: #ffb27f;
+  --waiting-soft: rgba(255, 157, 97, 0.14);
+  --waiting-line: rgba(255, 157, 97, 0.45);
   --on-waiting: #1a1109;
-  --running: #45d483;
+  --running: #62d491;
   --running-text: #8fe3b0;
-  --running-soft: rgba(69, 212, 131, 0.12);
-  --idle: #8b8e96;
-  --ended: #5c6070;
-  --review-text: #cdb9ff;
-  --review-soft: rgba(182, 156, 255, 0.14);
-  --danger: #ff6b6b;
-  --danger-soft: rgba(255, 107, 107, 0.1);
-  --st-backlog: #6c6f77;
-  --st-todo: #8b8e96;
-  --st-doing: #e5b94a;
-  --st-review: #b69cff;
-  --st-pending: #8aa4c8;
-  --st-done: #45d483;
-  --shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-  --radius: 8px;
+  --running-soft: rgba(98, 212, 145, 0.13);
+  --idle: #8a8984;
+  --ended: #5c5d62;
+  --review-text: #c6adff;
+  --review-soft: rgba(198, 173, 255, 0.14);
+  --danger: #ff8080;
+  --danger-soft: rgba(255, 128, 128, 0.13);
+  --st-backlog: #6c6d72;
+  --st-todo: #8a8984;
+  --st-doing: #e9c15a;
+  --st-review: #c6adff;
+  --st-pending: #97afd3;
+  --st-done: #62d491;
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  --radius: 10px;
+  --sans: "IBM Plex Sans JP", "Hiragino Sans", system-ui, sans-serif;
+  --mono-font: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  --brand: "Shippori Mincho", "Hiragino Mincho ProN", serif;
   --sidebar-w: 232px;
   --panel-w: 440px;
   --dock-w: max(520px, 44vw);
   color-scheme: dark;
-  font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", sans-serif;
+  font-family: var(--sans);
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.6;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
   -webkit-font-smoothing: antialiased;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
-    --bg: #fbfbfc;
-    --sidebar: #f4f5f7;
-    --surface: #f5f6f8;
+    --bg: #f6f6f4;
+    --sidebar: #eeeeeb;
+    --surface: #ffffff;
     --card: #ffffff;
-    --card-hover: #f7f8fa;
+    --card-hover: #ebebe8;
     --input: #ffffff;
-    --border: #e4e5e9;
-    --border-2: #dadbe0;
-    --border-strong: #c4c6cc;
-    --text: #1b1c1f;
-    --text-2: #50535a;
-    --text-3: #676a72;
-    --accent: #4f5bd5;
-    --accent-soft: rgba(79, 91, 213, 0.1);
-    --accent-line: rgba(79, 91, 213, 0.4);
-    --waiting: #e0692c;
-    --waiting-text: #a8471a;
-    --waiting-soft: rgba(224, 105, 44, 0.1);
-    --waiting-line: rgba(224, 105, 44, 0.45);
+    --border: #e1e0dc;
+    --border-2: #c8c7c2;
+    --border-strong: #b2b1ac;
+    --text: #1c1c1e;
+    --text-2: #55555a;
+    --text-3: #6b6b70;
+    --accent: #3a4fc2;
+    --accent-fill: #3a4fc2;
+    --accent-soft: rgba(58, 79, 194, 0.1);
+    --accent-line: rgba(58, 79, 194, 0.4);
+    --waiting: #d66420;
+    --waiting-text: #a8470e;
+    --waiting-soft: rgba(214, 100, 32, 0.13);
+    --waiting-line: rgba(214, 100, 32, 0.45);
     --on-waiting: #ffffff;
-    --running: #22a560;
-    --running-text: #157a43;
-    --running-soft: rgba(34, 165, 96, 0.1);
-    --idle: #8a8d95;
-    --ended: #b3b6be;
-    --review-text: #6a48c7;
-    --review-soft: rgba(124, 92, 214, 0.1);
-    --danger: #c9362b;
-    --danger-soft: rgba(201, 54, 43, 0.08);
-    --st-backlog: #a4a7ae;
-    --st-todo: #8a8d95;
-    --st-doing: #c9971f;
-    --st-review: #7c5cd6;
-    --st-pending: #5f7ea8;
-    --st-done: #22a560;
-    --shadow: 0 12px 32px rgba(20, 22, 30, 0.14);
+    --running: #1b7a44;
+    --running-text: #1b7a44;
+    --running-soft: rgba(27, 122, 68, 0.1);
+    --idle: #6b6b70;
+    --ended: #b2b1ac;
+    --review-text: #6a4cc0;
+    --review-soft: rgba(106, 76, 192, 0.1);
+    --danger: #b8282b;
+    --danger-soft: rgba(184, 40, 43, 0.09);
+    --st-backlog: #a4a3a0;
+    --st-todo: #6b6b70;
+    --st-doing: #8a6500;
+    --st-review: #6a4cc0;
+    --st-pending: #486a9a;
+    --st-done: #1b7a44;
+    --shadow: 0 16px 40px rgba(20, 20, 30, 0.16);
     color-scheme: light;
   }
 }
@@ -182,7 +189,7 @@ button.icon {
 button.small {
   height: 24px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 button.danger {
@@ -245,7 +252,7 @@ textarea::placeholder {
 .select.compact {
   height: 24px;
   max-width: 160px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 a {
@@ -268,12 +275,12 @@ a:hover {
 }
 
 .small-text {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .mono {
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 11px;
+  font-family: var(--mono-font);
+  font-size: 12px;
 }
 
 .ellipsis {
@@ -431,8 +438,8 @@ a:hover {
 
 .toolbar h1 {
   margin: 0 4px 0 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 20px;
+  font-weight: 700;
 }
 
 .banners {
@@ -447,16 +454,25 @@ a:hover {
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   padding: 4px 8px;
+  font-family: var(--brand);
+  font-size: 16px;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
+/* 斎, the logo's mark: the brand's Mincho on indigo. */
 .brand-mark {
-  width: 18px;
-  height: 18px;
-  border-radius: 5px;
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
   background: var(--accent-fill);
+  color: #fff;
+  font-size: 14px;
+  line-height: 1;
 }
 
 .search {
@@ -507,7 +523,7 @@ a:hover {
 
 .section-title {
   padding: 0 10px 4px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-3);
 }
@@ -612,7 +628,7 @@ a:hover {
   align-items: center;
   gap: 8px;
   padding: 0 4px 0 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* Pills, badges, tags */
@@ -624,7 +640,7 @@ a:hover {
   height: 18px;
   padding: 0 7px;
   border-radius: 9px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
 }
 
@@ -656,7 +672,7 @@ a:hover {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -795,7 +811,7 @@ a:hover {
   background: var(--card-hover);
   border: 0;
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
   white-space: nowrap;
 }
 
@@ -812,7 +828,7 @@ a:hover {
   border-radius: 5px;
   background: var(--card-hover);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 12px;
   display: inline-flex;
   align-items: center;
   white-space: nowrap;
@@ -1048,7 +1064,7 @@ button.lane-toggle:hover .lane-name {
 
 .folded-count {
   margin-top: 6px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 
@@ -1156,7 +1172,7 @@ button.lane-toggle:hover .lane-name {
 
 .open-menu button {
   height: 22px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   background: none;
   border-color: var(--border-strong);
@@ -1315,7 +1331,7 @@ button.lane-toggle:hover .lane-name {
   width: 52px;
   flex-shrink: 0;
   text-align: right;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .row.backlog-toggle {
@@ -1381,7 +1397,7 @@ button.lane-toggle:hover .lane-name {
   height: 30px;
   padding: 0 8px;
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--text-3);
   align-items: center;
@@ -1772,7 +1788,7 @@ input.panel-title:focus-visible {
 
 .combo-kind {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .combo-empty {
@@ -1818,7 +1834,7 @@ input.panel-title:focus-visible {
 }
 
 .session-main .muted {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .composer {
@@ -1857,7 +1873,7 @@ input.panel-title:focus-visible {
 .composer-foot .segmented button,
 .launch-controls .segmented button {
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 /* 計画させる, where, what and the model: how a todo starts. */
@@ -1870,7 +1886,7 @@ input.panel-title:focus-visible {
 
 .composer .hint {
   padding: 0 12px 10px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .memo {
@@ -2090,7 +2106,7 @@ input.panel-title:focus-visible {
   align-items: center;
   gap: 5px;
   padding-right: 2px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .browser-tab.review.urgent {
@@ -2119,7 +2135,7 @@ input.panel-title:focus-visible {
   align-items: center;
   gap: 4px;
   padding-right: 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .browser-tab-close {
@@ -2141,7 +2157,7 @@ input.panel-title:focus-visible {
 .translate-toggle button {
   height: 22px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .browser-bar .url {
@@ -2224,7 +2240,7 @@ input.panel-title:focus-visible {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 11px;
+  font-size: 12px;
   color: var(--text-3);
 }
 
@@ -2347,7 +2363,7 @@ input.panel-title:focus-visible {
 }
 
 .issue-main .muted {
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .palette-backdrop {
@@ -2375,7 +2391,7 @@ input.panel-title:focus-visible {
 
 .palette-crumb .muted {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .palette > input {
@@ -2431,7 +2447,7 @@ input.panel-title:focus-visible {
 
 .palette-list li .muted {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 12px;
 }
 
 .palette-empty {
