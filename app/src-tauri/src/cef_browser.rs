@@ -9,7 +9,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -57,10 +58,29 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 static READY: AtomicBool = AtomicBool::new(false);
 /// Set once Chromium is shut down, after which it must not be called.
 static DOWN: AtomicBool = AtomicBool::new(false);
+/// Ids for what a page asks the user (a dialog, a site permission), answered from the app.
+static NEXT_ASK: AtomicU64 = AtomicU64::new(1);
+/// This run's token, which the pages' messages carry (see `page_token`).
+static PAGE_TOKEN: OnceLock<String> = OnceLock::new();
+/// The switch the helpers get the token with (src/bin/helper.rs).
+pub const PAGE_TOKEN_SWITCH: &str = "todo-sessions-token";
 
 thread_local! {
     /// The tabs' browsers, touched on the main thread only.
     static TABS: RefCell<HashMap<String, Browser>> = RefCell::new(HashMap::new());
+    /// Pages' dialogs (alert, confirm, prompt) waiting for the app's answer, by id.
+    static DIALOGS: RefCell<HashMap<u64, JsdialogCallback>> = RefCell::new(HashMap::new());
+    /// Sites' asks for the microphone or camera waiting for the user, by id, with what they asked for.
+    static MEDIA_ASKS: RefCell<HashMap<u64, (MediaAccessCallback, u32)>> = RefCell::new(HashMap::new());
+    /// Downloads already told about.
+    static DOWNLOADED: RefCell<HashSet<u32>> = RefCell::new(HashSet::new());
+}
+
+/// The token a page's message to the app must carry: the pages' script gets it
+/// from the helper (on its command line), which a page's own scripts cannot
+/// read, so a page cannot pass itself off as the app's script.
+pub fn page_token() -> &'static str {
+    PAGE_TOKEN.get_or_init(|| uuid::Uuid::new_v4().simple().to_string())
 }
 
 /// A tab's rectangle in logical pixels from the top left of the window's content.
@@ -167,6 +187,13 @@ wrap_browser_process_handler! {
         fn on_schedule_message_pump_work(&self, delay_ms: i64) {
             if let Some(tx) = PUMP.get() {
                 let _ = tx.send(delay_ms);
+            }
+        }
+
+        // The renderers put the token in the pages' script (see `page_token`).
+        fn on_before_child_process_launch(&self, command_line: Option<&mut CommandLine>) {
+            if let Some(command_line) = command_line {
+                command_line.append_switch_with_value(Some(&CefString::from(PAGE_TOKEN_SWITCH)), Some(&CefString::from(page_token())));
             }
         }
     }
@@ -320,11 +347,154 @@ wrap_client! {
         }
 
         fn permission_handler(&self) -> Option<PermissionHandler> {
-            Some(PagePermission::new())
+            Some(PagePermission::new(self.app.clone()))
         }
 
         fn keyboard_handler(&self) -> Option<KeyboardHandler> {
             Some(SwallowCloseKey::new())
+        }
+
+        fn focus_handler(&self) -> Option<FocusHandler> {
+            Some(NoLoadFocus::new())
+        }
+
+        fn download_handler(&self) -> Option<DownloadHandler> {
+            Some(PageDownload::new(self.app.clone()))
+        }
+
+        fn jsdialog_handler(&self) -> Option<JsdialogHandler> {
+            Some(PageDialogs::new(self.app.clone(), self.tab.clone()))
+        }
+
+        fn request_handler(&self) -> Option<RequestHandler> {
+            Some(LinkClicks::new(self.app.clone(), self.tab.clone()))
+        }
+    }
+}
+
+wrap_request_handler! {
+    struct LinkClicks {
+        app: AppHandle,
+        tab: String,
+    }
+
+    impl RequestHandler {
+        // A link clicked with ⌘ (behind) or ⌘⇧ (in front), or a middle click: a
+        // new tab, as in a browser (left to CEF, the link would load in this tab).
+        fn on_open_urlfrom_tab(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            target_url: Option<&CefString>,
+            target_disposition: WindowOpenDisposition,
+            _user_gesture: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let new_tab = [WindowOpenDisposition::NEW_BACKGROUND_TAB, WindowOpenDisposition::NEW_FOREGROUND_TAB, WindowOpenDisposition::NEW_WINDOW];
+            if !new_tab.contains(&target_disposition) {
+                return 0;
+            }
+            let url = target_url.map(CefString::to_string).unwrap_or_default();
+            crate::tab_new_window(&self.app, &self.tab, url, false, target_disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB);
+            1
+        }
+    }
+}
+
+wrap_focus_handler! {
+    struct NoLoadFocus;
+
+    impl FocusHandler {
+        // A page loading (a tab made, the app sending it somewhere) does not take the
+        // keyboard: it moves only with the user's own clicks and keys (see `focus`).
+        fn on_set_focus(&self, _browser: Option<&mut Browser>, source: FocusSource) -> ::std::os::raw::c_int {
+            i32::from(source == FocusSource::NAVIGATION)
+        }
+    }
+}
+
+wrap_download_handler! {
+    struct PageDownload {
+        app: AppHandle,
+    }
+
+    impl DownloadHandler {
+        fn can_download(&self, _browser: Option<&mut Browser>, _url: Option<&CefString>, _request_method: Option<&CefString>) -> ::std::os::raw::c_int {
+            1
+        }
+
+        // Saved to the Downloads folder without asking, as a browser does.
+        fn on_before_download(
+            &self,
+            _browser: Option<&mut Browser>,
+            _download_item: Option<&mut DownloadItem>,
+            suggested_name: Option<&CefString>,
+            callback: Option<&mut BeforeDownloadCallback>,
+        ) -> ::std::os::raw::c_int {
+            let Some(callback) = callback else { return 0 };
+            let name = suggested_name.map(CefString::to_string).filter(|n| !n.is_empty()).unwrap_or_else(|| "download".into());
+            let path = crate::download_path(&name);
+            callback.cont(Some(&CefString::from(path.to_string_lossy().as_ref())), 0);
+            1
+        }
+
+        fn on_download_updated(&self, _browser: Option<&mut Browser>, download_item: Option<&mut DownloadItem>, _callback: Option<&mut DownloadItemCallback>) {
+            let Some(item) = download_item else { return };
+            if item.is_complete() == 0 || !DOWNLOADED.with(|d| d.borrow_mut().insert(item.id())) {
+                return;
+            }
+            crate::download_finished(&self.app, CefString::from(&item.full_path()).to_string());
+        }
+    }
+}
+
+wrap_jsdialog_handler! {
+    struct PageDialogs {
+        app: AppHandle,
+        tab: String,
+    }
+
+    impl JsdialogHandler {
+        // A page's alert, confirm and prompt show as the app's dialog (see `answer_dialog`).
+        fn on_jsdialog(
+            &self,
+            _browser: Option<&mut Browser>,
+            _origin_url: Option<&CefString>,
+            dialog_type: JsdialogType,
+            message_text: Option<&CefString>,
+            default_prompt_text: Option<&CefString>,
+            callback: Option<&mut JsdialogCallback>,
+            _suppress_message: Option<&mut ::std::os::raw::c_int>,
+        ) -> ::std::os::raw::c_int {
+            let Some(callback) = callback else { return 0 };
+            let id = NEXT_ASK.fetch_add(1, Ordering::SeqCst);
+            DIALOGS.with(|d| d.borrow_mut().insert(id, callback.clone()));
+            let kind = if dialog_type == JsdialogType::CONFIRM {
+                "confirm"
+            } else if dialog_type == JsdialogType::PROMPT {
+                "prompt"
+            } else {
+                "alert"
+            };
+            let text = |s: Option<&CefString>| s.map(CefString::to_string).unwrap_or_default();
+            crate::page_dialog(&self.app, &self.tab, id, kind, text(message_text), text(default_prompt_text));
+            1
+        }
+
+        // Leaving a page is not asked about: tabs close and move on when the user says so.
+        fn on_before_unload_dialog(
+            &self,
+            _browser: Option<&mut Browser>,
+            _message_text: Option<&CefString>,
+            _is_reload: ::std::os::raw::c_int,
+            callback: Option<&mut JsdialogCallback>,
+        ) -> ::std::os::raw::c_int {
+            match callback {
+                Some(callback) => {
+                    callback.cont(1, None);
+                    1
+                }
+                None => 0,
+            }
         }
     }
 }
@@ -391,8 +561,14 @@ wrap_load_handler! {
         }
 
         fn on_load_end(&self, _browser: Option<&mut Browser>, frame: Option<&mut Frame>, _status: i32) {
-            if let Some(frame) = frame.filter(|f| f.is_main() == 1) {
+            let Some(frame) = frame else { return };
+            if frame.is_main() == 1 {
                 crate::tab_load(&self.app, &self.tab, frame_url(frame), false);
+                return;
+            }
+            // A frame (an artifact, a doc's editor) gets the app's keys as the page does.
+            for script in crate::page_setup_scripts(&self.app) {
+                frame.execute_java_script(Some(&cef_string(&script)), None, 0);
             }
         }
     }
@@ -414,7 +590,7 @@ wrap_life_span_handler! {
             _popup_id: i32,
             target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
-            _target_disposition: WindowOpenDisposition,
+            target_disposition: WindowOpenDisposition,
             _user_gesture: i32,
             popup_features: Option<&PopupFeatures>,
             _window_info: Option<&mut WindowInfo>,
@@ -426,10 +602,12 @@ wrap_life_span_handler! {
             let sized = popup_features.is_some_and(|f| f.width_set != 0 || f.height_set != 0);
             // The popup is not the tab: its loads and titles must not reach the tab's page.
             if let Some(client) = client {
-                *client = Some(PopupClient::new());
+                *client = Some(PopupClient::new(self.app.clone()));
             }
             let url = target_url.map(CefString::to_string).unwrap_or_default();
-            i32::from(!crate::tab_new_window(&self.app, &self.tab, url, sized))
+            // ⌘-click opens behind, as in a browser.
+            let behind = target_disposition == WindowOpenDisposition::NEW_BACKGROUND_TAB;
+            i32::from(!crate::tab_new_window(&self.app, &self.tab, url, sized, behind))
         }
 
         fn on_after_created(&self, _browser: Option<&mut Browser>) {
@@ -453,7 +631,9 @@ wrap_life_span_handler! {
 }
 
 wrap_client! {
-    struct PopupClient;
+    struct PopupClient {
+        app: AppHandle,
+    }
 
     impl Client {
         fn life_span_handler(&self) -> Option<LifeSpanHandler> {
@@ -461,7 +641,7 @@ wrap_client! {
         }
 
         fn permission_handler(&self) -> Option<PermissionHandler> {
-            Some(PagePermission::new())
+            Some(PagePermission::new(self.app.clone()))
         }
     }
 }
@@ -474,15 +654,7 @@ wrap_life_span_handler! {
             LIVE.fetch_add(1, Ordering::SeqCst);
         }
 
-        // Left to CEF, closing a browser also sends performClose to its parent
-        // window, which hides the app's window. The pages are views in it, so
-        // taking the view out is the close (its release ends the browser).
-        fn do_close(&self, browser: Option<&mut Browser>) -> ::std::os::raw::c_int {
-            if let Some(view) = browser.and_then(|b| view_of(b)) {
-                view.removeFromSuperview();
-            }
-            1
-        }
+        // Left to CEF (no `do_close`), a popup's close closes its own window with it.
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             LIVE.fetch_sub(1, Ordering::SeqCst);
@@ -491,27 +663,53 @@ wrap_life_span_handler! {
 }
 
 wrap_permission_handler! {
-    struct PagePermission;
+    struct PagePermission {
+        app: AppHandle,
+    }
 
     impl PermissionHandler {
-        // The Input mode's ChatGPT voice mode asks for the microphone; macOS asks the user in turn.
+        // A site's ask for the microphone or camera: the answer kept for the site,
+        // else the user's (asked in the app, then kept); macOS asks in turn.
         fn on_request_media_access_permission(
             &self,
             _browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
-            _requesting_origin: Option<&CefString>,
+            requesting_origin: Option<&CefString>,
             requested_permissions: u32,
             callback: Option<&mut MediaAccessCallback>,
         ) -> i32 {
-            match callback {
-                Some(callback) => {
-                    callback.cont(requested_permissions);
-                    1
+            let Some(callback) = callback else { return 0 };
+            let origin = requesting_origin.map(CefString::to_string).unwrap_or_default();
+            let site = origin.parse::<tauri::Url>().ok().and_then(|u| u.host_str().map(String::from)).unwrap_or(origin);
+            match crate::site_permission(&self.app, &site) {
+                Some(allowed) => callback.cont(if allowed { requested_permissions } else { 0 }),
+                None => {
+                    let id = NEXT_ASK.fetch_add(1, Ordering::SeqCst);
+                    MEDIA_ASKS.with(|m| m.borrow_mut().insert(id, (callback.clone(), requested_permissions)));
+                    crate::ask_site_permission(&self.app, id, site, requested_permissions);
                 }
-                None => 0,
             }
+            1
         }
     }
+}
+
+/// The user's answer to a page's dialog (`ok` false: cancel), with what was typed for a prompt.
+pub fn answer_dialog(app: &AppHandle, id: u64, ok: bool, text: Option<String>) -> Result<(), String> {
+    on_main(app, move || {
+        if let Some(callback) = DIALOGS.with(|d| d.borrow_mut().remove(&id)) {
+            callback.cont(i32::from(ok), text.map(|t| CefString::from(t.as_str())).as_ref());
+        }
+    })
+}
+
+/// The user's answer to a site's ask for the microphone or camera.
+pub fn answer_media(app: &AppHandle, id: u64, allow: bool) -> Result<(), String> {
+    on_main(app, move || {
+        if let Some((callback, asked)) = MEDIA_ASKS.with(|m| m.borrow_mut().remove(&id)) {
+            callback.cont(if allow { asked } else { 0 });
+        }
+    })
 }
 
 wrap_string_visitor! {

@@ -34,6 +34,11 @@ import {
   ADD_INPUT_EVENT,
   WINDOW_FOCUS_EVENT,
   BROWSER_NEW_TAB_EVENT,
+  OPEN_URL_EVENT,
+  OPEN_NEW_TODO_EVENT,
+  BROWSER_DOWNLOADED_EVENT,
+  PAGE_DIALOG_EVENT,
+  SITE_PERMISSION_EVENT,
   OPEN_CLOUD_EVENT,
   BROWSER_TITLE_EVENT,
   BROWSER_ZOOM_EVENT,
@@ -74,6 +79,8 @@ import { TYPING, useTodoKeys } from "./todoKeys";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { reviewMessages, type ReviewRequest } from "./slackMessages";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
+import { addressToUrl, findTabFor, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
+import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
 import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
 const REFRESH_MS = 3000;
@@ -172,7 +179,8 @@ const OpenCloudContext = createContext<((sessionId: string) => void) | null>(nul
 /// With the in-app terminal chosen: opens a run in a terminal tab, and brings
 /// up the tab a session already runs in (false when there is none).
 interface InAppTerminal {
-  open: (run: TerminalRun) => void;
+  /// Shows `run` in a terminal tab; `focus` (opening, not starting) brings it up with the keyboard.
+  open: (run: TerminalRun, focus?: boolean) => void;
   focus: (sessionId: string) => boolean;
 }
 const TerminalContext = createContext<InAppTerminal | null>(null);
@@ -184,7 +192,7 @@ function openLocal(terminal: InAppTerminal | null, sessionId: string, report: (e
   api.markSessionSeen(sessionId).catch(report);
   if (!terminal) return void api.openSession(sessionId, main ? undefined : "herdr").catch(report);
   if (terminal.focus(sessionId)) return;
-  terminalApi.resume(sessionId, main).then((r) => r && terminal.open(r), report);
+  terminalApi.resume(sessionId, main).then((r) => r && terminal.open(r, true), report);
 }
 
 const COLUMNS: { status: Status; label: string }[] = [
@@ -432,6 +440,29 @@ const pagePrefix = (url: string) => {
 };
 /// How long "input に追加しました" stays.
 const ADDED_INPUT_MS = 3000;
+/// How long the toast about a finished download stays.
+const DOWNLOADED_MS = 8000;
+/// A page's alert, confirm or prompt (PAGE_DIALOG_EVENT).
+interface PageDialogAsk {
+  id: number;
+  tab: string;
+  kind: "alert" | "confirm" | "prompt";
+  message: string;
+  default: string;
+}
+/// A site's first ask for the microphone or camera (SITE_PERMISSION_EVENT).
+interface SiteAsk {
+  id: number;
+  site: string;
+  camera: boolean;
+}
+/// The pane's tabs as kept across restarts (PANE_TABS_KEY): their pages, and the one shown.
+interface SavedTabs {
+  /// `pinned` is the pinned page's id.
+  tabs: { url: string; openedFor?: string; title: string | null; pinned?: string; term?: TerminalRun }[];
+  active: number;
+}
+const PANE_TABS_KEY = "paneTabs";
 /// The focus mode's left side keeps at least this.
 const FOCUS_LEFT_MIN_W = 360;
 const SIDEBAR_W = 232;
@@ -1758,28 +1789,16 @@ function Composer({ todo, skills, run, onStarted }: { todo: Todo; skills: Skill[
   );
 }
 
-const CLOUD_SESSION_PAGE = /^https:\/\/claude\.ai\/code\/session_/;
 /// The `cse_…` id of the cloud session a claude.ai page shows, if it shows one.
 const cloudIdOfPage = (url: string) => url.match(/^https:\/\/claude\.ai\/code\/session_([A-Za-z0-9]+)/)?.[1]?.replace(/^/, "cse_") ?? null;
-
-/// Whether a tab already shows `url`: the same page, or a page under it
-/// (a PR's Files tab, a session page after claude.ai added a query), so
-/// opening it again comes back to that tab.
-function sameTarget(tabUrl: string, url: string): boolean {
-  try {
-    const a = new URL(tabUrl);
-    const b = new URL(url);
-    const path = (p: string) => p.replace(/\/+$/, "");
-    return a.origin === b.origin && (path(a.pathname) === path(b.pathname) || (path(b.pathname) !== "" && path(a.pathname).startsWith(`${path(b.pathname)}/`)));
-  } catch {
-    return tabUrl === url;
-  }
-}
 
 /// A page in the browser pane.
 interface BrowserTab {
   id: string;
   url: string;
+  /// The page of the app's own it was opened for (a session, a PR), which
+  /// opening again comes back to though the page moved on (see `findTabFor`).
+  openedFor?: string;
   title: string | null;
   /// From opening or a navigation until the page finishes loading.
   loading: boolean;
@@ -1797,6 +1816,20 @@ interface BrowserTab {
   space?: string;
   /// On the right: which page it is (a FOCUS_PAGES id or NOTE_TAB).
   kind?: string;
+  /// A Cloud session being made for it (BeginWeb): not kept across restarts.
+  creating?: boolean;
+}
+
+/// The pane's tabs kept from the last run (PANE_TABS_KEY), with new ids; the
+/// pages load when shown.
+function restoreTabs(): { tabs: BrowserTab[]; active: string | null } {
+  const saved = loadJson<SavedTabs>(PANE_TABS_KEY, { tabs: [], active: -1 });
+  let n = 1;
+  const tabs = saved.tabs.map((t): BrowserTab => {
+    const pinned = PINNED_PAGES.find((p) => p.id === t.pinned);
+    return { id: pinned?.id ?? `t${n++}`, url: t.url, openedFor: t.openedFor, title: t.title, loading: false, nav: 0, pinned: pinned ? true : undefined, term: t.term };
+  });
+  return { tabs, active: tabs[saved.active]?.id ?? null };
 }
 
 /// One Input mode space: the pages a todo or an input (or FREE_SPACE) has open on the
@@ -1827,7 +1860,6 @@ interface SavedSpace {
 /// The browser pane: tabs of web pages, each a webview laid over this one on
 /// a placeholder that follows the layout. `covered` hides them while a dialog
 /// is up, since a native webview draws above everything in the page.
-const SEARCH_URL = "https://www.google.com/search?q=";
 /// Pages offered on a new tab.
 /// Pages the new tab page offers, which the user sets there (none at first).
 interface StartPage {
@@ -1849,16 +1881,6 @@ const CHAT_PAGES = ["pinchatgpt", "pinclaude"];
 /// which is pinned (kept open) only there.
 const FOCUS_PAGES: typeof PINNED_PAGES = [...PINNED_PAGES, { id: "pinnotion", label: "Notion", url: "https://www.notion.so/", icon: "list" }];
 
-/// What the address bar opens: a URL as typed, a bare host over https, and
-/// anything else as a search.
-function addressToUrl(text: string): string | null {
-  const t = text.trim();
-  if (!t) return null;
-  if (/^https?:\/\//i.test(t)) return t;
-  if (/^[^\s/]+\.[^\s]+$/.test(t)) return `https://${t}`;
-  return SEARCH_URL + encodeURIComponent(t);
-}
-
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
 function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove, onArchive, onToInput, onStrip }: {
@@ -1876,8 +1898,8 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
   onClose: (id: string) => void;
   onNewTab: () => void;
   onHide: () => void;
-  /// `keys` gives the page the keyboard.
-  onOpen: (url: string, keys?: boolean) => void;
+  /// Opens what was typed on the new tab page, in a new tab with the keyboard.
+  onOpen: (url: string) => void;
   onAddress: (tab: string, url: string) => void;
   /// Moves a dragged tab to where another one is.
   onMove: (tab: string, to: string) => void;
@@ -1960,7 +1982,7 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
       ) : active ? (
         <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} onToInput={active.pinned ? undefined : onToInput} />
       ) : (
-        <NewTabPage onOpen={(url) => onOpen(url, true)} />
+        <NewTabPage onOpen={onOpen} />
       )}
     </section>
   );
@@ -2474,7 +2496,9 @@ function ExplainPanel({ subject, title, pages, report, onAskByVoice }: {
 
 /// The focus mode: its own pages (and terminals) on the left and a pinned
 /// page (ChatGPT, Claude Code or Notion), the note or 「説明する」 on the right, nothing else.
-function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit }: {
+function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit, typing }: {
+  /// Which side has the keyboard: the browser's keys (⌘[ ⌘] ⌘L) are that side's only.
+  typing: "left" | "right" | null;
   /// A click on the left's tab strip: its page shown (the tab picked) takes the keyboard.
   onLeftStrip: () => void;
   /// The left side's tabs (its own pages, and terminals), and the one shown
@@ -2537,7 +2561,7 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
         {left?.term ? (
           <TerminalView key={left.id} id={left.id} run={left.term} report={report} />
         ) : left ? (
-          <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} noDia />
+          <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} noDia keysOn={typing === "left"} />
         ) : (
           <NewTabPage onOpen={onOpenLeft} />
         )}
@@ -2575,7 +2599,7 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
           ) : right?.term ? (
             <TerminalView key={right.id} id={right.id} run={right.term} report={report} />
           ) : right ? (
-            <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} noDia />
+            <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} noDia keysOn={typing === "right"} />
           ) : (
             note && <NoteStart note={note} />
           )}
@@ -2588,26 +2612,32 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
 /// One tab's page: its webview laid over a placeholder that follows the
 /// layout. `covered` hides it while a dialog is up, since a native webview
 /// draws above everything in the page.
-/// A tab to give the typing to (its page's text box) once it is shown, and
-/// text to type into it.
-let typeInto: string | null = null;
-let typeText: string | null = null;
-/// A tab to give the keyboard to (the page, not its text box) once it is shown.
-let keysInto: string | null = null;
+/// Gives tab `tab`'s page the keyboard now (with `input`, its text box), as the user asked.
+function giveKeys(tab: string, report: (e: unknown) => void, input?: boolean, text?: string) {
+  noteFocusRequest();
+  api.browserFocus(tab, input, text).catch(report);
+}
 /// Gives the tab coming up the keyboard, as a browser does: a page once it is
 /// shown (now, if it is `shown` already), a terminal, or with none (a new tab
-/// page, whose field takes it) this page.
+/// page, whose field takes it) this page. Only for the user's own action.
 function keysToTab(next: BrowserTab | null, shown: string | undefined, report: (e: unknown) => void) {
-  if (!next) api.focusAppPage().catch(report);
-  else if (next.term) requestAnimationFrame(() => focusTerminal(next.id));
-  else if (next.id === shown) api.browserFocus(next.id).catch(report);
-  else keysInto = next.id;
+  if (!next) {
+    noteFocusRequest();
+    api.focusAppPage().catch(report);
+  } else if (next.term) {
+    focusSoon(next.id);
+    requestAnimationFrame(() => focusTerminal(next.id));
+  } else if (next.id === shown) giveKeys(next.id, report);
+  else focusSoon(next.id);
 }
 /// Each tab's `nav` when it was last sent to its address: showing it again
 /// with the same one leaves its page where the user moved it.
 const sentNav = new Map<string, number>();
 
-function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onToInput, keep, noDia }: {
+function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onToInput, keep, noDia, keysOn = true }: {
+  /// Whether the browser's keys (⌘[ ⌘] ⌘L, zoom) are this tab's: in the Input
+  /// mode, only the side that has the keyboard's.
+  keysOn?: boolean;
   /// Set in the 作業スペース: puts the page in an input.
   onToInput?: () => void;
   tab: BrowserTab;
@@ -2633,15 +2663,10 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
     api
       .browserOpen(active.id, to, rect(), go, keep)
       .then(() => {
-        if (keysInto === active.id) {
-          keysInto = null;
-          return api.browserFocus(active.id);
-        }
-        if (typeInto !== active.id) return;
-        typeInto = null;
-        const text = typeText;
-        typeText = null;
-        return api.browserFocus(active.id, true, text ?? undefined);
+        // Only when the user asked for it and has not done anything since: a
+        // page that took long to come up does not take the keyboard back.
+        const wish = takeFocusWish(active.id);
+        if (wish) return api.browserFocus(active.id, wish.input || undefined, wish.text);
       })
       .catch(report);
   // Switching tabs or coming back from under a dialog shows the page the tab
@@ -2715,14 +2740,17 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
   const address = useRef<HTMLInputElement>(null);
   const tabId = useRef(active.id);
   tabId.current = active.id;
+  const keysOnRef = useRef(keysOn);
+  keysOnRef.current = keysOn;
   useEffect(() => {
     const focusAddress = () => {
       // A pinned page has no address: ⌘L from its page leaves the keyboard there.
-      if (!address.current) return void api.browserFocus(tabId.current).catch(report);
+      if (!address.current) return void giveKeys(tabId.current, report);
       address.current.focus();
       address.current.select();
     };
     const onKey = (e: KeyboardEvent) => {
+      if (!keysOnRef.current) return;
       if (matches(e, "back") || matches(e, "forward")) {
         e.preventDefault();
         api.browserGo(tabId.current, matches(e, "back") ? "back" : "forward").catch(report);
@@ -2738,7 +2766,7 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
       }
     };
     window.addEventListener("keydown", onKey);
-    const off = listen<{ tab: string }>(BROWSER_FOCUS_URL_EVENT, ({ payload }) => payload.tab === tabId.current && focusAddress());
+    const off = listen<{ tab: string }>(BROWSER_FOCUS_URL_EVENT, ({ payload }) => payload.tab === tabId.current && keysOnRef.current && focusAddress());
     return () => {
       window.removeEventListener("keydown", onKey);
       off.then((f) => f());
@@ -2766,7 +2794,7 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
             title="⌘L で編集、Enter で移動、Esc でやめる（開いたページから候補が出ます）"
             // What was typed is to be read (j k scroll it, pick a search result): the page takes the keyboard.
             onGo={(url) => {
-              keysInto = active.id;
+              focusSoon(active.id);
               navigate(url, true);
             }}
             onSuggesting={setSuggesting}
@@ -2774,7 +2802,7 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
             onEscape={(input) => {
               input.value = active.url;
               input.blur();
-              api.browserFocus(active.id).catch(report);
+              giveKeys(active.id, report);
             }}
           />
           {active.zoom && active.zoom !== 1 && (
@@ -4978,6 +5006,36 @@ function SlackReviewDialog({ onClose }: { onClose: () => void }) {
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
 
 /// Asked on Esc in the focus mode: Esc again leaves, Enter stays.
+/// A page's alert, confirm or prompt, as the app's dialog (the page waits for the answer).
+function PageDialog({ ask, onAnswer }: { ask: PageDialogAsk; onAnswer: (ok: boolean, text?: string) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  const ok = () => onAnswer(true, ask.kind === "prompt" ? (input.current?.value ?? "") : undefined);
+  return (
+    <Modal
+      title="ページからの確認"
+      onClose={() => onAnswer(false)}
+      footer={
+        <>
+          <span className="grow" />
+          {ask.kind !== "alert" && (
+            <button className="ghost" onClick={() => onAnswer(false)}>
+              キャンセル
+            </button>
+          )}
+          <button className="primary" autoFocus={ask.kind !== "prompt"} onClick={ok}>
+            OK
+          </button>
+        </>
+      }
+    >
+      <p className="page-dialog-message">{ask.message}</p>
+      {ask.kind === "prompt" && (
+        <input ref={input} autoFocus defaultValue={ask.default} aria-label="ページへの入力" onKeyDown={(e) => isEnter(e) && ok()} />
+      )}
+    </Modal>
+  );
+}
+
 function ExitFocusDialog({ onExit, onStay }: { onExit: () => void; onStay: () => void }) {
   useEffect(() => {
     // Ahead of the dialog's own Esc (which would only close it).
@@ -5097,8 +5155,11 @@ export default function App() {
   const [selection, setSelection] = useState<Selection>(null);
   // Pages in the browser pane. The pane stays across screens, shown or
   // hidden from the sidebar; hiding it keeps the tabs.
-  const [tabs, setTabs] = useState<BrowserTab[]>([]);
-  const [activeTabId, setActiveTabIdState] = useState<string | null>(null);
+  // Kept across restarts (see `restoreTabs`).
+  const restored = useRef<ReturnType<typeof restoreTabs> | null>(null);
+  restored.current ??= restoreTabs();
+  const [tabs, setTabs] = useState<BrowserTab[]>(() => restored.current!.tabs);
+  const [activeTabId, setActiveTabIdState] = useState<string | null>(() => restored.current!.active);
   const [newTab, setNewTab] = useState(false);
   const [browserShown, setBrowserShownState] = useState(() => load(BROWSER_SHOWN_KEY, ["1", "0"] as const, "0") === "1");
   const setBrowserShown = (v: boolean) => {
@@ -5109,7 +5170,7 @@ export default function App() {
     setActiveTabIdState(id);
     setNewTab(false);
   };
-  const nextTab = useRef(1);
+  const nextTab = useRef(tabs.filter((t) => !t.pinned).length + 1);
   // The pane's tabs: the focus mode's own pages are apart from them.
   const paneTabs = tabs.filter((t) => !t.focus);
   const activeTab = newTab ? null : (paneTabs.find((t) => t.id === activeTabId) ?? paneTabs[paneTabs.length - 1] ?? null);
@@ -5148,34 +5209,54 @@ export default function App() {
     remember(LINK_TARGET_KEY, t);
     setLinkTargetState(t);
   };
-  /// In the pane, a page already open in a tab comes to the front and anything
-  /// else gets a new tab; with Dia chosen, pages go there instead.
-  /// `keys` gives the page the keyboard (one typed into the new tab page);
-  /// `behind` leaves the tab shown as it is.
-  const openInBrowser = (url: string, keys = false, behind = false) => {
+  /// Opens a page of the app's own (a session, a PR) in the pane: the tab
+  /// opened for it comes to the front, else a new tab next to the one shown;
+  /// with Dia chosen, pages go there instead. Opening is the user's action, so
+  /// the page takes the keyboard (`keys` false leaves it); `behind` leaves the
+  /// tab shown as it is.
+  const openInBrowser = (url: string, keys = true, behind = false) => {
     if (linkTarget === "dia") {
       api.openInDia(url).catch(report);
       return;
     }
-    setBrowserShown(true);
-    // Only a Claude session's page comes back to its tab; anything else, the
-    // claude.ai home included, may be open in as many tabs as asked.
-    const open = CLOUD_SESSION_PAGE.test(url) ? paneTabs.find((t) => sameTarget(t.url, url)) : undefined;
-    if (open) return setActiveTabId(open.id);
+    const open = findTabFor(paneTabs.filter((t) => !t.pinned && !t.term), url);
+    if (open) {
+      if (behind) return;
+      setBrowserShown(true);
+      if (keys) keysToTab(open, activeTab?.id, report);
+      return setActiveTabId(open.id);
+    }
     const id = `t${nextTab.current++}`;
-    if (keys) keysInto = id;
-    setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0 }]);
-    if (!behind) setActiveTabId(id);
+    if (keys && !behind) focusSoon(id);
+    setTabs((prev) => insertAfter(prev, { id, url, openedFor: url, title: null, loading: true, nav: 0 }, activeTab?.id ?? null));
+    if (!behind) {
+      setBrowserShown(true);
+      setActiveTabId(id);
+    }
   };
+  /// A link a page opens in a new window: a new tab right after that page's
+  /// tab, in front with the keyboard (the user clicked it), or `behind` (⌘-click).
+  const openFromPage = (url: string, from: string, behind: boolean) => {
+    if (linkTarget === "dia") return void api.openInDia(url).catch(report);
+    const id = `t${nextTab.current++}`;
+    if (!behind) focusSoon(id);
+    setTabs((prev) => insertAfter(prev, { id, url, title: null, loading: true, nav: 0 }, prev.some((t) => t.id === from && !t.pinned) ? from : (activeTab?.id ?? null)));
+    if (!behind) {
+      setBrowserShown(true);
+      setActiveTabId(id);
+    }
+  };
+  /// Starting a Cloud session to be watched on the web: its tab is made
+  /// behind the one shown (starting does not change what is seen or where the
+  /// keyboard is), marked while the session is made, and then goes to it.
   const beginWeb: BeginWeb = () => {
     if (linkTarget === "dia") return (sessionId) => sessionId && api.openInDia(cloudWebUrl(sessionId)).catch(report);
     const id = `t${nextTab.current++}`;
-    setBrowserShown(true);
-    setTabs((prev) => [...prev, { id, url: CLOUD_HOME, title: "セッションを作成中…", loading: true, nav: 0 }]);
-    setActiveTabId(id);
+    setTabs((prev) => insertAfter(prev, { id, url: CLOUD_HOME, title: "セッションを作成中…", loading: true, nav: 0, creating: true }, activeTab?.id ?? null));
     return (sessionId) => {
       if (sessionId) {
-        setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, url: cloudWebUrl(sessionId), title: null, loading: true, nav: t.nav + 1 } : t)));
+        const url = cloudWebUrl(sessionId);
+        setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, url, openedFor: url, title: null, loading: false, nav: t.nav + 1, creating: undefined } : t)));
       } else {
         api.browserClose(id).catch(report);
         setTabs((prev) => prev.filter((t) => t.id !== id));
@@ -5213,12 +5294,13 @@ export default function App() {
       setTabs((prev) => [...prev, { id, url: url ?? page.url, title: page.label, loading: true, nav: 0, focus: true, space: key, kind }]);
     }
   };
-  const setFocusRight = (kind: string) => {
+  /// Picks the right page; it takes the typing (its text box, with `text` typed in).
+  const setFocusRight = (kind: string, text?: string) => {
     remember(FOCUS_RIGHT_KEY, kind);
     setFocusRightPref(kind);
     patchSpace(spaceKey, (s) => ({ ...s, right: kind }));
     ensureRight(spaceKey, kind, space.rightUrls[kind]);
-    typeInto = rightTabId(spaceKey, kind);
+    focusSoon(rightTabId(spaceKey, kind), true, text);
   };
   // The pages take the keys as they are set (their script reads them).
   const keymap = useKeymap();
@@ -5466,10 +5548,7 @@ export default function App() {
   const openStudyRef = useRef(openStudy);
   openStudyRef.current = openStudy;
   /// 「声で質問される」: ChatGPT on the right, with the prompt typed into it.
-  const askByVoice = (prompt: string) => {
-    typeText = prompt;
-    setFocusRight("pinchatgpt");
-  };
+  const askByVoice = (prompt: string) => setFocusRight("pinchatgpt", prompt);
   const savedSpaces = () => loadJson<Record<string, SavedSpace>>(INPUT_SPACES_KEY, {});
   /// ⌘⇧[ ⌘⇧] in the Input mode: the previous or next tab of the side that has
   /// the keyboard, the left's own or the right's pages (which take the typing).
@@ -5492,7 +5571,7 @@ export default function App() {
   const openTerminalLink = (url: string, front: boolean) => {
     if (!focusModeRef.current) return openInBrowser(url, front, !front);
     const [id] = addToFocus([{ url }], spaceKey, !front);
-    if (front && id) keysInto = id;
+    if (front && id) focusSoon(id);
   };
   const openTerminalLinkRef = useRef(openTerminalLink);
   openTerminalLinkRef.current = openTerminalLink;
@@ -5555,7 +5634,7 @@ export default function App() {
       addToFocus(items, key);
     } else if (lacking.length > 0) addToFocus(lacking, key);
     ensureRight(key, right, rightUrls[right]);
-    typeInto = rightTabId(key, right);
+    focusSoon(rightTabId(key, right), true);
     setFocusTyping("right");
     setFocusMode(true);
   };
@@ -5564,7 +5643,7 @@ export default function App() {
   const showPinned = (id: string) => {
     const page = PINNED_PAGES.find((p) => p.id === id);
     if (!page) return;
-    typeInto = id;
+    focusSoon(id, true);
     if (!tabs.some((t) => t.id === id)) setTabs((prev) => [{ id, url: page.url, title: page.label, loading: true, nav: 0, pinned: true }, ...prev]);
     setBrowserShown(true);
     setActiveTabId(id);
@@ -5577,17 +5656,20 @@ export default function App() {
   const inAppTerminal: InAppTerminal | null =
     terminalTarget === "app"
       ? {
-          open: (run) => {
+          open: (run, focus = false) => {
             // herdr is attached once per herdr session; its pane is already focused.
             const attached = run.herdr ? tabs.find((t) => t.term?.herdr === run.herdr) : undefined;
             if (attached) {
+              if (!focus) return;
               showTab(attached.id);
+              focusSoon(attached.id);
               return void requestAnimationFrame(() => focusTerminal(attached.id));
             }
+            // Started (not opened): the tab is made behind, as a page's is.
             const id = `t${nextTab.current++}`;
-            setBrowserShown(true);
-            setTabs((prev) => [...prev, { id, url: "", title: run.title, loading: false, nav: 0, term: run }]);
-            setActiveTabId(id);
+            if (focus) focusSoon(id);
+            setTabs((prev) => insertAfter(prev, { id, url: "", title: run.title, loading: false, nav: 0, term: run }, activeTab?.id ?? null));
+            if (focus) showTab(id);
           },
           focus: (sessionId) => {
             const tab = terminalTab(sessionId);
@@ -5599,6 +5681,7 @@ export default function App() {
             if (!tab) return false;
             showTab(tab.id);
             // After the tab is shown, so its terminal is in the page.
+            focusSoon(tab.id);
             requestAnimationFrame(() => focusTerminal(tab.id));
             return true;
           },
@@ -5614,17 +5697,17 @@ export default function App() {
   const closeTab = (id: string) => {
     if (tabs.find((t) => t.id === id)?.term) closeTerminal(id);
     else api.browserClose(id).catch(report);
-    const i = tabs.findIndex((t) => t.id === id);
-    const rest = tabs.filter((t) => t.id !== id);
-    setTabs(rest);
-    // Closing the last tab leaves the pane open on a new tab (pinned pages
-    // aside); the one shown instead takes the keyboard, if the pane had it.
+    // The tab shown next is its right neighbour (else its left one) on the
+    // strip, among the pane's own tabs; with none left, a new tab page. It
+    // takes the keyboard only if the pane had it.
+    const next = nextAfterClose(paneTabs.filter((t) => !t.pinned), id);
+    setTabs((prev) => prev.filter((t) => t.id !== id));
+    if (id !== activeTab?.id) return;
     const typing = typingSideRef.current === "pane";
-    if (!rest.some((t) => !t.pinned)) {
+    if (!next) {
       setNewTab(true);
       if (typing) keysToTab(null, undefined, report);
-    } else if (id === activeTab?.id) {
-      const next = rest[Math.min(i, rest.length - 1)];
+    } else {
       if (typing) keysToTab(next, undefined, report);
       setActiveTabId(next.id);
     }
@@ -5669,7 +5752,7 @@ export default function App() {
       if (side?.term) focusTerminal(side.id);
       else if (side) {
         const chat = pane && CHAT_PAGES.includes(side.kind ?? side.id);
-        api.browserFocus(side.id, chat, chat ? text : undefined).catch(report);
+        giveKeys(side.id, report, chat, chat ? text : undefined);
       }
       return;
     }
@@ -5683,7 +5766,7 @@ export default function App() {
     if (!browserShown || !activeTab) return;
     setTypingSide("pane");
     if (activeTab.term) focusTerminal(activeTab.id);
-    else api.browserFocus(activeTab.id, CHAT_PAGES.includes(activeTab.id)).catch(report);
+    else giveKeys(activeTab.id, report, CHAT_PAGES.includes(activeTab.id));
   };
   const focusLeftRef = useRef(focusLeft);
   focusLeftRef.current = focusLeft;
@@ -5694,6 +5777,11 @@ export default function App() {
   // mode, its left or right. The keys moving the typing (⌃h ⌃l, ⌘⇧[ ⌘⇧]) mark
   // it as they move it; a click, or a page taking it, as that happens.
   const [typingSide, setTypingSide] = useState<"app" | "pane" | null>("app");
+  /// What had the keyboard in this window when the user last pressed a key or
+  /// clicked (before a dialog's own field takes it): a dialog gives it back.
+  const lastActive = useRef<Element | null>(null);
+  /// Set when a page's key opened the dialog (⌘K in a page): it goes back to the page.
+  const dialogFromPage = useRef(false);
   const typingSideRef = useRef(typingSide);
   typingSideRef.current = typingSide;
   useEffect(() => {
@@ -5760,6 +5848,36 @@ export default function App() {
       document.removeEventListener("focusout", lost);
     };
   }, []);
+  // The user's own keys and presses (and the window losing the keyboard to a
+  // page or another app) make older wishes for the keyboard stale (focus.ts).
+  useEffect(() => {
+    const acted = () => {
+      userActed();
+      lastActive.current = document.activeElement;
+    };
+    window.addEventListener("keydown", acted, true);
+    window.addEventListener("pointerdown", acted, true);
+    window.addEventListener("blur", acted);
+    return () => {
+      window.removeEventListener("keydown", acted, true);
+      window.removeEventListener("pointerdown", acted, true);
+      window.removeEventListener("blur", acted);
+    };
+  }, []);
+  // The pane's tabs are kept across restarts: their pages (not the pages'
+  // state), the pinned pages' too, and terminals attached to herdr sessions.
+  const savedTabsJson = JSON.stringify({
+    tabs: paneTabs
+      .filter((t) => !t.creating && (!t.term || t.term.herdr))
+      .map((t): SavedTabs["tabs"][number] => ({ url: t.url, openedFor: t.openedFor, title: t.title, pinned: t.pinned ? t.id : undefined, term: t.term })),
+    active: paneTabs.filter((t) => !t.creating && (!t.term || t.term.herdr)).findIndex((t) => t.id === activeTab?.id),
+  });
+  useEffect(() => remember(PANE_TABS_KEY, savedTabsJson), [savedTabsJson]);
+  // A kept terminal comes back only while its herdr session still runs.
+  useEffect(() => {
+    if (!tabs.some((t) => t.term?.herdr)) return;
+    api.herdrSessions().then(({ running }) => setTabs((prev) => prev.filter((t) => !t.term?.herdr || running.includes(t.term.herdr))), report);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const closeShownRef = useRef(closeShown);
   closeShownRef.current = closeShown;
   /// ⌘⇧A: archives the cloud session the shown tab is on and closes the tab.
@@ -5779,6 +5897,26 @@ export default function App() {
   const setTabUrl = (id: string, url: string) => setTabs((prev) => prev.map((t) => (t.id === id && t.url !== url ? { ...t, url } : t)));
   const openRef = useRef(openInBrowser);
   openRef.current = openInBrowser;
+  const openFromPageRef = useRef(openFromPage);
+  openFromPageRef.current = openFromPage;
+  // A page's download, dialog (alert, confirm, prompt) and ask for the microphone or camera.
+  const [downloaded, setDownloadedState] = useState<{ path: string; name: string } | null>(null);
+  const setDownloaded = (d: { path: string; name: string }) => {
+    setDownloadedState(d);
+    setTimeout(() => setDownloadedState((now) => (now === d ? null : now)), DOWNLOADED_MS);
+  };
+  const [pageDialog, setPageDialog] = useState<PageDialogAsk | null>(null);
+  const answerPageDialog = (ok: boolean, text?: string) => {
+    if (!pageDialog) return;
+    api.answerPageDialog(pageDialog.id, ok, text).catch(report);
+    setPageDialog(null);
+  };
+  const [siteAsk, setSiteAsk] = useState<SiteAsk | null>(null);
+  const answerSite = (allow: boolean) => {
+    if (!siteAsk) return;
+    api.answerSitePermission(siteAsk.id, siteAsk.site, allow).catch(report);
+    setSiteAsk(null);
+  };
   const openCloud = (sessionId: string) => {
     api.markSessionSeen(sessionId).catch(report);
     return cloudTarget === "desktop" ? api.openSession(sessionId, "desktop").catch(report) : openInBrowser(cloudWebUrl(sessionId));
@@ -5805,7 +5943,20 @@ export default function App() {
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)));
       }),
       // In the Input mode a page's new window is a new tab on the left.
-      listen<{ url: string }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => (focusModeRef.current ? addToFocusRef.current([{ url: payload.url }]) : openRef.current(payload.url))),
+      listen<{ url: string; tab: string; behind: boolean }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => {
+        if (!focusModeRef.current) return openFromPageRef.current(payload.url, payload.tab, payload.behind);
+        const [id] = addToFocusRef.current([{ url: payload.url }], undefined, payload.behind);
+        if (id && !payload.behind) focusSoon(id);
+      }),
+      // A notification's PR: opened by the user, so it takes the keyboard.
+      listen<{ url: string }>(OPEN_URL_EVENT, ({ payload }) => openRef.current(payload.url, true)),
+      listen(OPEN_NEW_TODO_EVENT, () => {
+        dialogFromPage.current = true;
+        setDialog("add");
+      }),
+      listen<{ path: string; name: string }>(BROWSER_DOWNLOADED_EVENT, ({ payload }) => setDownloaded(payload)),
+      listen<PageDialogAsk>(PAGE_DIALOG_EVENT, ({ payload }) => setPageDialog(payload)),
+      listen<SiteAsk>(SITE_PERMISSION_EVENT, ({ payload }) => setSiteAsk(payload)),
       listen<{ url: string; title: string }>(ADD_INPUT_EVENT, ({ payload }) => addInputRef.current(payload.url, payload.title)),
       // The Input mode's left takes the browser's keys; it lets the app's other shortcuts through.
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => (focusModeRef.current ? newFocusTabRef.current() : openNewTab())),
@@ -5816,9 +5967,19 @@ export default function App() {
         focusModeRef.current ? !onFocusRightRef.current(payload.tab) && closeFocusTabRef.current() : closeShownRef.current(),
       ),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
-      listen<{ tab: string }>(BROWSER_TO_INPUT_EVENT, () => !focusModeRef.current && toInputRef.current()),
-      listen(OPEN_PALETTE_EVENT, () => paletteRef.current()),
-      listen(OPEN_SESSIONS_EVENT, () => openSessionsRef.current()),
+      listen<{ tab: string }>(BROWSER_TO_INPUT_EVENT, () => {
+        if (focusModeRef.current) return;
+        dialogFromPage.current = true;
+        toInputRef.current();
+      }),
+      listen(OPEN_PALETTE_EVENT, () => {
+        dialogFromPage.current = true;
+        paletteRef.current();
+      }),
+      listen(OPEN_SESSIONS_EVENT, () => {
+        dialogFromPage.current = true;
+        openSessionsRef.current();
+      }),
       listen<{ subject: Subject }>(OPEN_STUDY_EVENT, ({ payload }) => openStudyRef.current(payload.subject)),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
@@ -5838,6 +5999,38 @@ export default function App() {
   }, [dialog]);
   const dialogRef = useRef(dialog);
   dialogRef.current = dialog;
+  // Closing a dialog (⌘K among them) gives the keyboard back to where it was
+  // before, unless what was done in it sent the keyboard somewhere.
+  const beforeDialog = useRef<{ side: "app" | "pane" | null; el: HTMLElement | null; tab: BrowserTab | null; requests: number } | null>(null);
+  const dialogUp = dialog !== null || pageDialog !== null;
+  useEffect(() => {
+    if (dialogUp) {
+      if (!beforeDialog.current) {
+        const fromPage = dialogFromPage.current || pageDialog !== null;
+        const el = lastActive.current;
+        beforeDialog.current = {
+          side: fromPage ? "pane" : typingSideRef.current,
+          // Only a field that had the keyboard (on the page's body, the keys work as they are).
+          el: !fromPage && el instanceof HTMLElement && el !== document.body && !el.closest(".modal-backdrop") ? el : null,
+          tab: activeTab,
+          requests: focusRequestCount(),
+        };
+      }
+      dialogFromPage.current = false;
+      return;
+    }
+    const before = beforeDialog.current;
+    beforeDialog.current = null;
+    dialogFromPage.current = false;
+    if (!before || before.requests !== focusRequestCount()) return;
+    if (before.side === "pane" && before.tab && browserShown && !focusMode) {
+      if (before.tab.term) focusTerminal(before.tab.id);
+      else giveKeys(before.tab.id, report);
+    } else if (before.side === "app") {
+      if (before.el?.isConnected) before.el.focus();
+      else (document.activeElement as HTMLElement | null)?.blur();
+    }
+  }, [dialogUp]); // eslint-disable-line react-hooks/exhaustive-deps
   const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "notices"] as const, "todos"));
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -6189,7 +6382,7 @@ export default function App() {
   reloadRef.current = reload;
 
 
-  const covered = dialog !== null;
+  const covered = dialog !== null || pageDialog !== null;
   // j k / h l and the other keys of the Todo pages (todoKeys.ts).
   const todoPage = useRef<HTMLDivElement>(null);
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
@@ -6682,7 +6875,10 @@ export default function App() {
             onLeftStrip={() => focusLeft && keysToTab(focusLeft, focusLeft.id, report)}
             onCloseLeft={removeFromFocus}
             onAddLeft={() => pickFocus("add")}
-            onOpenLeft={(url) => (keysInto = addToFocus([{ url }])[0] ?? null)}
+            onOpenLeft={(url) => {
+              const [id] = addToFocus([{ url }]);
+              if (id) focusSoon(id);
+            }}
             right={focusRightTab}
             rightKind={focusRight}
             explain={<ExplainPanel subject={focusSubject} title={subjectItem?.title ?? ""} pages={focusLefts.filter((t) => !t.term)} report={report} onAskByVoice={askByVoice} />}
@@ -6699,6 +6895,7 @@ export default function App() {
             onRight={setFocusRight}
             onAddress={setTabUrl}
             onExit={exitFocus}
+            typing={focusTyping}
           />
         )}
         {browserShown && !focusMode && (
@@ -6719,7 +6916,8 @@ export default function App() {
               onClose={closeTab}
               onNewTab={openNewTab}
               onHide={() => setBrowserShown(false)}
-              onOpen={openInBrowser}
+              // What is typed on a new tab page opens in a new tab, as a page's link does.
+              onOpen={(url) => openFromPage(url, activeTab?.id ?? "", false)}
               onAddress={setTabUrl}
               onToInput={toInput}
               onMove={(id, to) =>
@@ -6780,7 +6978,7 @@ export default function App() {
             onStay={() => {
               setDialog(null);
               // Back to typing on the right once its page is up again.
-              typeInto = focusRightId;
+              focusSoon(focusRightId, true);
             }}
           />
         )}
@@ -6789,6 +6987,30 @@ export default function App() {
             input に追加しました：{addedInput}
           </div>
         )}
+        {downloaded && (
+          <div className="toast login-ask" role="status">
+            <span>
+              ダウンロードしました：<b>{downloaded.name}</b>
+            </span>
+            <button className="small" onClick={() => api.revealInFinder(downloaded.path).catch(report)}>
+              Finder で表示
+            </button>
+          </div>
+        )}
+        {siteAsk && (
+          <div className="toast login-ask" role="alertdialog" aria-label="マイクとカメラの許可">
+            <span>
+              <b>{siteAsk.site}</b> が{siteAsk.camera ? "カメラとマイク" : "マイク"}を使おうとしています。答えはこのサイトについて覚えます
+            </span>
+            <button className="primary small" onClick={() => answerSite(true)}>
+              許可
+            </button>
+            <button className="ghost small" onClick={() => answerSite(false)}>
+              許可しない
+            </button>
+          </div>
+        )}
+        {pageDialog && <PageDialog ask={pageDialog} onAnswer={answerPageDialog} />}
         {loginAsk && (
           <div className="toast login-ask" role="alertdialog" aria-label="ログインの保存">
             <span>

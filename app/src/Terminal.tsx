@@ -9,6 +9,7 @@ import { Terminal, type IBufferLine, type ITerminalOptions, type ITheme } from "
 import { FitAddon } from "@xterm/addon-fit";
 import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
+import { noteFocusRequest, takeFocusWish } from "./focus";
 import { allKeys, matches, matchesCombo } from "./keymap";
 import { KittyFlags, kittyChord } from "./kitty";
 import { findUrls } from "./links";
@@ -371,11 +372,12 @@ function entryFor(id: string, look: Look): Entry {
   return e;
 }
 
-/// Gives terminal `id` the keyboard, as when its tab is brought up again
-/// (a new one takes it as it is first shown).
+/// Gives terminal `id` the keyboard, as the user asked (a new one takes it as
+/// it is first shown, if asked with `focusSoon`).
 export function focusTerminal(id: string) {
   const term = entries.get(id)?.term;
   if (!term?.element) return;
+  noteFocusRequest();
   invoke("term_focus").catch(() => {}).finally(() => term.focus());
 }
 
@@ -446,8 +448,9 @@ export function TerminalView({ id, run, report }: { id: string; run: TerminalRun
       e.host.style.setProperty("--term-fg", theme?.foreground ?? "");
     }
     e.fit.fit();
-    // The page may not have the keyboard when a browser tab had it.
-    invoke("term_focus").catch(() => {}).finally(() => e.term.focus());
+    // Only when the user asked for it (opening it); being shown alone takes
+    // nothing. The page may not have the keyboard when a browser tab had it.
+    if (takeFocusWish(id)) invoke("term_focus").catch(() => {}).finally(() => e.term.focus());
     if (!e.started) {
       e.started = true;
       invoke("term_open", { id, command: run.command, cwd: run.cwd, cols: e.term.cols, rows: e.term.rows }).catch((err) => {

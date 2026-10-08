@@ -90,6 +90,10 @@ struct AppState {
     /// CLI session ids archived in Desktop. Reading every Desktop record is
     /// slow, so the watch loop refreshes this and the board only reads it.
     archived: Mutex<HashSet<String>>,
+    /// Each site's zoom set with the keys (1.0 is none), kept across restarts (ZOOMS_FILE).
+    zooms: Mutex<HashMap<String, f64>>,
+    /// Each site's answer to its ask for the microphone or camera, kept (SITE_PERMISSIONS_FILE).
+    site_permissions: Mutex<HashMap<String, bool>>,
 }
 
 fn home() -> PathBuf {
@@ -352,11 +356,8 @@ fn focus_herdr_pane(session_id: &str) -> Option<String> {
 #[tauri::command(async)]
 fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> Result<(), String> {
     let TerminalRun { cwd, title: label, command, .. } = quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default());
-    match start_in_herdr(&state, &cwd, &label, &command, true) {
-        // The new workspace is focused inside herdr; bring its terminal forward too.
-        Ok(()) => cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err),
-        Err(herdr_err) => start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")),
-    }
+    // Started behind: neither herdr's view nor the terminal app comes forward (opening it does).
+    start_in_herdr(&state, &cwd, &label, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))
 }
 
 /// A plain `claude` (at home unless `cwd` is given), with the prompt if one
@@ -395,21 +396,22 @@ fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -
 /// claude and reopening a session (see `terminal.rs`).
 #[tauri::command(async)]
 fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<TerminalRun, String> {
-    Ok(via_herdr(&state, prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)?))
+    Ok(via_herdr(&state, prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)?, false))
 }
 
 #[tauri::command(async)]
 fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> TerminalRun {
-    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()))
+    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()), false)
 }
 
 /// The in-app terminal's sessions run in herdr when one runs (so they go on
-/// with the app closed): `run` goes to a new workspace there, shown, and the
-/// tab attaches that herdr session (one tab for it, as `terminal_resume`'s).
-/// Without herdr, or when it fails, `run` runs in the tab itself.
-fn via_herdr(state: &AppState, run: TerminalRun) -> TerminalRun {
+/// with the app closed): `run` goes to a new workspace there (herdr shows it
+/// with `show`: opening, not starting), and the tab attaches that herdr session
+/// (one tab for it, as `terminal_resume`'s). Without herdr, or when it fails,
+/// `run` runs in the tab itself.
+fn via_herdr(state: &AppState, run: TerminalRun, show: bool) -> TerminalRun {
     let Some(name) = herdr_target(state) else { return run };
-    if let Err(e) = start_in_herdr(state, &run.cwd, &run.title, &run.command, true) {
+    if let Err(e) = start_in_herdr(state, &run.cwd, &run.title, &run.command, show) {
         eprintln!("herdr: {e}; running in the tab instead");
         return run;
     }
@@ -443,7 +445,7 @@ fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) ->
             return open_url(&launch::jump_url(&session_id, Some(&local))).map(|_| None);
         }
     }
-    resume_run(&state, &session_id).map(|run| Some(via_herdr(&state, run)))
+    resume_run(&state, &session_id).map(|run| Some(via_herdr(&state, run, true)))
 }
 
 #[tauri::command]
@@ -944,9 +946,8 @@ fn note_url(state: State<AppState>, subject: Subject, session_id: String) -> Res
 
 #[tauri::command(async)]
 fn start_terminal(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<(), String> {
-    launch_terminal(&state, todo_id, true, &options.unwrap_or_default(), None)?;
-    // herdr has switched to the new workspace; show it.
-    cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
+    // Started behind: neither herdr's view nor the terminal app comes forward (opening it does).
+    launch_terminal(&state, todo_id, false, &options.unwrap_or_default(), None).map(|_| ())
 }
 
 /// Starts a cloud session and returns its id. `desktop` also opens it in
@@ -1402,8 +1403,15 @@ struct TabAddress {
 
 /// `{tab, title}` when a tab's page title changes.
 const BROWSER_TITLE_EVENT: &str = "browser-title";
-/// `{url}` for a link a page opens in a new window, which becomes a new tab.
+/// `{url, tab, behind}` for a link a page opens in a new window, which becomes a new tab.
 const BROWSER_NEW_TAB_EVENT: &str = "browser-new-tab";
+/// `{url}` for a page of the app's own (a PR from a notification), opened in its tab if it has one.
+const OPEN_URL_EVENT: &str = "open-url";
+
+#[derive(Clone, Serialize)]
+struct OpenUrl {
+    url: String,
+}
 
 #[derive(Clone, Serialize)]
 struct TabUrl {
@@ -1422,6 +1430,10 @@ struct TabTitle {
 #[derive(Clone, Serialize)]
 struct NewTab {
     url: String,
+    /// The tab whose page opened it, which it goes next to.
+    tab: String,
+    /// Opened behind (⌘-click), as a browser does.
+    behind: bool,
 }
 
 /// Focuses the page's text box (see `focusInput` in browser_page.js).
@@ -1445,8 +1457,11 @@ const PAGE_FOCUSED_EVENT: &str = "page-focused";
 /// the text selected in it (to paste there), if any.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
 /// A page's keys whose action gives a page or terminal the keyboard
-/// (switching and closing tabs, ⌃l to the Input mode's right), not the app.
-const KEYS_HANDED_ON: [&str; 4] = ["tab-prev", "tab-next", "close-tab", "focus-pane"];
+/// (switching and closing tabs, ⌃l to the Input mode's right), not the app,
+/// and messages that leave the keyboard where it is (⌥-click keeping a link).
+const KEYS_HANDED_ON: [&str; 5] = ["tab-prev", "tab-next", "close-tab", "focus-pane", "add-input"];
+/// When a page's ⌘N asks for a new todo.
+const OPEN_NEW_TODO_EVENT: &str = "open-new-todo";
 
 /// `{host, user}` when a page sent a login not kept yet: asked whether to keep it.
 const LOGIN_CAPTURED_EVENT: &str = "login-captured";
@@ -1567,6 +1582,16 @@ fn zoom_tab(app: &AppHandle, tab: &str, action: &str) -> Result<(), String> {
     let current = cef_browser::zoom(app, tab).ok_or("このタブは開いていません")?;
     let zoom = next_zoom(current, action).ok_or_else(|| format!("unknown zoom {action}"))?;
     cef_browser::set_zoom(app, tab, zoom)?;
+    if let Some(host) = cef_browser::url(app, tab).as_deref().and_then(host_of) {
+        let state = app.state::<AppState>();
+        let mut zooms = state.zooms.lock().map_err(err)?;
+        if (zoom - NO_ZOOM).abs() < f64::EPSILON {
+            zooms.remove(&host);
+        } else {
+            zooms.insert(host, zoom);
+        }
+        save_kept(ZOOMS_FILE, &zooms);
+    }
     app.emit(BROWSER_ZOOM_EVENT, TabZoom { tab: tab.to_string(), zoom }).map_err(err)
 }
 
@@ -1599,8 +1624,13 @@ fn tab_id(tab: &str) -> Result<&str, String> {
     Ok(tab)
 }
 
-/// What a page asked of the app: one of browser_page.js's `todo-sessions://` URLs.
+/// What a page asked of the app: one of browser_page.js's `todo-sessions://` URLs,
+/// which carry this run's token (`todo-sessions://<action>/<token>?...`); one
+/// without it comes from the page's own scripts and is dropped.
 fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
+    if url.path().trim_start_matches('/') != cef_browser::page_token() {
+        return;
+    }
     // A login the page sent: asked about (by host and user only) unless it is the one kept.
     if url.host_str() == Some("login-captured") {
         let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
@@ -1640,6 +1670,7 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
     let tab = tab.to_string();
     let _ = match url.host_str() {
         Some("new-tab") => app.emit(BROWSER_OPEN_NEW_TAB_EVENT, ()),
+        Some("new-todo") => app.emit(OPEN_NEW_TODO_EVENT, ()),
         Some("tab-prev") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: -1 }),
         Some("tab-next") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: 1 }),
         Some("archive") => app.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab }),
@@ -1661,20 +1692,32 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
     };
 }
 
+/// What a page (or one of its frames) is given as it loads: the app's keys,
+/// and whether the focus mode is on.
+fn page_setup_scripts(app: &AppHandle) -> Vec<String> {
+    let state = app.state::<AppState>();
+    let mut scripts = Vec::new();
+    if state.focus_mode.load(Ordering::Relaxed) {
+        scripts.push(focus_mode_script(true));
+    }
+    if let Ok(keys) = state.page_keys.lock() {
+        scripts.push(page_keys_script(&keys));
+    }
+    scripts
+}
+
 /// A tab's page began or finished loading.
 fn tab_load(app: &AppHandle, tab: &str, url: String, loading: bool) {
     // The page begins without the keys and the focus mode, which are set by eval. At the
     // start of a load as well as its end: a page slow to finish (a session's, just opened)
     // would leave the app's keys (⌃h ⌃l) dead until then.
     let state = app.state::<AppState>();
-    if state.focus_mode.load(Ordering::Relaxed) {
-        let _ = cef_browser::eval(app, tab, &focus_mode_script(true));
-    }
-    if let Ok(keys) = state.page_keys.lock() {
-        let _ = cef_browser::eval(app, tab, &page_keys_script(&keys));
+    for script in page_setup_scripts(app) {
+        let _ = cef_browser::eval(app, tab, &script);
     }
     // A page asked to take the typing (see `browser_focus`) once it has loaded.
     if !loading {
+        keep_site_zoom(app, tab, &url);
         // A site with a kept login has it filled in (and sent) by the page's script.
         if let Some(host) = url.parse::<tauri::Url>().ok().and_then(|u| u.host_str().map(String::from)) {
             if let Some(login) = kept_login(&state, &host) {
@@ -1702,12 +1745,150 @@ fn tab_address_changed(app: &AppHandle, tab: &str, url: String) {
 
 /// A page asks for a new window; true lets it open as one. A sized window is
 /// a popup (sign-in pages rely on those); a plain "open in new window" link
-/// becomes a tab instead.
-fn tab_new_window(app: &AppHandle, _tab: &str, url: String, sized: bool) -> bool {
+/// becomes a tab instead, next to `tab`, `behind` it for a ⌘-click.
+fn tab_new_window(app: &AppHandle, tab: &str, url: String, sized: bool, behind: bool) -> bool {
     if !sized {
-        let _ = app.emit(BROWSER_NEW_TAB_EVENT, NewTab { url });
+        let _ = app.emit(BROWSER_NEW_TAB_EVENT, NewTab { url, tab: tab.to_string(), behind });
     }
     sized
+}
+
+/// Kept across restarts, beside the database: the sites' zooms and their answers about the microphone and camera.
+const ZOOMS_FILE: &str = "zooms.json";
+const SITE_PERMISSIONS_FILE: &str = "site-permissions.json";
+
+fn kept_path(file: &str) -> PathBuf {
+    db_path().parent().map(|d| d.join(file)).unwrap_or_else(|| PathBuf::from(file))
+}
+
+/// A kept map (none yet, or unreadable: empty, said once).
+fn load_kept<V: serde::de::DeserializeOwned>(file: &str) -> HashMap<String, V> {
+    let path = kept_path(file);
+    match std::fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
+            eprintln!("{}: {e}", path.display());
+            HashMap::new()
+        }),
+        Err(_) => HashMap::new(),
+    }
+}
+
+fn save_kept<V: Serialize>(file: &str, map: &HashMap<String, V>) {
+    let path = kept_path(file);
+    if let Err(e) = serde_json::to_vec_pretty(map).map_err(err).and_then(|b| std::fs::write(&path, b).map_err(err)) {
+        eprintln!("{}: {e}", path.display());
+    }
+}
+
+fn host_of(url: &str) -> Option<String> {
+    url.parse::<tauri::Url>().ok().and_then(|u| u.host_str().map(String::from))
+}
+
+/// A site's page takes the zoom kept for the site (Chromium keeps zoom per
+/// site while it runs, not across restarts).
+fn keep_site_zoom(app: &AppHandle, tab: &str, url: &str) {
+    let Some(host) = host_of(url) else { return };
+    let kept = app.state::<AppState>().zooms.lock().ok().and_then(|z| z.get(&host).copied()).unwrap_or(NO_ZOOM);
+    if cef_browser::zoom(app, tab).is_some_and(|now| (now - kept).abs() > f64::EPSILON) && cef_browser::set_zoom(app, tab, kept).is_ok() {
+        let _ = app.emit(BROWSER_ZOOM_EVENT, TabZoom { tab: tab.to_string(), zoom: kept });
+    }
+}
+
+/// Where a download goes: the Downloads folder, under a name not taken there.
+fn download_path(name: &str) -> PathBuf {
+    let dir = home().join("Downloads");
+    // A name from the page: only its last part, so it stays in the folder.
+    let name = std::path::Path::new(name).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "download".into());
+    dir.join(cts_core::files::unique_name(&name, |n| dir.join(n).exists()))
+}
+
+/// `{path, name}` when a page's download has finished.
+const BROWSER_DOWNLOADED_EVENT: &str = "browser-downloaded";
+
+#[derive(Clone, Serialize)]
+struct Downloaded {
+    path: String,
+    name: String,
+}
+
+fn download_finished(app: &AppHandle, path: String) {
+    let name = std::path::Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let _ = app.emit(BROWSER_DOWNLOADED_EVENT, Downloaded { path, name });
+}
+
+/// Shows a downloaded file in the Finder.
+#[tauri::command(async)]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    let status = cli("open").args(["-R", &path]).status().map_err(err)?;
+    status.success().then_some(()).ok_or_else(|| format!("open -R failed: {status}"))
+}
+
+/// `{id, tab, kind, message, default}` when a page shows an alert, confirm or prompt.
+const PAGE_DIALOG_EVENT: &str = "page-dialog";
+
+#[derive(Clone, Serialize)]
+struct PageDialog {
+    id: u64,
+    tab: String,
+    kind: &'static str,
+    message: String,
+    default: String,
+}
+
+fn page_dialog(app: &AppHandle, tab: &str, id: u64, kind: &'static str, message: String, default: String) {
+    let _ = app.emit(PAGE_DIALOG_EVENT, PageDialog { id, tab: tab.to_string(), kind, message, default });
+}
+
+/// The user's answer to a page's dialog: OK (with what was typed for a prompt) or cancel.
+#[tauri::command(async)]
+fn answer_page_dialog(app: AppHandle, id: u64, ok: bool, text: Option<String>) -> Result<(), String> {
+    cef_browser::answer_dialog(&app, id, ok, text)
+}
+
+/// `{id, site, camera}` when a site asks for the microphone (or the camera) and was not answered before.
+const SITE_PERMISSION_EVENT: &str = "site-permission";
+/// Chromium's bit for the camera in what a site asks for.
+const VIDEO_CAPTURE: u32 = 2;
+
+#[derive(Clone, Serialize)]
+struct SitePermissionAsk {
+    id: u64,
+    site: String,
+    camera: bool,
+}
+
+/// The answer kept for a site's ask for the microphone or camera.
+fn site_permission(app: &AppHandle, site: &str) -> Option<bool> {
+    app.state::<AppState>().site_permissions.lock().ok()?.get(site).copied()
+}
+
+fn ask_site_permission(app: &AppHandle, id: u64, site: String, asked: u32) {
+    let _ = app.emit(SITE_PERMISSION_EVENT, SitePermissionAsk { id, site, camera: asked & VIDEO_CAPTURE != 0 });
+}
+
+/// The user's answer to SITE_PERMISSION_EVENT, kept for the site.
+#[tauri::command(async)]
+fn answer_site_permission(app: AppHandle, state: State<'_, AppState>, id: u64, site: String, allow: bool) -> Result<(), String> {
+    let mut kept = state.site_permissions.lock().map_err(err)?;
+    kept.insert(site, allow);
+    save_kept(SITE_PERMISSIONS_FILE, &kept);
+    drop(kept);
+    cef_browser::answer_media(&app, id, allow)
+}
+
+/// The sites' kept answers about the microphone and camera, for the settings.
+#[tauri::command(async)]
+fn site_permissions(state: State<'_, AppState>) -> Result<HashMap<String, bool>, String> {
+    Ok(state.site_permissions.lock().map_err(err)?.clone())
+}
+
+/// Takes a site's kept answer out: it is asked again next time.
+#[tauri::command(async)]
+fn forget_site_permission(state: State<'_, AppState>, site: String) -> Result<(), String> {
+    let mut kept = state.site_permissions.lock().map_err(err)?;
+    kept.remove(&site);
+    save_kept(SITE_PERMISSIONS_FILE, &kept);
+    Ok(())
 }
 
 /// Shows tab `tab` with `url` in the browser pane: a Chromium view laid over
@@ -2150,7 +2331,7 @@ fn notify_review_requests(app: &AppHandle, db: &Db, seeded: &mut bool) -> Result
             let url = p.url;
             post_banner(app, "レビュー依頼", title, Some(id), move |app| {
                 show_window(app);
-                app.emit(BROWSER_NEW_TAB_EVENT, NewTab { url }).map_err(err)
+                app.emit(OPEN_URL_EVENT, OpenUrl { url }).map_err(err)
             });
         }
     }
@@ -2380,6 +2561,8 @@ fn main() {
             pending_login: Mutex::new(None),
             page_keys: Mutex::new("{}".into()),
             archived: Mutex::new(HashSet::new()),
+            zooms: Mutex::new(load_kept(ZOOMS_FILE)),
+            site_permissions: Mutex::new(load_kept(SITE_PERMISSIONS_FILE)),
             browser_lock: Mutex::new(()),
             github_wake: Mutex::new(github_tx),
             cloud_wake: Mutex::new(cloud_tx),
@@ -2504,6 +2687,11 @@ fn main() {
             hide_session,
             answer_login,
             forget_login,
+            reveal_in_finder,
+            answer_page_dialog,
+            answer_site_permission,
+            site_permissions,
+            forget_site_permission,
             review_requests,
             herdr_focused,
             codex_models,

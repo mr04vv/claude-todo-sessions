@@ -3,8 +3,9 @@
 // commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling (and
 // picking a Google result), as the user set them), right-click offers translation (a Chromium view has no translate item),
 // ⌥ + click keeps a link as an input todo, and X shows its bookmarks only.
-// It runs in the page's frames too (a doc's editor on claude.ai is one), but
-// there only passes the app's keys up to the page (FRAME), which tells the app.
+// It runs in the page's frames too (a doc's editor on claude.ai is one), which
+// get the app's keys as the page does and tell the app themselves (FRAME), but
+// for the page's own history keys.
 // The helper binary (bin/helper.rs) runs this as each page's context is made.
 (() => {
   if (window.__todoSessionsPage) return;
@@ -35,7 +36,11 @@
   // URLs (todo-sessions://...) is acted on, and kept out of the console.
   // The console as it is now, before the page can change it.
   const tell = console.debug.bind(console);
-  const send = (url) => tell(url);
+  // This run's token (the helper puts it in; see cef_browser.rs's page_token):
+  // the app acts only on messages that carry it, which the page's own scripts
+  // cannot read, so they cannot pass themselves off as this script.
+  const TOKEN = "__TODO_SESSIONS_TOKEN__";
+  const send = (url) => tell(url.replace(/^(todo-sessions:\/\/[^/?]+)/, `$1/${TOKEN}`));
   const FOCUS_URL = "todo-sessions://focus-url";
   const NEW_TAB = "todo-sessions://new-tab";
   const PREV_TAB = "todo-sessions://tab-prev";
@@ -49,6 +54,7 @@
   const FOCUS_EXIT = "todo-sessions://focus-exit";
   const CLOSE_TAB = "todo-sessions://close-tab";
   const ADD_INPUT = "todo-sessions://add-input";
+  const NEW_TODO = "todo-sessions://new-todo";
   const ZOOM_IN = "todo-sessions://zoom-in";
   const ZOOM_OUT = "todo-sessions://zoom-out";
   const ZOOM_RESET = "todo-sessions://zoom-reset";
@@ -94,6 +100,7 @@
     ["sessions", () => send(SESSIONS)],
     ["focusUrl", () => send(FOCUS_URL)],
     ["newTab", () => send(NEW_TAB)],
+    ["newTodo", () => send(NEW_TODO)],
     ["closeTab", () => send(CLOSE_TAB)],
     ["prevTab", () => send(PREV_TAB)],
     ["nextTab", () => send(NEXT_TAB)],
@@ -106,16 +113,16 @@
     ["forward", () => history.forward()],
     ["reload", () => location.reload()],
   ];
-  // A frame's history is not the page's.
-  const PAGE_ONLY = ["back", "forward", "reload"];
-  const FRAME_KEY = "__todoSessionsKey";
+  // A frame's history is not the page's; and a frame (another site's, an
+  // artifact's) does not archive the session the page shows.
+  const PAGE_ONLY = ["back", "forward", "reload", "archive"];
+  // ⌘⇧A archives the Cloud session a claude.ai page shows; elsewhere the key is the page's.
+  const SESSION_PAGE = /^https:\/\/claude\.ai\/code\/session_/;
+  const appliesHere = (action) => action !== "archive" || SESSION_PAGE.test(location.href);
   // In the focus mode the app shows which side has the keyboard; a page (or
   // one of its frames) taking it says so.
   const FOCUSED = "todo-sessions://page-focused";
-  const FRAME_FOCUSED = "focused";
-  const FRAME_KEYDOWN = "keydown";
-  const tellFocused = () => window.__todoSessionsFocusMode && send(FOCUSED);
-  window.addEventListener("focus", () => (FRAME ? window.top.postMessage({ [FRAME_KEY]: FRAME_FOCUSED }, "*") : tellFocused()));
+  window.addEventListener("focus", () => window.__todoSessionsFocusMode && send(FOCUSED));
 
   window.addEventListener(
     "keydown",
@@ -127,17 +134,8 @@
         send(FOCUS_EXIT);
         return;
       }
-      // A frame does not know the app's keys (only the page is given them):
-      // it passes its key presses up, and the page matches them.
-      if (FRAME) {
-        if (e.metaKey || e.ctrlKey || e.altKey) {
-          const { key, metaKey, ctrlKey, altKey, shiftKey } = e;
-          window.top.postMessage({ [FRAME_KEY]: FRAME_KEYDOWN, event: { key, metaKey, ctrlKey, altKey, shiftKey } }, "*");
-        }
-        return;
-      }
       // Ahead of the page's own keys (ChatGPT's ⌘K search, say).
-      const hit = KEY_ACTIONS.find(([action]) => is(e, action));
+      const hit = KEY_ACTIONS.find(([action]) => is(e, action) && appliesHere(action) && !(FRAME && PAGE_ONLY.includes(action)));
       if (!hit) return;
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -145,14 +143,6 @@
     },
     true,
   );
-  // A frame's key, done here.
-  window.addEventListener("message", (e) => {
-    const action = e.data?.[FRAME_KEY];
-    if (!FRAME && e.source !== window && action === FRAME_FOCUSED) return tellFocused();
-    if (FRAME || e.source === window) return;
-    const hit = KEY_ACTIONS.find(([a]) => (action === FRAME_KEYDOWN ? is(e.data.event, a) : a === action) && !PAGE_ONLY.includes(a));
-    if (hit) hit[1]("");
-  });
 
   // The list keys (j k) scroll the page when no field has the typing, unless
   // the page took them itself (X's own j k, say). The page's scrolling box

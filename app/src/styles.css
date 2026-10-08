@@ -2857,6 +2857,13 @@ body.resizing {
   max-width: 640px;
 }
 
+/* A page's alert, confirm or prompt: its text as the page wrote it. */
+.page-dialog-message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 0 0 12px;
+}
+
 /* The sidebar with the keyboard (⌃h from the Todo side): its entry under the cursor. */
 .app[data-zone="sidebar"] .sidebar {
   box-shadow: inset -3px 0 0 var(--accent);

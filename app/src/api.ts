@@ -359,6 +359,11 @@ export const api = {
   answerLogin: (keep: boolean) => invoke<void>("answer_login", { keep }),
   /// Takes out the login kept for a site.
   forgetLogin: (host: string) => invoke<void>("forget_login", { host }),
+  revealInFinder: (path: string) => invoke<void>("reveal_in_finder", { path }),
+  answerPageDialog: (id: number, ok: boolean, text?: string) => invoke<void>("answer_page_dialog", { id, ok, text: text ?? null }),
+  answerSitePermission: (id: number, site: string, allow: boolean) => invoke<void>("answer_site_permission", { id, site, allow }),
+  sitePermissions: () => invoke<Record<string, boolean>>("site_permissions"),
+  forgetSitePermission: (site: string) => invoke<void>("forget_site_permission", { site }),
   /// The session was looked at now: its ended turn is read.
   markSessionSeen: (sessionId: string) => invoke<void>("mark_session_seen", { sessionId }),
   setParent: (todoId: number, parentId: number | null) => invoke<Todo>("set_parent", { todoId, parentId }),
@@ -431,8 +436,18 @@ export const BROWSER_TITLE_EVENT = "browser-title";
 export const BROWSER_ZOOM_EVENT = "browser-zoom";
 /** `{session_id}` of a cloud session picked in the menu bar or a notification. */
 export const OPEN_CLOUD_EVENT = "open-cloud";
-/** `{url}` for a link a page opens in a new window; it becomes a new tab. */
+/** `{url, tab, behind}` for a link a page opens in a new window; it becomes a new tab next to `tab`. */
 export const BROWSER_NEW_TAB_EVENT = "browser-new-tab";
+/** `{url}` for a page of the app's own (a PR from a notification), opened in its tab if it has one. */
+export const OPEN_URL_EVENT = "open-url";
+/** When a page's ⌘N asks for a new todo. */
+export const OPEN_NEW_TODO_EVENT = "open-new-todo";
+/** `{path, name}` when a page's download has finished (in the Downloads folder). */
+export const BROWSER_DOWNLOADED_EVENT = "browser-downloaded";
+/** `{id, tab, kind, message, default}` when a page shows an alert, confirm or prompt (answerPageDialog). */
+export const PAGE_DIALOG_EVENT = "page-dialog";
+/** `{id, site, camera}` when a site asks for the microphone or camera the first time (answerSitePermission). */
+export const SITE_PERMISSION_EVENT = "site-permission";
 
 export const isCloud = (s: Session) => s.session_id.startsWith("cse_");
 
