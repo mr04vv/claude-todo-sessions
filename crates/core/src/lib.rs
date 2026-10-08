@@ -655,6 +655,16 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    // Reviews that ended before a stopped review counted as failed (with
+    // review_sessions.auto) are put away once, rather than all waiting on the user.
+    let reviews_counted: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('review_sessions') WHERE name = 'auto'", [], |r| r.get::<_, i64>(0).map(|n| n > 0))?;
+    if !reviews_counted {
+        conn.execute(
+            "INSERT OR IGNORE INTO session_hidden (session_id, hidden_at)
+             SELECT session_id, ?1 FROM sessions WHERE state = 'ended' AND session_id IN (SELECT session_id FROM review_sessions)",
+            [now()],
+        )?;
+    }
     for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),

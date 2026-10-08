@@ -1068,3 +1068,30 @@ fn plans_fixes_and_events_work_on_databases_made_before_them() {
     db.add_event(1, "x").unwrap();
     assert_eq!(db.get_todo(1).unwrap().unwrap().plan.as_deref(), Some("plan"));
 }
+
+#[test]
+fn reviews_that_ended_before_failures_were_shown_are_put_away_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, todo_id INTEGER, cwd TEXT NOT NULL,
+         state TEXT NOT NULL CHECK (state IN ('running', 'needs_input', 'idle', 'ended')), state_at INTEGER NOT NULL);
+         CREATE TABLE review_sessions (session_id TEXT PRIMARY KEY, pr_url TEXT NOT NULL);
+         INSERT INTO sessions VALUES ('old-ended', NULL, '/r', 'ended', 0);
+         INSERT INTO sessions VALUES ('old-asking', NULL, '/r', 'needs_input', 0);
+         INSERT INTO review_sessions VALUES ('old-ended', 'https://github.com/o/r/pull/1');
+         INSERT INTO review_sessions VALUES ('old-asking', 'https://github.com/o/r/pull/2');",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert!(db.get_session("old-ended").unwrap().unwrap().hidden, "an old review that ended is not shown as failed");
+    assert!(!db.get_session("old-asking").unwrap().unwrap().hidden);
+    // Once only: a review ending later is left for あなた待ち.
+    db.record_session("new", "/r", SessionState::Ended).unwrap();
+    db.record_review_session("new", "https://github.com/o/r/pull/3", true).unwrap();
+    drop(db);
+    let db = Db::open(&path).unwrap();
+    assert!(!db.get_session("new").unwrap().unwrap().hidden);
+}

@@ -2425,12 +2425,23 @@ fn close_done_workspaces(todo_id: i64) {
 /// Tells a subtask's orchestrator (its parent's session running in herdr)
 /// what happened, into its pane, and keeps it in the parent's 経過. False
 /// when the subtask has no orchestrator to tell.
+/// A PR's failed CI or changes asked for that cannot reach an orchestrator the
+/// lists count as its own (a parent's live session outside herdr) is handed
+/// to the user instead.
 fn relay_to_orchestrator(db: &Db, subtask: &Todo, event: launch::SubtaskEvent) -> bool {
     let Some(parent) = subtask.parent_id else { return false };
     let Ok(sessions) = db.sessions_for_todo(parent) else { return false };
-    let orchestrator = sessions.iter().filter(|s| s.state != SessionState::Ended && !launch::is_cloud_session(&s.session_id)).find_map(|s| herdr_pane(&s.session_id));
-    let Some((name, pane)) = orchestrator else { return false };
+    let live: Vec<&Session> = sessions.iter().filter(|s| s.state != SessionState::Ended && !launch::is_cloud_session(&s.session_id)).collect();
     let message = event.message(subtask.id, &subtask.title);
+    let Some((name, pane)) = live.iter().find_map(|s| herdr_pane(&s.session_id)) else {
+        if !live.is_empty() && matches!(event, launch::SubtaskEvent::CiFailed(_) | launch::SubtaskEvent::ChangesRequested) {
+            let why = format!("指揮役（herdr の外で動いています）に届かなかったので回します：{}", event.message(subtask.id, &subtask.title).split_once(' ').map_or("", |(_, m)| m));
+            if let Err(e) = db.escalate(subtask.id, Some(&why)) {
+                eprintln!("{e}");
+            }
+        }
+        return false;
+    };
     if let Err(e) = herdr(&["--session", &name, "agent", "prompt", &pane, &message]) {
         eprintln!("{e}");
         return false;

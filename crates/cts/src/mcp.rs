@@ -182,7 +182,7 @@ impl Server {
         orchestra::start_subtask(a.todo_id, a.cloud, a.agent.as_deref(), a.model, a.effort)
     }
 
-    #[tool(description = "Answer a subtask's session (one waiting for a reply, or tell it something) in its herdr pane. A Cloud subtask cannot be sent anything: escalate instead, with the answer you propose.")]
+    #[tool(description = "Send text into a subtask's herdr pane, as if typed and sent with Enter (an answer, or something to tell it). Read its pane first when it shows a question with choices. A Cloud subtask cannot be sent anything: escalate instead, with the answer you propose.")]
     async fn reply_to_subtask(&self, Parameters(a): Parameters<TextArgs>) -> Result<String, String> {
         orchestra::reply(a.todo_id, &a.text)
     }
