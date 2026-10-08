@@ -236,10 +236,33 @@ export interface Pr {
   is_draft: boolean;
 }
 
+/** A PR's CI: its state and the checks that failed. */
+export interface Ci {
+  state: CiState;
+  failed: string[];
+}
+
+/** An open PR of the user's. */
+export interface MyPr {
+  repo: string;
+  number: number;
+  title: string;
+  url: string;
+  is_draft: boolean;
+  updated_at: string;
+  stage: PrState;
+  ci: Ci | null;
+  /** Whom it asks for a review and who reviewed it (logins, team slugs). */
+  reviewers: string[];
+}
+
 export interface PrLists {
   review: Pr[];
-  mine: Pr[];
+  mine: MyPr[];
 }
+
+/** Where a review runs. */
+export type ReviewRunner = "cloud" | "herdr";
 
 export interface HerdrSessions {
   running: string[];
@@ -301,13 +324,15 @@ export const api = {
     invoke<void>("quick_claude", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null, options: options ?? null }),
   /// A PR review in a cloud session linked to no todo; returns its id.
   /// `url` is the PR reviewed: the session is put away once the review is in.
-  startReviewCloud: (repo: string, title: string, prompt: string, desktop: boolean, options?: StartOptions, url?: string) =>
-    invoke<string>("start_review_cloud", { repo, title, prompt, desktop, options: options ?? null, url: url ?? null }),
+  /// Reviews a PR in a session of its own, started behind; its id (none for Codex's, which picks its own).
+  startReview: (r: { url: string; repo: string; title: string; agent: Agent; auto: boolean; runner: ReviewRunner; cwd?: string; options?: StartOptions }) =>
+    invoke<string | null>("start_review", { ...r, cwd: r.cwd ?? null, options: r.options ?? null }),
+  /// Stops a review: archived on Cloud, its herdr workspace closed, off the lists.
+  stopReview: (sessionId: string) => invoke<void>("stop_review", { sessionId }),
   /// Takes a session off the lists (a Local one, which cannot be archived from here).
   hideSession: (sessionId: string) => invoke<void>("hide_session", { sessionId }),
   /// The models Codex offers and the efforts each takes (Codex's own cache).
   codexModels: () => invoke<{ id: string; label: string; efforts: string[] }[]>("codex_models"),
-  startDesktopPrompt: (cwd: string | undefined, prompt: string) => invoke<void>("start_desktop_prompt", { cwd: cwd ?? null, prompt }),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openLink: (url: string) => invoke<void>("open_link", { url }),
   openInDia: (url: string) => invoke<void>("open_in_dia", { url }),
@@ -349,9 +374,6 @@ export const api = {
   startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),
   /** Marks one notification read, or all with no id. */
   /// Merges the PR once approved: now when it is ready ("merged"), else by GitHub's auto-merge ("auto").
-  autoMerge: (url: string) => invoke<"merged" | "auto">("auto_merge", { url }),
-  /// The user's open PRs and whom each still waits on (logins, team slugs).
-  reviewRequests: () => invoke<import("./slackMessages").ReviewRequest[]>("review_requests"),
   /// Keeps (in the Keychain) the login a page just sent, or lets it go.
   answerLogin: (keep: boolean) => invoke<void>("answer_login", { keep }),
   /// Takes out the login kept for a site.
@@ -416,6 +438,8 @@ export const LOGIN_CAPTURED_EVENT = "login-captured";
 export const OPEN_SESSIONS_EVENT = "open-sessions";
 /** `{subject}` when a notification says it is time to explain the subject again. */
 export const OPEN_STUDY_EVENT = "open-study";
+/// A review went in: `{url, title, verdict}` (APPROVED, CHANGES_REQUESTED or COMMENTED).
+export const REVIEW_SUBMITTED_EVENT = "review-submitted";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
 /** `{tab}` when a page asks to go into an input (⌘⇧D). */

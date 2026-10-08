@@ -41,6 +41,17 @@ pub fn find_pane(agents: &Value, session_id: &str) -> Option<String> {
         .map(Into::into)
 }
 
+/// Workspace id of the agent whose Claude (or Codex) session id matches,
+/// from `herdr agent list` JSON, for closing it.
+pub fn find_workspace(agents: &Value, session_id: &str) -> Option<String> {
+    agents["result"]["agents"]
+        .as_array()?
+        .iter()
+        .find(|a| a["agent_session"]["value"] == session_id)?["workspace_id"]
+        .as_str()
+        .map(Into::into)
+}
+
 /// Live state of every Claude agent herdr hosts, from `herdr agent list`:
 /// (session id, cwd, state). herdr watches the terminal, so this is current
 /// even for sessions without our hooks. Unknown statuses are skipped.
@@ -147,5 +158,16 @@ mod tests {
         assert_eq!(find_pane(&agents, "bbb").as_deref(), Some("w3:p1"));
         assert_eq!(find_pane(&agents, "zzz"), None);
         assert_eq!(find_pane(&json!({}), "aaa"), None);
+    }
+
+    #[test]
+    fn finds_workspace_by_agent_session() {
+        let agents = json!({"result": {"agents": [
+            {"pane_id": "w1:p1", "workspace_id": "w1", "agent_session": {"agent": "claude", "value": "aaa"}},
+            {"pane_id": "w3:p1", "agent_session": {"agent": "claude", "value": "bbb"}}
+        ]}});
+        assert_eq!(find_workspace(&agents, "aaa").as_deref(), Some("w1"));
+        assert_eq!(find_workspace(&agents, "bbb"), None, "no workspace said");
+        assert_eq!(find_workspace(&agents, "zzz"), None);
     }
 }

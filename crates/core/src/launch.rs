@@ -135,6 +135,42 @@ pub fn fix_prompt(pr_url: &str, ci: Option<&[String]>, changes: bool) -> String 
     parts.join("\n\n")
 }
 
+/// How a review session that submits on its own is told so; its prompt is
+/// known by it again (`review_of_prompt`).
+pub const AUTO_SUBMIT: &str = "レビューが終わったら、確認せずに GitHub に提出してください。ブロッカー（マージ前に直すべき問題）があれば Request changes、なければ Approve で、ブロッカーでない指摘はコメントとして添えてください。";
+const REVIEW_SUBMIT_HOW: &str = "指摘はインラインコメントと本文にまとめて提出してください（gh pr review、使えなければ GitHub のツール）。";
+const CLAUDE_REVIEW: &str = "/review ";
+const CODEX_REVIEW: (&str, &str) = ("PR ", " をレビューしてください。");
+
+/// First prompt of a review of the PR at `url`. Claude runs its /review
+/// skill (which answers in English unless asked otherwise); Codex, without
+/// one, reads the PR with gh. With `auto` it submits on its own, else it asks
+/// how to submit first.
+pub fn review_prompt(url: &str, agent: crate::Agent, auto: bool) -> String {
+    let codex = agent == crate::Agent::Codex;
+    let head = if codex {
+        format!("{}{url}{}gh pr view と gh pr diff で説明と差分を読み、必要ならリポジトリのコードも読みます。レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。", CODEX_REVIEW.0, CODEX_REVIEW.1)
+    } else {
+        format!("{CLAUDE_REVIEW}{url} レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。")
+    };
+    let submit = if auto {
+        AUTO_SUBMIT.to_string()
+    } else {
+        format!(
+            "レビューが終わったら、GitHub への提出方法を{}私に聞いてください。ブロッカー（マージ前に直すべき問題）があれば Request changes を、なければ Comment か Approve を選択肢に出し、おすすめを先頭にしてください。私が選ぶまでは提出しないでください。",
+            if codex { "" } else { " AskUserQuestion で" }
+        )
+    };
+    [head, submit, REVIEW_SUBMIT_HOW.to_string()].join("\n\n")
+}
+
+/// The PR a review's first prompt is for, and whether it submits on its own.
+pub fn review_of_prompt(prompt: &str) -> Option<(String, bool)> {
+    let rest = prompt.strip_prefix(CLAUDE_REVIEW).or_else(|| prompt.strip_prefix(CODEX_REVIEW.0).filter(|r| r.contains(CODEX_REVIEW.1)))?;
+    let url = rest.split_whitespace().next()?;
+    (url.starts_with(GITHUB_HTTPS) && url.contains("/pull/")).then(|| (url.to_string(), prompt.contains(AUTO_SUBMIT)))
+}
+
 /// A todo's repo list may hold free group names ("調査"); only `owner/repo`
 /// entries are GitHub repositories a cloud session can work on.
 pub fn github_repos(repos: &[String]) -> Vec<String> {
@@ -541,5 +577,40 @@ mod fix_tests {
     fn both_at_once_ask_for_both() {
         let p = fix_prompt(PR, Some(&["e2e".into()]), true);
         assert!(p.contains("修正の依頼") && p.contains("e2e"), "{p}");
+    }
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    use crate::Agent;
+
+    const PR: &str = "https://github.com/acme/web/pull/61";
+
+    #[test]
+    fn claude_reviews_with_its_skill_and_asks_before_submitting() {
+        let p = review_prompt(PR, Agent::Claude, false);
+        assert!(p.starts_with(&format!("/review {PR}")), "{p}");
+        assert!(p.contains("日本語") && p.contains("AskUserQuestion") && p.contains("私が選ぶまでは提出しないでください"), "{p}");
+    }
+
+    #[test]
+    fn codex_reads_the_pr_with_gh_and_may_submit_on_its_own() {
+        let p = review_prompt(PR, Agent::Codex, true);
+        assert!(p.starts_with(&format!("PR {PR} をレビューしてください")), "{p}");
+        assert!(p.contains("gh pr diff") && p.contains(AUTO_SUBMIT), "{p}");
+        assert!(!p.contains("AskUserQuestion"), "{p}");
+    }
+
+    #[test]
+    fn a_review_is_known_again_from_its_prompt() {
+        for agent in [Agent::Claude, Agent::Codex] {
+            for auto in [false, true] {
+                assert_eq!(review_of_prompt(&review_prompt(PR, agent, auto)), Some((PR.to_string(), auto)), "{agent:?} {auto}");
+            }
+        }
+        assert_eq!(review_of_prompt("/review"), None);
+        assert_eq!(review_of_prompt("PR https://github.com/o/r/pull/1 を見て"), None);
+        assert_eq!(review_of_prompt("fix the bug"), None);
     }
 }

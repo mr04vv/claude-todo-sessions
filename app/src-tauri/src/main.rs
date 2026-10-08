@@ -337,14 +337,28 @@ fn focus_in_herdr(session_id: &str) -> bool {
     true
 }
 
-/// The herdr session and pane running the session, if herdr hosts it.
-fn herdr_pane(session_id: &str) -> Option<(String, String)> {
+/// The herdr session hosting the session, with what `herdr agent list` says there.
+fn herdr_agents_with(session_id: &str) -> Option<(String, serde_json::Value)> {
     let table = cli("herdr").args(["session", "list"]).output().ok()?;
     cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)).into_iter().find_map(|name| {
         let out = cli("herdr").args(["--session", &name, "agent", "list"]).output().ok()?;
         let agents = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
-        cts_core::herdr::find_pane(&agents, session_id).map(|pane| (name, pane))
+        cts_core::herdr::find_pane(&agents, session_id).is_some().then_some((name, agents))
     })
+}
+
+/// The herdr session and pane running the session, if herdr hosts it.
+fn herdr_pane(session_id: &str) -> Option<(String, String)> {
+    let (name, agents) = herdr_agents_with(session_id)?;
+    cts_core::herdr::find_pane(&agents, session_id).map(|pane| (name, pane))
+}
+
+/// Closes the herdr workspace the session runs in (its record stays, so
+/// `claude --resume` brings it back). False when herdr does not host it.
+fn close_herdr_workspace(session_id: &str) -> Result<bool, String> {
+    let Some((name, agents)) = herdr_agents_with(session_id) else { return Ok(false) };
+    let workspace = cts_core::herdr::find_workspace(&agents, session_id).ok_or("herdr がワークスペースを教えてくれませんでした")?;
+    herdr(&["--session", &name, "workspace", "close", &workspace]).map(|_| true)
 }
 
 /// Focuses the herdr pane running the session, inside herdr only, and
@@ -730,26 +744,63 @@ fn terminal_cwd(todo: &Todo) -> String {
     todo.cwd.clone().unwrap_or_else(|| home().to_string_lossy().into())
 }
 
-/// Reviews a PR in a cloud session linked to no todo; `desktop` opens it in
-/// Claude Desktop, else the page shows it.
-#[tauri::command(async)]
-fn start_review_cloud(repo: String, title: String, prompt: String, desktop: bool, options: Option<StartOptions>, url: Option<String>) -> Result<String, String> {
-    let db = open_db()?;
-    let id = cts_core::cloud::create_review_session(&db, &repo, &title, &prompt, &options.unwrap_or_default())?;
-    // Its PR, for putting it away once the review is in (clean_reviews).
-    if let Some(url) = url {
-        db.record_review_session(&id, &url, false).map_err(err)?;
-    }
-    if desktop {
-        open_url(&launch::jump_url(&id, None))?;
-    }
-    Ok(id)
+/// Where a review runs: on Cloud, or in herdr on the Mac.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ReviewRunner {
+    Cloud,
+    Herdr,
 }
 
-/// A new Claude Desktop session with `prompt`, in `cwd` when given.
+/// Reviews the PR at `url` in a session linked to no todo, started behind
+/// (nothing comes forward): on Cloud, or in a herdr workspace not shown
+/// (Ghostty when herdr is down) in the repository's folder `cwd`. With `auto`
+/// it submits on its own. Returns its session id (Codex picks its own, which
+/// herdr reports: `discover_sessions` knows it by its prompt).
 #[tauri::command(async)]
-fn start_desktop_prompt(cwd: Option<String>, prompt: String) -> Result<(), String> {
-    open_url(&launch::desktop_new_url(cwd.as_deref(), &prompt))
+fn start_review(state: State<AppState>, url: String, repo: String, title: String, agent: cts_core::Agent, auto: bool, runner: ReviewRunner, cwd: Option<String>, options: Option<StartOptions>) -> Result<Option<String>, String> {
+    let prompt = launch::review_prompt(&url, agent, auto);
+    let opts = options.unwrap_or_default();
+    if runner == ReviewRunner::Cloud {
+        if agent == cts_core::Agent::Codex {
+            return Err("Codex のレビューは herdr でだけ動きます".into());
+        }
+        let db = open_db()?;
+        let id = cts_core::cloud::create_review_session(&db, &repo, &title, &prompt, &opts)?;
+        // Its PR, for putting it away once the review is in (clean_reviews).
+        db.record_review_session(&id, &url, auto).map_err(err)?;
+        return Ok(Some(id));
+    }
+    let TerminalRun { cwd, title: label, command, session, .. } = quick_agent_run(Some(&prompt), cwd, Some(title.clone()), Some(agent), &opts);
+    if let Some(id) = &session {
+        let db = state.db.lock().map_err(err)?;
+        db.record_session(id, &cwd, SessionState::Idle).map_err(err)?;
+        db.set_session_title(id, &title).map_err(err)?;
+        db.record_review_session(id, &url, auto).map_err(err)?;
+    }
+    start_in_herdr(&state, &cwd, &label, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
+    Ok(session)
+}
+
+/// Stops a review: a Cloud one is archived, a herdr one's workspace closed,
+/// and it leaves the lists.
+#[tauri::command(async)]
+fn stop_review(state: State<AppState>, session_id: String) -> Result<(), String> {
+    put_review_away(&*state.db.lock().map_err(err)?, &session_id)
+}
+
+/// A review session done with (submitted or stopped): archived on Cloud, its
+/// herdr workspace closed, and off the lists.
+fn put_review_away(db: &Db, session_id: &str) -> Result<(), String> {
+    if launch::is_cloud_session(session_id) {
+        let errors = cts_core::cloud::archive_sessions(db, &[session_id.to_string()])?;
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
+    } else {
+        close_herdr_workspace(session_id)?;
+    }
+    db.hide_session(session_id).map_err(err)
 }
 
 #[tauri::command(async)]
@@ -1341,8 +1392,8 @@ struct PrView {
 struct PrLists {
     /// Open PRs asking the user for a review.
     review: Vec<PrView>,
-    /// Open PRs the user opened.
-    mine: Vec<PrView>,
+    /// Open PRs the user opened: their stage, CI and reviewers.
+    mine: Vec<cts_core::github::MyPr>,
 }
 
 /// Open PRs, leaving out archived repositories' (they can no longer move).
@@ -1361,6 +1412,12 @@ fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
             is_draft: p.is_draft,
         })
         .collect())
+}
+
+fn my_prs() -> Result<Vec<cts_core::github::MyPr>, String> {
+    let json = gh(&["api", "graphql", "-f", &format!("query={}", cts_core::github::MY_PRS_QUERY)])?;
+    let resp: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("gh output: {e}"))?;
+    Ok(cts_core::github::parse_my_prs(&resp))
 }
 
 /// The models Codex offers (its own cache), for picking one to start it with.
@@ -1382,33 +1439,9 @@ fn herdr_focused(name: String) -> Option<String> {
     cts_core::herdr::agent_states(&agents).into_iter().find(|a| a.focused).map(|a| a.session_id)
 }
 
-/// Merges the PR once it is approved (and its checks pass): at once when it
-/// is ready now, else through GitHub's auto-merge. "merged" or "auto".
-#[tauri::command(async)]
-fn auto_merge(url: String) -> Result<String, String> {
-    if !is_web_url(&url) {
-        return Err(format!("開けない URL です: {url}"));
-    }
-    let view: serde_json::Value = serde_json::from_str(&gh(&["pr", "view", &url, "--json", "state,reviewDecision,mergeStateStatus"])?).map_err(|e| format!("gh output: {e}"))?;
-    if cts_core::github::merge_now(&view) {
-        gh(&["pr", "merge", &url, "--merge"])?;
-        return Ok("merged".into());
-    }
-    gh(&["pr", "merge", &url, "--auto", "--merge"])?;
-    Ok("auto".into())
-}
-
-/// The user's open PRs and the reviewers each still waits on, for the Slack messages asking them.
-#[tauri::command(async)]
-fn review_requests() -> Result<Vec<cts_core::github::ReviewRequest>, String> {
-    let json = gh(&["api", "graphql", "-f", &format!("query={}", cts_core::github::REVIEW_REQUESTS_QUERY)])?;
-    let resp: serde_json::Value = serde_json::from_str(&json).map_err(|e| format!("gh output: {e}"))?;
-    Ok(cts_core::github::parse_review_requests(&resp))
-}
-
 #[tauri::command]
 async fn gh_prs() -> Result<PrLists, String> {
-    tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: search_prs("--review-requested")?, mine: search_prs("--author")? }))
+    tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: search_prs("--review-requested")?, mine: my_prs()? }))
         .await
         .map_err(err)?
 }
@@ -2168,40 +2201,42 @@ fn github_login() -> Option<String> {
     LOGIN.get_or_init(|| gh(&["api", "user", "--jq", ".login"]).ok().filter(|l| !l.is_empty())).clone()
 }
 
+/// Tells the page a review went in: `{url, title, verdict}` (APPROVED,
+/// CHANGES_REQUESTED or COMMENTED).
+const REVIEW_SUBMITTED_EVENT: &str = "review-submitted";
+
+#[derive(Clone, Serialize)]
+struct ReviewSubmitted {
+    url: String,
+    title: String,
+    verdict: String,
+}
+
 /// Review sessions whose work is over (the user's review is in, or the PR is
-/// merged or closed) and whose turn has ended: a Cloud one is archived, and
-/// every one leaves the session lists.
-fn clean_reviews(db: &Db) {
+/// merged or closed) and whose turn has ended, or that ended: put away
+/// (`put_review_away`), the page told of a review that went in. One that
+/// stopped without it stays, for あなた待ち.
+fn clean_reviews(app: &AppHandle, db: &Db) {
     let Some(me) = github_login() else { return };
     let Ok(sessions) = db.unlinked_sessions() else { return };
-    for s in sessions.iter().filter(|s| s.state == SessionState::Idle && !s.hidden) {
+    for s in sessions.iter().filter(|s| matches!(s.state, SessionState::Idle | SessionState::Ended) && !s.hidden) {
         let Some(url) = review_pr(s) else { continue };
         let Ok(json) = gh(&["pr", "view", &url, "--json", "state,reviews"]) else { continue };
         let Ok(view) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
-        if !cts_core::github::review_done(&view, &me, &iso_utc(s.started_at)) {
+        let Some(outcome) = cts_core::github::review_outcome(&view, &me, &iso_utc(s.started_at)) else { continue };
+        if let Err(e) = put_review_away(db, &s.session_id) {
+            eprintln!("{e}");
             continue;
         }
-        if launch::is_cloud_session(&s.session_id) {
-            match cts_core::cloud::archive_sessions(db, std::slice::from_ref(&s.session_id)) {
-                Ok(errors) if errors.is_empty() => {}
-                Ok(errors) => {
-                    eprintln!("{}", errors.join("; "));
-                    continue;
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    continue;
-                }
-            }
-        }
-        if let Err(e) = db.hide_session(&s.session_id) {
-            eprintln!("{e}");
+        if let cts_core::github::ReviewOutcome::Submitted(verdict) = outcome {
+            let title = s.title.clone().unwrap_or_default();
+            let _ = app.emit(REVIEW_SUBMITTED_EVENT, ReviewSubmitted { url, title, verdict });
         }
     }
 }
 
 /// One GitHub sync: all todos, or just `only`.
-fn sync_github(db: &Db, only: Option<i64>) {
+fn sync_github(app: &AppHandle, db: &Db, only: Option<i64>) {
     let todos: Vec<Todo> = db
         .list_todos(None)
         .unwrap_or_default()
@@ -2219,7 +2254,7 @@ fn sync_github(db: &Db, only: Option<i64>) {
     let todos: Vec<Todo> = todos.iter().filter_map(|t| db.get_todo(t.id).ok().flatten()).collect();
     refresh_states(db, &todos);
     if only.is_none() {
-        clean_reviews(db);
+        clean_reviews(app, db);
     }
 }
 
@@ -2236,9 +2271,9 @@ fn issue_sync_loop(app: AppHandle, wake: std::sync::mpsc::Receiver<Option<i64>>)
     loop {
         let wait = next_full.saturating_duration_since(std::time::Instant::now());
         match wake.recv_timeout(wait) {
-            Ok(Some(id)) => sync_github(&db, Some(id)),
+            Ok(Some(id)) => sync_github(&app, &db, Some(id)),
             Ok(None) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                sync_github(&db, None);
+                sync_github(&app, &db, None);
                 if let Err(e) = notify_review_requests(&app, &db, &mut seeded) {
                     eprintln!("review requests: {e}");
                 }
@@ -2417,6 +2452,10 @@ fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
                         let rollout = cts_core::codex::rollout_path(&home().join(cts_core::codex::SESSIONS_DIR), &id);
                         if let Some(prompt) = rollout.and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| cts_core::codex::first_prompt(&t)) {
                             db.name_from_prompt(&id, &prompt).map_err(err)?;
+                            // A review Codex runs is known by its prompt (it picks its own session id).
+                            if let Some((url, auto)) = launch::review_of_prompt(&prompt) {
+                                db.record_review_session(&id, &url, auto).map_err(err)?;
+                            }
                             db.mark_marker_checked(&id).map_err(err)?;
                         }
                     }
@@ -2699,8 +2738,8 @@ fn main() {
             window_focused,
             set_focus_mode,
             set_page_keys,
-            start_review_cloud,
-            start_desktop_prompt,
+            start_review,
+            stop_review,
             terminal_quick,
             terminal_resume,
             set_in_app_terminal,
@@ -2721,10 +2760,8 @@ fn main() {
             answer_site_permission,
             site_permissions,
             forget_site_permission,
-            review_requests,
             herdr_focused,
             codex_models,
-            auto_merge,
             feynman::browser_text,
             feynman::page_text,
             feynman::feynman_state,

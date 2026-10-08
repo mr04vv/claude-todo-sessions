@@ -133,59 +133,25 @@ pub fn parse_my_prs(response: &Value) -> Vec<MyPr> {
         .collect()
 }
 
-/// The user's open PRs and the reviewers each still waits on (a review
-/// given takes a reviewer off), for the Slack messages asking them; not
-/// archived repositories' (they can no longer move).
-pub const REVIEW_REQUESTS_QUERY: &str = "query { search(query: \"is:pr is:open author:@me archived:false\", type: ISSUE, first: 100) { nodes { ... on PullRequest { number title url isDraft repository { nameWithOwner } reviewRequests(first: 30) { nodes { requestedReviewer { ... on User { login } ... on Team { slug } } } } } } } }";
-
-/// An open PR of the user's, and whom it waits on (a user's login or a team's slug).
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct ReviewRequest {
-    pub repo: String,
-    pub number: i64,
-    pub title: String,
-    pub url: String,
-    pub reviewers: Vec<String>,
-}
-
-/// The PRs of REVIEW_REQUESTS_QUERY's response that wait on someone; drafts are not asked about yet.
-pub fn parse_review_requests(response: &Value) -> Vec<ReviewRequest> {
-    response["data"]["search"]["nodes"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|n| n["isDraft"] != true)
-        .filter_map(|n| {
-            let reviewers: Vec<String> = n["reviewRequests"]["nodes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|r| r["requestedReviewer"]["login"].as_str().or_else(|| r["requestedReviewer"]["slug"].as_str()).map(Into::into))
-                .collect();
-            (!reviewers.is_empty()).then_some(())?;
-            Some(ReviewRequest {
-                repo: n["repository"]["nameWithOwner"].as_str()?.into(),
-                number: n["number"].as_i64()?,
-                title: n["title"].as_str()?.into(),
-                url: n["url"].as_str()?.into(),
-                reviewers,
-            })
-        })
-        .collect()
+/// How a review session's work ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReviewOutcome {
+    /// The user's review went in: APPROVED, CHANGES_REQUESTED or COMMENTED.
+    Submitted(String),
+    /// The PR was merged or closed meanwhile.
+    PrClosed,
 }
 
 /// Whether a review session's work is over: the PR (`gh pr view --json
 /// state,reviews`) got a review from `me` submitted since `since` (ISO
-/// 8601, as GitHub writes it), or it is merged or closed.
-pub fn review_done(view: &Value, me: &str, since: &str) -> bool {
-    view["state"] != "OPEN"
-        || view["reviews"].as_array().into_iter().flatten().any(|r| r["author"]["login"] == me && r["submittedAt"].as_str().is_some_and(|at| at >= since))
-}
-
-/// Whether a PR (`gh pr view --json state,reviewDecision,mergeStateStatus`)
-/// can merge at once; otherwise GitHub's auto-merge waits for it.
-pub fn merge_now(view: &Value) -> bool {
-    view["state"] == "OPEN" && view["reviewDecision"] == "APPROVED" && view["mergeStateStatus"] == "CLEAN"
+/// 8601, as GitHub writes it; the last one says how), or it is merged or
+/// closed. None while it is not.
+pub fn review_outcome(view: &Value, me: &str, since: &str) -> Option<ReviewOutcome> {
+    let mine = view["reviews"].as_array().into_iter().flatten().filter(|r| r["author"]["login"] == me && r["submittedAt"].as_str().is_some_and(|at| at >= since));
+    if let Some(last) = mine.max_by_key(|r| r["submittedAt"].as_str().unwrap_or_default().to_string()) {
+        return Some(ReviewOutcome::Submitted(last["state"].as_str().unwrap_or_default().into()));
+    }
+    (view["state"] != "OPEN").then_some(ReviewOutcome::PrClosed)
 }
 
 #[cfg(test)]
@@ -195,41 +161,17 @@ mod tests {
     #[test]
     fn a_review_is_done_once_the_user_submits_one_or_the_pr_closes() {
         let view = |state: &str, reviews: serde_json::Value| serde_json::json!({"state": state, "reviews": reviews});
-        let mine = serde_json::json!([{"author": {"login": "me"}, "submittedAt": "2026-10-05T10:00:00Z"}]);
-        assert!(review_done(&view("OPEN", mine.clone()), "me", "2026-10-05T09:00:00Z"));
-        assert!(!review_done(&view("OPEN", mine.clone()), "me", "2026-10-05T11:00:00Z"), "a review from before the session is not its");
-        assert!(!review_done(&view("OPEN", serde_json::json!([{"author": {"login": "you"}, "submittedAt": "2026-10-05T10:00:00Z"}])), "me", "2026-10-05T09:00:00Z"));
-        assert!(review_done(&view("MERGED", serde_json::json!([])), "me", "2026-10-05T09:00:00Z"));
-        assert!(review_done(&view("CLOSED", serde_json::json!([])), "me", "2026-10-05T09:00:00Z"));
+        let mine = serde_json::json!([
+            {"author": {"login": "me"}, "submittedAt": "2026-10-05T10:00:00Z", "state": "COMMENTED"},
+            {"author": {"login": "me"}, "submittedAt": "2026-10-05T10:05:00Z", "state": "CHANGES_REQUESTED"}
+        ]);
+        assert_eq!(review_outcome(&view("OPEN", mine.clone()), "me", "2026-10-05T09:00:00Z"), Some(ReviewOutcome::Submitted("CHANGES_REQUESTED".into())), "the last one says how it went in");
+        assert_eq!(review_outcome(&view("OPEN", mine.clone()), "me", "2026-10-05T11:00:00Z"), None, "a review from before the session is not its");
+        assert_eq!(review_outcome(&view("OPEN", serde_json::json!([{"author": {"login": "you"}, "submittedAt": "2026-10-05T10:00:00Z", "state": "APPROVED"}])), "me", "2026-10-05T09:00:00Z"), None);
+        assert_eq!(review_outcome(&view("MERGED", serde_json::json!([])), "me", "2026-10-05T09:00:00Z"), Some(ReviewOutcome::PrClosed));
+        assert_eq!(review_outcome(&view("CLOSED", serde_json::json!([])), "me", "2026-10-05T09:00:00Z"), Some(ReviewOutcome::PrClosed));
     }
 
-    #[test]
-    fn an_approved_pr_ready_to_go_merges_now_and_others_wait_for_it() {
-        let view = |decision: &str, merge: &str| serde_json::json!({"state": "OPEN", "reviewDecision": decision, "mergeStateStatus": merge});
-        assert!(merge_now(&view("APPROVED", "CLEAN")));
-        assert!(!merge_now(&view("APPROVED", "BLOCKED")), "checks not through yet");
-        assert!(!merge_now(&view("REVIEW_REQUIRED", "BLOCKED")));
-        assert!(!merge_now(&serde_json::json!({"state": "MERGED", "reviewDecision": "APPROVED", "mergeStateStatus": "CLEAN"})));
-    }
-
-    #[test]
-    fn review_requests_are_the_open_prs_reviewers_not_yet_heard_from() {
-        let resp = serde_json::json!({"data": {"search": {"nodes": [
-            {"number": 1, "title": "Fix", "url": "https://github.com/o/a/pull/1", "isDraft": false, "repository": {"nameWithOwner": "o/a"},
-             "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "alice"}}, {"requestedReviewer": {"slug": "core"}}]}},
-            {"number": 2, "title": "Draft", "url": "https://github.com/o/a/pull/2", "isDraft": true, "repository": {"nameWithOwner": "o/a"},
-             "reviewRequests": {"nodes": [{"requestedReviewer": {"login": "bob"}}]}},
-            {"number": 3, "title": "Nobody", "url": "https://github.com/o/b/pull/3", "isDraft": false, "repository": {"nameWithOwner": "o/b"},
-             "reviewRequests": {"nodes": []}},
-            {}
-        ]}}});
-        let got = parse_review_requests(&resp);
-        assert_eq!(got, vec![ReviewRequest {
-            repo: "o/a".into(), number: 1, title: "Fix".into(), url: "https://github.com/o/a/pull/1".into(),
-            reviewers: vec!["alice".into(), "core".into()],
-        }], "drafts and PRs asking no one are left out; a team goes by its slug");
-        assert!(REVIEW_REQUESTS_QUERY.contains("author:@me") && REVIEW_REQUESTS_QUERY.contains("is:open") && REVIEW_REQUESTS_QUERY.contains("archived:false"));
-    }
     use serde_json::json;
 
     #[test]

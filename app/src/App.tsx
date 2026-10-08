@@ -26,6 +26,8 @@ import {
   OPEN_PALETTE_EVENT,
   OPEN_SESSIONS_EVENT,
   OPEN_STUDY_EVENT,
+  REVIEW_SUBMITTED_EVENT,
+  type ReviewRunner,
   LOGIN_CAPTURED_EVENT,
   FOCUS_APP_EVENT,
   PAGE_FOCUSED_EVENT,
@@ -76,10 +78,9 @@ import {
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
-import { reviewMessages, type ReviewRequest } from "./slackMessages";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
 import { addressToUrl, findTabFor, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
-import { ciFailureLine, waitingOnYou, type WaitItem } from "./waiting";
+import { ciFailureLine, isFailedReview, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
 import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
@@ -3030,15 +3031,6 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
                     再開して直させる
                   </button>
                 )}
-                {todo.pr_state !== "merged" && todo.pr_state !== "closed" && (
-                  <button
-                    className="ghost small"
-                    title="承認されて CI が通ったらマージします（今マージできるならすぐ。merge commit）"
-                    onClick={() => run(() => api.autoMerge(todo.pr_url!).then(() => api.syncNow(todo.id)))}
-                  >
-                    承認されたらマージ
-                  </button>
-                )}
                 <button className="ghost icon" onClick={() => update({ pr_url: "" })} aria-label="PR を外す" title="外す">
                   <Icon name="close" size={12} />
                 </button>
@@ -3511,92 +3503,42 @@ function SessionsPage({ board, waiting, filter, onFilter, repoFilter, run, repor
   );
 }
 
-/// How a review session submits its review: after asking, or on its own.
-type ReviewSubmit = "ask" | "auto";
-
-const REVIEW_SUBMIT_HOW = "指摘はインラインコメントと本文にまとめて提出してください（gh pr review、使えなければ GitHub のツール）。";
-
-/// First prompt of a review session. /review answers in English unless asked
-/// otherwise; `submit` says whether it asks before posting the review.
-const reviewSubmitPrompt = (submit: ReviewSubmit, ask: string) =>
-  submit === "ask"
-    ? `レビューが終わったら、GitHub への提出方法を${ask}私に聞いてください。ブロッカー（マージ前に直すべき問題）があれば Request changes を、なければ Comment か Approve を選択肢に出し、おすすめを先頭にしてください。私が選ぶまでは提出しないでください。`
-    : "レビューが終わったら、確認せずに GitHub に提出してください。ブロッカー（マージ前に直すべき問題）があれば Request changes、なければ Approve で、ブロッカーでない指摘はコメントとして添えてください。";
-const reviewPrompt = (url: string, submit: ReviewSubmit) =>
-  [`/review ${url} レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`, reviewSubmitPrompt(submit, " AskUserQuestion で"), REVIEW_SUBMIT_HOW].join("\n\n");
-/// Codex has no /review for a PR: it is asked to read the PR with gh itself.
-const codexReviewPrompt = (url: string, submit: ReviewSubmit) =>
-  [
-    `PR ${url} をレビューしてください。gh pr view と gh pr diff で説明と差分を読み、必要ならリポジトリのコードも読みます。レビューは日本語で行い、指摘や結果もすべて日本語で書いてください。`,
-    reviewSubmitPrompt(submit, ""),
-    REVIEW_SUBMIT_HOW,
-  ].join("\n\n");
-/// Where reviews start: a session target, or Codex in the terminal (herdr).
-type ReviewRunner = Target | "codex";
-const REVIEW_RUNNERS = ["web", "cloud", "desktop", "terminal", "codex"] as const;
+/// How reviews start, kept as last picked: who reviews, whether it submits
+/// on its own, where it runs. Codex runs in herdr only.
+interface ReviewPrefs {
+  agent: Agent;
+  auto: boolean;
+  runner: ReviewRunner;
+}
+const REVIEW_PREFS_KEY = "reviewPrefs";
+function loadReviewPrefs(): ReviewPrefs {
+  const saved = loadJson<Partial<ReviewPrefs> | null>(REVIEW_PREFS_KEY, null);
+  if (saved) return { agent: saved.agent ?? "claude", auto: saved.auto ?? false, runner: saved.agent === "codex" ? "herdr" : (saved.runner ?? "cloud") };
+  // From before the choices were apart: one list of where (and with what) reviews started.
+  const old = load(REVIEW_RUNNER_KEY, ["web", "cloud", "desktop", "terminal", "codex"] as const, "web");
+  return { agent: old === "codex" ? "codex" : "claude", auto: false, runner: old === "codex" || old === "terminal" ? "herdr" : "cloud" };
+}
 /// The model and effort reviews start with, Claude's and Codex's apart.
 const REVIEW_OPTIONS_KEY = "reviewOptions";
-type ReviewOptions = Record<"claude" | "codex", { model: string; effort: string }>;
+type ReviewOptions = Record<Agent, { model: string; effort: string }>;
 const NO_REVIEW_OPTIONS: ReviewOptions = { claude: { model: "", effort: "" }, codex: { model: "", effort: "" } };
-const reviewOptionsFor = (runner: ReviewRunner): StartOptions => {
-  const picked = { ...NO_REVIEW_OPTIONS, ...loadJson<Partial<ReviewOptions>>(REVIEW_OPTIONS_KEY, {}) }[runner === "codex" ? "codex" : "claude"];
-  return { model: picked.model || undefined, effort: picked.effort || undefined };
-};
-
-/// "/review で開始" asks before submitting the review; the caret picks, per
-/// PR, whether the session may submit on its own.
-function ReviewButton({ accent, busy, onStart }: { accent: boolean; busy: boolean; onStart: (submit: ReviewSubmit) => void }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLSpanElement>(null);
-  useOutsideClose(root, open, () => setOpen(false));
-  const start = (submit: ReviewSubmit) => {
-    setOpen(false);
-    onStart(submit);
-  };
-  const menuKeys = useMenuKeys(open, () => setOpen(false));
-  return (
-    <span ref={root} className={`open-menu${accent ? " accent" : ""}`} onClick={stop}>
-      <button className="open-main" title="レビューして、提出する前に確認する" disabled={busy} aria-busy={busy} onClick={() => start("ask")}>
-        {busy ? (
-          <>
-            <span className="spinner" />
-            開始しています…
-          </>
-        ) : (
-          <>
-            <span className="mono">/review</span> で開始
-          </>
-        )}
-      </button>
-      <button className="open-caret" aria-label="提出のしかたを選んで開始" aria-expanded={open} disabled={busy} onClick={() => setOpen((o) => !o)}>
-        <Icon name="chevron" size={10} />
-      </button>
-      {open && (
-        <span className="menu" role="menu" {...menuKeys}>
-          <button role="menuitem" onClick={() => start("ask")}>
-            提出前に確認して開始
-          </button>
-          <button role="menuitem" onClick={() => start("auto")}>
-            自動で提出まで行う
-          </button>
-        </span>
-      )}
-    </span>
-  );
-}
+const loadReviewOptions = (): ReviewOptions => ({ ...NO_REVIEW_OPTIONS, ...loadJson<Partial<ReviewOptions>>(REVIEW_OPTIONS_KEY, {}) });
 
 /// The PR a review is for.
 interface ReviewTarget {
   url: string;
   repo: string;
+  number: number;
   title: string;
 }
 
-/// Starts reviews where the PR page's "/review は …" says, and tells which
-/// PRs' reviews are starting.
+/// How a review submitted went in, in GitHub's words.
+const REVIEW_VERDICT: Record<string, string> = { APPROVED: "Approve", CHANGES_REQUESTED: "Request changes", COMMENTED: "Comment" };
+
+/// Starts reviews as the PR page's choices say, behind (nothing comes
+/// forward), and tells which PRs' reviews are starting.
 function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) => void) {
   const beginWeb = useContext(BeginWebContext);
-  const terminal = useContext(TerminalContext);
   const [starting, setStarting] = useState<Set<string>>(new Set());
   const mark = (url: string, on: boolean) =>
     setStarting((prev) => {
@@ -3605,22 +3547,27 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
       else next.delete(url);
       return next;
     });
-  const startReview = (p: ReviewTarget, submit: ReviewSubmit) => {
+  const startReview = (p: ReviewTarget) => {
     if (starting.has(p.url)) return;
     mark(p.url, true);
-    const runner = load(REVIEW_RUNNER_KEY, REVIEW_RUNNERS, "web");
-    const cwd = local.find((r) => r.key === p.repo)?.path;
+    const prefs = loadReviewPrefs();
+    const picked = loadReviewOptions()[prefs.agent];
     run(async () => {
-      const finish = runner === "web" ? beginWeb?.() : undefined;
-      // A review is its own session, not a todo; the PR list is where it is followed.
-      const title = `${REVIEW_TITLE_PREFIX}${p.title}`;
-      const prompt = runner === "codex" ? codexReviewPrompt(p.url, submit) : reviewPrompt(p.url, submit);
-      const opts = reviewOptionsFor(runner);
+      // A review asking before it submits on Cloud gets its tab, made behind; one submitting on its own none.
+      const finish = prefs.runner === "cloud" && !prefs.auto ? beginWeb?.() : undefined;
       try {
-        if (runner === "codex") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title, "codex", opts)) : await api.quickClaude(prompt, cwd, title, "codex", opts);
-        else if (runner === "desktop") await api.startDesktopPrompt(cwd, prompt);
-        else if (runner === "terminal") terminal ? terminal.open(await terminalApi.quick(prompt, cwd, title, undefined, opts)) : await api.quickClaude(prompt, cwd, title, undefined, opts);
-        else finish?.(await api.startReviewCloud(p.repo, title, prompt, runner === "cloud", opts, p.url));
+        const id = await api.startReview({
+          url: p.url,
+          repo: p.repo,
+          // A review is its own session, not a todo; the PR page is where it is followed.
+          title: `${REVIEW_TITLE_PREFIX}${p.title}`,
+          agent: prefs.agent,
+          auto: prefs.auto,
+          runner: prefs.runner,
+          cwd: local.find((r) => r.key === p.repo)?.path,
+          options: { model: picked.model || undefined, effort: picked.effort || undefined },
+        });
+        finish?.(id);
       } catch (e) {
         finish?.(null);
         throw e;
@@ -3633,16 +3580,26 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
 }
 
 type PrFilter = "all" | "review" | "mine";
-type PrRow = Pr & { kind: "review" | "mine" };
 
-function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUrl, run, onRefresh, onOpenTodo, onSlack }: {
-  /// The Slack messages asking for the reviews of the user's PRs.
-  onSlack: () => void;
+/// Where a review asked of the user stands, by its session.
+function reviewStanding(p: Pr, sessions: Session[], submitted: Map<string, string>, now: number): { word: string; cls: string; failed?: Session } {
+  const s = sessions.filter((x) => x.review_url === p.url && !x.hidden).sort((a, b) => b.state_at - a.state_at)[0];
+  if (!s) return submitted.has(p.url) ? { word: `提出済み（${REVIEW_VERDICT[submitted.get(p.url)!] ?? submitted.get(p.url)}）`, cls: "state-merged" } : { word: "未着手", cls: "state-needs_input" };
+  if (s.state === "needs_input") return { word: "返事待ち", cls: "state-needs_input" };
+  if (isFailedReview(s, now)) return { word: "失敗", cls: "state-ended", failed: s };
+  return { word: s.review_auto ? "レビュー中（自動で提出）" : "レビュー中", cls: "state-running" };
+}
+
+function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, repoFilter, browserUrl, run, onRefresh, onOpenTodo }: {
   prs: PrLists | null;
   /// While the PRs are being taken again, so ↻ turns.
   prsLoading: boolean;
   prError: string | null;
   todos: Todo[];
+  /// Sessions not linked to a todo: the reviews among them.
+  sessions: Session[];
+  /// Reviews that went in since the PRs were taken: their verdicts by URL.
+  submitted: Map<string, string>;
   local: LocalRepo[];
   repoFilter: string | null;
   /// The page the browser pane shows, to mark its row.
@@ -3653,60 +3610,51 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
 }) {
   // Review requests first: they are what waits on the user.
   const [filter, setFilter] = useState<PrFilter>("review");
-  const [reviewRunner, setReviewRunnerState] = useState<ReviewRunner>(() => load(REVIEW_RUNNER_KEY, REVIEW_RUNNERS, "web"));
   const openInBrowser = useContext(BrowserContext);
+  const fix = useContext(FixContext);
+  const [prefs, setPrefsState] = useState<ReviewPrefs>(loadReviewPrefs);
+  const setPrefs = (patch: Partial<ReviewPrefs>) => {
+    const next = { ...prefs, ...patch };
+    if (next.agent === "codex") next.runner = "herdr";
+    remember(REVIEW_PREFS_KEY, JSON.stringify(next));
+    setPrefsState(next);
+  };
   // The model and effort reviews start with (Codex's from its own list).
-  const [reviewOptions, setReviewOptionsState] = useState<ReviewOptions>(() => ({ ...NO_REVIEW_OPTIONS, ...loadJson<Partial<ReviewOptions>>(REVIEW_OPTIONS_KEY, {}) }));
-  const reviewAgent = reviewRunner === "codex" ? "codex" : "claude";
+  const [reviewOptions, setReviewOptionsState] = useState<ReviewOptions>(loadReviewOptions);
   const setReviewOption = (patch: Partial<{ model: string; effort: string }>) => {
-    const next = { ...reviewOptions, [reviewAgent]: { ...reviewOptions[reviewAgent], ...patch } };
+    const next = { ...reviewOptions, [prefs.agent]: { ...reviewOptions[prefs.agent], ...patch } };
     remember(REVIEW_OPTIONS_KEY, JSON.stringify(next));
     setReviewOptionsState(next);
   };
   const [codexModels, setCodexModels] = useState<{ id: string; label: string; efforts: string[] }[]>([]);
   useEffect(() => void api.codexModels().then(setCodexModels, () => {}), []);
-  const picked = reviewOptions[reviewAgent];
-  const modelChoices = reviewAgent === "codex" ? [{ id: "", label: "Codex の既定のモデル" }, ...codexModels] : MODELS;
-  const effortChoices = reviewAgent === "codex" ? ["", ...(codexModels.find((m) => m.id === picked.model)?.efforts ?? ["low", "medium", "high", "xhigh"])] : EFFORTS;
-  const setReviewRunner = (t: ReviewRunner) => {
-    remember(REVIEW_RUNNER_KEY, t);
-    setReviewRunnerState(t);
-  };
-  const byRepo = (p: Pr) => repoFilter === null || p.repo === repoFilter;
-  const review = (prs?.review ?? []).filter(byRepo).map((p) => ({ ...p, kind: "review" as const }));
-  const mine = (prs?.mine ?? []).filter(byRepo).map((p) => ({ ...p, kind: "mine" as const }));
-  // The user's PRs shown (drafts aside), set to merge once approved, all at once.
-  const mergeable = mine.filter((p) => !p.is_draft);
-  const [confirmMerge, setConfirmMerge] = useState(false);
-  const mergeAll = () => {
-    setConfirmMerge(false);
-    run(async () => {
-      const failed: string[] = [];
-      for (const p of mergeable) await api.autoMerge(p.url).catch((e) => failed.push(`${p.repo}#${p.number}: ${e}`));
-      await api.syncNow();
-      onRefresh();
-      if (failed.length > 0) throw new Error(`マージを設定できなかった PR があります\n${failed.join("\n")}`);
-    });
-  };
-  const todoOf = (p: Pr) => todos.find((t) => t.pr_url === p.url);
-  const cwdOf = (p: Pr) => local.find((r) => r.key === p.repo)?.path;
-  // A PR becomes a todo that ships as it, so its state keeps the todo current.
-  const makeTodo = (p: Pr, title: string) =>
-    api.createTodo({ title, repos: [p.repo], cwd: cwdOf(p) }).then((t) => api.updateTodo(t.id, { pr_url: p.url }));
-  const terminal = useContext(TerminalContext);
+  const picked = reviewOptions[prefs.agent];
+  const modelChoices = prefs.agent === "codex" ? [{ id: "", label: "Codex の既定のモデル" }, ...codexModels] : MODELS;
+  const effortChoices = prefs.agent === "codex" ? ["", ...(codexModels.find((m) => m.id === picked.model)?.efforts ?? ["low", "medium", "high", "xhigh"])] : EFFORTS;
+  const byRepo = (p: { repo: string }) => repoFilter === null || p.repo === repoFilter;
+  const review = (prs?.review ?? []).filter(byRepo);
+  const mine = (prs?.mine ?? []).filter(byRepo);
+  const todoOf = (url: string) => todos.find((t) => t.pr_url === url);
   // PRs whose review session is being started, so their button shows it.
   const { startReview, starting } = useReviewStarter(local, run);
-  const sections: { key: "review" | "mine"; title: string; hint: string; rows: PrRow[] }[] = [
-    { key: "review", title: "レビュー依頼", hint: "自分にレビューが来ている PR", rows: review },
-    { key: "mine", title: "自分の PR", hint: "自分が出している open の PR", rows: mine },
-  ];
-  const shown = sections.filter((sec) => filter === "all" || filter === sec.key);
-  const rowId = (p: PrRow) => `${p.kind}:${p.url}`;
-  // ↑↓ or j k pick a PR. Enter on a review request offers submitting on its
-  // own or asking first; on the user's own PR, and with ⌥, it opens the PR.
-  const { cursorId, setCursor, list } = useRowCursor(shown.flatMap((sec) => sec.rows.map(rowId)), (_, alt, row) =>
-    ((!alt && row.querySelector<HTMLButtonElement>(".open-caret")) || row).click(),
-  );
+  const now = Date.now() / 1000;
+  const rowId = (kind: string, url: string) => `${kind}:${url}`;
+  const shownReview = filter !== "mine" ? review : [];
+  const shownMine = filter !== "review" ? mine : [];
+  // ↑↓ or j k pick a PR, Enter opens it in the pane, ⌘Enter starts reviewing it.
+  const { cursorId, setCursor, list } = useRowCursor([...shownReview.map((p) => rowId("review", p.url)), ...shownMine.map((p) => rowId("mine", p.url))], (_, __, row) => row.click());
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!matches(e, "start") || (e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .sheet-backdrop")) return;
+      const p = review.find((x) => rowId("review", x.url) === cursorId);
+      if (!p) return;
+      e.preventDefault();
+      startReview(p);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+  const reviewerLabel = (names: string[]) => (names.length === 0 ? "レビュー未依頼" : `${names.slice(0, 2).join("・")}${names.length > 2 ? ` ほか ${names.length - 2}` : ""}`);
   return (
     <>
       <header className="toolbar">
@@ -3723,61 +3671,6 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
           </button>
         </div>
         <span className="grow" />
-        {confirmMerge ? (
-          <span className="inline-confirm">
-            {repoFilter ?? "すべてのリポジトリ"}の自分の PR {mergeable.length} 件を、承認されたらマージしますか？（今マージできるものはすぐ）
-            <button className="primary small" onClick={mergeAll}>
-              マージを設定
-            </button>
-            <button className="ghost small" onClick={() => setConfirmMerge(false)}>
-              やめる
-            </button>
-          </span>
-        ) : (
-          mergeable.length > 0 && (
-            <button onClick={() => setConfirmMerge(true)} title="表示中の自分の PR（Draft 以外）を、承認されて CI が通ったらマージします（merge commit）">
-              承認されたらマージ {mergeable.length}
-            </button>
-          )
-        )}
-        <button onClick={onSlack} title="レビュー依頼中の自分の PR のリンクを、レビュアーごとに並べます">
-          Slack 依頼文
-        </button>
-        <select className="select compact" value={reviewRunner} aria-label="/review を始める場所" title="/review を始める場所" onChange={(e) => setReviewRunner(e.target.value as ReviewRunner)}>
-          <option value="web">/review は Cloud・Web</option>
-          <option value="cloud">/review は Cloud・Desktop</option>
-          <option value="desktop">/review は Local・Desktop</option>
-          <option value="terminal">/review は {terminal ? "ターミナル" : "herdr"}</option>
-          <option value="codex">レビューは Codex（{terminal ? "ターミナル" : "herdr"}）</option>
-        </select>
-        <select
-          className="select compact"
-          value={picked.model}
-          disabled={reviewRunner === "desktop"}
-          aria-label="レビューのモデル"
-          title={reviewRunner === "desktop" ? "Desktop ではモデルを選べません" : "レビューのモデル"}
-          onChange={(e) => setReviewOption({ model: e.target.value })}
-        >
-          {modelChoices.map((m) => (
-            <option key={m.id} value={m.id}>
-              {m.label}
-            </option>
-          ))}
-        </select>
-        <select
-          className="select compact"
-          value={picked.effort}
-          disabled={reviewRunner === "desktop"}
-          aria-label="レビューの effort"
-          title={reviewRunner === "desktop" ? "Desktop では effort を選べません" : "レビューの effort"}
-          onChange={(e) => setReviewOption({ effort: e.target.value })}
-        >
-          {effortChoices.map((x) => (
-            <option key={x} value={x}>
-              {x ? `effort: ${x}` : "既定の effort"}
-            </option>
-          ))}
-        </select>
         <button className={`ghost icon${prsLoading ? " turning" : ""}`} aria-label="PR を取り直す（⌘R）" title="PR を取り直す（⌘R）" aria-busy={prsLoading} onClick={onRefresh}>
           <Icon name="sync" size={14} />
         </button>
@@ -3785,55 +3678,146 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
       <div className="content flush" ref={list}>
         {prError && <p className="error-text pad">{prError}</p>}
         {!prs && !prError && <p className="muted pad">gh で取得しています…</p>}
-        {shown.map((sec) => (
-            <section key={sec.key}>
-              <div className="section-head">
-                <b>{sec.title}</b>
-                <span className="muted">{sec.rows.length}</span>
-                <span className="muted">{sec.hint}</span>
+        {filter !== "mine" && (
+          <section>
+            <div className="section-head review-prefs">
+              <b>レビュー依頼</b>
+              <span className="muted">{review.length}</span>
+              <span className="grow" />
+              <span className="muted">エージェント</span>
+              <div className="segmented" role="group" aria-label="レビューするエージェント">
+                {(["claude", "codex"] as const).map((a) => (
+                  <button key={a} className={prefs.agent === a ? "on" : ""} aria-pressed={prefs.agent === a} onClick={() => setPrefs({ agent: a })}>
+                    {a === "claude" ? "Claude" : "Codex"}
+                  </button>
+                ))}
               </div>
-              {prs && sec.rows.length === 0 && <p className="muted pad">ありません。</p>}
-              <ul className="rows">
-                {sec.rows.map((p) => {
-                  const todo = todoOf(p);
-                  return (
-                    <li
-                      key={p.url}
-                      data-row={rowId(p)}
-                      className={`row pr-row${browserUrl === p.url ? " selected" : ""}${rowId(p) === cursorId ? " cursor" : ""}`}
-                      onClick={() => (setCursor(rowId(p)), openInBrowser?.(p.url))}
-                    >
-                      <span className="pr-main">
-                        <span className="pr-meta">
-                          <span className="mono">
-                            {repoName(p.repo)}#{p.number}
-                          </span>
-                          {todo?.pr_state ? <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span> : p.is_draft && <span className="gh gh-pr-draft">Draft</span>}
-                          <span>
-                            {p.kind === "review" ? `${p.author} · ` : ""}
-                            {isoAgo(p.updated_at)}
-                          </span>
+              <span className="muted">提出</span>
+              <div className="segmented" role="group" aria-label="レビューの提出">
+                <button className={!prefs.auto ? "on" : ""} aria-pressed={!prefs.auto} title="指摘がまとまると、Request changes・Comment・Approve のどれで出すかを聞いてきます（あなた待ちに入ります）" onClick={() => setPrefs({ auto: false })}>
+                  提出前に確認する
+                </button>
+                <button className={prefs.auto ? "on" : ""} aria-pressed={prefs.auto} title="確かめずに提出し、提出したら片付けます" onClick={() => setPrefs({ auto: true })}>
+                  自動で提出する
+                </button>
+              </div>
+              <span className="muted">動く場所</span>
+              <div className="segmented" role="group" aria-label="レビューが動く場所">
+                <button className={prefs.runner === "cloud" ? "on" : ""} aria-pressed={prefs.runner === "cloud"} disabled={prefs.agent === "codex"} title={prefs.agent === "codex" ? "Codex は herdr でだけ動きます" : undefined} onClick={() => setPrefs({ runner: "cloud" })}>
+                  Cloud
+                </button>
+                <button className={prefs.runner === "herdr" ? "on" : ""} aria-pressed={prefs.runner === "herdr"} onClick={() => setPrefs({ runner: "herdr" })}>
+                  herdr
+                </button>
+              </div>
+              <select className="select compact" value={picked.model} aria-label="レビューのモデル" title="レビューのモデル" onChange={(e) => setReviewOption({ model: e.target.value })}>
+                {modelChoices.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+              <select className="select compact" value={picked.effort} aria-label="レビューの effort" title="レビューの effort" onChange={(e) => setReviewOption({ effort: e.target.value })}>
+                {effortChoices.map((x) => (
+                  <option key={x} value={x}>
+                    {x ? `effort: ${x}` : "既定の effort"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {prs && review.length === 0 && <p className="muted pad">ありません。</p>}
+            <ul className="rows">
+              {review.map((p) => {
+                const st = reviewStanding(p, sessions, submitted, now);
+                const id = rowId("review", p.url);
+                const busy = starting.has(p.url);
+                return (
+                  <li key={p.url} data-row={id} className={`row pr-row${browserUrl === p.url ? " selected" : ""}${id === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(id), openInBrowser?.(p.url))}>
+                    <span className={`state ${st.cls}`}>
+                      <i />
+                      {busy ? "始めています…" : st.word}
+                    </span>
+                    <span className="pr-main">
+                      <span className="ellipsis">{p.title}</span>
+                      <span className="pr-meta">
+                        <span className="mono">
+                          {repoName(p.repo)}#{p.number}
                         </span>
-                        <span className="ellipsis">{p.title}</span>
+                        <span>
+                          {p.author} から · {isoAgo(p.updated_at)}
+                        </span>
                       </span>
-                      {todo ? (
-                        <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
-                          #{todo.id} {todo.title}
-                        </button>
-                      ) : (
-                        p.kind === "mine" && (
-                          <button className="small" onClick={(e) => (e.stopPropagation(), run(() => makeTodo(p, p.title)))}>
-                            todo にする
-                          </button>
-                        )
-                      )}
-                      {p.kind === "review" && <ReviewButton accent={browserUrl === p.url} busy={starting.has(p.url)} onStart={(submit) => startReview(p, submit)} />}
-                    </li>
-                  );
-                })}
-              </ul>
-            </section>
-          ))}
+                    </span>
+                    {st.word === "未着手" && (
+                      <button className="small primary" disabled={busy} title="上の選び方でレビューを始めます（⌘Enter。画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), startReview(p))}>
+                        レビューを始める
+                      </button>
+                    )}
+                    {st.failed && (
+                      <button
+                        className="small"
+                        disabled={busy}
+                        title="止まったレビューを片付けて、もう一度始めます"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          const failed = st.failed!;
+                          run(() => api.hideSession(failed.session_id));
+                          startReview(p);
+                        }}
+                      >
+                        もう一度
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
+        {filter !== "review" && (
+          <section>
+            <div className="section-head">
+              <b>自分の PR</b>
+              <span className="muted">{mine.length}</span>
+              <span className="muted">自分が出している open の PR</span>
+            </div>
+            {prs && mine.length === 0 && <p className="muted pad">ありません。</p>}
+            <ul className="rows">
+              {mine.map((p) => {
+                const todo = todoOf(p.url);
+                const latest = todo && [...todo.sessions].sort((a, b) => b.state_at - a.state_at)[0];
+                const needsFix = p.ci?.state === "failure" || p.stage === "changes_requested";
+                const id = rowId("mine", p.url);
+                return (
+                  <li key={p.url} data-row={id} className={`row pr-row${browserUrl === p.url ? " selected" : ""}${id === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(id), openInBrowser?.(p.url))}>
+                    <span className={`gh gh-pr-${p.stage}`}>{PR_LABEL[p.stage]}</span>
+                    <span className="pr-main">
+                      <span className="ellipsis">{p.title}</span>
+                      <span className="pr-meta">
+                        <span className="mono">
+                          {repoName(p.repo)}#{p.number}
+                        </span>
+                        {p.ci && <span className={`gh ci-${p.ci.state}`} title={p.ci.failed.join("\n") || undefined}>{CI_LABEL[p.ci.state]}{p.ci.failed.length > 0 && ` ${p.ci.failed.length}`}</span>}
+                        <span>{reviewerLabel(p.reviewers)}</span>
+                        <span>{isoAgo(p.updated_at)}</span>
+                      </span>
+                    </span>
+                    {todo && (
+                      <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
+                        #{todo.id} {todo.title}
+                      </button>
+                    )}
+                    {fix && todo && latest && needsFix && latest.state !== "running" && (
+                      <button className="small" title="元のセッションに、直すところを送ります（画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), fix(latest, todo))}>
+                        元のセッションに直させる
+                      </button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
       </div>
     </>
   );
@@ -4683,56 +4667,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | null;
-type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | "slack" | null;
-
-/// The links of the user's open PRs waiting on each reviewer (slackMessages.ts),
-/// one a line, copied with a key (1〜9) or a click.
-function SlackReviewDialog({ onClose }: { onClose: () => void }) {
-  const [prs, setPrs] = useState<ReviewRequest[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
-  useEffect(() => void api.reviewRequests().then(setPrs, (e) => setError(String(e))), []);
-  const messages = prs ? reviewMessages(prs) : [];
-  const copy = (key: string, text: string) =>
-    navigator.clipboard.writeText(text).then(
-      () => setCopied(key),
-      (e) => setError(String(e)),
-    );
-  const copyRef = useRef({ messages, copy });
-  copyRef.current = { messages, copy };
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const { messages, copy } = copyRef.current;
-      const m = messages[Number(e.key) - 1];
-      if (!m) return;
-      e.preventDefault();
-      copy(m.reviewer, m.text);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  return (
-    <Modal title="レビュー依頼中の PR（レビュアーごと）" wide onClose={onClose}>
-      {error && <p className="error-text">{error}</p>}
-      {!prs && !error && <p className="muted">自分の PR を調べています…</p>}
-      {prs?.length === 0 && <p className="muted">レビューを待っている自分の PR はありません（Draft は除きます）。</p>}
-      {messages.map((m, i) => (
-        <div key={m.reviewer} className="slack-message">
-          <div className="slack-head">
-            <b className="mono">{m.reviewer}</b>
-            <span className="muted">{m.prs.length} 件</span>
-            <span className="grow" />
-            <button className={copied === m.reviewer ? "" : "primary"} onClick={() => copy(m.reviewer, m.text)}>
-              {copied === m.reviewer ? "コピーしました" : "コピー"} {i < 9 && <span className="kbd">{i + 1}</span>}
-            </button>
-          </div>
-          <pre>{m.text}</pre>
-        </div>
-      ))}
-    </Modal>
-  );
-}
+type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | null;
 
 /// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
@@ -5666,6 +5601,18 @@ export default function App() {
       api.markSessionSeen(s.session_id).catch(report);
       openInBrowser(cloudWebUrl(s.session_id), true, false, r.prompt);
     });
+  // Reviews that went in (REVIEW_SUBMITTED_EVENT), for the PR page until the
+  // PRs are taken again; each is told in a toast.
+  const [submittedReviews, setSubmittedReviews] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    const off = listen<{ url: string; title: string; verdict: string }>(REVIEW_SUBMITTED_EVENT, ({ payload }) => {
+      setSubmittedReviews((prev) => new Map(prev).set(payload.url, payload.verdict));
+      showToastRef.current(`${prRef(payload.url).split("/").pop()} にレビューを提出しました（${REVIEW_VERDICT[payload.verdict] ?? payload.verdict}）`);
+    });
+    return () => void off.then((f) => f());
+  }, []);
+  const showToastRef = useRef(showToast);
+  showToastRef.current = showToast;
   const openCloudRef = useRef(openCloud);
   openCloudRef.current = openCloud;
   useEffect(() => {
@@ -6244,7 +6191,6 @@ export default function App() {
     { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
     { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
-    { key: "slack", label: "レビュー依頼中の PR のリンク（レビュアーごと、Slack 用）", run: () => setDialog("slack") },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },
     ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned
@@ -6576,7 +6522,20 @@ export default function App() {
             />
           )}
           {view === "prs" && (
-            <PrsPage prs={prs} prsLoading={prsLoading} prError={prError} todos={allTodos} local={local} repoFilter={repoFilter} browserUrl={browserUrl} run={run} onRefresh={loadPrs} onOpenTodo={goTodo} onSlack={() => setDialog("slack")} />
+            <PrsPage
+              prs={prs}
+              prsLoading={prsLoading}
+              prError={prError}
+              todos={allTodos}
+              sessions={board?.inbox ?? []}
+              submitted={submittedReviews}
+              local={local}
+              repoFilter={repoFilter}
+              browserUrl={browserUrl}
+              run={run}
+              onRefresh={loadPrs}
+              onOpenTodo={goTodo}
+            />
           )}
           {panel === "todo" && selectedTodo && (
             // A sheet over the Todo page, not a dialog: the pane stays, and j k go on to the next todo.
@@ -6768,7 +6727,6 @@ export default function App() {
           </div>
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
-        {dialog === "slack" && <SlackReviewDialog onClose={() => setDialog(null)} />}
         {dialog === "start" && selectedTodo && (
           <StartDialog todo={selectedTodo} allTodos={allTodos} skills={skillsByCwd[skillsKey] ?? []} run={run} onClose={() => setDialog(null)} />
         )}

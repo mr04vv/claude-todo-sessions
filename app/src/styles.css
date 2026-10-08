@@ -2162,6 +2162,19 @@ input.panel-title:focus-visible {
   align-items: center;
 }
 
+.pr-row > .state {
+  width: 132px;
+  flex-shrink: 0;
+}
+
+/* How reviews start, over the review requests: wraps when narrow. */
+.section-head.review-prefs {
+  flex-wrap: wrap;
+  row-gap: 6px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
 .pr-main {
   flex-grow: 1;
   min-width: 0;
@@ -2711,30 +2724,6 @@ body.resizing {
 }
 
 /* SlackReviewDialog: a message to copy, under whom it asks. */
-.slack-message {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.slack-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.slack-message pre {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 6px;
-  background: var(--input);
-  font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
-
 /* The Input mode's 「説明する」 (ExplainPanel). */
 .explain {
   flex-grow: 1;
