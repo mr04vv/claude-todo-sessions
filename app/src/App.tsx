@@ -415,7 +415,7 @@ const NOTE_POLL_MS = 5000;
 /// The right pages a space may show.
 /// The right's 「説明する」 (ExplainPanel), the app's own, not a page.
 const EXPLAIN_TAB = "fexplain";
-const RIGHT_KINDS = [NOTE_TAB, EXPLAIN_TAB, "pinchatgpt", "pinclaude", "pinnotion"];
+const RIGHT_KINDS = [NOTE_TAB, EXPLAIN_TAB, "pinchatgpt", "pinclaude"];
 /// The explanation being written, by subjectKey.
 const FEYNMAN_DRAFTS_KEY = "feynmanDrafts";
 const DAY_S = 86_400;
@@ -1880,9 +1880,9 @@ const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[]
 /// Pinned pages whose text box takes the typing when the keyboard comes over
 /// (⌃l), and the focus mode's selection pasted in.
 const CHAT_PAGES = ["pinchatgpt", "pinclaude"];
-/// What the focus mode's right side can keep: the pinned pages, and Notion,
+/// What the focus mode's right side can keep: the pinned pages.
 /// which is pinned (kept open) only there.
-const FOCUS_PAGES: typeof PINNED_PAGES = [...PINNED_PAGES, { id: "pinnotion", label: "Notion", url: "https://www.notion.so/", icon: "list" }];
+const FOCUS_PAGES = PINNED_PAGES;
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
@@ -2553,7 +2553,7 @@ function ExplainPanel({ subject, title, pages, report, onAskByVoice }: {
 }
 
 /// The focus mode: its own pages (and terminals) on the left and a pinned
-/// page (ChatGPT, Claude Code or Notion), the note or 「説明する」 on the right, nothing else.
+/// page (ChatGPT or Claude Code), the note or 「説明する」 on the right, nothing else.
 function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit, typing }: {
   /// Which side has the keyboard: the browser's keys (⌘[ ⌘] ⌘L) are that side's only.
   typing: "left" | "right" | null;
