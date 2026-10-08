@@ -701,27 +701,6 @@ a:hover {
 
 
 
-.state .unread-dot {
-  margin-right: 2px;
-}
-
-/* Unread dot, session state and PR glyph, side by side (StateMarks). */
-.state-marks {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.state-marks .unread-dot {
-  width: 6px;
-  height: 6px;
-}
-
-.state-marks .state-approved,
-.state-marks .state-merged {
-  color: var(--st-done);
-}
-
 .state-draft {
   color: var(--text-3);
 }
@@ -778,6 +757,43 @@ a:hover {
 .state-ended i,
 .dot.state-ended {
   background: var(--ended);
+}
+
+/* Each state's mark has its own shape, so the colour is not all that tells
+   them apart: running a dot that pulses, waiting a diamond, idle a ring,
+   新着 a filled dot in the accent, ended a dash. */
+.state-running i {
+  animation: state-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes state-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+
+.state-needs_input i {
+  border-radius: 1px;
+  transform: rotate(45deg) scale(0.9);
+}
+
+.state-idle i {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--idle);
+}
+
+.state-unread {
+  color: var(--accent);
+}
+
+.state-unread i {
+  background: var(--accent);
+  box-shadow: none;
+}
+
+.state-ended i {
+  height: 2px;
+  border-radius: 1px;
 }
 
 .tag {
@@ -897,6 +913,9 @@ button.gh:hover:not(:disabled) {
 /* Board */
 
 .waiting-strip {
+  height: auto;
+  font-size: 13px;
+  text-align: left;
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -906,6 +925,11 @@ button.gh:hover:not(:disabled) {
   background: var(--waiting-soft);
   border: 1px solid var(--waiting-line);
   border-radius: 9px;
+}
+
+button.waiting-strip:hover:not(:disabled) {
+  background: var(--waiting-soft);
+  border-color: var(--waiting);
 }
 
 .waiting-item {
@@ -1346,8 +1370,39 @@ button.lane-toggle:hover .lane-name {
 
 .sessions-grid {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1.3fr) minmax(0, 1fr) minmax(0, 150px) 110px 28px;
+  grid-template-columns: 76px minmax(0, 1.3fr) minmax(0, 1fr) 150px auto;
   column-gap: 12px;
+}
+
+/* あなた待ち, pinned over the sessions: why, what it asks, where it runs. */
+.waiting-section {
+  margin-bottom: 18px;
+}
+
+.waiting-section .section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 8px;
+}
+
+.wait-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr) minmax(0, 180px) auto;
+  column-gap: 12px;
+  align-items: center;
+}
+
+.wait-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.wait-line {
+  color: var(--waiting-text);
+  font-size: 12px;
 }
 
 /* Repositories as tags, cut to their column. */
@@ -2325,34 +2380,6 @@ input.panel-title:focus-visible {
 
 .palette-empty {
   color: var(--text-3);
-}
-
-/* Notifications */
-
-.unread-dot {
-  width: 8px;
-  height: 8px;
-  flex-shrink: 0;
-  border-radius: 50%;
-}
-
-.unread-dot.on {
-  background: var(--accent);
-}
-
-.notice-row .state {
-  width: 124px;
-  flex-shrink: 0;
-}
-
-.notice-row .row-title {
-  font-weight: 600;
-}
-
-.notice-todo {
-  max-width: 220px;
-  display: block;
-  line-height: 20px;
 }
 
 /* Drag handles on the left edge of the side panel and the browser pane. */

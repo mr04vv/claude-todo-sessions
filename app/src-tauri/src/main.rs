@@ -248,7 +248,8 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             .unlinked_sessions()
             .map_err(err)?
             .into_iter()
-            .filter(|s| s.state != SessionState::Ended && !archived.contains(&s.session_id))
+            // A review that ended without being put away stopped before submitting: it waits on the user.
+            .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .collect();
         (todos, db.list_inputs().map_err(err)?, inbox, db.notifications().map_err(err)?, db.feynman_summaries().map_err(err)?)
     };
@@ -1230,22 +1231,6 @@ fn session_question(session: &Session) -> Option<String> {
         cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id)?)
     };
     cts_core::transcript::question(&entries)
-}
-
-/// What a session is doing: its last message, context size and recent tool
-/// calls, from the transcript (local) or the events API (cloud).
-#[tauri::command]
-async fn session_detail(session_id: String) -> Result<cts_core::transcript::Detail, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let entries = if launch::is_cloud_session(&session_id) {
-            cts_core::cloud::recent_entries(&session_id)?
-        } else {
-            transcript_tail(&session_id).map(|t| cts_core::transcript::parse_jsonl(&t)).unwrap_or_default()
-        };
-        Ok(cts_core::transcript::detail(&entries))
-    })
-    .await
-    .map_err(err)?
 }
 
 #[tauri::command]
@@ -2663,7 +2648,6 @@ fn main() {
             move_in_queue,
             set_loop_enabled,
             set_parent,
-            session_detail,
             usage,
             skills,
             gh_prs,

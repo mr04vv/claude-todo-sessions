@@ -221,20 +221,6 @@ export interface Limit {
   severity: string;
 }
 
-export interface ToolCall {
-  name: string;
-  summary: string;
-}
-
-/** What a session is doing, from its transcript or cloud events. */
-export interface SessionDetail {
-  model: string | null;
-  context_tokens: number | null;
-  last_text: string | null;
-  /** Newest first. */
-  tools: ToolCall[];
-}
-
 export interface Skill {
   name: string;
   description: string;
@@ -376,7 +362,6 @@ export const api = {
   /// The session was looked at now: its ended turn is read.
   markSessionSeen: (sessionId: string) => invoke<void>("mark_session_seen", { sessionId }),
   setParent: (todoId: number, parentId: number | null) => invoke<Todo>("set_parent", { todoId, parentId }),
-  sessionDetail: (sessionId: string) => invoke<SessionDetail>("session_detail", { sessionId }),
   usage: () => invoke<Limit[]>("usage"),
   skills: (cwd: string | null) => invoke<Skill[]>("skills", { cwd }),
   ghPrs: () => invoke<PrLists>("gh_prs"),

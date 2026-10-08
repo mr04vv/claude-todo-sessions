@@ -63,7 +63,6 @@ import {
   type CiState,
   type Runner,
   type Session,
-  type SessionDetail,
   type SessionState,
   type Skill,
   type StartOptions,
@@ -80,6 +79,7 @@ import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { reviewMessages, type ReviewRequest } from "./slackMessages";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
 import { addressToUrl, findTabFor, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
+import { ciFailureLine, waitingOnYou, type WaitItem } from "./waiting";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
 import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
@@ -92,7 +92,6 @@ const USAGE_RETRY_MS = 60_000;
 const PR_REFRESH_MS = 5 * 60_000;
 /// How long the focus events are let settle before marking the typing's side.
 const FOCUS_SETTLE_MS = 120;
-const DETAIL_REFRESH_MS = 10_000;
 /// The shown tab's address is checked this often, for pages that move
 /// without loading or changing their title.
 const ADDRESS_POLL_MS = 500;
@@ -249,10 +248,9 @@ const REVIEW_TITLE_PREFIX = "レビュー: ";
 const isReviewSession = (s: Session) =>
   s.todo_id === null &&
   (!!s.review_url || (!!s.title && (s.title.startsWith(REVIEW_TITLE_PREFIX) || s.title.startsWith("/review ") || /^PR https:\/\/github\.com\/\S+\/pull\/\d+ をレビュー/.test(s.title))));
-/// The session lists leave out a review while it runs (it shows once it is
-/// done or asks), and sessions put away (⌘⇧A, or a review once it is in)
-/// unless they wait for input.
-const listedSession = (s: Session) => (!isReviewSession(s) || s.state !== "running") && (!s.hidden || s.state === "needs_input");
+/// The session lists leave out reviews (one asking is in あなた待ち), and
+/// sessions put away (⌘⇧A, or a review once it is in) unless they ask.
+const listedSession = (s: Session) => (!isReviewSession(s) || s.state === "needs_input") && (!s.hidden || s.state === "needs_input");
 
 /// Lanes that start folded, and the ones already folded once on this machine
 /// (so a lane added to the list later folds too, and stays open once opened).
@@ -346,10 +344,6 @@ function todoRef(todo: Todo): string {
 }
 
 const isoAgo = (iso: string) => ago(Math.floor(Date.parse(iso) / 1000));
-
-function tokensLabel(n: number) {
-  return n >= 1000 ? `${Math.round(n / 1000)}k` : String(n);
-}
 
 function load<T extends string>(key: string, allowed: readonly T[], fallback: T): T {
   try {
@@ -655,40 +649,14 @@ function StatusIcon({ status }: { status: Status }) {
   );
 }
 
-/// A session's state, after a dot when its ended turn is unread (as herdr marks it).
+/// A session's state in a shape and a word; a turn ended and not looked at
+/// yet (as herdr marks it) is 新着.
 function StateBadge({ state, unread }: { state: SessionState; unread?: boolean }) {
+  const fresh = unread && state === "idle";
   return (
-    <span className={`state state-${state}`}>
-      {unread !== undefined && <span className={`unread-dot${unread ? " on" : ""}`} title={unread ? "新着：ひと区切りしてから、まだ見ていません" : undefined} />}
+    <span className={`state state-${state}${fresh ? " state-unread" : ""}`} title={fresh ? "ひと区切りしてから、まだ見ていません" : undefined}>
       <i />
-      {STATE_LABEL[state]}
-    </span>
-  );
-}
-
-/// The sessions table's PR cell: the todo's PR stage as a PR glyph in its
-/// colour (its name on hover). The session's state is the row's colour.
-function StateMarks({ todo }: { todo: Todo | undefined }) {
-  const pr = todo?.pr_state ? PR_STAGE[todo.pr_state] : null;
-  return (
-    <span className="state-marks">
-      {pr && (
-        <span className={`state state-${pr[0]}`} title={`PR：${pr[1]}`}>
-          <Icon name="pr" size={13} />
-        </span>
-      )}
-    </span>
-  );
-}
-
-/// Where the todo's PR stands (none: a dash, or nothing with `bare`).
-function PrBadge({ todo, bare }: { todo: Todo | undefined; bare?: boolean }) {
-  if (!todo?.pr_state) return bare ? null : <span className="muted">—</span>;
-  const [cls, label] = PR_STAGE[todo.pr_state];
-  return (
-    <span className={`state state-${cls}`} title={todo.pr_url ?? undefined}>
-      <i />
-      {label}
+      {fresh ? "新着" : STATE_LABEL[state]}
     </span>
   );
 }
@@ -734,13 +702,6 @@ function GhChip({ todo, report }: { todo: Todo; report: (e: unknown) => void }) 
 
 /// What a PR's CI says, in words (the colour backs it).
 const CI_LABEL: Record<CiState, string> = { pending: "CI 実行中", success: "CI 成功", failure: "CI 失敗" };
-/// "acme/api#120 の test-api が失敗（2件）": why a PR's CI waits on the user.
-const ciFailureLine = (todo: Todo) =>
-  `${todo.pr_url ? `${prRef(todo.pr_url)} の` : ""}${todo.ci_failed.length > 0 ? `${todo.ci_failed.slice(0, CI_NAMES_SHOWN).join("・")}${todo.ci_failed.length > CI_NAMES_SHOWN ? " ほか" : ""}が失敗（${todo.ci_failed.length}件）` : "CI が失敗"}`;
-/// Checks named in a failure's line before "ほか".
-const CI_NAMES_SHOWN = 2;
-/// "acme/api#120" for a PR's URL.
-const prRef = (url: string) => url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/)?.slice(1).join("#") ?? url;
 
 /// The CI of a todo's open PR, in words; nothing without checks or once the PR is done.
 function CiChip({ todo }: { todo: Todo }) {
@@ -1318,27 +1279,27 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
   );
 }
 
-/// The sessions waiting for the user, above the board.
-function WaitingStrip({ sessions, report }: { sessions: Session[]; report: (e: unknown) => void }) {
-  if (sessions.length === 0) return null;
+/// あなた待ち above the board; it opens the sessions page on them.
+function WaitingStrip({ items, onShow }: { items: WaitItem[]; onShow: () => void }) {
+  if (items.length === 0) return null;
   return (
-    <div className="waiting-strip" role="status">
+    <button className="waiting-strip" title="セッション画面のあなた待ちを開く" onClick={onShow}>
       <span className="pill waiting">
         <i />
-        返事待ち {sessions.length}
+        あなた待ち {items.length}
       </span>
-      {sessions.map((s) => (
-        <span key={s.session_id} className="waiting-item">
-          <span className="ellipsis">{sessionLabel(s)}</span>
-          <span className="muted">
-            {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
-          </span>
-          <OpenMenu session={s} report={report} primary />
+      {items.slice(0, WAITING_STRIP_MAX).map((w) => (
+        <span key={w.key} className="waiting-item">
+          <span className="ellipsis">{w.session ? sessionLabel(w.session) : (w.todo?.title ?? w.review?.title)}</span>
+          <span className="muted ellipsis">{w.line}</span>
         </span>
       ))}
-    </div>
+      {items.length > WAITING_STRIP_MAX && <span className="muted">ほか {items.length - WAITING_STRIP_MAX} 件</span>}
+    </button>
   );
 }
+/// Items the strip over the board names; the rest are counted.
+const WAITING_STRIP_MAX = 3;
 
 /// Picks a todo's parent, or none. Subtasks go one level deep, so only
 /// top-level todos are offered and a todo with subtasks cannot move.
@@ -3102,16 +3063,15 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
 
         <section>
           <h3>セッション {liveSessions(todo).length > 0 && <span className="muted">{liveSessions(todo).length}</span>}</h3>
-          {todo.sessions.length === 0 && <p className="muted hint">まだありません。下から始めるか、セッション画面で既存のものを紐づけます。</p>}
+          {todo.sessions.length === 0 && <p className="muted hint">まだありません。⌘Enter で始めます。</p>}
           <ul className="sessions">
             {todo.sessions.map((s) => (
               <li key={s.session_id} className={`session-row state-bg-${s.state}`}>
-                <span className={`unread-dot${s.unread ? " on" : ""}`} title={s.unread ? "作業が終わってから、まだ見ていません" : undefined} />
-                <span className={`dot state-${s.state}`} />
+                <StateBadge state={s.state} unread={s.unread} />
                 <span className="session-main">
                   <span className="ellipsis">{sessionLabel(s)}</span>
                   <span className="muted">
-                    {STATE_LABEL[s.state]} · {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
+                    {placeOf(s)} · {ago(s.state_at)}
                   </span>
                 </span>
                 <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
@@ -3214,7 +3174,8 @@ function RepoTags({ repos }: { repos: string[] }) {
     </span>
   );
 }
-/// A session row's colour: waiting for input, else unread, else running (idle and ended have none).
+/// A session row's colour backs its state's word: waiting for a reply, else
+/// 新着, else running (idle and ended have none).
 const rowState = (s: Session) => (s.state === "needs_input" ? " needs-input" : s.unread ? " unread" : s.state === "running" ? " running" : "");
 
 /// What a subtask row without a session says.
@@ -3224,56 +3185,69 @@ const TODO_ROW: Record<"none" | "queued" | "ended", [string, string]> = {
   ended: ["終了", "セッションは終わりました"],
 };
 
+/// Why something waits on the user, as its row's word.
+const WAIT_WORD: Record<WaitItem["reasons"][number], string> = {
+  needs_input: "返事待ち",
+  changes: "修正依頼",
+  ci: "CI 失敗",
+  review: "レビュー依頼",
+  review_failed: "レビュー失敗",
+};
+
 /// Every session the board knows, with the todo it belongs to.
 function sessionItemsOf(board: Board): SessionItem[] {
   return [...board.todos.flatMap((todo) => todo.sessions.map((session) => ({ session, todo }))), ...board.inbox.map((session) => ({ session }))];
 }
 
-type SessionFilter = "all" | "unread" | "needs_input" | "running" | "unlinked";
+export type SessionFilter = "all" | "waiting" | "running" | "unread";
+const SESSION_FILTERS: { key: SessionFilter; label: string }[] = [
+  { key: "all", label: "すべて" },
+  { key: "waiting", label: "あなた待ち" },
+  { key: "running", label: "作業中" },
+  { key: "unread", label: "新着" },
+];
 
-function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, onOpenTodo, onStartTodo, onQuick }: {
+/// Where a session runs and what runs it: "Cloud · Claude", "herdr · Codex".
+const placeOf = (s: Session) => `${isCloud(s) ? "Cloud" : "herdr"} · ${s.agent === "codex" ? "Codex" : "Claude"}`;
+
+/// The sessions page, the place to keep up with what runs: あなた待ち pinned
+/// on top, then the sessions as they changed last (a parent's under it).
+function SessionsPage({ board, waiting, filter, onFilter, repoFilter, run, report, onOpenTodo, onQuick }: {
   board: Board;
+  waiting: WaitItem[];
+  filter: SessionFilter;
+  onFilter: (f: SessionFilter) => void;
   repoFilter: string | null;
-  selectedId: string | null;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
-  onSelect: (id: string) => void;
   onOpenTodo: (id: number) => void;
-  /// A subtask not started: its launch sheet.
-  onStartTodo: (id: number) => void;
   onQuick: () => void;
 }) {
-  const [filter, setFilter] = useState<SessionFilter>("all");
   const [showEnded, setShowEnded] = useState(false);
   const openInBrowser = useContext(BrowserContext);
   const openCloud = useContext(OpenCloudContext);
   const terminal = useContext(TerminalContext);
-  // A row opens its session as 開く does (the ways to open are in its details).
+  // A row opens its session as 開く does (⌥Enter: the ways to open it).
   const open = (s: Session) => (isCloud(s) && openCloud ? openCloud(s.session_id) : openLocal(terminal, s.session_id, report, true));
-  // Todos set aside (pending), and the subtasks of one, are out with their sessions.
+  const inRepo = (repos: string[] | undefined) => repoFilter === null || laneKey(repos) === repoFilter;
+  const waits = waiting.filter((w) => inRepo(w.todo?.repos ?? w.session?.repos ?? (w.review ? [w.review.repo] : undefined)));
+  const waitingIds = new Set(waits.flatMap((w) => (w.session ? [w.session.session_id] : [])));
+  // Todos set aside (pending), and the subtasks of one, are out with their
+  // sessions (one asking is in あなた待ち). Reviews show only there too.
   const aside = new Set(board.todos.filter((t) => t.status === "pending" || board.todos.find((p) => p.id === t.parent_id)?.status === "pending").map((t) => t.id));
   const all = sessionItemsOf(board).filter(
-    (i) => (repoFilter === null || laneKey(i.todo?.repos ?? i.session.repos) === repoFilter) && !(i.todo && aside.has(i.todo.id)) && listedSession(i.session),
+    (i) => inRepo(i.todo?.repos ?? i.session.repos) && !(i.todo && aside.has(i.todo.id)) && listedSession(i.session) && !waitingIds.has(i.session.session_id),
   );
   const live = all.filter((i) => i.session.state !== "ended");
   const counts: Record<SessionFilter, number> = {
-    all: live.length,
-    unread: live.filter((i) => i.session.unread).length,
-    needs_input: live.filter((i) => i.session.state === "needs_input").length,
+    all: live.length + waits.length,
+    waiting: waits.length,
     running: live.filter((i) => i.session.state === "running").length,
-    unlinked: live.filter((i) => !i.todo).length,
+    unread: live.filter((i) => i.session.unread).length,
   };
-  const FILTERS: { key: SessionFilter; label: string }[] = [
-    { key: "all", label: "すべて" },
-    { key: "unread", label: "新着" },
-    { key: "needs_input", label: "返事待ち" },
-    { key: "running", label: "作業中" },
-    { key: "unlinked", label: "未紐づけ" },
-  ];
-  const pass = (i: SessionItem) =>
-    filter === "all" || (filter === "unlinked" ? !i.todo : filter === "unread" ? i.session.unread : i.session.state === filter);
+  const pass = (i: SessionItem) => filter === "all" || (filter === "unread" ? i.session.unread : filter === "running" && i.session.state === "running");
   // Todos with subtasks head groups (sessionTree.ts); a folded group shows its head only.
-  const { ordered } = sessionTree((showEnded ? all : live).filter(pass), all, board.todos, showEnded, filter === "all");
+  const { ordered } = sessionTree(filter === "waiting" ? [] : (showEnded ? all : live).filter(pass), all, board.todos, showEnded, filter === "all");
   const [folded, setFolded] = useState<Set<number>>(new Set());
   const fold = (id: number, on?: boolean) =>
     setFolded((prev) => {
@@ -3283,30 +3257,38 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
       return next;
     });
   const rows: TreeRow[] = ordered.flatMap((g) => g.filter((r) => r.kind === "group" || !folded.has(r.group ?? -1)));
+  const shownWaits = filter === "all" || filter === "waiting" ? waits : [];
   const ended = all.length - live.length;
   // Cloud sessions done with their turn, which the bulk archive takes.
   const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
   const [confirmArchive, setConfirmArchive] = useState(false);
-  // ↑↓ or j k pick a row, Enter opens it as "開く" does (a group's head its
-  // todo, a subtask not started its launch sheet), ⌥Enter its details; h
-  // folds the group the row is in, l opens it.
   const startable = (r: TreeRow) => r.kind === "todo" && r.state !== "ended" && r.todo.status !== "done";
   // A subtask row with no session: its PR when it has one, else its sheet.
   const openTodoRow = (todo: Todo) => (todo.pr_url && openInBrowser ? openInBrowser(todo.pr_url) : onOpenTodo(todo.id));
+  /// あなた待ち's row: its session, else its todo's sheet, else the PR asking for a review.
+  const openWait = (w: WaitItem) => (w.session ? open(w.session) : w.todo ? onOpenTodo(w.todo.id) : w.review && openInBrowser?.(w.review.url));
+  // ↑↓ or j k pick a row, Enter opens it (a group's head its todo, a
+  // subtask not started its launch sheet), ⌥Enter the ways to open it; h
+  // folds the group the row is in, l opens it.
+  const ids = [...shownWaits.map((w) => `w:${w.key}`), ...rows.map((r) => r.id)];
   const { cursorId, setCursor, list: listRef } = useRowCursor(
-    rows.map((r) => r.id),
-    (id, choose, row) => {
+    ids,
+    (id, alt, row) => {
+      if (alt) return row.querySelector<HTMLButtonElement>(".open-caret")?.click();
+      const w = shownWaits.find((x) => `w:${x.key}` === id);
+      if (w) return openWait(w);
       const r = rows.find((x) => x.id === id);
       if (r?.kind === "group") return onOpenTodo(r.todo.id);
       if (r?.kind === "todo") return openTodoRow(r.todo);
-      if (r?.kind === "session") choose ? onSelect(r.id) : open(r.session);
+      if (r?.kind === "session") open(r.session);
     },
     (e, id) => {
       const r = rows.find((x) => x.id === id);
+      const w = shownWaits.find((x) => `w:${x.key}` === id);
       // ⌘⇧A puts the session away: a Cloud one archived, a Local one off the list.
       if (matches(e, "archive")) {
-        if (r?.kind !== "session") return false;
-        const s = r.session;
+        const s = r?.kind === "session" ? r.session : w?.session;
+        if (!s) return false;
         run(() => (isCloud(s) ? api.archiveSessions([s.session_id]) : api.hideSession(s.session_id)));
         return true;
       }
@@ -3323,12 +3305,12 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
       <header className="toolbar">
         <h1>セッション</h1>
         <div className="segmented" role="group" aria-label="絞り込み">
-          {FILTERS.map((f) => (
+          {SESSION_FILTERS.map((f) => (
             <button
               key={f.key}
-              className={`${filter === f.key ? "on" : ""}${(f.key === "needs_input" || f.key === "unread") && counts[f.key] > 0 ? " warn" : ""}`}
+              className={`${filter === f.key ? "on" : ""}${f.key === "waiting" && counts.waiting > 0 ? " warn" : ""}`}
               aria-pressed={filter === f.key}
-              onClick={() => setFilter(f.key)}
+              onClick={() => onFilter(f.key)}
             >
               {f.label} {counts[f.key]}
             </button>
@@ -3357,325 +3339,152 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
         </button>
       </header>
       <div className="content" ref={listRef}>
-        <section className="box">
-          <div className="box-head">
-            <b>起動待ち</b>
-            <span className="muted">{queued.length}</span>
-            <span className="muted">上から順に、ループが動いていれば自動で始めます</span>
-            <span className="grow" />
-            <label className="toggle">
-              <input type="checkbox" checked={board.loop_enabled} onChange={(e) => run(() => api.setLoopEnabled(e.target.checked))} />
-              ループを動かす
-            </label>
-          </div>
-          {queued.length === 0 && <p className="muted hint pad">todo の起動シートで起動先に「キュー」を選ぶと、ここに並びます。</p>}
-          <ul className="rows">
-            {queued.map((t, i) => (
-              <li key={t.id} className="row" onClick={() => onOpenTodo(t.id)}>
-                <span className="mono muted">{i + 1}</span>
-                <span className="mono muted">#{t.id}</span>
-                <span className="row-title">
-                  {t.title}
-                  {t.queue_error && <span className="error-text"> — {t.queue_error}</span>}
-                </span>
-                <select className="select compact" value={t.queue_runner ?? "auto"} aria-label="起動方法" onClick={stop} onChange={(e) => run(() => api.enqueue(t.id, e.target.value as Runner))}>
-                  {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
-                    <option key={r} value={r}>
-                      {RUNNER_LABEL[r]}
-                    </option>
-                  ))}
-                </select>
-                <span className="order-buttons" onClick={stop}>
-                  <button className="ghost icon" disabled={i === 0} aria-label="上へ" onClick={() => run(() => api.moveInQueue(t.id, -1))}>
-                    <Icon name="up" size={12} />
-                  </button>
-                  <button className="ghost icon" disabled={i === queued.length - 1} aria-label="下へ" onClick={() => run(() => api.moveInQueue(t.id, 1))}>
-                    <Icon name="down" size={12} />
-                  </button>
-                </span>
-                {t.queue_error && (
-                  <button className="small" onClick={(e) => (e.stopPropagation(), run(() => api.enqueue(t.id, t.queue_runner ?? "auto")))}>
-                    再試行
-                  </button>
-                )}
-                <button className="ghost small" onClick={(e) => (e.stopPropagation(), run(() => api.dequeue(t.id)))}>
-                  外す
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <section>
-          <div className="table-head sessions-grid">
-            <span title="PR の段階（色。マウスを重ねると名前）。セッションの状態は行の色：緑は作業中、橙は返事待ち、青は新着">PR</span>
-            <span>セッション</span>
-            <span>todo</span>
-            <span>リポジトリ</span>
-            <span>場所</span>
-            <span />
-          </div>
-          {rows.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
-          <ul className="rows">
-            {rows.map((r) => {
-              const cursor = r.id === cursorId ? " cursor" : "";
-              if (r.kind === "group") {
-                const open = !folded.has(r.todo.id);
-                return (
-                  <li key={r.id} data-row={r.id} className={`row session-group${cursor}`} onClick={() => (setCursor(r.id), onOpenTodo(r.todo.id))}>
-                    <button className="ghost icon" aria-label={open ? "畳む" : "開く"} aria-expanded={open} onClick={(e) => (e.stopPropagation(), fold(r.todo.id))}>
-                      <Icon name={open ? "chevron" : "chevronRight"} size={12} />
-                    </button>
-                    <StatusIcon status={r.todo.status} />
-                    <span className="mono muted">#{r.todo.id}</span>
-                    <span className="row-title ellipsis">{r.todo.title}</span>
-                    {r.todo.repos.length > 0 && <RepoTags repos={r.todo.repos} />}
-                    <span className="muted">{statusLabel(r.todo.status)}</span>
-                    <span className="tag" title="サブタスクのうち Done になったもの">
-                      子 {r.done}/{r.total} Done
-                    </span>
-                  </li>
-                );
-              }
-              // In a group: its parent's own sessions one step in, its subtasks' two.
-              // Outside any group: a block of its own, at a group's level.
-              const tree = r.group !== undefined ? ` in-group${r.child ? " child" : ""}${r.last ? " last" : ""}` : " lone";
-              if (r.kind === "todo") {
-                const [state, says] = TODO_ROW[r.state];
-                return (
-                  <li
-                    key={r.id}
-                    data-row={r.id}
-                    className={`row sessions-grid${tree}${cursor}${r.todo.status === "done" ? " done" : ""}`}
-                    title={r.todo.pr_url ? "PR を開く" : undefined}
-                    onClick={() => (setCursor(r.id), openTodoRow(r.todo))}
-                  >
-                    <StateMarks todo={r.todo} />
-                    <span className="muted ellipsis" title={says}>
-                      {state}
-                      {r.todo.pr_state && ` · PR ${PR_STAGE[r.todo.pr_state][1]}`}
-                    </span>
-                    <TodoCell todo={r.todo} onOpen={onOpenTodo} />
-                    <RepoTags repos={r.todo.repos} />
-                    <span className="muted">{r.todo.pr_url ? "Enter で PR" : startable(r) ? "Enter で開始" : "—"}</span>
-                    <span />
-                  </li>
-                );
-              }
-              const { session: s, todo } = r;
-              return (
-                <li
-                  key={r.id}
-                  data-row={r.id}
-                  className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}${rowState(s)}`}
-                  title={`${STATE_LABEL[s.state]}${s.unread ? "・新着" : ""}`}
-                  onClick={() => (setCursor(r.id), open(s))}
-                >
-                  <StateMarks todo={todo} />
-                  <span className="ellipsis">
-                    {s.agent === "codex" && <span className="tag agent-tag">Codex</span>}
-                    {sessionLabel(s)}
+        {queued.length > 0 && (
+          <section className="box">
+            <div className="box-head">
+              <b>起動待ち</b>
+              <span className="muted">{queued.length}</span>
+              <span className="muted">上から順に、ループが動いていれば自動で始めます</span>
+              <span className="grow" />
+              <label className="toggle">
+                <input type="checkbox" checked={board.loop_enabled} onChange={(e) => run(() => api.setLoopEnabled(e.target.checked))} />
+                ループを動かす
+              </label>
+            </div>
+            <ul className="rows">
+              {queued.map((t, i) => (
+                <li key={t.id} className="row" onClick={() => onOpenTodo(t.id)}>
+                  <span className="mono muted">{i + 1}</span>
+                  <span className="mono muted">#{t.id}</span>
+                  <span className="row-title">
+                    {t.title}
+                    {t.queue_error && <span className="error-text"> — {t.queue_error}</span>}
                   </span>
-                  {todo ? <TodoCell todo={todo} onOpen={onOpenTodo} /> : <span className="tag">未紐づけ</span>}
-                  <RepoTags repos={todo?.repos ?? s.repos ?? []} />
-                  <span className="muted ellipsis">
-                    {isCloud(s) ? "Cloud" : "Local"} · {ago(s.state_at)}
-                  </span>
-                  <button className="ghost icon" aria-label={`${sessionLabel(s)} の詳細`} title="詳細（⌥Enter）" onClick={(e) => (e.stopPropagation(), onSelect(s.session_id))}>
-                    <Icon name="more" size={14} />
+                  <button className="ghost small" onClick={(e) => (e.stopPropagation(), run(() => api.dequeue(t.id)))}>
+                    外す
                   </button>
-                </li>
-              );
-            })}
-          </ul>
-          {ended > 0 && (
-            <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
-              {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件を表示`}
-            </button>
-          )}
-        </section>
-      </div>
-    </>
-  );
-}
-
-function SessionPanel({ item, todos, run, report, onClose, onOpenTodo }: {
-  item: SessionItem;
-  todos: Todo[];
-  run: (f: () => Promise<unknown>) => void;
-  report: (e: unknown) => void;
-  onClose: () => void;
-  onOpenTodo: (id: number) => void;
-}) {
-  const s = item.session;
-  const openInBrowser = useContext(BrowserContext);
-  const terminal = useContext(TerminalContext);
-  const [detail, setDetail] = useState<SessionDetail | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  useEffect(() => {
-    setDetail(null);
-    setDetailError(null);
-    const load = () =>
-      api.sessionDetail(s.session_id).then(
-        (d) => (setDetail(d), setDetailError(null)),
-        (e) => setDetailError(String(e)),
-      );
-    load();
-    const t = setInterval(load, DETAIL_REFRESH_MS);
-    return () => clearInterval(t);
-  }, [s.session_id]);
-  const [target, setTarget] = useState<number | "">("");
-  const [newTitle, setNewTitle] = useState(s.title ?? "");
-  useEffect(() => setNewTitle(s.title ?? ""), [s.session_id, s.title]);
-  // A local session's cwd is a folder the todo can reuse; a cloud session's is a repo URL.
-  const cwd = s.cwd.startsWith("/") ? s.cwd : undefined;
-  const createAndLink = () => {
-    const title = newTitle.trim();
-    if (!title) return;
-    run(async () => {
-      const todo = await api.createTodo({ title, cwd, repos: s.repos ?? [] });
-      await api.linkSession(s.session_id, todo.id);
-      onOpenTodo(todo.id);
-    });
-  };
-  return (
-    <aside className="panel" aria-label={sessionLabel(s)}>
-      <header className="panel-head">
-        <StateBadge state={s.state} unread={s.unread} />
-        <PrBadge todo={item.todo} bare />
-        <span className="muted">{ago(s.state_at)}から</span>
-        <span className="grow" />
-        <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
-        <button className="ghost icon" onClick={onClose} aria-label="閉じる">
-          <Icon name="close" size={14} />
-        </button>
-      </header>
-      <div className="panel-body">
-        <div>
-          <h2 className="panel-title static">{sessionLabel(s)}</h2>
-          {item.todo && (
-            <button className="link-button" onClick={() => onOpenTodo(item.todo!.id)}>
-              todo #{item.todo.id} {item.todo.title}
-            </button>
-          )}
-        </div>
-        <div className="actions">
-          {isCloud(s) ? (
-            <>
-              <button className="primary grow" onClick={() => openInBrowser?.(cloudWebUrl(s.session_id))}>
-                Web で開く
-              </button>
-              <button className="grow" onClick={() => api.openSession(s.session_id, "desktop").catch(report)}>
-                Desktop で開く
-              </button>
-              {s.state !== "ended" && (
-                <button className="grow" title="claude.ai と同じようにアーカイブします" onClick={() => run(() => api.archiveSessions([s.session_id]))}>
-                  アーカイブ
-                </button>
-              )}
-            </>
-          ) : (
-            <>
-              <button className="primary grow" onClick={() => openLocal(terminal, s.session_id, report)}>
-                {terminal ? "ターミナルで開く" : "herdr で開く"}
-              </button>
-              <button className="grow" onClick={() => api.openSession(s.session_id, "desktop").catch(report)}>
-                Desktop で開く
-              </button>
-            </>
-          )}
-        </div>
-
-        <section>
-          <h3>最後のメッセージ</h3>
-          {detailError && <p className="error-text">{detailError}</p>}
-          {!detail && !detailError && <p className="muted">読み込み中…</p>}
-          {detail && <div className="message">{detail.last_text ?? <span className="muted">まだありません</span>}</div>}
-        </section>
-
-        {detail && (detail.context_tokens !== null || detail.model) && (
-          <dl className="props">
-            {detail.context_tokens !== null && (
-              <>
-                <dt>コンテキスト</dt>
-                <dd>{tokensLabel(detail.context_tokens)} トークン</dd>
-              </>
-            )}
-            {detail.model && (
-              <>
-                <dt>モデル</dt>
-                <dd>{MODELS.find((m) => m.id === detail.model)?.label ?? detail.model}</dd>
-              </>
-            )}
-          </dl>
-        )}
-
-        {detail && detail.tools.length > 0 && (
-          <section>
-            <h3>直近の操作</h3>
-            <ul className="activity">
-              {detail.tools.map((t, i) => (
-                <li key={i}>
-                  <span className="mono tool">{t.name}</span>
-                  <span className="mono muted ellipsis">{t.summary}</span>
                 </li>
               ))}
             </ul>
           </section>
         )}
 
-        <dl className="props">
-          <dt>起動先</dt>
-          <dd>{isCloud(s) ? "Cloud" : "Local"}</dd>
-          {(s.repos ?? []).length > 0 && (
-            <>
-              <dt>リポジトリ</dt>
-              <dd>{(s.repos ?? []).join(", ")}</dd>
-            </>
-          )}
-          <dt>場所</dt>
-          <dd className="mono small-text">{tildify(s.cwd)}</dd>
-          <dt>ID</dt>
-          <dd className="mono small-text">{s.session_id}</dd>
-        </dl>
+        {shownWaits.length > 0 && (
+          <section className="waiting-section">
+            <div className="section-head">
+              <span className="pill waiting">
+                <i />
+                あなた待ち {shownWaits.length}
+              </span>
+              <span className="muted">返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼</span>
+            </div>
+            <ul className="rows">
+              {shownWaits.map((w) => {
+                const s = w.session;
+                const todo = w.todo;
+                return (
+                  <li key={w.key} data-row={`w:${w.key}`} className={`row wait-row${`w:${w.key}` === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(`w:${w.key}`), openWait(w))}>
+                    <span className="state state-needs_input">
+                      <i />
+                      {w.reasons.map((r) => WAIT_WORD[r]).join("・")}
+                    </span>
+                    <span className="wait-main">
+                      <span className="row-title ellipsis">
+                        {todo && <span className="mono muted">#{todo.id} </span>}
+                        {s ? sessionLabel(s) : (todo?.title ?? w.review?.title)}
+                      </span>
+                      <span className="wait-line ellipsis" title={w.line}>
+                        {w.line}
+                      </span>
+                    </span>
+                    <span className="muted ellipsis wait-meta">
+                      {[todo?.parent_id ? `親 #${todo.parent_id}` : null, s ? placeOf(s) : null, s ? ago(s.state_at) : null].filter(Boolean).join(" · ")}
+                    </span>
+                    {s ? <OpenMenu session={s} report={report} primary /> : <span />}
+                  </li>
+                );
+              })}
+            </ul>
+          </section>
+        )}
 
-        {item.todo ? (
-          <button className="ghost small align-start" onClick={() => run(() => api.unlinkSession(s.session_id))}>
-            todo との紐づけを外す
-          </button>
-        ) : (
-          <>
-            <section>
-              <h3>このセッションから todo を作る</h3>
-              <div className="actions">
-                <input value={newTitle} placeholder="todo のタイトル" aria-label="todo のタイトル" onChange={(e) => setNewTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && createAndLink()} />
-                <button className="primary" disabled={!newTitle.trim()} onClick={createAndLink}>
-                  作って紐づける
-                </button>
-              </div>
-            </section>
-            <section>
-              <h3>既存の todo に紐づける</h3>
-              <div className="actions">
-                <select className="select grow" value={target} aria-label="紐づける todo" onChange={(e) => setTarget(e.target.value === "" ? "" : Number(e.target.value))}>
-                  <option value="">todo を選ぶ</option>
-                  {todos
-                    .filter((t) => t.status !== "done")
-                    .map((t) => (
-                      <option key={t.id} value={t.id}>
-                        #{t.id} {t.title}
-                      </option>
-                    ))}
-                </select>
-                <button disabled={target === ""} onClick={() => target !== "" && run(() => api.linkSession(s.session_id, target))}>
-                  紐づける
-                </button>
-              </div>
-            </section>
-          </>
+        {filter !== "waiting" && (
+          <section>
+            {rows.length === 0 && shownWaits.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
+            <ul className="rows">
+              {rows.map((r) => {
+                const cursor = r.id === cursorId ? " cursor" : "";
+                if (r.kind === "group") {
+                  const open = !folded.has(r.todo.id);
+                  const under = waiting.filter((w) => w.todo && (w.todo.id === r.todo.id || w.todo.parent_id === r.todo.id)).length;
+                  return (
+                    <li key={r.id} data-row={r.id} className={`row session-group${cursor}`} onClick={() => (setCursor(r.id), onOpenTodo(r.todo.id))}>
+                      <button className="ghost icon" aria-label={open ? "畳む" : "開く"} aria-expanded={open} onClick={(e) => (e.stopPropagation(), fold(r.todo.id))}>
+                        <Icon name={open ? "chevron" : "chevronRight"} size={12} />
+                      </button>
+                      <StatusIcon status={r.todo.status} />
+                      <span className="mono muted">#{r.todo.id}</span>
+                      <span className="row-title ellipsis">{r.todo.title}</span>
+                      {r.todo.repos.length > 0 && <RepoTags repos={r.todo.repos} />}
+                      <span className="muted">{statusLabel(r.todo.status)}</span>
+                      <span className="tag" title="サブタスクのうち Done になったもの">
+                        サブタスク {r.done}/{r.total}
+                      </span>
+                      {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
+                    </li>
+                  );
+                }
+                // In a group: its parent's own sessions one step in, its subtasks' two.
+                // Outside any group: a block of its own, at a group's level.
+                const tree = r.group !== undefined ? ` in-group${r.child ? " child" : ""}${r.last ? " last" : ""}` : " lone";
+                if (r.kind === "todo") {
+                  const [state, says] = TODO_ROW[r.state];
+                  return (
+                    <li
+                      key={r.id}
+                      data-row={r.id}
+                      className={`row sessions-grid${tree}${cursor}${r.todo.status === "done" ? " done" : ""}`}
+                      title={r.todo.pr_url ? "PR を開く" : undefined}
+                      onClick={() => (setCursor(r.id), openTodoRow(r.todo))}
+                    >
+                      <span className="muted ellipsis" title={says}>
+                        {state}
+                      </span>
+                      <TodoCell todo={r.todo} onOpen={onOpenTodo} />
+                      <span className="muted ellipsis">{r.todo.pr_state ? `PR ${PR_STAGE[r.todo.pr_state][1]}` : ""}</span>
+                      <span className="muted">{r.todo.pr_url ? "Enter で PR" : startable(r) ? "Enter で開始" : "—"}</span>
+                      <span />
+                    </li>
+                  );
+                }
+                const { session: s, todo } = r;
+                return (
+                  <li
+                    key={r.id}
+                    data-row={r.id}
+                    className={`row sessions-grid${tree}${cursor}${s.state === "ended" ? " done" : ""}${rowState(s)}`}
+                    onClick={() => (setCursor(r.id), open(s))}
+                  >
+                    <StateBadge state={s.state} unread={s.unread} />
+                    <span className="ellipsis">{sessionLabel(s)}</span>
+                    {todo ? <TodoCell todo={todo} onOpen={onOpenTodo} /> : <span className="muted">Todo なし</span>}
+                    <span className="muted ellipsis">
+                      {placeOf(s)} · {ago(s.state_at)}
+                    </span>
+                    <OpenMenu session={s} report={report} />
+                  </li>
+                );
+              })}
+            </ul>
+            {ended > 0 && (
+              <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
+                {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件`}
+              </button>
+            )}
+          </section>
         )}
       </div>
-    </aside>
+    </>
   );
 }
 
@@ -4850,7 +4659,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
   );
 }
 
-type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | { kind: "session"; id: string } | null;
+type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | null;
 type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | "slack" | null;
 
 /// The links of the user's open PRs waiting on each reviewer (slackMessages.ts),
@@ -5208,11 +5017,11 @@ export default function App() {
   const focusModeRef = useRef(focusMode);
   focusModeRef.current = focusMode;
   useEffect(() => void api.setFocusMode(focusMode).catch((e) => setError(String(e))), [focusMode]);
-  // Notifications during the focus mode wait (the backend posts none); on
-  // leaving, the page tells how many came.
-  const unreadAtFocus = useRef(0);
-  const [heldNotices, setHeldNotices] = useState(0);
-  const unreadNow = () => board?.notifications.filter((n) => !n.read).length ?? 0;
+  // Notifications wait while the focus mode is on (the backend posts none);
+  // on leaving, the page tells how much more waits on the user.
+  const waitingAtFocus = useRef<Set<string>>(new Set());
+  const waitingKeys = useRef<string[]>([]);
+  const [heldWaiting, setHeldWaiting] = useState(0);
   const exitFocus = () => {
     setDialog(null);
     setFocusMode(false);
@@ -5225,7 +5034,7 @@ export default function App() {
       setSpaces(({ [FREE_SPACE]: _, ...rest }) => rest);
     }
     setFocusSubject(null);
-    setHeldNotices(Math.max(0, unreadNow() - unreadAtFocus.current));
+    setHeldWaiting(waitingKeys.current.filter((k) => !waitingAtFocus.current.has(k)).length);
   };
   // The space's left: its own tabs (apart from the pane's) and terminals the
   // pane has, and the one shown.
@@ -5512,7 +5321,7 @@ export default function App() {
   /// `items` on the left.
   const enterFocus = (items: FocusItem[], subject = focusSubject) => {
     const key = subjectKey(subject);
-    unreadAtFocus.current = unreadNow();
+    waitingAtFocus.current = new Set(waitingKeys.current);
     setFocusSubject(subject);
     const saved = subject === null ? undefined : savedSpaces()[key];
     let right = spaces[key]?.right ?? focusRightPref;
@@ -5931,6 +5740,7 @@ export default function App() {
       else (document.activeElement as HTMLElement | null)?.blur();
     }
   }, [dialogUp]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
   const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs"] as const, "todos"));
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -6244,7 +6054,7 @@ export default function App() {
   const repoLanes = buildLanes(shownTodos, "repo", shownTodos);
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
-  const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? [])];
+  const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? []).filter((s) => s.state !== "ended")];
   /// A terminal's title: the session it shows, as the session list names it.
   const sessionTitle = (id: string) => (board ? (sessionItemsOf(board).find((i) => i.session.session_id === id)?.session.title ?? null) : null);
   // A session whose page or terminal the pane shows (the app in front) is looked at.
@@ -6253,11 +6063,16 @@ export default function App() {
   useEffect(() => {
     if (watchedSession && watchedUnread && pageVisible()) api.markSessionSeen(watchedSession).then(refresh, report);
   }, [watchedSession, watchedUnread]); // eslint-disable-line react-hooks/exhaustive-deps
-  const waiting = allSessions.filter((s) => s.state === "needs_input");
+  const waiting = waitingOnYou({ todos: allTodos, inbox: board?.inbox ?? [], reviews: prs?.review ?? [], now: Date.now() / 1000 });
+  waitingKeys.current = waiting.map((w) => w.key);
+  /// The sessions page on あなた待ち (the strip over the kanban, the banner after the focus mode).
+  const showWaiting = () => {
+    setSessionFilter("waiting");
+    setView("sessions");
+  };
   const openTodoCount = allTodos.filter((t) => t.status !== "done").length;
   const colCounts = Object.fromEntries(COLUMNS.map((c) => [c.status, visibleTodos.filter((t) => t.status === c.status).length])) as Record<Status, number>;
 
-  const selectedSession = selection?.kind === "session" && board ? sessionItemsOf(board).find((i) => i.session.session_id === selection.id) ?? null : null;
 
   const openTodo = (id: number) => {
     setSelection({ kind: "todo", id });
@@ -6351,9 +6166,9 @@ export default function App() {
       on: view === "sessions",
       go: () => setView("sessions"),
       badge: waiting.length > 0 && (
-        <span className="pill waiting">
+        <span className="pill waiting" title="あなたが動かないと進まないもの：返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼">
           <i />
-          {waiting.length}
+          あなた待ち {waiting.length}
         </span>
       ),
     },
@@ -6411,7 +6226,7 @@ export default function App() {
 
   const selectedInput = selection?.kind === "input" ? board?.inputs.find((i) => i.id === selection.id) ?? null : null;
   // A todo picked on the sessions page opens in the same sheet, over the sessions.
-  const panel = (view === "todos" || view === "sessions") && selectedTodo ? "todo" : view === "inputs" && selectedInput ? "input" : view === "sessions" && selectedSession ? "session" : null;
+  const panel = (view === "todos" || view === "sessions") && selectedTodo ? "todo" : view === "inputs" && selectedInput ? "input" : null;
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
@@ -6565,15 +6380,15 @@ export default function App() {
         </aside>
 
         <main className="main">
-          {(closePrompt || error || heldNotices > 0) && (
+          {(closePrompt || error || heldWaiting > 0) && (
             <div className="banners">
-              {heldNotices > 0 && (
+              {heldWaiting > 0 && (
                 <div className="notice" role="status">
-                  <span className="grow">Input モードのあいだに通知が {heldNotices} 件ありました。</span>
-                  <button className="primary small" onClick={() => (setHeldNotices(0), setView("sessions"))}>
-                    セッションを見る
+                  <span className="grow">Input モードのあいだに、あなた待ちが {heldWaiting} 件増えました。</span>
+                  <button className="primary small" onClick={() => (setHeldWaiting(0), showWaiting())}>
+                    あなた待ちを見る
                   </button>
-                  <button className="ghost icon" onClick={() => setHeldNotices(0)} aria-label="閉じる">
+                  <button className="ghost icon" onClick={() => setHeldWaiting(0)} aria-label="閉じる">
                     <Icon name="close" size={12} />
                   </button>
                 </div>
@@ -6644,7 +6459,7 @@ export default function App() {
                   <Icon name="plus" size={13} /> 新しい todo <span className="kbd">⌘N</span>
                 </button>
               </header>
-              <WaitingStrip sessions={waiting} report={report} />
+              <WaitingStrip items={waiting} onShow={showWaiting} />
               <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
                 <div className="content" ref={todoPage}>
                   {layout === "board" && lanes.length > 0 && (
@@ -6702,16 +6517,13 @@ export default function App() {
           {view === "sessions" && board && (
             <SessionsPage
               board={board}
+              waiting={waiting}
+              filter={sessionFilter}
+              onFilter={setSessionFilter}
               repoFilter={repoFilter}
-              selectedId={selectedSession?.session.session_id ?? null}
               run={run}
               report={report}
-              onSelect={(id) => setSelection({ kind: "session", id })}
               onOpenTodo={openTodo}
-              onStartTodo={(id) => {
-                openTodo(id);
-                setDialog("start");
-              }}
               onQuick={() => setDialog("quick")}
             />
           )}
@@ -6750,14 +6562,11 @@ export default function App() {
           )}
         </main>
 
-        {(panel === "input" || panel === "session") && (
+        {panel === "input" && (
           <div className="side">
             <Resizer label="パネルの幅" cssVar="--panel-w" width={panelW} min={PANEL_MIN_W} max={() => maxPaneWidth(browserShown ? dockW : 0)} onResize={setPanelW} />
         {panel === "input" && selectedInput && (
           <InputPanel input={selectedInput} run={run} report={report} onFocus={() => focusInput(selectedInput)} onClose={() => setSelection(null)} />
-        )}
-        {panel === "session" && selectedSession && (
-          <SessionPanel item={selectedSession} todos={allTodos} run={run} report={report} onClose={() => setSelection(null)} onOpenTodo={goTodo} />
         )}
           </div>
         )}
