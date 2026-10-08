@@ -465,18 +465,6 @@ pub const MAX_FIXES: i64 = 2;
 /// Notifications kept for the in-app list, newest first.
 const NOTICES_LIMIT: i64 = 200;
 
-/// A URL attached to a todo, with the page's Open Graph title and image
-/// once they have been fetched.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Link {
-    pub id: i64,
-    pub todo_id: i64,
-    pub url: String,
-    pub title: Option<String>,
-    pub image: Option<String>,
-    pub created_at: i64,
-}
-
 /// Hooks from parallel sessions write to the same file.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 const MARKER_PREFIX: &str = "[todo:";
@@ -618,7 +606,6 @@ CREATE TABLE IF NOT EXISTS input_links (
 );
 ";
 
-const LINK_COLS: &str = "id, todo_id, url, title, image, created_at";
 const INPUT_COLS: &str = "id, title, memo, done, updated_at, CAST(theme_id AS INTEGER)";
 const THEME_COLS: &str = "id, name, goal, doc_url, updated_at";
 const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
@@ -710,10 +697,6 @@ fn theme_from_row(r: &Row) -> rusqlite::Result<Theme> {
 
 fn input_link_from_row(r: &Row) -> rusqlite::Result<InputLink> {
     Ok(InputLink { id: r.get(0)?, input_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
-}
-
-fn link_from_row(r: &Row) -> rusqlite::Result<Link> {
-    Ok(Link { id: r.get(0)?, todo_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
 }
 
 fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
@@ -947,38 +930,6 @@ impl Db {
         }
     }
 
-    pub fn add_link(&self, todo_id: i64, url: &str) -> Result<Link> {
-        if self.get_todo(todo_id)?.is_none() {
-            return Err(Error::TodoNotFound(todo_id));
-        }
-        let created_at = now();
-        self.conn.execute("INSERT INTO links (todo_id, url, created_at) VALUES (?1, ?2, ?3)", params![todo_id, url, created_at])?;
-        Ok(Link { id: self.conn.last_insert_rowid(), todo_id, url: url.into(), title: None, image: None, created_at })
-    }
-
-    /// Records what the linked page says about itself.
-    pub fn set_link_meta(&self, id: i64, title: Option<&str>, image: Option<&str>) -> Result<()> {
-        self.conn.execute("UPDATE links SET title = ?2, image = ?3 WHERE id = ?1", params![id, title, image])?;
-        Ok(())
-    }
-
-    pub fn remove_link(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM links WHERE id = ?1", [id])?;
-        Ok(())
-    }
-
-    /// Every link by its todo, in the order they were added.
-    pub fn links_by_todo(&self) -> Result<std::collections::HashMap<i64, Vec<Link>>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT {LINK_COLS} FROM links ORDER BY id"))?;
-        let rows = stmt.query_map([], link_from_row)?;
-        let mut by_todo: std::collections::HashMap<i64, Vec<Link>> = std::collections::HashMap::new();
-        for link in rows {
-            let link = link?;
-            by_todo.entry(link.todo_id).or_default().push(link);
-        }
-        Ok(by_todo)
-    }
-
     pub fn create_input(&self, title: &str, memo: Option<&str>) -> Result<Input> {
         self.conn.execute("INSERT INTO inputs (title, memo, updated_at) VALUES (?1, ?2, ?3)", params![title, memo, now()])?;
         let id = self.conn.last_insert_rowid();
@@ -1097,17 +1048,6 @@ impl Db {
     pub fn set_input_link_meta(&self, id: i64, title: Option<&str>, image: Option<&str>) -> Result<()> {
         self.conn.execute("UPDATE input_links SET title = ?2, image = ?3 WHERE id = ?1", params![id, title, image])?;
         Ok(())
-    }
-
-    pub fn remove_input_link(&self, id: i64) -> Result<()> {
-        self.conn.execute("DELETE FROM input_links WHERE id = ?1", [id])?;
-        Ok(())
-    }
-
-    pub fn links_for(&self, todo_id: i64) -> Result<Vec<Link>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT {LINK_COLS} FROM links WHERE todo_id = ?1 ORDER BY id"))?;
-        let rows = stmt.query_map([todo_id], link_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// The session was looked at as of `at`: a turn that ended before then is read.

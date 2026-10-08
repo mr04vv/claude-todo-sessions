@@ -60,17 +60,6 @@ export interface Todo {
   /** Why its orchestrator handed it to the user. */
   escalation: string | null;
   is_orchestrator: boolean;
-  links: Link[];
-}
-
-/** A URL attached to a todo; title and image arrive once the page has been read. */
-export interface Link {
-  id: number;
-  todo_id: number;
-  url: string;
-  title: string | null;
-  image: string | null;
-  created_at: number;
 }
 
 /** Material to read in the Input mode, apart from the todos. */
@@ -87,7 +76,7 @@ export interface Input {
   links: InputLink[];
 }
 
-/** A page of an input; like a todo's Link, its title and image come later. */
+/** A page of an input; its title and image come once the page has been read. */
 export interface InputLink {
   id: number;
   input_id: number;
@@ -356,10 +345,8 @@ export const api = {
   openLink: (url: string) => invoke<void>("open_link", { url }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
-  addLink: (todoId: number, url: string) => invoke<Link>("add_link", { todoId, url }),
   /// A page's own title (og:title, else <title>), when it has one.
   pageTitle: (url: string) => invoke<string | null>("page_title", { url }),
-  removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   windowFocused: () => invoke<boolean>("window_focused"),
   /// Gives the app's own page the keyboard, which a browser tab may hold.
@@ -395,7 +382,6 @@ export const api = {
   updateInput: (id: number, update: { title?: string; memo?: string; done?: boolean }) => invoke<Input>("update_input", { id, update }),
   deleteInput: (id: number) => invoke<void>("delete_input", { id }),
   addInputLink: (inputId: number, url: string) => invoke<InputLink>("add_input_link", { inputId, url }),
-  removeInputLink: (id: number) => invoke<void>("remove_input_link", { id }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
   startCloud: (todoId: number, options?: StartOptions) => invoke<string>("start_cloud", { todoId, options: options ?? null }),

@@ -395,9 +395,8 @@ fn inputs_are_kept_apart_from_todos() {
     let a = db.get_input(a.id).unwrap().unwrap();
     assert_eq!(a.links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(), ["https://doc.rust-lang.org/book/ch04-00.html", "https://doc.rust-lang.org/book/ch04-01.html"]);
     assert_eq!(a.links[0].title.as_deref(), Some("Understanding Ownership"));
-    db.remove_input_link(l1.id).unwrap();
     let a = db.update_input(a.id, InputPatch { title: Some("所有権".into()), done: Some(true), ..Default::default() }).unwrap();
-    assert_eq!((a.title.as_str(), a.done, a.links.len()), ("所有権", true, 1));
+    assert_eq!((a.title.as_str(), a.done, a.links.len()), ("所有権", true, 2));
     // (The latest changed come first: see the migration's test, whose times differ.)
     assert_eq!(db.list_inputs().unwrap().len(), 2);
     db.delete_input(a.id).unwrap();
@@ -428,7 +427,6 @@ fn input_todos_become_inputs_with_their_ids() {
     drop(old);
     let db = Db::open(&path).unwrap();
     assert_eq!(db.list_todos(None).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), [3]);
-    assert_eq!(db.links_for(3).unwrap().len(), 1);
     let inputs = db.list_inputs().unwrap();
     assert_eq!(inputs.iter().map(|i| (i.id, i.title.as_str(), i.done)).collect::<Vec<_>>(), [(9, "読んだ", true), (7, "Rust の所有権", false)]);
     let rust = &inputs[1];
@@ -512,24 +510,6 @@ fn migrated_integer_columns_read_back_as_integers() {
     let c = db.create_todo(NewTodo { title: "c".into(), parent_id: Some(p.id), ..Default::default() }).unwrap();
     assert_eq!(c.parent_id, Some(p.id));
     assert_eq!(db.get_todo(c.id).unwrap().unwrap().parent_id, Some(p.id));
-}
-
-#[test]
-fn links_attach_to_a_todo_and_go_with_it() {
-    let (_d, db) = open();
-    let t = db.create_todo(new_todo("a")).unwrap();
-    let l = db.add_link(t.id, "https://example.com/x").unwrap();
-    assert_eq!((l.todo_id, l.url.as_str(), l.title.as_deref()), (t.id, "https://example.com/x", None));
-    db.set_link_meta(l.id, Some("Example"), Some("https://example.com/og.png")).unwrap();
-    let links = db.links_for(t.id).unwrap();
-    assert_eq!(links.len(), 1);
-    assert_eq!((links[0].title.as_deref(), links[0].image.as_deref()), (Some("Example"), Some("https://example.com/og.png")));
-    assert!(matches!(db.add_link(999, "https://example.com"), Err(Error::TodoNotFound(999))));
-    db.remove_link(l.id).unwrap();
-    assert!(db.links_for(t.id).unwrap().is_empty());
-    db.add_link(t.id, "https://example.com/y").unwrap();
-    db.delete_todo(t.id).unwrap();
-    assert!(db.links_for(t.id).unwrap().is_empty());
 }
 
 #[test]
@@ -702,18 +682,11 @@ fn sessions_and_links_come_grouped_by_todo() {
         db.link_session(id, todo).unwrap();
     }
     db.record_session("loose", "/w", SessionState::Idle).unwrap();
-    db.add_link(a.id, "https://example.com/1").unwrap();
-    db.add_link(b.id, "https://example.com/2").unwrap();
-    db.add_link(b.id, "https://example.com/3").unwrap();
     let sessions = db.sessions_by_todo().unwrap();
     for t in [&a, &b] {
         assert_eq!(sessions.get(&t.id).cloned().unwrap_or_default(), db.sessions_for_todo(t.id).unwrap());
     }
     assert_eq!(sessions.values().map(Vec::len).sum::<usize>(), 3);
-    let links = db.links_by_todo().unwrap();
-    for t in [&a, &b] {
-        assert_eq!(links.get(&t.id).cloned().unwrap_or_default(), db.links_for(t.id).unwrap());
-    }
 }
 
 #[test]
