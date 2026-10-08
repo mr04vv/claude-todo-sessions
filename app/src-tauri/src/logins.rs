@@ -53,6 +53,21 @@ pub fn save(host: &str, login: &Login) -> Result<(), String> {
     Ok(())
 }
 
+/// The sites with a login kept, from `security dump-keychain` (its items'
+/// attributes only: no secret is read, and nothing is asked).
+pub fn sites() -> Vec<String> {
+    Command::new(SECURITY).arg("dump-keychain").output().map(|out| sites_in(&String::from_utf8_lossy(&out.stdout))).unwrap_or_default()
+}
+
+/// The accounts (sites) of SERVICE's items in a keychain dump.
+fn sites_in(dump: &str) -> Vec<String> {
+    let attr = |item: &str, name: &str| {
+        let key = format!("\"{name}\"<blob>=\"");
+        item.lines().find_map(|l| l.trim().strip_prefix(&key).and_then(|v| v.strip_suffix('"')).map(String::from))
+    };
+    dump.split("keychain: ").filter(|item| attr(item, "svce").as_deref() == Some(SERVICE)).filter_map(|item| attr(item, "acct")).collect()
+}
+
 /// Takes the login for `host` out of the Keychain.
 pub fn delete(host: &str) -> Result<(), String> {
     let out = Command::new(SECURITY).args(["delete-generic-password", "-s", SERVICE, "-a", host]).output().map_err(|e| e.to_string())?;
@@ -66,6 +81,31 @@ mod tests {
     #[test]
     fn quotes_for_security_interactive_mode() {
         assert_eq!(quote(r#"a"b\c d'e$x"#), r#""a\"b\\c d'e$x""#);
+    }
+
+    #[test]
+    fn finds_the_sites_kept_in_a_keychain_dump() {
+        let dump = r#"keychain: "/Users/me/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    0x00000007 <blob>="todo-sessions-login"
+    "acct"<blob>="github.com"
+    "svce"<blob>="todo-sessions-login"
+keychain: "/Users/me/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="me@example.com"
+    "svce"<blob>="Some Other App"
+keychain: "/Users/me/Library/Keychains/login.keychain-db"
+version: 512
+class: "genp"
+attributes:
+    "acct"<blob>="localhost:3000"
+    "svce"<blob>="todo-sessions-login"
+"#;
+        assert_eq!(sites_in(dump), vec!["github.com".to_string(), "localhost:3000".to_string()]);
     }
 
     #[test]

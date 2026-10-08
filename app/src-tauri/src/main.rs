@@ -72,6 +72,8 @@ struct AppState {
     logins: Mutex<HashMap<String, Option<logins::Login>>>,
     /// A login a page just sent, asked about before it is kept: its host and the login.
     pending_login: Mutex<Option<(String, logins::Login)>>,
+    /// Sites whose logins are never asked about (LOGIN_NEVER_FILE).
+    login_never: Mutex<HashMap<String, bool>>,
     /// The app's keys for the pages, as JSON (see `set_page_keys`).
     page_keys: Mutex<String>,
     /// Tabs whose page should focus its text box once it loads, and since when.
@@ -1405,15 +1407,66 @@ fn kept_login(state: &AppState, host: &str) -> Option<logins::Login> {
     cache.entry(host.to_string()).or_insert_with(|| logins::load(host)).clone()
 }
 
-/// The answer to LOGIN_CAPTURED_EVENT: keep the login the page sent, or let it go.
+/// The answers to LOGIN_CAPTURED_EVENT.
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum LoginAnswer {
+    /// Kept in the Keychain, filled in from then on.
+    Keep,
+    /// Not this time.
+    Skip,
+    /// Not kept, and the site is not asked about again (until set so).
+    Never,
+}
+
+/// Sites whose logins are never asked about (LoginAnswer::Never), next to the DB.
+const LOGIN_NEVER_FILE: &str = "login-never.json";
+
+/// The answer to LOGIN_CAPTURED_EVENT for the login the page sent.
 #[tauri::command(async)]
-fn answer_login(state: State<'_, AppState>, keep: bool) -> Result<(), String> {
-    let Some((host, login)) = state.pending_login.lock().map_err(err)?.take() else { return Ok(()) };
-    if !keep {
-        return Ok(());
+fn answer_login(state: State<'_, AppState>, answer: LoginAnswer) -> Result<(), String> {
+    let Some((site, login)) = state.pending_login.lock().map_err(err)?.take() else { return Ok(()) };
+    match answer {
+        LoginAnswer::Skip => {}
+        LoginAnswer::Never => {
+            let mut never = state.login_never.lock().map_err(err)?;
+            never.insert(site, true);
+            save_kept(LOGIN_NEVER_FILE, &never);
+        }
+        LoginAnswer::Keep => {
+            logins::save(&site, &login)?;
+            state.logins.lock().map_err(err)?.insert(site, Some(login));
+        }
     }
-    logins::save(&host, &login)?;
-    state.logins.lock().map_err(err)?.insert(host, Some(login));
+    Ok(())
+}
+
+/// A login kept, as the settings list it (its password is never shown).
+#[derive(Serialize)]
+struct SavedLogin {
+    site: String,
+    user: String,
+}
+
+#[tauri::command(async)]
+fn saved_logins(state: State<'_, AppState>) -> Vec<SavedLogin> {
+    logins::sites().into_iter().filter_map(|site| kept_login(&state, &site).map(|l| SavedLogin { user: l.user, site })).collect()
+}
+
+/// The sites whose logins are never asked about.
+#[tauri::command(async)]
+fn never_asked_logins(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let mut sites: Vec<String> = state.login_never.lock().map_err(err)?.keys().cloned().collect();
+    sites.sort();
+    Ok(sites)
+}
+
+/// Asks about the site's logins again.
+#[tauri::command(async)]
+fn ask_login_again(state: State<'_, AppState>, site: String) -> Result<(), String> {
+    let mut never = state.login_never.lock().map_err(err)?;
+    never.remove(&site);
+    save_kept(LOGIN_NEVER_FILE, &never);
     Ok(())
 }
 
@@ -1561,11 +1614,12 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
     // A login the page sent: asked about (by host and user only) unless it is the one kept.
     if url.host_str() == Some("login-captured") {
         let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
-        let host = cef_browser::url(app, tab).and_then(|u| u.parse::<tauri::Url>().ok()).and_then(|u| u.host_str().map(String::from));
+        let host = cef_browser::url(app, tab).and_then(|u| site_of(&u));
         if let Some(host) = host {
             let login = logins::Login { user: param("u"), password: param("p") };
             let state = app.state::<AppState>();
-            if !login.user.is_empty() && !login.password.is_empty() && kept_login(&state, &host).as_ref() != Some(&login) {
+            let never = state.login_never.lock().is_ok_and(|n| n.contains_key(&host));
+            if !never && !login.user.is_empty() && !login.password.is_empty() && kept_login(&state, &host).as_ref() != Some(&login) {
                 let user = login.user.clone();
                 if let Ok(mut pending) = state.pending_login.lock() {
                     *pending = Some((host.clone(), login));
@@ -1646,7 +1700,7 @@ fn tab_load(app: &AppHandle, tab: &str, url: String, loading: bool) {
     if !loading {
         keep_site_zoom(app, tab, &url);
         // A site with a kept login has it filled in (and sent) by the page's script.
-        if let Some(host) = url.parse::<tauri::Url>().ok().and_then(|u| u.host_str().map(String::from)) {
+        if let Some(host) = site_of(&url) {
             if let Some(login) = kept_login(&state, &host) {
                 let args = serde_json::to_string(&(host, &login.user, &login.password)).unwrap_or_default();
                 let _ = cef_browser::eval(app, tab, &format!("window.__todoSessionsFill?.(...{args})"));
@@ -1709,6 +1763,14 @@ fn save_kept<V: Serialize>(file: &str, map: &HashMap<String, V>) {
 
 fn host_of(url: &str) -> Option<String> {
     url.parse::<tauri::Url>().ok().and_then(|u| u.host_str().map(String::from))
+}
+
+/// A page's site as its login is kept: its host, and its port when it has one
+/// (as the page's `URL.host` says it).
+fn site_of(url: &str) -> Option<String> {
+    let u = url.parse::<tauri::Url>().ok()?;
+    let host = u.host_str()?;
+    Some(u.port().map_or_else(|| host.to_string(), |p| format!("{host}:{p}")))
 }
 
 /// A site's page takes the zoom kept for the site (Chromium keeps zoom per
@@ -2495,6 +2557,7 @@ fn main() {
             focus_mode: AtomicBool::new(false),
             logins: Mutex::new(HashMap::new()),
             pending_login: Mutex::new(None),
+            login_never: Mutex::new(load_kept(LOGIN_NEVER_FILE)),
             page_keys: Mutex::new("{}".into()),
             archived: Mutex::new(HashSet::new()),
             zooms: Mutex::new(load_kept(ZOOMS_FILE)),
@@ -2595,6 +2658,9 @@ fn main() {
             hide_session,
             answer_login,
             forget_login,
+            saved_logins,
+            never_asked_logins,
+            ask_login_again,
             reveal_in_finder,
             answer_page_dialog,
             answer_site_permission,
@@ -2636,6 +2702,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_login_is_kept_for_its_site_with_its_port() {
+        assert_eq!(site_of("http://localhost:3000/login").as_deref(), Some("localhost:3000"));
+        assert_eq!(site_of("https://github.com/login?x=1").as_deref(), Some("github.com"));
+        assert_eq!(site_of("not a url"), None);
+    }
+
+    #[test]
     fn zooms_by_chromes_steps() {
         assert_eq!(next_zoom(1.0, "in"), Some(1.1));
         assert_eq!(next_zoom(1.0, "out"), Some(0.9));
@@ -2651,7 +2724,7 @@ mod tests {
     fn a_review_session_names_its_pr_by_record_or_title() {
         let session = |title: Option<&str>, url: Option<&str>| cts_core::Session {
             session_id: "s".into(), title: title.map(Into::into), todo_id: None, cwd: "/".into(), state: SessionState::Idle, state_at: 0,
-            repos: vec![], branch: None, started_at: 0, unread: false, agent: cts_core::Agent::Claude, review_url: url.map(Into::into), hidden: false,
+            repos: vec![], branch: None, started_at: 0, unread: false, agent: cts_core::Agent::Claude, review_url: url.map(Into::into), hidden: false, question: None, review_auto: false,
         };
         let pr = "https://github.com/o/r/pull/12";
         assert_eq!(review_pr(&session(Some("レビュー: x"), Some(pr))).as_deref(), Some(pr));

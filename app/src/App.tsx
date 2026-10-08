@@ -4620,7 +4620,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | null;
-type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | null;
+type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | "settings" | null;
 
 /// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
@@ -4699,6 +4699,120 @@ const FIXED_KEYS: [string, string][] = [
 
 /// Every shortcut, and changing one: its key's button, then the new key
 /// (Esc keeps the old one). ? and ⌘K's "ショートカット" open it.
+/// Where things open and run, and what the browser keeps for sites: the
+/// logins (their sites and users), the sites not asked about, and the
+/// microphone and camera answers.
+function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, report, onClose }: {
+  cloudTarget: CloudTarget;
+  onCloudTarget: (t: CloudTarget) => void;
+  terminalTarget: TerminalTarget;
+  onTerminalTarget: (t: TerminalTarget) => void;
+  herdr: HerdrSessions | null;
+  onLoadHerdr: () => void;
+  onPickHerdr: (name: string) => void;
+  report: (e: unknown) => void;
+  onClose: () => void;
+}) {
+  const [logins, setLogins] = useState<{ site: string; user: string }[] | null>(null);
+  const [never, setNever] = useState<string[]>([]);
+  const [permissions, setPermissions] = useState<Record<string, boolean>>({});
+  const load = () => {
+    api.savedLogins().then(setLogins, report);
+    api.neverAskedLogins().then(setNever, report);
+    api.sitePermissions().then(setPermissions, report);
+  };
+  useEffect(load, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const then = (p: Promise<unknown>) => p.then(load, report);
+  return (
+    <Modal title="設定" wide onClose={onClose}>
+      <div className="settings">
+        <section>
+          <h3>開く場所</h3>
+          <div className="setting-row">
+            <span className="grow">Cloud のセッション</span>
+            <div className="segmented" role="group" aria-label="Cloud のセッションを開く場所">
+              {(["web", "desktop"] as const).map((t) => (
+                <button key={t} className={cloudTarget === t ? "on" : ""} aria-pressed={cloudTarget === t} onClick={() => onCloudTarget(t)}>
+                  {t === "web" ? "Web（アプリ内）" : "Claude Desktop"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting-row">
+            <span className="grow">ターミナル（herdr のセッションを開く場所）</span>
+            <div className="segmented" role="group" aria-label="ターミナル">
+              {(["ghostty", "app"] as const).map((t) => (
+                <button key={t} className={terminalTarget === t ? "on" : ""} aria-pressed={terminalTarget === t} onClick={() => onTerminalTarget(t)}>
+                  {t === "ghostty" ? "Ghostty" : "アプリ内"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting-row">
+            <span className="grow">新しいワークスペースを開く herdr のセッション</span>
+            {herdr && herdr.running.length > 0 ? (
+              <select className="select compact" value={herdr.picked && herdr.running.includes(herdr.picked) ? herdr.picked : ""} aria-label="herdr のセッション" onMouseDown={onLoadHerdr} onChange={(e) => onPickHerdr(e.target.value)}>
+                <option value="">自動（{herdr.target}）</option>
+                {herdr.running.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <button className="ghost small" title="herdr のセッションを探し直す（止まっているときは、アプリ内のセッションはタブの中で直接動きます）" onClick={onLoadHerdr}>
+                停止中（探し直す）
+              </button>
+            )}
+          </div>
+        </section>
+        <section>
+          <h3>保存したログイン</h3>
+          {logins === null && <p className="muted">Keychain を見ています…</p>}
+          {logins?.length === 0 && <p className="muted">ありません。ログインしたときに「保存する」を選ぶと、ここに並びます。</p>}
+          {logins?.map((l) => (
+            <div key={l.site} className="setting-row">
+              <span className="mono grow">{l.site}</span>
+              <span className="muted">{l.user}</span>
+              <button className="ghost small" onClick={() => then(api.forgetLogin(l.site))}>
+                消す
+              </button>
+            </div>
+          ))}
+        </section>
+        {never.length > 0 && (
+          <section>
+            <h3>ログインを聞かないサイト</h3>
+            {never.map((site) => (
+              <div key={site} className="setting-row">
+                <span className="mono grow">{site}</span>
+                <button className="ghost small" onClick={() => then(api.askLoginAgain(site))}>
+                  また聞く
+                </button>
+              </div>
+            ))}
+          </section>
+        )}
+        <section>
+          <h3>サイトの許可（マイク・カメラ）</h3>
+          {Object.keys(permissions).length === 0 && <p className="muted">まだありません。サイトが初めて使おうとしたときに聞いて、答えをここに覚えます。</p>}
+          {Object.entries(permissions)
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([site, allow]) => (
+              <div key={site} className="setting-row">
+                <span className="mono grow">{site}</span>
+                <span className={allow ? "" : "muted"}>{allow ? "許可" : "許可しない"}</span>
+                <button className="ghost small" title="次に使おうとしたとき、また聞きます" onClick={() => then(api.forgetSitePermission(site))}>
+                  外す
+                </button>
+              </div>
+            ))}
+        </section>
+      </div>
+    </Modal>
+  );
+}
+
 function ShortcutsDialog({ onClose }: { onClose: () => void }) {
   return (
     <Modal title="キーの一覧" wide onClose={onClose}>
@@ -5110,14 +5224,14 @@ export default function App() {
     const off = listen<{ host: string; user: string }>(LOGIN_CAPTURED_EVENT, ({ payload }) => setLoginAsk(payload));
     return () => void off.then((f) => f());
   }, []);
-  const answerLogin = (keep: boolean) => {
+  const answerLogin = (answer: "keep" | "skip" | "never") => {
     setLoginAsk(null);
-    api.answerLogin(keep).catch(report);
+    api.answerLogin(answer).catch(report);
   };
   /// ⌘K: the login kept for the site the pane shows, taken out.
   const forgetShownLogin = () => {
-    const host = activeTab && !activeTab.term ? hostOf(activeTab.url) : null;
-    if (host) api.forgetLogin(host).catch(report);
+    const site = activeTab && !activeTab.term ? hostOf(activeTab.url) : null;
+    if (site) api.forgetLogin(site).catch(report);
   };
   const openStudyRef = useRef(openStudy);
   openStudyRef.current = openStudy;
@@ -6137,6 +6251,7 @@ export default function App() {
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
     { key: "shortcuts", label: "キーの一覧", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
+    { key: "settings", label: "設定（開く場所・ターミナル・herdr・ログイン・サイトの許可）", run: () => setDialog("settings") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },
@@ -6215,52 +6330,9 @@ export default function App() {
             </div>
           )}
           <div className="sidebar-foot">
-            <div className="link-target">
-              <span className="muted">Cloud を開く</span>
-              <div className="segmented" role="group" aria-label="Cloud のセッションを開く場所">
-                <button className={cloudTarget === "web" ? "on" : ""} aria-pressed={cloudTarget === "web"} onClick={() => setCloudTarget("web")}>
-                  Web
-                </button>
-                <button className={cloudTarget === "desktop" ? "on" : ""} aria-pressed={cloudTarget === "desktop"} onClick={() => setCloudTarget("desktop")}>
-                  Desktop
-                </button>
-              </div>
-            </div>
-            <div className="link-target">
-              <span className="muted">ターミナル</span>
-              <div className="segmented" role="group" aria-label="ローカルのセッションを動かす場所">
-                <button className={terminalTarget === "ghostty" ? "on" : ""} aria-pressed={terminalTarget === "ghostty"} onClick={() => setTerminalTarget("ghostty")}>
-                  Ghostty
-                </button>
-                <button className={terminalTarget === "app" ? "on" : ""} aria-pressed={terminalTarget === "app"} onClick={() => setTerminalTarget("app")}>
-                  アプリ内
-                </button>
-              </div>
-            </div>
-            <div className="link-target">
-              <span className="muted">herdr</span>
-              {herdr && herdr.running.length > 0 ? (
-                <select
-                  className="select compact"
-                  value={herdr.picked && herdr.running.includes(herdr.picked) ? herdr.picked : ""}
-                  aria-label="新しいワークスペースを開く herdr のセッション"
-                  title="新しいワークスペースを開く herdr のセッション"
-                  onMouseDown={loadHerdr}
-                  onChange={(e) => pickHerdr(e.target.value)}
-                >
-                  <option value="">自動（{herdr.target}）</option>
-                  {herdr.running.map((name) => (
-                    <option key={name} value={name}>
-                      {name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <button className="ghost small" title="herdr のセッションを探し直す（止まっているときは、アプリ内のセッションはタブの中で直接動きます）" onClick={loadHerdr}>
-                  停止中
-                </button>
-              )}
-            </div>
+            <button className="ghost small settings-button" onClick={() => setDialog("settings")}>
+              設定
+            </button>
             <UsageBox limits={limits} error={usageError} />
             <div className="sync-line">
               <span className="dot state-running" />
@@ -6622,15 +6694,31 @@ export default function App() {
             <span>
               <b>{loginAsk.host}</b> のログイン（{loginAsk.user}）を Keychain に保存しますか？次から自動で入力して送信します
             </span>
-            <button className="primary small" onClick={() => answerLogin(true)}>
-              保存
+            <button className="primary small" onClick={() => answerLogin("keep")}>
+              保存する
             </button>
-            <button className="ghost small" onClick={() => answerLogin(false)}>
-              しない
+            <button className="ghost small" onClick={() => answerLogin("skip")}>
+              今回はしない
+            </button>
+            <button className="ghost small" title="このサイトのログインは、設定で戻すまで聞きません" onClick={() => answerLogin("never")}>
+              このサイトでは聞かない
             </button>
           </div>
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+        {dialog === "settings" && (
+          <SettingsDialog
+            cloudTarget={cloudTarget}
+            onCloudTarget={setCloudTarget}
+            terminalTarget={terminalTarget}
+            onTerminalTarget={setTerminalTarget}
+            herdr={herdr}
+            onLoadHerdr={loadHerdr}
+            onPickHerdr={pickHerdr}
+            report={report}
+            onClose={() => setDialog(null)}
+          />
+        )}
         {dialog === "start" && selectedTodo && (
           <StartDialog todo={selectedTodo} allTodos={allTodos} run={run} onClose={() => setDialog(null)} />
         )}

@@ -338,7 +338,12 @@ export const api = {
   /** Marks one notification read, or all with no id. */
   /// Merges the PR once approved: now when it is ready ("merged"), else by GitHub's auto-merge ("auto").
   /// Keeps (in the Keychain) the login a page just sent, or lets it go.
-  answerLogin: (keep: boolean) => invoke<void>("answer_login", { keep }),
+  answerLogin: (answer: "keep" | "skip" | "never") => invoke<void>("answer_login", { answer }),
+  /// The logins kept: each site and its user (never the password).
+  savedLogins: () => invoke<{ site: string; user: string }[]>("saved_logins"),
+  /// The sites whose logins are never asked about, and asking about one again.
+  neverAskedLogins: () => invoke<string[]>("never_asked_logins"),
+  askLoginAgain: (site: string) => invoke<void>("ask_login_again", { site }),
   /// Takes out the login kept for a site.
   forgetLogin: (host: string) => invoke<void>("forget_login", { host }),
   revealInFinder: (path: string) => invoke<void>("reveal_in_finder", { path }),

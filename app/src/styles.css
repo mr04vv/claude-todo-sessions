@@ -554,19 +554,8 @@ a:hover {
   gap: 8px;
 }
 
-.link-target {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 0 4px 0 8px;
-  font-size: 11px;
-}
-
-.link-target .segmented button {
-  height: 22px;
-  padding: 0 8px;
-  font-size: 11px;
+.settings-button {
+  align-self: flex-start;
 }
 
 .usage {
@@ -2631,12 +2620,22 @@ body.resizing {
 }
 
 /* The shortcuts (ShortcutsDialog). */
-.shortcuts {
+.shortcuts,
+.settings {
   display: flex;
   flex-direction: column;
   gap: 14px;
 }
 
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  font-size: 12px;
+}
+
+.settings h3,
 .shortcuts h3 {
   margin: 0 0 6px;
   font-size: 12px;

@@ -249,8 +249,9 @@
     if (button) button.click();
     else if (el.form) el.form.requestSubmit();
   };
-  window.__todoSessionsFill = (host, user, password) => {
-    if (location.hostname !== host) return;
+  // `site` is the page's host with its port, as the app keeps logins.
+  window.__todoSessionsFill = (site, user, password) => {
+    if (location.host !== site) return;
     const resent = Date.now() - Number(sessionStorage.getItem(LOGIN_SENT_KEY) || 0) < RESEND_AFTER_MS;
     let userDone = false;
     let passDone = false;
