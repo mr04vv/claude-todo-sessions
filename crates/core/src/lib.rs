@@ -24,6 +24,7 @@ pub enum Error {
     Sql(rusqlite::Error),
     TodoNotFound(i64),
     InputNotFound(i64),
+    ThemeNotFound(i64),
     SessionNotFound(String),
     /// Subtasks go one level deep: why this parent cannot be set.
     InvalidParent(String),
@@ -35,6 +36,7 @@ impl std::fmt::Display for Error {
             Error::Sql(e) => write!(f, "sqlite: {e}"),
             Error::TodoNotFound(id) => write!(f, "todo {id} not found"),
             Error::InputNotFound(id) => write!(f, "input {id} not found"),
+            Error::ThemeNotFound(id) => write!(f, "theme {id} not found"),
             Error::SessionNotFound(id) => write!(f, "session {id} not found"),
             Error::InvalidParent(why) => write!(f, "{why}"),
         }
@@ -186,6 +188,29 @@ pub struct Input {
     pub updated_at: i64,
     /// Its pages (and its note), in the order they were added.
     pub links: Vec<InputLink>,
+    /// The learning theme it is in; None waits unsorted (まだテーマにないもの).
+    pub theme_id: Option<i64>,
+}
+
+/// Something to learn: a name and a goal, the inputs read for it, and one
+/// claude.ai document its notes build up in.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Theme {
+    pub id: i64,
+    pub name: String,
+    pub goal: Option<String>,
+    /// Its claude.ai document, once made.
+    pub doc_url: Option<String>,
+    pub updated_at: i64,
+}
+
+/// None leaves a field unchanged; a blank goal clears it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct ThemePatch {
+    pub name: Option<String>,
+    pub goal: Option<String>,
+    pub doc_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -327,6 +352,7 @@ pub struct Notice {
 pub enum Subject {
     Todo(i64),
     Input(i64),
+    Theme(i64),
 }
 
 impl Subject {
@@ -334,15 +360,20 @@ impl Subject {
         match self {
             Subject::Todo(_) => "todo",
             Subject::Input(_) => "input",
+            Subject::Theme(_) => "theme",
         }
     }
     fn id(self) -> i64 {
         match self {
-            Subject::Todo(id) | Subject::Input(id) => id,
+            Subject::Todo(id) | Subject::Input(id) | Subject::Theme(id) => id,
         }
     }
     fn from_row(kind: &str, id: i64) -> Subject {
-        if kind == "todo" { Subject::Todo(id) } else { Subject::Input(id) }
+        match kind {
+            "todo" => Subject::Todo(id),
+            "theme" => Subject::Theme(id),
+            _ => Subject::Input(id),
+        }
     }
 }
 
@@ -561,6 +592,14 @@ CREATE TABLE IF NOT EXISTS inputs (
     title TEXT NOT NULL,
     memo TEXT,
     done INTEGER NOT NULL DEFAULT 0,
+    updated_at INTEGER NOT NULL,
+    theme_id INTEGER REFERENCES themes(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS themes (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    goal TEXT,
+    doc_url TEXT,
     updated_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -590,7 +629,8 @@ CREATE TABLE IF NOT EXISTS input_links (
 ";
 
 const LINK_COLS: &str = "id, todo_id, url, title, image, created_at";
-const INPUT_COLS: &str = "id, title, memo, done, updated_at";
+const INPUT_COLS: &str = "id, title, memo, done, updated_at, CAST(theme_id AS INTEGER)";
+const THEME_COLS: &str = "id, name, goal, doc_url, updated_at";
 const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, CAST(parent_id AS INTEGER), ci_state, ci_failed, plan, COALESCE(CAST(fix_count AS INTEGER), 0), escalation";
@@ -674,6 +714,10 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
     })
 }
 
+fn theme_from_row(r: &Row) -> rusqlite::Result<Theme> {
+    Ok(Theme { id: r.get(0)?, name: r.get(1)?, goal: r.get(2)?, doc_url: r.get(3)?, updated_at: r.get(4)? })
+}
+
 fn input_link_from_row(r: &Row) -> rusqlite::Result<InputLink> {
     Ok(InputLink { id: r.get(0)?, input_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
 }
@@ -729,7 +773,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [now()],
         )?;
     }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -738,7 +782,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if !exists {
             // Integer columns keep integer affinity; older builds added them as TEXT,
             // which TODO_COLS casts back when reading.
-            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto" | "fix_count") { "INTEGER" } else { "TEXT" };
+            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto" | "fix_count" | "theme_id") { "INTEGER" } else { "TEXT" };
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
@@ -954,11 +998,11 @@ impl Db {
     pub fn get_input(&self, id: i64) -> Result<Option<Input>> {
         let row = self
             .conn
-            .query_row(&format!("SELECT {INPUT_COLS} FROM inputs WHERE id = ?1"), [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+            .query_row(&format!("SELECT {INPUT_COLS} FROM inputs WHERE id = ?1"), [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
             .optional()?;
-        let Some((id, title, memo, done, updated_at)) = row else { return Ok(None) };
+        let Some((id, title, memo, done, updated_at, theme_id)) = row else { return Ok(None) };
         let links = self.input_links(Some(id))?;
-        Ok(Some(Input { id, title, memo, done, updated_at, links }))
+        Ok(Some(Input { id, title, memo, done, updated_at, links, theme_id }))
     }
 
     /// Every input, the latest changed first.
@@ -970,7 +1014,7 @@ impl Db {
         let mut stmt = self.conn.prepare(&format!("SELECT {INPUT_COLS} FROM inputs ORDER BY updated_at DESC, id DESC"))?;
         let rows = stmt.query_map([], |r| {
             let id: i64 = r.get(0)?;
-            Ok(Input { id, title: r.get(1)?, memo: r.get(2)?, done: r.get(3)?, updated_at: r.get(4)?, links: by_input.remove(&id).unwrap_or_default() })
+            Ok(Input { id, title: r.get(1)?, memo: r.get(2)?, done: r.get(3)?, updated_at: r.get(4)?, links: by_input.remove(&id).unwrap_or_default(), theme_id: r.get(5)? })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
@@ -993,6 +1037,54 @@ impl Db {
             return Err(Error::InputNotFound(id));
         }
         self.get_input(id)?.ok_or(Error::InputNotFound(id))
+    }
+
+    /// Puts an input in a theme, or (None) back among the unsorted.
+    pub fn set_input_theme(&self, id: i64, theme_id: Option<i64>) -> Result<()> {
+        match self.conn.execute("UPDATE inputs SET theme_id = ?2, updated_at = ?3 WHERE id = ?1", params![id, theme_id, now()])? {
+            0 => Err(Error::InputNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn create_theme(&self, name: &str, goal: Option<&str>) -> Result<Theme> {
+        let goal = goal.map(str::trim).filter(|g| !g.is_empty());
+        self.conn.execute("INSERT INTO themes (name, goal, updated_at) VALUES (?1, ?2, ?3)", params![name.trim(), goal, now()])?;
+        let id = self.conn.last_insert_rowid();
+        self.get_theme(id)?.ok_or(Error::ThemeNotFound(id))
+    }
+
+    pub fn get_theme(&self, id: i64) -> Result<Option<Theme>> {
+        Ok(self.conn.query_row(&format!("SELECT {THEME_COLS} FROM themes WHERE id = ?1"), [id], theme_from_row).optional()?)
+    }
+
+    /// Every theme, the latest changed first.
+    pub fn list_themes(&self) -> Result<Vec<Theme>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT {THEME_COLS} FROM themes ORDER BY updated_at DESC, id DESC"))?;
+        let rows = stmt.query_map([], theme_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn update_theme(&self, id: i64, p: ThemePatch) -> Result<Theme> {
+        let goal = p.goal.map(|g| g.trim().to_string());
+        let changed = self.conn.execute(
+            "UPDATE themes SET name = COALESCE(?2, name), goal = CASE WHEN ?3 IS NULL THEN goal ELSE NULLIF(?3, '') END,
+                 doc_url = COALESCE(?4, doc_url), updated_at = ?5 WHERE id = ?1",
+            params![id, p.name.map(|n| n.trim().to_string()), goal, p.doc_url, now()],
+        )?;
+        if changed == 0 {
+            return Err(Error::ThemeNotFound(id));
+        }
+        self.get_theme(id)?.ok_or(Error::ThemeNotFound(id))
+    }
+
+    /// Takes a theme out; its inputs go back to the unsorted.
+    pub fn delete_theme(&self, id: i64) -> Result<()> {
+        self.conn.execute("UPDATE inputs SET theme_id = NULL WHERE theme_id = ?1", [id])?;
+        match self.conn.execute("DELETE FROM themes WHERE id = ?1", [id])? {
+            0 => Err(Error::ThemeNotFound(id)),
+            _ => Ok(()),
+        }
     }
 
     pub fn delete_input(&self, id: i64) -> Result<()> {
@@ -1203,6 +1295,7 @@ impl Db {
         let (todo_id, input_id) = match subject {
             Subject::Todo(id) => (Some(id), None),
             Subject::Input(id) => (None, Some(id)),
+            Subject::Theme(_) => (None, None),
         };
         self.conn.execute(
             "INSERT INTO notifications (session_id, todo_id, input_id, kind, title, created_at) VALUES ('', ?1, ?2, ?3, ?4, ?5)",
@@ -1285,11 +1378,13 @@ impl Db {
             let title = match s.subject {
                 Subject::Input(id) => self.get_input(id)?.filter(|i| !i.done).map(|i| i.title),
                 Subject::Todo(id) => self.get_todo(id)?.filter(|t| t.status != Status::Done).map(|t| t.title),
+                Subject::Theme(id) => self.get_theme(id)?.map(|t| t.name),
             };
             let Some(title) = title else { continue };
             let (todo_id, input_id) = match s.subject {
                 Subject::Todo(id) => (Some(id), None),
                 Subject::Input(id) => (None, Some(id)),
+                Subject::Theme(_) => (None, None),
             };
             let noticed: bool = self.conn.query_row(
                 "SELECT EXISTS (SELECT 1 FROM notifications WHERE kind = 'study' AND created_at >= ?1 AND ((?2 IS NOT NULL AND todo_id = ?2) OR (?3 IS NOT NULL AND input_id = ?3)))",

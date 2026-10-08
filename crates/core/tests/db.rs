@@ -1109,3 +1109,49 @@ fn artifacts_are_kept_once_newest_first_with_their_todo() {
     db.delete_todo(t.id).unwrap();
     assert_eq!(db.artifacts().unwrap()[1].todo_id, None, "it outlives its todo");
 }
+
+#[test]
+fn themes_gather_inputs_and_the_rest_wait_unsorted() {
+    let (_d, db) = open();
+    let sec = db.create_theme("セキュリティ", Some("Web の攻撃と守りを説明できる")).unwrap();
+    assert_eq!((sec.name.as_str(), sec.goal.as_deref(), sec.doc_url.clone()), ("セキュリティ", Some("Web の攻撃と守りを説明できる"), None));
+    let a = db.create_input("CSRF とは", None).unwrap();
+    let b = db.create_input("Rust の所有権", None).unwrap();
+    assert_eq!(a.theme_id, None, "a new one waits unsorted");
+    db.set_input_theme(a.id, Some(sec.id)).unwrap();
+    let inputs = db.list_inputs().unwrap();
+    assert_eq!(inputs.iter().find(|i| i.id == a.id).unwrap().theme_id, Some(sec.id));
+    assert_eq!(inputs.iter().find(|i| i.id == b.id).unwrap().theme_id, None);
+    let sec = db.update_theme(sec.id, cts_core::ThemePatch { doc_url: Some("https://claude.ai/code/artifact/x".into()), ..Default::default() }).unwrap();
+    assert_eq!(sec.doc_url.as_deref(), Some("https://claude.ai/code/artifact/x"));
+    assert_eq!(db.list_themes().unwrap().len(), 1);
+    db.delete_theme(sec.id).unwrap();
+    assert_eq!(db.get_input(a.id).unwrap().unwrap().theme_id, None, "its inputs go back to unsorted");
+}
+
+#[test]
+fn a_themes_review_is_due_by_its_last_score() {
+    let (_d, db) = open();
+    let t = db.create_theme("Rust", None).unwrap();
+    let grade = cts_core::feynman::Grade::default();
+    db.add_feynman_attempt(Subject::Theme(t.id), "Q/A", &grade, 50).unwrap();
+    let summary = db.feynman_summaries().unwrap().into_iter().find(|s| s.subject == Subject::Theme(t.id)).unwrap();
+    assert_eq!(summary.due_at - summary.attempted_at, 86_400, "under 60%: the next day");
+}
+
+#[test]
+fn themes_work_on_databases_made_before_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE inputs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, memo TEXT, done INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL);
+         INSERT INTO inputs (title, updated_at) VALUES ('old one', 5);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let t = db.create_theme("x", None).unwrap();
+    assert_eq!(db.get_input(1).unwrap().unwrap().theme_id, None, "the inputs from before wait unsorted");
+    db.set_input_theme(1, Some(t.id)).unwrap();
+}

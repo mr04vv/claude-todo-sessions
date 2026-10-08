@@ -943,6 +943,7 @@ fn start_note(state: State<AppState>, subject: Subject, urls: Vec<String>, forma
     let opts = StartOptions::default();
     let input_id = match subject {
         Subject::Input(id) => id,
+        Subject::Theme(_) => return Err("テーマのノートは「読み終わった」で書き足します".into()),
         Subject::Todo(todo_id) => {
             let title = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?.title;
             let body = Some(launch::note_prompt(&title, &urls, format));
@@ -1001,6 +1002,7 @@ fn note_url(state: State<AppState>, subject: Subject, session_id: String) -> Res
                 db.set_input_link_meta(link.id, Some(NOTE_TITLE), None).map_err(err)?;
             }
         }
+        Subject::Theme(_) => {}
     }
     Ok(Some(url))
 }
