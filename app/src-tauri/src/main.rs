@@ -58,8 +58,6 @@ struct AppState {
     sync_status: Mutex<String>,
     /// `owner/repo` per working directory, from `git remote get-url origin`.
     origin_cache: Mutex<HashMap<String, Option<String>>>,
-    /// Whether the queue runner starts queued todos.
-    loop_enabled: AtomicBool,
     /// Wakes the GitHub sync: Some(todo id) or None for everything.
     github_wake: Mutex<std::sync::mpsc::Sender<Option<i64>>>,
     /// Wakes the cloud session sync.
@@ -151,12 +149,9 @@ struct Board {
     /// The Input page's reading material, apart from the todos.
     inputs: Vec<Input>,
     inbox: Vec<SessionView>,
-    /// Notifications posted, newest first, for the in-app list.
-    notifications: Vec<cts_core::Notice>,
     /// Each subject's latest 「説明する」 attempt (feynman.rs).
     feynman: Vec<cts_core::FeynmanSummary>,
     sync_status: String,
-    loop_enabled: bool,
 }
 
 fn git_origin(cwd: &str) -> Option<String> {
@@ -208,8 +203,6 @@ struct TodoInput {
     memo: Option<String>,
     #[serde(default)]
     repos: Vec<String>,
-    #[serde(default)]
-    kind: cts_core::Kind,
     parent_id: Option<i64>,
 }
 
@@ -223,12 +216,11 @@ struct TodoUpdate {
     repos: Option<Vec<String>>,
     prompt: Option<String>,
     pr_url: Option<String>,
-    kind: Option<cts_core::Kind>,
 }
 
 #[tauri::command(async)]
 fn board(state: State<AppState>) -> Result<Board, String> {
-    let (todos, inputs, inbox, notifications, feynman) = {
+    let (todos, inputs, inbox, feynman) = {
         let db = state.db.lock().map_err(err)?;
         let (mut sessions, mut links) = (db.sessions_by_todo().map_err(err)?, db.links_by_todo().map_err(err)?);
         let todos = db
@@ -245,7 +237,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             // A review that ended without being put away stopped before submitting: it waits on the user.
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .collect();
-        (todos, db.list_inputs().map_err(err)?, inbox, db.notifications().map_err(err)?, db.feynman_summaries().map_err(err)?)
+        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -253,7 +245,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|(sessions, links, todo)| TodoView {
             repos: repos_of_todo(&state, &todo),
             repos_derived: todo.repos.is_empty(),
-            prompt_preview: launch::start_prompt(todo.id, &todo.prompt_body()),
+            prompt_preview: launch::start_prompt(todo.id, &todo.prompt_body(false)),
             is_orchestrator: todo.is_orchestrator(),
             sessions,
             links,
@@ -265,7 +257,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, inputs, inbox, notifications, feynman, sync_status, loop_enabled: state.loop_enabled.load(Ordering::Relaxed) })
+    Ok(Board { todos, inputs, inbox, feynman, sync_status })
 }
 
 #[tauri::command(async)]
@@ -278,7 +270,6 @@ fn create_todo(state: State<AppState>, input: TodoInput) -> Result<Todo, String>
         cwd: blank(input.cwd),
         memo: blank(input.memo),
         repos: input.repos,
-        kind: input.kind,
         parent_id: input.parent_id,
     })
     .map_err(err)
@@ -295,7 +286,6 @@ fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<To
         repos: update.repos,
         prompt: update.prompt,
         pr_url: update.pr_url,
-        kind: update.kind,
     };
     state.db.lock().map_err(err)?.update_todo(id, patch).map_err(err)
 }
@@ -784,14 +774,6 @@ fn put_review_away(db: &Db, session_id: &str) -> Result<(), String> {
     db.hide_session(session_id).map_err(err)
 }
 
-#[tauri::command(async)]
-fn start_desktop(state: State<AppState>, todo_id: i64) -> Result<(), String> {
-    let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
-    let prompt = launch::start_prompt(todo.id, &todo.prompt_body());
-    // Without a folder Desktop opens a scratch workspace, fine for research todos.
-    open_url(&launch::desktop_new_url(todo.cwd.as_deref(), &prompt))
-}
-
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
@@ -880,7 +862,7 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: O
     if opts.agent == cts_core::Agent::Codex {
         // Codex picks its own session id: herdr finds the session, and its first prompt's marker links it.
         let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
-        let prompt = launch::start_prompt(todo.id, &launch::codex_body(&opts.body(body.unwrap_or_else(|| todo.prompt_body()))));
+        let prompt = launch::start_prompt(todo.id, &launch::codex_body(&body.unwrap_or_else(|| todo.prompt_body(false))));
         let flags: String = opts.codex_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
         let command = format!("codex{flags} {}", shell_quote(&prompt));
         return Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: None, herdr: None });
@@ -899,7 +881,7 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: O
     let flags: String = opts.claude_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
     let command = format!(
         "claude --session-id {session_id}{flags} {}",
-        shell_quote(&launch::start_prompt(todo.id, &opts.body(body.unwrap_or_else(|| todo.prompt_body()))))
+        shell_quote(&launch::start_prompt(todo.id, &body.unwrap_or_else(|| todo.prompt_body(opts.plan))))
     );
     Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: Some(session_id), herdr: None })
 }
@@ -920,14 +902,14 @@ fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOpti
 /// `body` (else the todo's own) as its first prompt.
 fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions, body: Option<String>) -> Result<String, String> {
     let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
-    if todo.is_orchestrator() {
-        // Planning creates child todos through the local MCP server, which cloud sessions cannot reach.
-        return Err("複数リポジトリの todo は計画用です。Local で計画セッションを始め、リポジトリごとの子 todo を作ってください".into());
+    if opts.plan {
+        // Planning creates subtasks through the Mac's MCP server, which Cloud sessions cannot reach.
+        return Err("計画させるときは herdr で始めます（計画は Mac の Claude がサブタスクを作ります）".into());
     }
-    // Without a GitHub repository the session runs with no checkout, which is fine for research.
+    // Without a GitHub repository the session runs with no checkout, which is fine for a question.
     let repos = launch::github_repos(&repos_of_todo(state, &todo));
     let db = state.db.lock().map_err(err)?;
-    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &opts.body(body.unwrap_or_else(|| todo.prompt_body())), opts)
+    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &body.unwrap_or_else(|| todo.prompt_body(false)), opts)
 }
 
 /// A note session (the focus mode's "ノート"): where it runs, and the command
@@ -1018,74 +1000,11 @@ fn start_terminal(state: State<AppState>, todo_id: i64, options: Option<StartOpt
     launch_terminal(&state, todo_id, false, &options.unwrap_or_default(), None).map(|_| ())
 }
 
-/// Starts a cloud session and returns its id. `desktop` also opens it in
-/// Claude Desktop; otherwise the page shows it on the web.
+/// Starts a cloud session and returns its id; nothing comes forward (the
+/// page makes its tab behind).
 #[tauri::command(async)]
-fn start_cloud(state: State<AppState>, todo_id: i64, options: Option<StartOptions>, desktop: bool) -> Result<String, String> {
-    let id = launch_cloud(&state, todo_id, &options.unwrap_or_default(), None)?;
-    if desktop {
-        open_url(&launch::jump_url(&id, None))?;
-    }
-    Ok(id)
-}
-
-const RUNNER_CLOUD: &str = "cloud";
-const RUNNER_LOCAL: &str = "local";
-const RUNNER_AUTO: &str = "auto";
-/// How often the queue runner looks for todos to start.
-const QUEUE_INTERVAL: Duration = Duration::from_secs(10);
-
-#[tauri::command(async)]
-fn enqueue(state: State<AppState>, todo_id: i64, runner: String) -> Result<(), String> {
-    if ![RUNNER_CLOUD, RUNNER_LOCAL, RUNNER_AUTO].contains(&runner.as_str()) {
-        return Err(format!("unknown runner {runner}"));
-    }
-    state.db.lock().map_err(err)?.enqueue(todo_id, &runner).map_err(err)
-}
-
-#[tauri::command(async)]
-fn dequeue(state: State<AppState>, todo_id: i64) -> Result<(), String> {
-    state.db.lock().map_err(err)?.dequeue(todo_id).map_err(err)
-}
-
-#[tauri::command(async)]
-fn move_in_queue(state: State<AppState>, todo_id: i64, delta: i64) -> Result<(), String> {
-    state.db.lock().map_err(err)?.move_in_queue(todo_id, delta).map_err(err)
-}
-
-#[tauri::command]
-fn set_loop_enabled(state: State<AppState>, enabled: bool) {
-    state.loop_enabled.store(enabled, Ordering::Relaxed);
-}
-
-/// Starts every queued todo, all at once (no concurrency limit), in queue
-/// order. A todo that fails to start keeps its error and waits for a retry.
-// ponytail: unlimited parallel starts; add a max-running setting if machines or quotas choke.
-fn queue_loop(app: AppHandle) {
-    loop {
-        std::thread::sleep(QUEUE_INTERVAL);
-        let state = app.state::<AppState>();
-        if !state.loop_enabled.load(Ordering::Relaxed) {
-            continue;
-        }
-        let queued = match state.db.lock().map(|db| db.queued()) {
-            Ok(Ok(q)) => q,
-            _ => continue,
-        };
-        for todo in queued.into_iter().filter(|t| t.queue_error.is_none()) {
-            let runner = todo.queue_runner.as_deref().unwrap_or(RUNNER_AUTO);
-            let cloud = runner == RUNNER_CLOUD
-                || (runner == RUNNER_AUTO && !launch::github_repos(&repos_of_todo(&state, &todo)).is_empty());
-            let opts = StartOptions::default();
-            let started = if cloud { launch_cloud(&state, todo.id, &opts, None).map(|_| ()) } else { launch_terminal(&state, todo.id, false, &opts, None).map(|_| ()) };
-            if let Ok(db) = state.db.lock() {
-                let _ = match started {
-                    Ok(()) => db.dequeue(todo.id),
-                    Err(e) => db.set_queue_error(todo.id, Some(&e)),
-                };
-            }
-        }
-    }
+fn start_cloud(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<String, String> {
+    launch_cloud(&state, todo_id, &options.unwrap_or_default(), None)
 }
 
 #[derive(Deserialize)]
@@ -1165,7 +1084,6 @@ fn import_issues(state: State<AppState>, issues: Vec<IssueImport>) -> Result<usi
             cwd: i.cwd.clone(),
             memo: None,
             repos: Vec::new(),
-            kind: Default::default(),
             parent_id: None,
         })
         .map_err(err)?;
@@ -1303,33 +1221,6 @@ fn session_question(session: &Session) -> Option<String> {
 #[tauri::command]
 async fn usage() -> Result<Vec<cts_core::usage::Limit>, String> {
     tauri::async_runtime::spawn_blocking(cts_core::cloud::usage).await.map_err(err)?
-}
-
-const INSTALLED_PLUGINS: &str = ".claude/plugins/installed_plugins.json";
-const USER_SKILLS_DIR: &str = ".claude/skills";
-
-/// Skills a session in `cwd` can use (the user's, the project's, installed
-/// plugins' and the built-in commands), the ones past prompts used most first.
-#[tauri::command(async)]
-fn skills(state: State<AppState>, cwd: Option<String>) -> Result<Vec<cts_core::skills::Skill>, String> {
-    use cts_core::skills;
-    let mut all = skills::read_dir(&home().join(USER_SKILLS_DIR), None);
-    if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
-        all.extend(skills::read_dir(&PathBuf::from(cwd).join(USER_SKILLS_DIR), None));
-    }
-    let plugins: serde_json::Value = std::fs::read(home().join(INSTALLED_PLUGINS))
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok())
-        .unwrap_or_default();
-    for (key, installs) in plugins["plugins"].as_object().into_iter().flatten() {
-        let name = key.split('@').next().unwrap_or(key);
-        if let Some(path) = installs[0]["installPath"].as_str() {
-            all.extend(skills::read_dir(&PathBuf::from(path).join("skills"), Some(name)));
-        }
-    }
-    all.extend(skills::builtin());
-    let prompts: Vec<String> = state.db.lock().map_err(err)?.list_todos(None).map_err(err)?.into_iter().filter_map(|t| t.prompt).collect();
-    Ok(skills::rank(all, &prompts))
 }
 
 #[tauri::command(async)]
@@ -2569,7 +2460,6 @@ fn main() {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
             origin_cache: Mutex::new(HashMap::new()),
-            loop_enabled: AtomicBool::new(true),
             herdr_session: Mutex::new(None),
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
@@ -2602,8 +2492,6 @@ fn main() {
             std::thread::spawn(move || watch_loop(handle));
             let handle = app.handle().clone();
             std::thread::spawn(move || issue_sync_loop(handle, github_rx));
-            let handle = app.handle().clone();
-            std::thread::spawn(move || queue_loop(handle));
             Ok(())
         })
         .menu(app_menu)
@@ -2639,7 +2527,6 @@ fn main() {
             sync_now,
             quick_claude,
             fix_in_session,
-            start_desktop,
             start_terminal,
             start_cloud,
             gh_issues,
@@ -2647,13 +2534,8 @@ fn main() {
             local_repos,
             create_issue,
             close_issue,
-            enqueue,
-            dequeue,
-            move_in_queue,
-            set_loop_enabled,
             set_parent,
             usage,
-            skills,
             gh_prs,
             browser_open,
             browser_bounds,

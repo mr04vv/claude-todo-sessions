@@ -48,9 +48,10 @@ pub fn desktop_new_url(cwd: Option<&str>, prompt: &str) -> String {
 pub struct StartOptions {
     pub model: Option<String>,
     pub effort: Option<String>,
-    /// The session sets its PR to merge once approved (GitHub's auto-merge).
+    /// The session plans the todo, splitting it into subtasks, instead of
+    /// implementing it (Claude in herdr: it reaches the Mac's MCP server).
     #[serde(default)]
-    pub auto_merge: bool,
+    pub plan: bool,
     /// What runs it (a terminal session; Cloud and Desktop are Claude's).
     #[serde(default)]
     pub agent: crate::Agent,
@@ -67,21 +68,9 @@ pub fn codex_body(body: &str) -> String {
     body.trim().to_string()
 }
 
-/// What an auto-merging session is asked to do with its PR.
-const AUTO_MERGE_INSTRUCTIONS: &str = "PR を作ってレビューを依頼したら、`gh pr merge <PR> --auto --merge` で、承認されて CI が通ったら自動でマージされるようにしてください（承認済みでマージできる状態なら、そのまま `gh pr merge <PR> --merge` でマージします）。";
-
 impl StartOptions {
     fn given(v: &Option<String>) -> Option<&str> {
         v.as_deref().map(str::trim).filter(|s| !s.is_empty())
-    }
-
-    /// The first prompt's body, with what the options ask of the session.
-    pub fn body(&self, body: String) -> String {
-        if self.auto_merge {
-            format!("{body}\n\n{AUTO_MERGE_INSTRUCTIONS}")
-        } else {
-            body
-        }
     }
 
     pub fn model(&self) -> Option<&str> {
@@ -370,15 +359,6 @@ mod tests {
         let body = "/grilling 直す\n\nメモ\n\n質問はすべて AskUserQuestion ツールで聞いてください（本文に質問を書いて待たない）。";
         assert_eq!(codex_body(body), "直す\n\nメモ");
         assert_eq!(codex_body("自由に"), "自由に");
-    }
-
-    #[test]
-    fn auto_merge_asks_the_session_to_set_it_on_its_pr() {
-        let plain = StartOptions::default();
-        assert_eq!(plain.body("作業".into()), "作業");
-        let merge = StartOptions { auto_merge: true, ..Default::default() };
-        let body = merge.body("作業".into());
-        assert!(body.starts_with("作業\n\n") && body.contains("gh pr merge") && body.contains("--auto --merge"), "{body}");
     }
 
     use super::*;

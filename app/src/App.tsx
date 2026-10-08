@@ -63,10 +63,8 @@ import {
   type PrLists,
   type PrState,
   type CiState,
-  type Runner,
   type Session,
   type SessionState,
-  type Skill,
   type StartOptions,
   type Status,
   type Todo,
@@ -81,6 +79,7 @@ import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
 import { addressToUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
 import { ciFailureLine, isFailedReview, prRef, waitingOnYou, type WaitItem } from "./waiting";
+import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
 import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
@@ -117,14 +116,15 @@ function useOnVisible(f: () => void) {
 const DRAG_DISTANCE_PX = 6;
 /// Done cards kept per lane while "Done は直近のみ" is on.
 const DONE_RECENT = 3;
-/// Skill chips shown before the rest go into the "その他" menu.
-const SKILL_CHIPS = 5;
 const VIEW_KEY = "view";
 const LAYOUT_KEY = "layout";
 const COLLAPSED_KEY = "collapsedLanes";
 const DONE_RECENT_KEY = "doneRecent";
 const GROUP_KEY = "groupBy";
+/// The launch sheet's choice from before LAUNCH_KEY, carried over once.
 const START_KEY = "startChoice";
+/// How todos last started, apart for planning and implementing (launch.ts).
+const LAUNCH_KEY = "launchPrefs";
 const REVIEW_RUNNER_KEY = "reviewRunner";
 const BROWSER_SHOWN_KEY = "browserShown";
 const HERDR_SESSION_KEY = "herdrSession";
@@ -138,24 +138,6 @@ const GROUPINGS: { key: GroupBy; label: string }[] = [
   { key: "repo", label: "リポジトリ" },
   { key: "parent", label: "親タスク" },
 ];
-
-const RUNNER_LABEL: Record<Runner, string> = {
-  auto: "自動（Cloud 優先）",
-  cloud: "Cloud",
-  local: "Local（herdr）",
-};
-
-/// Where a new session starts. "web" is a cloud session shown on claude.ai
-/// in the app's browser pane; "cloud" opens it in Claude Desktop instead.
-type Target = "web" | "cloud" | "desktop" | "terminal" | "queue";
-const TARGETS: { key: Target; label: string }[] = [
-  { key: "web", label: "Cloud・Web" },
-  { key: "cloud", label: "Cloud・Desktop" },
-  { key: "desktop", label: "Local・Desktop" },
-  { key: "terminal", label: "herdr" },
-  { key: "queue", label: "キュー" },
-];
-const isCloudTarget = (t: Target) => t === "web" || t === "cloud";
 
 /// Opens a page in the browser pane docked on the right. It stays open across
 /// screens until closed, so opening a page never leaves the current one.
@@ -1048,12 +1030,11 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
         {urgent && <StateBadge state={urgent} unread={todo.sessions.some((s) => s.unread) || undefined} />}
       </div>
       <div className="card-title">{todo.title}</div>
-      {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner) && (
+      {(todo.pr_url || todo.issue_url || rel || direct) && (
         <div className="card-foot">
           <GhChip todo={todo} report={report} />
           <CiChip todo={todo} />
           {rel && <span className="tag">{rel}</span>}
-          {todo.queue_runner && <span className={`tag${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "起動待ち"}</span>}
           <span className="grow" />
           {direct && <OpenMenu session={direct} report={report} primary={urgent === "needs_input"} />}
         </div>
@@ -1588,186 +1569,121 @@ function RepoChips({ todo, local, groups, update }: {
   );
 }
 
-interface StartChoice {
-  target: Target;
-  runner: Runner;
-  model: string;
-  effort: string;
-  /// The session sets its PR to merge once approved.
-  autoMerge?: boolean;
-  /// What runs a terminal session.
-  agent?: Agent;
-}
+/// Starts a todo's session as `launch` and `plan` say, behind: nothing comes
+/// forward, and the keyboard stays (a Cloud session's tab is made behind).
+type StartTodo = (todoId: number, plan: boolean, launch: Launch) => Promise<void>;
+const StartTodoContext = createContext<StartTodo | null>(null);
 
-const DEFAULT_START: StartChoice = { target: "web", runner: "auto", model: "", effort: "" };
-
-/// Prompt with its leading `/skill` swapped for `name` (or added).
-function withSkill(prompt: string, name: string) {
-  const rest = prompt.replace(/^\/\S+\s*/, "");
-  return `/${name} ${rest}`;
-}
-
-/// The first prompt, the skill it starts with, where it runs and with which
-/// model: everything a new session needs (the launch sheet's). The keys work
-/// from anywhere in it: ⌘1〜⌘5 pick where it runs, ⌘Enter starts.
-function Composer({ todo, skills, run, onStarted }: { todo: Todo; skills: Skill[]; run: (f: () => Promise<unknown>) => void; onStarted: () => void }) {
-  // An orchestrator plans locally (its session registers child todos over the local MCP server).
-  const cloudOk = !todo.is_orchestrator;
-  const [choice, setChoiceState] = useState<StartChoice>(() => loadJson(START_KEY, DEFAULT_START));
-  const target = !cloudOk && isCloudTarget(choice.target) ? "terminal" : choice.target;
-  const setChoice = (c: Partial<StartChoice>) => {
-    const next = { ...choice, ...c };
-    remember(START_KEY, JSON.stringify(next));
-    setChoiceState(next);
+/// The kept settings (LAUNCH_KEY) for planning or implementing, and their setter.
+function useLaunchPrefs() {
+  const [prefs, setPrefsState] = useState<LaunchPrefs>(() => launchPrefsFrom(loadJson<Partial<LaunchPrefs> | null>(LAUNCH_KEY, null), loadJson(START_KEY, null)));
+  const setLaunch = (plan: boolean, patch: Partial<Launch>) => {
+    const next = { ...prefs, [plan ? "plan" : "direct"]: { ...prefs[plan ? "plan" : "direct"], ...patch } };
+    remember(LAUNCH_KEY, JSON.stringify(next));
+    setPrefsState(next);
   };
-  const ref = useRef<HTMLTextAreaElement>(null);
+  return { prefs, setLaunch };
+}
+
+/// 計画させる, where it runs, what runs it and with which model: how a todo
+/// starts (the launch sheet's and the new todo dialog's).
+function LaunchControls({ plan, launch, onPlan, onLaunch }: { plan: boolean; launch: Launch; onPlan: (on: boolean) => void; onLaunch: (patch: Partial<Launch>) => void }) {
+  const e = effectiveLaunch(launch, plan);
+  const why = plan ? "計画させるときは herdr の Claude で動きます（Mac の Claude がサブタスクを作ります）" : "Codex は herdr でだけ動きます";
+  return (
+    <div className="launch-controls">
+      <label className="toggle" title="Claude に詳細を詰めさせて、サブタスクに分けさせます（実装はしません）">
+        <input type="checkbox" checked={plan} onChange={(ev) => onPlan(ev.target.checked)} />
+        計画させる
+      </label>
+      <div className="segmented" role="group" aria-label="動かす場所">
+        {(["cloud", "herdr"] as const).map((r) => (
+          <button key={r} className={e.runner === r ? "on" : ""} aria-pressed={e.runner === r} disabled={r === "cloud" && e.runner === "herdr" && launch.runner === "cloud"} title={r === "cloud" && e.runner === "herdr" && launch.runner === "cloud" ? why : undefined} onClick={() => onLaunch({ runner: r })}>
+            {r === "cloud" ? "Cloud" : "herdr"}
+          </button>
+        ))}
+      </div>
+      <div className="segmented" role="group" aria-label="動かすもの">
+        {(["claude", "codex"] as const).map((a) => (
+          <button key={a} className={e.agent === a ? "on" : ""} aria-pressed={e.agent === a} disabled={plan && a === "codex"} title={plan && a === "codex" ? why : undefined} onClick={() => onLaunch({ agent: a })}>
+            {a === "claude" ? "Claude" : "Codex"}
+          </button>
+        ))}
+      </div>
+      {e.agent === "claude" && (
+        <>
+          <select className="select compact" value={launch.model} title="モデル" aria-label="モデル" onChange={(ev) => onLaunch({ model: ev.target.value })}>
+            {MODELS.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+          <select className="select compact" value={launch.effort} title="effort" aria-label="effort" onChange={(ev) => onLaunch({ effort: ev.target.value })}>
+            {EFFORTS.map((x) => (
+              <option key={x} value={x}>
+                {x ? `effort: ${x}` : "既定の effort"}
+              </option>
+            ))}
+          </select>
+        </>
+      )}
+    </div>
+  );
+}
+
+/// The first prompt and how it starts: everything a new session needs (the
+/// launch sheet's). ⌘Enter starts it, from anywhere in it.
+function Composer({ todo, run, onStarted }: { todo: Todo; run: (f: () => Promise<unknown>) => void; onStarted: () => void }) {
+  const startTodo = useContext(StartTodoContext);
+  const { prefs, setLaunch } = useLaunchPrefs();
+  const [plan, setPlan] = useState(() => planByDefault(todo));
   const [prompt, setPrompt] = useState(todo.prompt ?? "");
   // The stored prompt comes back on another todo, not on every refresh.
-  useEffect(() => setPrompt(todo.prompt ?? ""), [todo.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const current = prompt.match(/^\/(\S+)/)?.[1] ?? todo.prompt_preview.match(/^\/(\S+)/)?.[1];
-  const chips = skills.slice(0, SKILL_CHIPS);
-  const others = skills.slice(SKILL_CHIPS);
-  const pickSkill = (name: string) => {
-    // From the title and memo, not the preview: the preview carries lines the app adds again on start.
-    const base = [todo.title, todo.memo?.trim()].filter(Boolean).join("\n\n");
-    setPrompt((p) => withSkill(p || base, name));
-    ref.current?.focus();
-  };
-  // Codex runs in the terminal only, with its own models (the Claude ones are not offered).
-  const codex = target === "terminal" && choice.agent === "codex";
-  const cliOptions = !codex && (target === "terminal" || isCloudTarget(target));
-  const options: StartOptions = codex
-    ? { agent: "codex", auto_merge: !!choice.autoMerge }
-    : cliOptions
-      ? { model: choice.model || undefined, effort: choice.effort || undefined, auto_merge: !!choice.autoMerge }
-      : {};
-  const beginWeb = useContext(BeginWebContext);
-  const terminal = useContext(TerminalContext);
+  useEffect(() => {
+    setPrompt(todo.prompt ?? "");
+    setPlan(planByDefault(todo));
+  }, [todo.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const launch = prefs[plan ? "plan" : "direct"];
   const [starting, setStarting] = useState(false);
   const start = () => {
-    if (starting) return;
+    if (starting || !startTodo) return;
     setStarting(true);
     run(async () => {
-      const finish = target === "web" ? beginWeb?.() : undefined;
       try {
-        // The prompt lives on the todo, so the next start (and the queue) reuse it.
+        // The prompt lives on the todo, so the next start reuses it.
         if (prompt !== (todo.prompt ?? "")) await api.updateTodo(todo.id, { prompt });
-        if (isCloudTarget(target)) finish?.(await api.startCloud(todo.id, options, target === "cloud"));
-        else if (target === "desktop") await api.startDesktop(todo.id);
-        else if (target === "terminal") terminal ? terminal.open(await terminalApi.start(todo.id, options)) : await api.startTerminal(todo.id, options);
-        else await api.enqueue(todo.id, choice.runner);
+        await startTodo(todo.id, plan, launch);
         onStarted();
-      } catch (e) {
-        finish?.(null);
-        throw e;
       } finally {
         setStarting(false);
       }
     });
   };
-  const keysRef = useRef({ start, setChoice });
-  keysRef.current = { start, setChoice };
+  const startRef = useRef(start);
+  startRef.current = start;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing) return;
-      const n = e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey ? Number(e.key) : NaN;
-      const pick = TARGETS[n - 1];
-      if (pick && !(isCloudTarget(pick.key) && !cloudOk)) {
-        e.preventDefault();
-        keysRef.current.setChoice({ target: pick.key });
-      } else if (matches(e, "start")) {
-        e.preventDefault();
-        keysRef.current.start();
-      }
+      if (e.isComposing || !matches(e, "start")) return;
+      e.preventDefault();
+      startRef.current();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cloudOk]);
+  }, []);
   return (
     <div className="composer">
-      <textarea ref={ref} autoFocus rows={3} value={prompt} aria-label="最初のプロンプト" placeholder={todo.prompt_preview} onChange={(e) => setPrompt(e.target.value)} />
-      {skills.length > 0 && (
-        <div className="skills">
-          <span className="muted">スキル</span>
-          {chips.map((s) => (
-            <button key={s.name} className={`skill${current === s.name ? " on" : ""}`} aria-pressed={current === s.name} title={s.description} onClick={() => pickSkill(s.name)}>
-              /{s.name}
-            </button>
-          ))}
-          {others.length > 0 && (
-            <select className="select compact" value="" aria-label="ほかのスキル" onChange={(e) => e.target.value && pickSkill(e.target.value)}>
-              <option value="">その他…</option>
-              {others.map((s) => (
-                <option key={s.name} value={s.name} title={s.description}>
-                  /{s.name}
-                </option>
-              ))}
-            </select>
-          )}
-        </div>
-      )}
+      <textarea autoFocus rows={3} value={prompt} aria-label="最初のプロンプト" placeholder={todo.prompt_preview} onChange={(e) => setPrompt(e.target.value)} />
       <div className="composer-foot">
-        <div className="segmented" role="group" aria-label="起動先">
-          {TARGETS.map((t, i) => (
-            <button
-              key={t.key}
-              className={target === t.key ? "on" : ""}
-              aria-pressed={target === t.key}
-              disabled={isCloudTarget(t.key) && !cloudOk}
-              title={isCloudTarget(t.key) && !cloudOk ? "計画用の todo は Local で始めます" : `⌘${i + 1}`}
-              onClick={() => setChoice({ target: t.key })}
-            >
-              {t.key === "terminal" && terminal ? "ターミナル" : t.label}
-            </button>
-          ))}
-        </div>
-        {target === "terminal" && (
-          <div className="segmented" role="group" aria-label="動かすもの">
-            {(["claude", "codex"] as const).map((a) => (
-              <button key={a} className={(choice.agent ?? "claude") === a ? "on" : ""} aria-pressed={(choice.agent ?? "claude") === a} onClick={() => setChoice({ agent: a })}>
-                {a === "claude" ? "Claude" : "Codex"}
-              </button>
-            ))}
-          </div>
-        )}
-        {target === "queue" ? (
-          <select className="select compact" value={choice.runner} aria-label="キューからの起動方法" onChange={(e) => setChoice({ runner: e.target.value as Runner })}>
-            {(Object.keys(RUNNER_LABEL) as Runner[]).map((r) => (
-              <option key={r} value={r}>
-                {RUNNER_LABEL[r]}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <>
-            <select className="select compact" value={cliOptions ? choice.model : ""} disabled={!cliOptions} title={cliOptions ? "モデル" : "Desktop ではモデルを選べません"} aria-label="モデル" onChange={(e) => setChoice({ model: e.target.value })}>
-              {MODELS.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-            <select className="select compact" value={cliOptions ? choice.effort : ""} disabled={!cliOptions} title={cliOptions ? "effort" : "Desktop では effort を選べません"} aria-label="effort" onChange={(e) => setChoice({ effort: e.target.value })}>
-              {EFFORTS.map((x) => (
-                <option key={x} value={x}>
-                  {x ? `effort: ${x}` : "既定の effort"}
-                </option>
-              ))}
-            </select>
-            <label className="toggle" title={cliOptions || codex ? "PR を作ってレビューを依頼したら、承認されて CI が通ったら自動でマージされるようにセッションに頼みます（merge commit）" : "Desktop では選べません"}>
-              <input type="checkbox" checked={(cliOptions || codex) && !!choice.autoMerge} disabled={!cliOptions && !codex} onChange={(e) => setChoice({ autoMerge: e.target.checked })} />
-              承認されたらマージ
-            </label>
-          </>
-        )}
+        <LaunchControls plan={plan} launch={launch} onPlan={setPlan} onLaunch={(patch) => setLaunch(plan, patch)} />
         <span className="grow" />
         <button className="primary" onClick={start} disabled={starting} aria-busy={starting}>
           {starting && <span className="spinner" />}
-          {starting ? "開始しています…" : target === "queue" ? "キューに入れる" : "開始"} {!starting && <span className="kbd">⌘↵</span>}
+          {starting ? "開始しています…" : "任せる"} {!starting && <span className="kbd">⌘↵</span>}
         </button>
       </div>
       <p className="muted hint">
-        ⌘1〜⌘{TARGETS.length} で起動先 · Tab でモデルと effort · [todo:{todo.id}] は自動で付きます · 空ならタイトルとメモから作ります
+        前回の設定で始まります（計画させるかどうかで別々に覚えます）· [todo:{todo.id}] は自動で付きます · 空ならタイトルとメモから作ります
         {todo.cwd ? ` · ${tildify(todo.cwd)}` : ""}
       </p>
     </div>
@@ -2892,7 +2808,7 @@ const createSubtask = (todo: Todo, title: string) =>
 
 /// The launch sheet (⌘Enter, or o without a session): the first prompt, where
 /// it runs and the subtasks, all from the keyboard; ⌘⇧N goes to adding a subtask.
-function StartDialog({ todo, allTodos, skills, run, onClose }: { todo: Todo; allTodos: Todo[]; skills: Skill[]; run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
+function StartDialog({ todo, allTodos, run, onClose }: { todo: Todo; allTodos: Todo[]; run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
   const children = allTodos.filter((c) => c.parent_id === todo.id);
   const subtask = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -2906,7 +2822,7 @@ function StartDialog({ todo, allTodos, skills, run, onClose }: { todo: Todo; all
   }, []);
   return (
     <Modal title={`#${todo.id} ${todo.title}`} wide onClose={onClose}>
-      <Composer todo={todo} skills={skills} run={run} onStarted={onClose} />
+      <Composer todo={todo} run={run} onStarted={onClose} />
       {!todo.parent_id && (
         <section className="start-subtasks" ref={subtask}>
           <h3>
@@ -3142,16 +3058,6 @@ function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOp
               </li>
             ))}
           </ul>
-          {todo.queue_runner && (
-            <div className="notice small">
-              <span>
-                キューで起動待ち（{RUNNER_LABEL[todo.queue_runner]}）{todo.queue_error && ` — ${todo.queue_error}`}
-              </span>
-              <button className="ghost small" onClick={() => run(() => api.dequeue(todo.id))}>
-                外す
-              </button>
-            </div>
-          )}
         </section>
 
         <div className="sheet-start">
@@ -3209,9 +3115,8 @@ function RepoTags({ repos }: { repos: string[] }) {
 const rowState = (s: Session) => (s.state === "needs_input" ? " needs-input" : s.unread ? " unread" : s.state === "running" ? " running" : "");
 
 /// What a subtask row without a session says.
-const TODO_ROW: Record<"none" | "queued" | "ended", [string, string]> = {
+const TODO_ROW: Record<"none" | "ended", [string, string]> = {
   none: ["未起動", "まだ始めていません"],
-  queued: ["キュー待ち", "キューで起動を待っています"],
   ended: ["終了", "セッションは終わりました"],
 };
 
@@ -3330,7 +3235,6 @@ function SessionsPage({ board, waiting, filter, onFilter, repoFilter, run, repor
       return true;
     },
   );
-  const queued = board.todos.filter((t) => t.queue_runner).sort((a, b) => (a.queue_pos ?? 0) - (b.queue_pos ?? 0) || a.id - b.id);
   return (
     <>
       <header className="toolbar">
@@ -3370,36 +3274,6 @@ function SessionsPage({ board, waiting, filter, onFilter, repoFilter, run, repor
         </button>
       </header>
       <div className="content" ref={listRef}>
-        {queued.length > 0 && (
-          <section className="box">
-            <div className="box-head">
-              <b>起動待ち</b>
-              <span className="muted">{queued.length}</span>
-              <span className="muted">上から順に、ループが動いていれば自動で始めます</span>
-              <span className="grow" />
-              <label className="toggle">
-                <input type="checkbox" checked={board.loop_enabled} onChange={(e) => run(() => api.setLoopEnabled(e.target.checked))} />
-                ループを動かす
-              </label>
-            </div>
-            <ul className="rows">
-              {queued.map((t, i) => (
-                <li key={t.id} className="row" onClick={() => onOpenTodo(t.id)}>
-                  <span className="mono muted">{i + 1}</span>
-                  <span className="mono muted">#{t.id}</span>
-                  <span className="row-title">
-                    {t.title}
-                    {t.queue_error && <span className="error-text"> — {t.queue_error}</span>}
-                  </span>
-                  <button className="ghost small" onClick={(e) => (e.stopPropagation(), run(() => api.dequeue(t.id)))}>
-                    外す
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </section>
-        )}
-
         {shownWaits.length > 0 && (
           <section className="waiting-section">
             <div className="section-head">
@@ -4109,52 +3983,85 @@ function Modal({ title, onClose, children, footer, wide }: {
 }
 
 /// Adds todos one after another: the dialog stays open and lists what it added.
-function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo }: {
+/// ⌘N: a todo in one go. 「作って任せる」 (⌘Enter) makes it and starts its
+/// session as last time (behind: nothing comes forward); 「置いておく」 (Enter)
+/// only makes it, and the dialog stays for the next.
+function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo, onImport }: {
   local: LocalRepo[];
   groups: string[];
   initialRepo: string | null;
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
   onOpenTodo: (id: number) => void;
+  /// The issues assigned to the user, to pick from instead.
+  onImport: () => void;
 }) {
+  const startTodo = useContext(StartTodoContext);
+  const { prefs, setLaunch } = useLaunchPrefs();
   const [title, setTitle] = useState("");
+  const [memo, setMemo] = useState("");
   const [repo, setRepo] = useState(initialRepo && initialRepo !== NO_REPO_LANE ? initialRepo : "");
   const [issueUrl, setIssueUrl] = useState("");
+  const [plan, setPlan] = useState(false);
   const [added, setAdded] = useState<Todo[]>([]);
   const titleRef = useRef<HTMLInputElement>(null);
   useEffect(() => titleRef.current?.focus(), []);
-  const submit = () => {
-    const t = title.trim();
-    if (!t) return;
-    const path = local.find((r) => r.key === repo)?.path;
+  const launch = prefs[plan ? "plan" : "direct"];
+  const make = () => api.createTodo({ title: title.trim(), memo: memo.trim() || undefined, repos: repo ? [repo] : [], cwd: local.find((r) => r.key === repo)?.path, issue_url: issueUrl.trim() || undefined });
+  const keep = () => {
+    if (!title.trim()) return;
     run(async () => {
-      const todo = await api.createTodo({ title: t, repos: repo ? [repo] : [], cwd: path, issue_url: issueUrl.trim() || undefined });
+      const todo = await make();
       setAdded((prev) => [todo, ...prev]);
       setTitle("");
+      setMemo("");
       setIssueUrl("");
       titleRef.current?.focus();
     });
   };
+  const delegate = () => {
+    if (!title.trim() || !startTodo) return;
+    onClose();
+    run(async () => startTodo((await make()).id, plan, launch));
+  };
+  const delegateRef = useRef(delegate);
+  delegateRef.current = delegate;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing || !matches(e, "start")) return;
+      e.preventDefault();
+      delegateRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   return (
     <Modal
-      title="todo を追加"
+      title="新しい todo"
+      wide
       onClose={onClose}
       footer={
         <>
-          <span className="muted">Enter で追加。続けて入力できます</span>
-          <span className="grow" />
-          <button className="ghost" onClick={onClose}>
-            閉じる
+          <button className="ghost" onClick={onImport} title="自分に割り当てられた issue から選んで todo にします">
+            issue から…
           </button>
-          <button className="primary" disabled={!title.trim()} onClick={submit}>
-            追加
+          <span className="grow" />
+          <button disabled={!title.trim()} title="作るだけで、まだ始めません（Enter）" onClick={keep}>
+            置いておく
+          </button>
+          <button className="primary" disabled={!title.trim()} title="作って、前回の設定でセッションを始めます（画面もフォーカスも動きません）" onClick={delegate}>
+            作って任せる <span className="kbd">⌘↵</span>
           </button>
         </>
       }
     >
       <label className="field">
         <span>タイトル</span>
-        <input ref={titleRef} value={title} placeholder="何をする？" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && submit()} />
+        <input ref={titleRef} value={title} placeholder="何をする？" onChange={(e) => setTitle(e.target.value)} onKeyDown={(e) => isEnter(e) && !e.metaKey && keep()} />
+      </label>
+      <label className="field">
+        <span>メモ（任意。最初のプロンプトに入ります）</span>
+        <textarea rows={3} value={memo} placeholder="背景・方針・完了条件など" onChange={(e) => setMemo(e.target.value)} />
       </label>
       <div className="two-col">
         <div className="field">
@@ -4162,13 +4069,17 @@ function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo }:
           <RepoChoice local={local} groups={repo && !isGithubRepo(repo) && !groups.includes(repo) ? [repo, ...groups] : groups} value={repo} placeholder={NO_REPO_LANE} onPick={setRepo} />
         </div>
         <label className="field">
-          <span>Issue / PR URL（任意）</span>
-          <input value={issueUrl} placeholder="https://github.com/…" onChange={(e) => setIssueUrl(e.target.value)} onKeyDown={(e) => isEnter(e) && submit()} />
+          <span>Issue URL（任意）</span>
+          <input value={issueUrl} placeholder="https://github.com/…" onChange={(e) => setIssueUrl(e.target.value)} onKeyDown={(e) => isEnter(e) && !e.metaKey && keep()} />
         </label>
+      </div>
+      <div className="field">
+        <span>任せ方（前回の設定）</span>
+        <LaunchControls plan={plan} launch={launch} onPlan={setPlan} onLaunch={(patch) => setLaunch(plan, patch)} />
       </div>
       {added.length > 0 && (
         <div className="added">
-          <span className="muted">追加済み {added.length} 件</span>
+          <span className="muted">置いておいたもの {added.length} 件</span>
           <ul className="rows compact">
             {added.map((t) => (
               <li key={t.id} className="row" onClick={() => onOpenTodo(t.id)}>
@@ -5565,6 +5476,22 @@ export default function App() {
     api.markSessionSeen(sessionId).catch(report);
     return cloudTarget === "desktop" ? api.openSession(sessionId, "desktop").catch(report) : openInBrowser(cloudWebUrl(sessionId));
   };
+  /// Starts a todo's session behind (StartTodo): a Cloud one's page is made
+  /// behind when Cloud sessions open on the web, an in-app terminal's tab too.
+  const startTodo: StartTodo = async (todoId, plan, launch) => {
+    const e = effectiveLaunch(launch, plan);
+    const options: StartOptions = { plan, agent: e.agent, ...(e.agent === "claude" ? { model: e.model || undefined, effort: e.effort || undefined } : {}) };
+    if (e.runner === "cloud") {
+      const finish = cloudTarget === "web" ? beginWeb() : undefined;
+      try {
+        finish?.(await api.startCloud(todoId, options));
+      } catch (err) {
+        finish?.(null);
+        throw err;
+      }
+    } else if (inAppTerminal) inAppTerminal.open(await terminalApi.start(todoId, options));
+    else await api.startTerminal(todoId, options);
+  };
   /// 「再開して直させる」: the todo's session is sent what to fix in its PR,
   /// without the keyboard or the screen moving. A Cloud session cannot be
   /// sent anything from here yet: its page opens with the request typed in.
@@ -5737,7 +5664,6 @@ export default function App() {
   const [usageError, setUsageError] = useState<string | null>(null);
   const [prs, setPrs] = useState<PrLists | null>(null);
   const [prError, setPrError] = useState<string | null>(null);
-  const [skillsByCwd, setSkillsByCwd] = useState<Record<string, Skill[]>>({});
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: DRAG_DISTANCE_PX } }));
 
   const setView = (v: View) => {
@@ -5975,13 +5901,6 @@ export default function App() {
   const allInputs = board?.inputs ?? [];
   const selectedTodo = selection?.kind === "todo" ? allTodos.find((t) => t.id === selection.id) ?? null : null;
 
-  // Skills depend on the folder a session starts in; fetch each folder's once.
-  const skillsKey = selectedTodo?.cwd ?? "";
-  useEffect(() => {
-    if (!selectedTodo || skillsByCwd[skillsKey]) return;
-    api.skills(skillsKey || null).then((s) => setSkillsByCwd((prev) => ({ ...prev, [skillsKey]: s })), report);
-  }, [selectedTodo?.id, skillsKey]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // "+ 新規" in a lane: a todo there with that status, a subtask when the lane is a parent's.
   const addTodoIn = (lane: Lane, status: Status, title: string) =>
     run(async () => {
@@ -6216,6 +6135,7 @@ export default function App() {
     <BeginWebContext.Provider value={beginWeb}>
     <OpenCloudContext.Provider value={openCloud}>
     <FixContext.Provider value={fixInSession}>
+    <StartTodoContext.Provider value={startTodo}>
     <TerminalContext.Provider value={inAppTerminal}>
     <SessionTitleContext.Provider value={sessionTitle}>
       <div
@@ -6662,6 +6582,7 @@ export default function App() {
               setDialog(null);
               goTodo(id);
             }}
+            onImport={() => setDialog("import")}
           />
         )}
         {dialog === "import" && <ImportDialog run={run} onClose={() => setDialog(null)} />}
@@ -6720,7 +6641,7 @@ export default function App() {
         )}
         {dialog === "keys" && <ShortcutsDialog onClose={() => setDialog(null)} />}
         {dialog === "start" && selectedTodo && (
-          <StartDialog todo={selectedTodo} allTodos={allTodos} skills={skillsByCwd[skillsKey] ?? []} run={run} onClose={() => setDialog(null)} />
+          <StartDialog todo={selectedTodo} allTodos={allTodos} run={run} onClose={() => setDialog(null)} />
         )}
         {dialog === "focusPick" && (
           <FocusPicker
@@ -6753,6 +6674,7 @@ export default function App() {
       </div>
     </SessionTitleContext.Provider>
     </TerminalContext.Provider>
+    </StartTodoContext.Provider>
     </FixContext.Provider>
     </OpenCloudContext.Provider>
     </BeginWebContext.Provider>

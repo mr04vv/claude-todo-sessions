@@ -16,8 +16,8 @@ export type TreeRow =
   | { kind: "group"; id: string; todo: Todo; done: number; total: number }
   /// `group` is the parent todo it sits under (folded with it), `child` set on a subtask's.
   | { kind: "session"; id: string; session: Session; todo?: Todo; group?: number; child?: boolean; last?: boolean }
-  /// A subtask with no session to show: not started, queued, or over.
-  | { kind: "todo"; id: string; todo: Todo; group: number; child: true; last?: boolean; state: "none" | "queued" | "ended" };
+  /// A subtask with no session to show: not started, or over.
+  | { kind: "todo"; id: string; todo: Todo; group: number; child: true; last?: boolean; state: "none" | "ended" };
 
 /// A PR still on its way: a subtask with one stays in sight when its sessions are over.
 const PR_UNDER_WAY: PrState[] = ["open", "review_requested", "changes_requested", "approved"];
@@ -55,7 +55,7 @@ export function sessionTree(
       }
       if (!withTodos) continue;
       const ever = all.some((i) => i.todo?.id === kid.id);
-      const state = kid.queue_runner ? "queued" : ever ? "ended" : "none";
+      const state = ever ? "ended" : "none";
       // A subtask done, or over with no PR under way, is only shown when the hidden ones are.
       const prUnderWay = kid.pr_state !== null && PR_UNDER_WAY.includes(kid.pr_state);
       if (!showIdleChildren && (kid.status === "done" || (state === "ended" && !prUnderWay))) continue;

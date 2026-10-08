@@ -48,10 +48,6 @@ export interface Todo {
   issue_state: "open" | "closed" | null;
   pr_url: string | null;
   pr_state: PrState | null;
-  queue_runner: Runner | null;
-  queue_error: string | null;
-  queue_pos: number | null;
-  kind: Kind;
   prompt_preview: string;
   parent_id: number | null;
   /** Its PR's CI (null: no checks). */
@@ -141,34 +137,14 @@ export type CiState = "pending" | "success" | "failure";
 
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
-export type Runner = "auto" | "cloud" | "local";
-export type Kind = "implementation" | "research";
-
-/** A notification the app posted, kept for the in-app list. */
-export interface Notice {
-  id: number;
-  session_id: string;
-  todo_id: number | null;
-  kind: "finished" | "needs_input" | "review_requested" | "study";
-  title: string;
-  created_at: number;
-  read: boolean;
-  /// The PR of a review request; its session_id is empty.
-  url: string | null;
-  /// The input a study notice (time to explain again) is for; a todo's is in todo_id.
-  input_id: number | null;
-}
 
 export interface Board {
   todos: Todo[];
   inputs: Input[];
   inbox: Session[];
-  /** Newest first. */
-  notifications: Notice[];
   /** Each subject's latest 「説明する」 attempt. */
   feynman: FeynmanSummary[];
   sync_status: string;
-  loop_enabled: boolean;
 }
 
 export interface TodoInput {
@@ -177,7 +153,6 @@ export interface TodoInput {
   cwd?: string;
   memo?: string;
   repos?: string[];
-  kind?: Kind;
   parent_id?: number;
 }
 
@@ -190,7 +165,6 @@ export interface TodoUpdate {
   repos?: string[];
   prompt?: string;
   pr_url?: string;
-  kind?: Kind;
 }
 
 export interface Issue {
@@ -219,11 +193,6 @@ export interface Limit {
   percent: number;
   resets_at: string | null;
   severity: string;
-}
-
-export interface Skill {
-  name: string;
-  description: string;
 }
 
 export interface Pr {
@@ -275,8 +244,8 @@ export interface HerdrSessions {
 export interface StartOptions {
   model?: string;
   effort?: string;
-  /** The session sets its PR to merge once approved (GitHub's auto-merge). */
-  auto_merge?: boolean;
+  /** The session plans the todo into subtasks (Claude in herdr) instead of implementing it. */
+  plan?: boolean;
   /** What runs a terminal session (Cloud and Desktop are Claude's). */
   agent?: Agent;
 }
@@ -305,10 +274,6 @@ export const api = {
   localRepos: () => invoke<LocalRepo[]>("local_repos"),
   createIssue: (todoId: number) => invoke<Todo>("create_issue", { todoId }),
   closeIssue: (todoId: number) => invoke<void>("close_issue", { todoId }),
-  enqueue: (todoId: number, runner: Runner) => invoke<void>("enqueue", { todoId, runner }),
-  dequeue: (todoId: number) => invoke<void>("dequeue", { todoId }),
-  moveInQueue: (todoId: number, delta: number) => invoke<void>("move_in_queue", { todoId, delta }),
-  setLoopEnabled: (enabled: boolean) => invoke<void>("set_loop_enabled", { enabled }),
   ghIssues: () => invoke<Issue[]>("gh_issues"),
   importIssues: (issues: IssueImport[]) => invoke<number>("import_issues", { issues }),
   board: () => invoke<Board>("board"),
@@ -342,7 +307,6 @@ export const api = {
   pageTitle: (url: string) => invoke<string | null>("page_title", { url }),
   removeLink: (id: number) => invoke<void>("remove_link", { id }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
-  startDesktop: (todoId: number) => invoke<void>("start_desktop", { todoId }),
   windowFocused: () => invoke<boolean>("window_focused"),
   /// Gives the app's own page the keyboard, which a browser tab may hold.
   focusAppPage: () => invoke<void>("term_focus"),
@@ -370,7 +334,7 @@ export const api = {
   removeInputLink: (id: number) => invoke<void>("remove_input_link", { id }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
-  startCloud: (todoId: number, options: StartOptions | undefined, desktop: boolean) => invoke<string>("start_cloud", { todoId, options: options ?? null, desktop }),
+  startCloud: (todoId: number, options?: StartOptions) => invoke<string>("start_cloud", { todoId, options: options ?? null }),
   /** Marks one notification read, or all with no id. */
   /// Merges the PR once approved: now when it is ready ("merged"), else by GitHub's auto-merge ("auto").
   /// Keeps (in the Keychain) the login a page just sent, or lets it go.
@@ -386,7 +350,6 @@ export const api = {
   markSessionSeen: (sessionId: string) => invoke<void>("mark_session_seen", { sessionId }),
   setParent: (todoId: number, parentId: number | null) => invoke<Todo>("set_parent", { todoId, parentId }),
   usage: () => invoke<Limit[]>("usage"),
-  skills: (cwd: string | null) => invoke<Skill[]>("skills", { cwd }),
   ghPrs: () => invoke<PrLists>("gh_prs"),
   /** Shows tab `tab` (created on first use) at `url` and hides the other tabs. */
   /// Shows `tab`, hiding the other tabs but `keep` (the focus mode's other side).

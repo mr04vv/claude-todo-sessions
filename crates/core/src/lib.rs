@@ -8,7 +8,6 @@ pub mod github;
 pub mod herdr;
 pub mod launch;
 pub mod ogp;
-pub mod skills;
 pub mod transcript;
 pub mod usage;
 
@@ -65,38 +64,13 @@ pub enum Status {
     Done,
 }
 
-/// What kind of work a todo is; it picks the default first prompt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum Kind {
-    #[default]
-    Implementation,
-    Research,
-}
-
 /// Skill that drills into the details before implementing.
 const GRILLING_COMMAND: &str = "/grilling";
-const RESEARCH_INSTRUCTIONS: &str = "調査を始める前に、完了条件（何が分かれば終わりか）と出力条件（成果物の形式・保存先・粒度）を私に質問して確認してから進めてください。";
 /// Every session the app starts asks its questions through the tool, so
 /// the answers are picked instead of typed (and the app can tell it waits).
 pub(crate) const ASK_INSTRUCTIONS: &str = "質問はすべて AskUserQuestion ツールで聞いてください（本文に質問を書いて待たない）。";
 /// Implementation work ends in a PR, whose reviewer the user picks.
 const REVIEWER_INSTRUCTIONS: &str = "PR を作ったら、レビューを誰に頼むかを AskUserQuestion で聞いてください（候補は、このリポジトリの最近の PR をレビューした人を `gh` で調べて挙げる）。選ばれた人に `gh pr edit <PR> --add-reviewer <user>` で依頼します。";
-
-impl Kind {
-    fn as_str(self) -> &'static str {
-        match self {
-            Kind::Implementation => "implementation",
-            Kind::Research => "research",
-        }
-    }
-    fn parse(s: Option<String>) -> Kind {
-        match s.as_deref() {
-            Some("research") => Kind::Research,
-            _ => Kind::Implementation,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,13 +100,6 @@ pub struct Todo {
     pub pr_url: Option<String>,
     /// draft / open / review_requested / changes_requested / approved / merged / closed
     pub pr_state: Option<String>,
-    /// Waiting in the run queue to be started as "cloud" or "local"; None = not queued.
-    pub queue_runner: Option<String>,
-    /// Why the last automatic start failed, shown in the queue.
-    pub queue_error: Option<String>,
-    /// Place in the run queue; lower starts first.
-    pub queue_pos: Option<i64>,
-    pub kind: Kind,
     /// The orchestrator todo this one was split from.
     pub parent_id: Option<i64>,
     /// Its PR's CI: "pending", "success" or "failure" (None: no checks).
@@ -142,22 +109,26 @@ pub struct Todo {
 }
 
 impl Todo {
-    /// First prompt (without the `[todo:<id>]` marker): the todo's own, else
-    /// the default for its kind. Implementation work starts by grilling the
-    /// details; research first asks for completion and output conditions.
-    /// A todo spanning several GitHub repositories plans the work and splits
-    /// it into one child todo per repository instead of implementing it.
+    /// A todo spanning several GitHub repositories is planned (split into
+    /// subtasks) by default when it starts.
     pub fn is_orchestrator(&self) -> bool {
         self.repos.iter().filter(|r| r.contains('/')).count() > 1
     }
 
-    /// First prompt, plus — for implementation work — what its PR should do
-    /// (close the issue, so GitHub closes it on merge; ask whom to review),
-    /// and for every todo that questions go through AskUserQuestion.
-    pub fn prompt_body(&self) -> String {
-        let mut body = self.base_prompt();
-        if self.kind == Kind::Implementation && !self.is_orchestrator() {
-            body.push_str("\n\n");
+    /// First prompt (without the `[todo:<id>]` marker): the todo's own, else
+    /// one grilling the details of its title and memo. Implementing, its PR
+    /// closes the issue (so GitHub closes it on merge) and asks whom to
+    /// review; `plan` asks instead to split the work into subtasks. Every
+    /// session asks its questions through AskUserQuestion.
+    pub fn prompt_body(&self, plan: bool) -> String {
+        let mut body = self.prompt.clone().unwrap_or_else(|| {
+            let memo = self.memo.as_deref().map(str::trim).filter(|m| !m.is_empty());
+            [Some(format!("{GRILLING_COMMAND} {}", self.title)), memo.map(Into::into)].into_iter().flatten().collect::<Vec<_>>().join("\n\n")
+        });
+        body.push_str("\n\n");
+        if plan {
+            body.push_str(&self.plan_instructions());
+        } else {
             if let Some(url) = self.issue_url.as_deref().filter(|u| u.contains("/issues/")) {
                 body.push_str(&format!("PR を作るときは、本文に `Closes {url}` を入れてください。"));
             }
@@ -168,45 +139,20 @@ impl Todo {
         body
     }
 
-    fn base_prompt(&self) -> String {
-        if let Some(p) = &self.prompt {
-            return p.clone();
-        }
-        if self.is_orchestrator() {
-            let repos: Vec<&str> = self.repos.iter().filter(|r| r.contains('/')).map(String::as_str).collect();
-            let mut body = format!("{GRILLING_COMMAND} {}", self.title);
-            if let Some(m) = self.memo.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-                body.push_str("\n\n");
-                body.push_str(m);
-            }
-            body.push_str(&format!(
-                "\n\nこれは複数リポジトリ（{}）にまたがる計画用の todo です。ここでは実装せず、詳細を詰めたあと、リポジトリごとに実装 todo を todo-sessions の create_todo で登録してください（parent_id={}、repos はそのリポジトリ1つ、memo にそのリポジトリでの実装方針と完了条件）。",
-                repos.join(", "),
-                self.id
-            ));
-            return body;
-        }
-        let memo = self.memo.as_deref().map(str::trim).filter(|m| !m.is_empty());
-        let head = match self.kind {
-            Kind::Implementation => format!("{GRILLING_COMMAND} {}", self.title),
-            Kind::Research => format!("調査: {}", self.title),
-        };
-        let mut body = head;
-        if let Some(m) = memo {
-            body.push_str("\n\n");
-            body.push_str(m);
-        }
-        if self.kind == Kind::Research {
-            body.push_str("\n\n");
-            body.push_str(RESEARCH_INSTRUCTIONS);
-        }
-        body
+    /// What a planning session is asked: no implementing, the details settled,
+    /// then a subtask per piece of work (per repository when it spans several).
+    fn plan_instructions(&self) -> String {
+        let repos: Vec<&str> = self.repos.iter().filter(|r| r.contains('/')).map(String::as_str).collect();
+        let span = if repos.len() > 1 { format!("複数リポジトリ（{}）にまたがる", repos.join(", ")) } else { "いくつかの作業に分けて進める".into() };
+        format!(
+            "これは{span}計画用の todo です。ここでは実装せず、詳細を詰めたあと、作業ごとにサブタスクを todo-sessions の create_todo で登録してください（parent_id={}、repos はそのサブタスクのリポジトリ1つ、memo にそのサブタスクの実装方針と完了条件）。",
+            self.id
+        )
     }
 }
 
 #[derive(Debug, Default)]
 pub struct NewTodo {
-    pub kind: Kind,
     pub parent_id: Option<i64>,
     pub title: String,
     pub issue_url: Option<String>,
@@ -261,7 +207,6 @@ pub struct TodoPatch {
     pub prompt: Option<String>,
     /// Blank clears it.
     pub pr_url: Option<String>,
-    pub kind: Option<Kind>,
 }
 
 /// The program a session runs.
@@ -547,7 +492,7 @@ const LINK_COLS: &str = "id, todo_id, url, title, image, created_at";
 const INPUT_COLS: &str = "id, title, memo, done, updated_at";
 const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER), ci_state, ci_failed";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, CAST(parent_id AS INTEGER), ci_state, ci_failed";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at),
     (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0)),
     COALESCE(agent, 'claude'),
@@ -619,13 +564,9 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         issue_state: r.get(9)?,
         pr_url: r.get(10)?,
         pr_state: r.get(11)?,
-        queue_runner: r.get(12)?,
-        queue_error: r.get(13)?,
-        queue_pos: r.get(14)?,
-        kind: Kind::parse(r.get(15)?),
-        parent_id: r.get(16)?,
-        ci_state: r.get(17)?,
-        ci_failed: r.get::<_, Option<String>>(18)?.map(|f| f.split(CI_FAILED_SEPARATOR).map(Into::into).collect()).unwrap_or_default(),
+        parent_id: r.get(12)?,
+        ci_state: r.get(13)?,
+        ci_failed: r.get::<_, Option<String>>(14)?.map(|f| f.split(CI_FAILED_SEPARATOR).map(Into::into).collect()).unwrap_or_default(),
     })
 }
 
@@ -790,8 +731,8 @@ impl Db {
 
     pub fn create_todo(&self, t: NewTodo) -> Result<Todo> {
         self.conn.execute(
-            "INSERT INTO todos (title, issue_url, cwd, memo, updated_at, repos, kind, parent_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![t.title, t.issue_url, t.cwd, t.memo, now(), join_repos(&t.repos), t.kind.as_str(), t.parent_id],
+            "INSERT INTO todos (title, issue_url, cwd, memo, updated_at, repos, parent_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![t.title, t.issue_url, t.cwd, t.memo, now(), join_repos(&t.repos), t.parent_id],
         )?;
         let id = self.conn.last_insert_rowid();
         self.get_todo(id)?.ok_or(Error::TodoNotFound(id))
@@ -825,7 +766,6 @@ impl Db {
                 prompt = CASE WHEN ?9 IS NULL THEN prompt ELSE NULLIF(?9, '') END,
                 pr_state = CASE WHEN ?10 IS NULL OR NULLIF(?10, '') IS pr_url THEN pr_state ELSE NULL END,
                 pr_url = CASE WHEN ?10 IS NULL THEN pr_url ELSE NULLIF(?10, '') END,
-                kind = COALESCE(?11, kind),
                 updated_at = ?6
              WHERE id = ?1",
             params![
@@ -840,7 +780,6 @@ impl Db {
                 p.repos.as_deref().map(|r| join_repos(r).unwrap_or_default()),
                 p.prompt.as_deref().map(str::trim),
                 p.pr_url.as_deref().map(str::trim),
-                p.kind.map(Kind::as_str),
             ],
         )?;
         if n == 0 {
@@ -1308,58 +1247,6 @@ impl Db {
     }
 
     /// Puts the todo at the end of the run queue (or changes its runner).
-    pub fn enqueue(&self, id: i64, runner: &str) -> Result<()> {
-        let n = self.conn.execute(
-            "UPDATE todos SET queue_runner = ?2, queue_error = NULL,
-                queue_pos = COALESCE(queue_pos, (SELECT COALESCE(MAX(CAST(queue_pos AS INTEGER)), 0) + 1 FROM todos))
-             WHERE id = ?1",
-            params![id, runner],
-        )?;
-        if n == 0 {
-            return Err(Error::TodoNotFound(id));
-        }
-        Ok(())
-    }
-
-    pub fn dequeue(&self, id: i64) -> Result<()> {
-        self.conn.execute(
-            "UPDATE todos SET queue_runner = NULL, queue_pos = NULL, queue_error = NULL WHERE id = ?1",
-            [id],
-        )?;
-        Ok(())
-    }
-
-    pub fn queued(&self) -> Result<Vec<Todo>> {
-        let mut stmt = self.conn.prepare(&format!(
-            "SELECT {TODO_COLS} FROM todos WHERE queue_runner IS NOT NULL ORDER BY CAST(queue_pos AS INTEGER), id"
-        ))?;
-        let rows = stmt.query_map([], todo_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Swaps the todo with its neighbour in the queue (`delta` -1 = earlier).
-    pub fn move_in_queue(&self, id: i64, delta: i64) -> Result<()> {
-        let q = self.queued()?;
-        let Some(i) = q.iter().position(|t| t.id == id) else { return Ok(()) };
-        let j = i as i64 + delta;
-        if j < 0 || j >= q.len() as i64 {
-            return Ok(());
-        }
-        let other = q[j as usize].id;
-        self.conn.execute(
-            "UPDATE todos SET queue_pos = CASE id WHEN ?1 THEN (SELECT queue_pos FROM todos WHERE id = ?2)
-                                                  ELSE (SELECT queue_pos FROM todos WHERE id = ?1) END
-             WHERE id IN (?1, ?2)",
-            params![id, other],
-        )?;
-        Ok(())
-    }
-
-    pub fn set_queue_error(&self, id: i64, error: Option<&str>) -> Result<()> {
-        self.conn.execute("UPDATE todos SET queue_error = ?2 WHERE id = ?1", params![id, error])?;
-        Ok(())
-    }
-
     /// Records the pull request's state and returns the one seen before.
     pub fn set_pr_state(&self, id: i64, state: &str) -> Result<Option<String>> {
         let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.pr_state;

@@ -303,11 +303,11 @@ fn todo_prompt_is_stored_and_cleared() {
     let (_d, db) = open();
     let t = db.create_todo(new_todo("Fix login")).unwrap();
     assert_eq!(t.prompt, None);
-    let start = cts_core::launch::start_prompt(t.id, &t.prompt_body());
+    let start = cts_core::launch::start_prompt(t.id, &t.prompt_body(false));
     assert!(start.starts_with("/grilling Fix login") && start.ends_with(&format!(" [todo:{}]", t.id)), "{start}");
     let u = db.update_todo(t.id, TodoPatch { prompt: Some("まず計画を立てて".into()), ..Default::default() }).unwrap();
     assert_eq!(u.prompt.as_deref(), Some("まず計画を立てて"));
-    assert!(u.prompt_body().starts_with("まず計画を立てて"), "{}", u.prompt_body());
+    assert!(u.prompt_body(false).starts_with("まず計画を立てて"), "{}", u.prompt_body(false));
     let u = db.update_todo(t.id, TodoPatch { prompt: Some("  ".into()), ..Default::default() }).unwrap();
     assert_eq!(u.prompt, None);
 }
@@ -338,38 +338,27 @@ fn todo_keeps_one_pr_and_its_state() {
 }
 
 #[test]
-fn queue_orders_and_records_runner_and_errors() {
+fn the_default_prompt_grills_the_title_and_memo() {
     let (_d, db) = open();
-    let a = db.create_todo(new_todo("a")).unwrap();
-    let b = db.create_todo(new_todo("b")).unwrap();
-    db.enqueue(b.id, "local").unwrap();
-    db.enqueue(a.id, "cloud").unwrap();
-    let q: Vec<(i64, String)> = db.queued().unwrap().into_iter().map(|t| (t.id, t.queue_runner.unwrap())).collect();
-    assert_eq!(q, vec![(b.id, "local".into()), (a.id, "cloud".into())]);
-    db.move_in_queue(a.id, -1).unwrap();
-    assert_eq!(db.queued().unwrap()[0].id, a.id);
-    db.set_queue_error(a.id, Some("no repo")).unwrap();
-    assert_eq!(db.get_todo(a.id).unwrap().unwrap().queue_error.as_deref(), Some("no repo"));
-    db.dequeue(a.id).unwrap();
-    let t = db.get_todo(a.id).unwrap().unwrap();
-    assert_eq!((t.queue_runner, t.queue_error), (None, None));
-    assert_eq!(db.queued().unwrap().len(), 1);
+    let t = db.create_todo(NewTodo { title: "Fix login".into(), memo: Some("see logs".into()), ..Default::default() }).unwrap();
+    assert!(t.prompt_body(false).starts_with("/grilling Fix login\n\nsee logs"), "{}", t.prompt_body(false));
+    // A custom prompt wins over the default.
+    let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
+    assert!(c.prompt_body(false).starts_with("自由に"), "{}", c.prompt_body(false));
 }
 
 #[test]
-fn kind_picks_the_default_prompt() {
+fn planning_splits_any_todo_into_subtasks() {
     let (_d, db) = open();
-    let t = db.create_todo(NewTodo { title: "Fix login".into(), memo: Some("see logs".into()), ..Default::default() }).unwrap();
-    assert_eq!(t.kind, cts_core::Kind::Implementation);
-    assert!(t.prompt_body().starts_with("/grilling Fix login\n\nsee logs"), "{}", t.prompt_body());
-    let r = db.update_todo(t.id, TodoPatch { kind: Some(cts_core::Kind::Research), ..Default::default() }).unwrap();
-    assert_eq!(r.kind, cts_core::Kind::Research);
-    let body = r.prompt_body();
-    assert!(body.starts_with("調査: Fix login"), "{body}");
-    assert!(body.contains("完了条件") && body.contains("出力条件"), "{body}");
-    // A custom prompt wins over the kind's default.
-    let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
-    assert!(c.prompt_body().starts_with("自由に"), "{}", c.prompt_body());
+    let t = db.create_todo(NewTodo { title: "ダッシュボード刷新".into(), repos: vec!["o/web".into()], ..Default::default() }).unwrap();
+    let body = t.prompt_body(true);
+    assert!(body.starts_with("/grilling ダッシュボード刷新"), "{body}");
+    assert!(body.contains("create_todo") && body.contains(&format!("parent_id={}", t.id)), "{body}");
+    assert!(!body.contains("--add-reviewer"), "planning makes no PR: {body}");
+    // A custom prompt is planned too.
+    let c = db.update_todo(t.id, TodoPatch { prompt: Some("分けて進めたい".into()), ..Default::default() }).unwrap();
+    let body = c.prompt_body(true);
+    assert!(body.starts_with("分けて進めたい") && body.contains("create_todo"), "{body}");
 }
 
 #[test]
@@ -378,13 +367,11 @@ fn prompts_ask_through_ask_user_question_and_implementation_asks_whom_to_review(
     let asks = |body: &str| body.contains("AskUserQuestion");
     let reviewer = |body: &str| body.contains("レビューを誰に頼むか") && body.contains("--add-reviewer");
     let t = db.create_todo(new_todo("fix")).unwrap();
-    assert!(asks(&t.prompt_body()) && reviewer(&t.prompt_body()), "{}", t.prompt_body());
+    assert!(asks(&t.prompt_body(false)) && reviewer(&t.prompt_body(false)), "{}", t.prompt_body(false));
     let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
-    assert!(asks(&c.prompt_body()) && reviewer(&c.prompt_body()), "a custom prompt too: {}", c.prompt_body());
-    let r = db.update_todo(t.id, TodoPatch { kind: Some(cts_core::Kind::Research), prompt: Some(String::new()), ..Default::default() }).unwrap();
-    assert!(asks(&r.prompt_body()) && !reviewer(&r.prompt_body()), "research makes no PR: {}", r.prompt_body());
+    assert!(asks(&c.prompt_body(false)) && reviewer(&c.prompt_body(false)), "a custom prompt too: {}", c.prompt_body(false));
     let p = db.create_todo(NewTodo { title: "横断".into(), repos: vec!["o/a".into(), "o/b".into()], ..Default::default() }).unwrap();
-    assert!(asks(&p.prompt_body()) && !reviewer(&p.prompt_body()), "an orchestrator makes no PR: {}", p.prompt_body());
+    assert!(asks(&p.prompt_body(true)) && !reviewer(&p.prompt_body(true)), "planning makes no PR: {}", p.prompt_body(true));
 }
 
 #[test]
@@ -488,7 +475,7 @@ fn children_finish_their_parent() {
 fn orchestrator_prompt_plans_child_todos() {
     let (_d, db) = open();
     let p = db.create_todo(NewTodo { title: "横断改修".into(), repos: vec!["o/a".into(), "o/b".into()], ..Default::default() }).unwrap();
-    let body = p.prompt_body();
+    let body = p.prompt_body(true);
     assert!(body.starts_with("/grilling 横断改修"), "{body}");
     assert!(body.contains(&format!("parent_id={}", p.id)) && body.contains("o/a") && body.contains("o/b"), "{body}");
 }
@@ -498,11 +485,10 @@ fn implementation_prompt_asks_the_pr_to_close_the_issue() {
     let (_d, db) = open();
     let url = "https://github.com/o/r/issues/7";
     let t = db.create_todo(NewTodo { title: "fix".into(), issue_url: Some(url.into()), ..Default::default() }).unwrap();
-    assert!(t.prompt_body().contains(&format!("Closes {url}")), "{}", t.prompt_body());
+    assert!(t.prompt_body(false).contains(&format!("Closes {url}")), "{}", t.prompt_body(false));
     let c = db.update_todo(t.id, TodoPatch { prompt: Some("自由に".into()), ..Default::default() }).unwrap();
-    assert!(c.prompt_body().starts_with("自由に") && c.prompt_body().contains(&format!("Closes {url}")));
-    let r = db.update_todo(t.id, TodoPatch { kind: Some(cts_core::Kind::Research), prompt: Some(String::new()), ..Default::default() }).unwrap();
-    assert!(!r.prompt_body().contains("Closes"), "{}", r.prompt_body());
+    assert!(c.prompt_body(false).starts_with("自由に") && c.prompt_body(false).contains(&format!("Closes {url}")));
+    assert!(!t.prompt_body(true).contains("Closes"), "planning makes no PR: {}", t.prompt_body(true));
 }
 
 #[test]
@@ -520,8 +506,7 @@ fn migrated_integer_columns_read_back_as_integers() {
     let p = db.create_todo(new_todo("p")).unwrap();
     let c = db.create_todo(NewTodo { title: "c".into(), parent_id: Some(p.id), ..Default::default() }).unwrap();
     assert_eq!(c.parent_id, Some(p.id));
-    db.enqueue(c.id, "auto").unwrap();
-    assert_eq!(db.get_todo(c.id).unwrap().unwrap().queue_pos, Some(1));
+    assert_eq!(db.get_todo(c.id).unwrap().unwrap().parent_id, Some(p.id));
 }
 
 #[test]

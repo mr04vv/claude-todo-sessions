@@ -1826,30 +1826,6 @@ input.panel-title:focus-visible {
   border-color: var(--accent-line);
 }
 
-.skills {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px 10px;
-  font-size: 11px;
-}
-
-.skill {
-  height: 24px;
-  padding: 0 9px;
-  border-radius: 12px;
-  background: none;
-  font-family: ui-monospace, "SF Mono", Menlo, monospace;
-  font-size: 11px;
-}
-
-.skill.on {
-  background: var(--accent-soft);
-  border-color: var(--accent-line);
-  color: var(--accent);
-}
-
 .composer-foot {
   display: flex;
   align-items: center;
@@ -1859,9 +1835,18 @@ input.panel-title:focus-visible {
   border-top: 1px solid var(--border-2);
 }
 
-.composer-foot .segmented button {
+.composer-foot .segmented button,
+.launch-controls .segmented button {
   padding: 0 8px;
   font-size: 11px;
+}
+
+/* 計画させる, where, what and the model: how a todo starts. */
+.launch-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .composer .hint {
