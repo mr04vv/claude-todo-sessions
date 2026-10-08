@@ -113,6 +113,7 @@
   // one of its frames) taking it says so.
   const FOCUSED = "todo-sessions://page-focused";
   const FRAME_FOCUSED = "focused";
+  const FRAME_KEYDOWN = "keydown";
   const tellFocused = () => window.__todoSessionsFocusMode && send(FOCUSED);
   window.addEventListener("focus", () => (FRAME ? window.top.postMessage({ [FRAME_KEY]: FRAME_FOCUSED }, "*") : tellFocused()));
 
@@ -126,14 +127,21 @@
         send(FOCUS_EXIT);
         return;
       }
+      // A frame does not know the app's keys (only the page is given them):
+      // it passes its key presses up, and the page matches them.
+      if (FRAME) {
+        if (e.metaKey || e.ctrlKey || e.altKey) {
+          const { key, metaKey, ctrlKey, altKey, shiftKey } = e;
+          window.top.postMessage({ [FRAME_KEY]: FRAME_KEYDOWN, event: { key, metaKey, ctrlKey, altKey, shiftKey } }, "*");
+        }
+        return;
+      }
       // Ahead of the page's own keys (ChatGPT's ⌘K search, say).
-      const hit = KEY_ACTIONS.find(([action]) => is(e, action) && !(FRAME && PAGE_ONLY.includes(action)));
+      const hit = KEY_ACTIONS.find(([action]) => is(e, action));
       if (!hit) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      const text = String(getSelection() ?? "").trim();
-      if (FRAME) window.top.postMessage({ [FRAME_KEY]: hit[0], text }, "*");
-      else hit[1](text);
+      hit[1](String(getSelection() ?? "").trim());
     },
     true,
   );
@@ -141,8 +149,9 @@
   window.addEventListener("message", (e) => {
     const action = e.data?.[FRAME_KEY];
     if (!FRAME && e.source !== window && action === FRAME_FOCUSED) return tellFocused();
-    const hit = !FRAME && e.source !== window && KEY_ACTIONS.find(([a]) => a === action && !PAGE_ONLY.includes(a));
-    if (hit) hit[1](typeof e.data.text === "string" ? e.data.text : "");
+    if (FRAME || e.source === window) return;
+    const hit = KEY_ACTIONS.find(([a]) => (action === FRAME_KEYDOWN ? is(e.data.event, a) : a === action) && !PAGE_ONLY.includes(a));
+    if (hit) hit[1]("");
   });
 
   // The list keys (j k) scroll the page when no field has the typing, unless
