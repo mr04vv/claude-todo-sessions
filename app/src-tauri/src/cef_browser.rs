@@ -436,6 +436,16 @@ wrap_life_span_handler! {
             LIVE.fetch_add(1, Ordering::SeqCst);
         }
 
+        // Left to CEF, closing a browser also sends performClose to its parent
+        // window, which hides the app's window. The pages are views in it, so
+        // taking the view out is the close (its release ends the browser).
+        fn do_close(&self, browser: Option<&mut Browser>) -> ::std::os::raw::c_int {
+            if let Some(view) = browser.and_then(|b| view_of(b)) {
+                view.removeFromSuperview();
+            }
+            1
+        }
+
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             LIVE.fetch_sub(1, Ordering::SeqCst);
         }
@@ -462,6 +472,16 @@ wrap_life_span_handler! {
     impl LifeSpanHandler {
         fn on_after_created(&self, _browser: Option<&mut Browser>) {
             LIVE.fetch_add(1, Ordering::SeqCst);
+        }
+
+        // Left to CEF, closing a browser also sends performClose to its parent
+        // window, which hides the app's window. The pages are views in it, so
+        // taking the view out is the close (its release ends the browser).
+        fn do_close(&self, browser: Option<&mut Browser>) -> ::std::os::raw::c_int {
+            if let Some(view) = browser.and_then(|b| view_of(b)) {
+                view.removeFromSuperview();
+            }
+            1
         }
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {

@@ -2526,8 +2526,11 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("build tauri app")
         .run(|app, event| {
-            if let tauri::RunEvent::Exit = event {
-                cef_browser::shutdown(app);
+            match event {
+                tauri::RunEvent::Exit => cef_browser::shutdown(app),
+                // The Dock icon brings back the window a close hid.
+                tauri::RunEvent::Reopen { .. } => show_window(app),
+                _ => {}
             }
         });
 }
