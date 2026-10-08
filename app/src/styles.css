@@ -1887,55 +1887,6 @@ input.panel-title:focus-visible {
   background: var(--card-hover);
 }
 
-.attachments {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.attachment {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px;
-  background: var(--card);
-  border: 1px solid var(--border-2);
-  border-radius: 8px;
-  cursor: pointer;
-}
-
-.attachment img,
-.thumb {
-  width: 56px;
-  height: 36px;
-  flex-shrink: 0;
-  border-radius: 5px;
-  object-fit: cover;
-}
-
-.thumb {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--card-hover);
-  color: var(--text-3);
-}
-
-.attachment-text {
-  flex-grow: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  font-size: 12px;
-}
-
-.attachment-text .muted {
-  font-size: 11px;
-}
-
 .actions {
   display: flex;
   align-items: center;

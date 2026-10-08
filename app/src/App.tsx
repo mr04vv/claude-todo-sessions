@@ -2930,10 +2930,8 @@ function StartDialog({ todo, allTodos, skills, run, onClose }: { todo: Todo; all
   );
 }
 
-function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setStatus, onOpenTodo, onFocus, onStart, onClose }: {
+function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOpenTodo, onStart, onClose }: {
   todo: Todo;
-  /// Its latest 「説明する」 attempt.
-  feynman: FeynmanSummary | undefined;
   allTodos: Todo[];
   local: LocalRepo[];
   groups: string[];
@@ -2941,8 +2939,6 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
   report: (e: unknown) => void;
   setStatus: (todo: Todo, status: Status) => void;
   onOpenTodo: (id: number) => void;
-  /// The focus mode, with the todo's page on the left.
-  onFocus: () => void;
   /// The launch sheet.
   onStart: () => void;
   onClose: () => void;
@@ -2995,10 +2991,6 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
         )}
         <span className="mono">#{todo.id}</span>
         <span className="grow" />
-        <StudyTags summary={feynman} />
-        <button className="ghost small" title={`Input モードで開く（${keyLabel(keyOf("focusTodo"))}）：添付の URL を左、ChatGPT を右に`} onClick={onFocus}>
-          Input モード
-        </button>
         {gh && (
           <button className="ghost icon" aria-label="GitHub で開く" title={gh} onClick={() => browse(gh)}>
             <Icon name="open" size={14} />
@@ -3178,37 +3170,6 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
           <MemoEditor value={todo.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
         </section>
 
-        <section>
-          <h3>リンク {todo.links.length > 0 && <span className="muted">{todo.links.length}</span>}</h3>
-          <ul className="attachments">
-            {todo.links.map((l) => (
-              <li key={l.id} className="attachment" title={l.url} onClick={() => browse(l.url)}>
-                {l.image ? (
-                  <img src={l.image} alt="" />
-                ) : (
-                  <span className="thumb">
-                    <Icon name="open" size={14} />
-                  </span>
-                )}
-                <span className="attachment-text">
-                  <span className="ellipsis">{l.title ?? hostOf(l.url)}</span>
-                  <span className="muted ellipsis">{l.url}</span>
-                </span>
-                <button
-                  className="ghost icon"
-                  aria-label="外す"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    run(() => api.removeLink(l.id));
-                  }}
-                >
-                  <Icon name="close" size={12} />
-                </button>
-              </li>
-            ))}
-          </ul>
-          <SubmitInput placeholder="URL を貼って Enter で追加" onSubmit={(url) => run(() => api.addLink(todo.id, url))} />
-        </section>
       </div>
     </aside>
   );
@@ -6137,10 +6098,6 @@ export default function App() {
     open: (id) => openTodo(id),
     select: openTodo,
     status: setStatusMenuFor,
-    focus: (id) => {
-      const todo = allTodos.find((t) => t.id === id);
-      if (todo) focusTodo(todo);
-    },
     link: (id) => {
       const todo = allTodos.find((t) => t.id === id);
       const url = todo?.pr_url ?? todo?.issue_url;
@@ -6577,14 +6534,12 @@ export default function App() {
               <TodoPanel
                 todo={selectedTodo}
                 allTodos={allTodos}
-                feynman={feynmanOf.get(subjectKey({ kind: "todo", id: selectedTodo.id }))}
                 local={local}
                 groups={groups}
                 run={run}
                 report={report}
                 setStatus={setStatus}
                 onOpenTodo={openTodo}
-                onFocus={() => focusTodo(selectedTodo)}
                 onStart={() => setDialog("start")}
                 onClose={() => setSelection(null)}
               />
