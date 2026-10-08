@@ -68,6 +68,39 @@ pub fn note_url(text: &str) -> Option<String> {
     published.or_else(born).or_else(named)
 }
 
+/// An artifact or a doc a session made, as its record tells it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub url: String,
+    /// A published artifact's file name, without its extension.
+    pub title: Option<String>,
+    /// A Claude Docs document (else an artifact).
+    pub doc: bool,
+}
+
+/// Every artifact a session published and every doc it made, in its
+/// transcript or events, once each (a new version is the same one), in the
+/// order made. Links merely mentioned are not them.
+pub fn artifacts(text: &str) -> Vec<Found> {
+    let mut found: Vec<(usize, Found)> = Vec::new();
+    for (i, _) in text.match_indices(PUBLISHED) {
+        let line = until_line_end(&text[i + PUBLISHED.len()..]);
+        let Some(j) = line.find(PUBLISHED_AT) else { continue };
+        let Some(url) = artifact_at(&line[j + PUBLISHED_AT.len()..]) else { continue };
+        let file = line[..j].rsplit('/').next().unwrap_or_default();
+        let title = file.rsplit_once('.').map_or(file, |(stem, _)| stem).trim();
+        found.push((i, Found { url, title: (!title.is_empty()).then(|| title.to_string()), doc: false }));
+    }
+    for (i, _) in text.match_indices(DOC_BORN) {
+        if let Some(url) = artifact_at(text[i + DOC_BORN.len()..].trim_start_matches(['\\', '"', ':'])) {
+            found.push((i, Found { url, title: None, doc: true }));
+        }
+    }
+    found.sort_by_key(|(i, _)| *i);
+    let mut seen = std::collections::HashSet::new();
+    found.into_iter().map(|(_, f)| f).filter(|f| seen.insert(f.url.clone())).collect()
+}
+
 /// Up to the end of the line, also where the line is a JSON string's.
 fn until_line_end(s: &str) -> &str {
     &s[..s.find(['\n', '"', '\\']).unwrap_or(s.len())]
@@ -186,6 +219,28 @@ mod tests {
         let long = "あ".repeat(QUESTION_MAX_CHARS + 50);
         let entries = [assistant(json!([{"type": "text", "text": long}]), json!({}))];
         assert_eq!(question(&entries).unwrap().chars().count(), QUESTION_MAX_CHARS);
+    }
+
+    #[test]
+    fn every_artifact_and_doc_a_session_made_is_found_once() {
+        let text = concat!(
+            r#"{"type":"user","message":{"content":"see https://claude.ai/artifact/abc123 in the docs"}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Published /tmp/work/比較表.html at https://claude.ai/artifact/1UnAnmsD3RX7 (Version 1)"}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"frame\":{\"artifactUrl\":\"https://claude.ai/code/artifact/e1e71452-f7a7\"}}"}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Published /tmp/work/比較表.html at https://claude.ai/artifact/1UnAnmsD3RX7 (Version 2)"}]}}"#,
+        );
+        assert_eq!(
+            artifacts(text),
+            vec![
+                Found { url: "https://claude.ai/artifact/1UnAnmsD3RX7".into(), title: Some("比較表".into()), doc: false },
+                Found { url: "https://claude.ai/code/artifact/e1e71452-f7a7".into(), title: None, doc: true },
+            ],
+            "a link merely mentioned is not one, and a new version is the same one"
+        );
+        assert!(artifacts("nothing").is_empty());
     }
 
     #[test]

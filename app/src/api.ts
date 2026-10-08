@@ -152,12 +152,27 @@ export interface TodoEvent {
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
 
+/** What a session made besides a PR: a claude.ai artifact or doc, or a file it registered. */
+export interface Artifact {
+  id: number;
+  /** A claude.ai page, or a file's path. */
+  url: string;
+  title: string | null;
+  kind: "artifact" | "doc" | "file";
+  session_id: string | null;
+  todo_id: number | null;
+  theme_id: number | null;
+  created_at: number;
+}
+
 export interface Board {
   todos: Todo[];
   inputs: Input[];
   inbox: Session[];
   /** Each subject's latest 「説明する」 attempt. */
   feynman: FeynmanSummary[];
+  /** Newest first. */
+  artifacts: Artifact[];
   sync_status: string;
 }
 
@@ -297,6 +312,8 @@ export const api = {
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
   /// A plain claude in herdr, at home unless `cwd` is given.
+  /// Opens a file an artifact is, with its app.
+  openPath: (path: string) => invoke<void>("open_path", { path }),
   /// The todo's handover is dealt with.
   clearEscalation: (todoId: number) => invoke<void>("clear_escalation", { todoId }),
   /// What happened under a (parent) todo, newest first: its 経過.

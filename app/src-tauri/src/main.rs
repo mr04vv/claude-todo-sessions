@@ -152,6 +152,8 @@ struct Board {
     inbox: Vec<SessionView>,
     /// Each subject's latest 「説明する」 attempt (feynman.rs).
     feynman: Vec<cts_core::FeynmanSummary>,
+    /// What sessions made besides PRs, newest first.
+    artifacts: Vec<cts_core::Artifact>,
     sync_status: String,
 }
 
@@ -221,7 +223,7 @@ struct TodoUpdate {
 
 #[tauri::command(async)]
 fn board(state: State<AppState>) -> Result<Board, String> {
-    let (todos, inputs, inbox, feynman) = {
+    let (todos, inputs, inbox, feynman, artifacts) = {
         let db = state.db.lock().map_err(err)?;
         let (mut sessions, mut links) = (db.sessions_by_todo().map_err(err)?, db.links_by_todo().map_err(err)?);
         let todos = db
@@ -238,7 +240,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             // A review that ended without being put away stopped before submitting: it waits on the user.
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .collect();
-        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?)
+        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -258,7 +260,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, inputs, inbox, feynman, sync_status })
+    Ok(Board { todos, inputs, inbox, feynman, artifacts, sync_status })
 }
 
 #[tauri::command(async)]
@@ -1209,6 +1211,42 @@ fn transcript_tail(session_id: &str) -> Option<String> {
 /// Latest non-default branch a local session worked on, from its transcript.
 fn transcript_branch(session_id: &str) -> Option<String> {
     launch::last_git_branch(&transcript_tail(session_id)?)
+}
+
+/// Keeps the claude.ai artifacts and docs a session made, with its todo.
+fn keep_artifacts(session: &Session) {
+    let text = if launch::is_cloud_session(&session.session_id) {
+        match cts_core::cloud::recent_entries(&session.session_id).and_then(|e| serde_json::to_string(&e).map_err(err)) {
+            Ok(t) => t,
+            Err(e) => return eprintln!("{e}"),
+        }
+    } else {
+        transcript_tail(&session.session_id).unwrap_or_default()
+    };
+    let found = cts_core::transcript::artifacts(&text);
+    if found.is_empty() {
+        return;
+    }
+    let db = match open_db() {
+        Ok(db) => db,
+        Err(e) => return eprintln!("{e}"),
+    };
+    for f in found {
+        let kind = if f.doc { cts_core::ArtifactKind::Doc } else { cts_core::ArtifactKind::Artifact };
+        let a = cts_core::NewArtifact { url: f.url, title: f.title, kind, session_id: Some(session.session_id.clone()), todo_id: session.todo_id, theme_id: None };
+        if let Err(e) = db.add_artifact(a) {
+            eprintln!("{e}");
+        }
+    }
+}
+
+/// Opens a file an artifact is (one a session registered), with its app.
+#[tauri::command(async)]
+fn open_path(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err(format!("{path} がもうありません"));
+    }
+    cli("open").arg(&path).status().map_err(err)?.success().then_some(()).ok_or_else(|| format!("{path} を開けませんでした"))
 }
 
 /// What a session waiting for a reply asks, from its transcript (local) or
@@ -2555,6 +2593,9 @@ fn watch_loop(app: AppHandle) {
                 for s in linked.iter().filter(|s| !archived.contains(&s.session_id)) {
                     let before = last_state.insert(s.session_id.clone(), s.state);
                     if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
+                        // What it made in that turn goes in the artifacts.
+                        let session = s.clone();
+                        std::thread::spawn(move || keep_artifacts(&session));
                         // Look for the PR now.
                         if let (Some(todo_id), Ok(tx)) = (s.todo_id, app.state::<AppState>().github_wake.lock()) {
                             let _ = tx.send(Some(todo_id));
@@ -2706,6 +2747,7 @@ fn main() {
             clear_escalation,
             set_plan,
             todo_events,
+            open_path,
             start_terminal,
             start_cloud,
             gh_issues,

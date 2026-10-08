@@ -371,6 +371,59 @@ pub struct FeynmanSummary {
     pub due_at: i64,
 }
 
+/// What an artifact is: a claude.ai artifact, a Claude Docs document, or a
+/// file on the Mac.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ArtifactKind {
+    Artifact,
+    Doc,
+    File,
+}
+
+impl ArtifactKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ArtifactKind::Artifact => "artifact",
+            ArtifactKind::Doc => "doc",
+            ArtifactKind::File => "file",
+        }
+    }
+    fn parse(s: &str) -> ArtifactKind {
+        match s {
+            "doc" => ArtifactKind::Doc,
+            "file" => ArtifactKind::File,
+            _ => ArtifactKind::Artifact,
+        }
+    }
+}
+
+/// Something a session made other than a PR: found in its record (a
+/// claude.ai artifact or doc) or registered by it (a file), with the todo
+/// (or the learning theme) it is for.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Artifact {
+    pub id: i64,
+    /// A claude.ai page, or a file's path.
+    pub url: String,
+    pub title: Option<String>,
+    pub kind: ArtifactKind,
+    pub session_id: Option<String>,
+    pub todo_id: Option<i64>,
+    pub theme_id: Option<i64>,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewArtifact {
+    pub url: String,
+    pub title: Option<String>,
+    pub kind: ArtifactKind,
+    pub session_id: Option<String>,
+    pub todo_id: Option<i64>,
+    pub theme_id: Option<i64>,
+}
+
 /// Something that happened under a todo: what its orchestrator did, or what
 /// it was told of its subtasks (its 経過).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -508,6 +561,16 @@ CREATE TABLE IF NOT EXISTS inputs (
     memo TEXT,
     done INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY,
+    url TEXT NOT NULL UNIQUE,
+    title TEXT,
+    kind TEXT NOT NULL,
+    session_id TEXT,
+    todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
+    theme_id INTEGER,
+    created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS todo_events (
     id INTEGER PRIMARY KEY,
@@ -1348,6 +1411,33 @@ impl Db {
             0 => Err(Error::TodoNotFound(id)),
             _ => Ok(()),
         }
+    }
+
+    /// Keeps an artifact, once per URL; whether it is new.
+    pub fn add_artifact(&self, a: NewArtifact) -> Result<bool> {
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO artifacts (url, title, kind, session_id, todo_id, theme_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![a.url, a.title, a.kind.as_str(), a.session_id, a.todo_id, a.theme_id, now()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Every artifact, newest first.
+    pub fn artifacts(&self) -> Result<Vec<Artifact>> {
+        let mut stmt = self.conn.prepare("SELECT id, url, title, kind, session_id, todo_id, theme_id, created_at FROM artifacts ORDER BY id DESC")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Artifact {
+                id: r.get(0)?,
+                url: r.get(1)?,
+                title: r.get(2)?,
+                kind: ArtifactKind::parse(&r.get::<_, String>(3)?),
+                session_id: r.get(4)?,
+                todo_id: r.get(5)?,
+                theme_id: r.get(6)?,
+                created_at: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Records what happened under a (parent) todo, for its 経過.

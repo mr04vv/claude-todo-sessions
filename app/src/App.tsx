@@ -65,6 +65,7 @@ import {
   type PrState,
   type CiState,
   type TodoEvent,
+  type Artifact,
   type Session,
   type SessionState,
   type StartOptions,
@@ -130,7 +131,7 @@ const BROWSER_SHOWN_KEY = "browserShown";
 const HERDR_SESSION_KEY = "herdrSession";
 
 
-type View = "todos" | "inputs" | "sessions" | "prs";
+type View = "todos" | "inputs" | "sessions" | "prs" | "artifacts";
 type Layout = "board" | "list";
 type GroupBy = "repo" | "parent";
 
@@ -2851,8 +2852,10 @@ function StartDialog({ todo, allTodos, run, onClose }: { todo: Todo; allTodos: T
   );
 }
 
-function TodoPanel({ todo, allTodos, waiting, local, groups, run, report, setStatus, onOpenTodo, onStart, onClose }: {
+function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, report, setStatus, onOpenTodo, onStart, onClose }: {
   todo: Todo;
+  /// Every artifact: the todo's (and its subtasks') are listed.
+  artifacts: Artifact[];
   /// あなた待ち, for what of it is under this todo.
   waiting: WaitItem[];
   allTodos: Todo[];
@@ -2914,6 +2917,7 @@ function TodoPanel({ todo, allTodos, waiting, local, groups, run, report, setSta
     return () => clearInterval(timer);
   }, [todo.id, isParent]); // eslint-disable-line react-hooks/exhaustive-deps
   const latestOf = (t: Todo) => [...t.sessions].sort((a, b) => b.state_at - a.state_at)[0];
+  const mine = artifacts.filter((a) => a.todo_id === todo.id || children.some((c) => c.id === a.todo_id));
   return (
     <aside ref={root} className="panel" aria-label={`#${todo.id} ${todo.title}`} onClick={stop}>
       <header className="panel-head">
@@ -3140,6 +3144,15 @@ function TodoPanel({ todo, allTodos, waiting, local, groups, run, report, setSta
           <MemoEditor value={todo.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
         </section>
 
+        {mine.length > 0 && (
+          <section>
+            <h3>
+              成果物 <span className="muted">{mine.length}</span>
+            </h3>
+            <ArtifactRows artifacts={mine} todos={allTodos} report={report} onOpenTodo={onOpenTodo} />
+          </section>
+        )}
+
         {isParent && (
           <section>
             <h3>計画 <span className="muted">サブタスクのセッションが最初から知っています</span></h3>
@@ -3215,6 +3228,80 @@ const WAIT_WORD: Record<WaitItem["reasons"][number], string> = {
   review: "レビュー依頼",
   review_failed: "レビュー失敗",
 };
+
+const ARTIFACT_KIND: Record<Artifact["kind"], string> = { artifact: "アーティファクト", doc: "ドキュメント", file: "ファイル" };
+
+/// An artifact's name: its title, else where it is.
+const artifactName = (a: Artifact) => a.title ?? (a.kind === "file" ? (a.url.split("/").pop() ?? a.url) : `名前のない${ARTIFACT_KIND[a.kind]}（${a.url.split("/").pop()?.slice(0, ARTIFACT_ID_SHOWN)}）`);
+/// Characters of an untitled artifact's id its name shows.
+const ARTIFACT_ID_SHOWN = 8;
+
+/// Opens an artifact: a claude.ai page in the pane, a file with its app.
+function useOpenArtifact(report: (e: unknown) => void) {
+  const openInBrowser = useContext(BrowserContext);
+  return (a: Artifact) => (a.kind === "file" && !/^https?:/.test(a.url) ? api.openPath(a.url).catch(report) : openInBrowser?.(a.url));
+}
+
+/// Artifacts as rows: their kind, name, todo and when.
+function ArtifactRows({ artifacts, todos, report, onOpenTodo }: { artifacts: Artifact[]; todos: Todo[]; report: (e: unknown) => void; onOpenTodo: (id: number) => void }) {
+  const open = useOpenArtifact(report);
+  return (
+    <ul className="rows compact">
+      {artifacts.map((a) => {
+        const todo = todos.find((t) => t.id === a.todo_id);
+        return (
+          <li key={a.id} className="row artifact-row" title={a.url} onClick={() => open(a)}>
+            <span className="tag">{ARTIFACT_KIND[a.kind]}</span>
+            <span className="row-title ellipsis">{artifactName(a)}</span>
+            {todo && (
+              <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
+                #{todo.id} {todo.title}
+              </button>
+            )}
+            <span className="muted when">{ago(a.created_at)}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/// What sessions made besides PRs, newest first, narrowed to a todo (a parent
+/// with its subtasks).
+function ArtifactsPage({ artifacts, todos, report, onOpenTodo }: { artifacts: Artifact[]; todos: Todo[]; report: (e: unknown) => void; onOpenTodo: (id: number) => void }) {
+  const [todoFilter, setTodoFilter] = useState<number | null>(null);
+  const parentOf = (id: number | null) => todos.find((t) => t.id === id)?.parent_id ?? null;
+  const shown = todoFilter === null ? artifacts : artifacts.filter((a) => a.todo_id === todoFilter || parentOf(a.todo_id) === todoFilter);
+  // The todos with artifacts, and their parents.
+  const withArtifacts = new Set(artifacts.flatMap((a) => (a.todo_id === null ? [] : [a.todo_id, parentOf(a.todo_id)].filter((x): x is number => x !== null))));
+  return (
+    <>
+      <header className="toolbar">
+        <h1>成果物</h1>
+        <span className="muted">{shown.length}</span>
+        {withArtifacts.size > 0 && (
+          <select className="select compact" value={todoFilter ?? ""} aria-label="todo で絞り込む" onChange={(e) => setTodoFilter(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">すべての todo</option>
+            {todos
+              .filter((t) => withArtifacts.has(t.id))
+              .map((t) => (
+                <option key={t.id} value={t.id}>
+                  #{t.id} {t.title}
+                  {todos.some((c) => c.parent_id === t.id) ? "（サブタスクも）" : ""}
+                </option>
+              ))}
+          </select>
+        )}
+      </header>
+      <div className="content">
+        {shown.length === 0 && (
+          <p className="muted empty">まだありません。セッションが claude.ai にアーティファクトやドキュメントを作ると、ひと区切りしたときにここへ並びます。Mac のファイルは、セッションが todo-sessions の add_artifact で登録します。</p>
+        )}
+        <ArtifactRows artifacts={shown} todos={todos} report={report} onOpenTodo={onOpenTodo} />
+      </div>
+    </>
+  );
+}
 
 /// A page's filter by place (a repository, a group, or none).
 function PlaceFilter({ places, value, onChange }: { places: string[]; value: string | null; onChange: (place: string | null) => void }) {
@@ -5850,7 +5937,7 @@ export default function App() {
     }
   }, [dialogUp]); // eslint-disable-line react-hooks/exhaustive-deps
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
-  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs"] as const, "todos"));
+  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "artifacts"] as const, "todos"));
   const viewRef = useRef(view);
   viewRef.current = view;
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
@@ -6312,6 +6399,7 @@ export default function App() {
     },
     { key: "inputs", label: "Input", icon: "import", count: allInputs.filter((i) => !i.done).length, on: view === "inputs", go: () => setView("inputs") },
     { key: "prs", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
+    { key: "artifacts", label: "成果物", icon: "open", count: board?.artifacts.length, on: view === "artifacts", go: () => setView("artifacts") },
   ];
 
   // ⌘K lists the sidebar's entries first, in its order, then the actions.
@@ -6604,6 +6692,7 @@ export default function App() {
               onOpenTodo={goTodo}
             />
           )}
+          {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} onOpenTodo={goTodo} />}
           {panel === "todo" && selectedTodo && (
             // A sheet over the Todo page, not a dialog: the pane stays, and j k go on to the next todo.
             <div className="sheet-backdrop" onClick={() => setSelection(null)}>
@@ -6611,6 +6700,7 @@ export default function App() {
                 todo={selectedTodo}
                 allTodos={allTodos}
                 waiting={waiting}
+                artifacts={board?.artifacts ?? []}
                 local={local}
                 groups={groups}
                 run={run}

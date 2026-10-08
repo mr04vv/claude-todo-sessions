@@ -67,6 +67,16 @@ struct SessionArgs {
 }
 
 #[derive(Deserialize, JsonSchema)]
+struct ArtifactArgs {
+    /// This session's id (from the session context), to know its todo.
+    session_id: String,
+    /// The file's absolute path on this Mac (or a URL).
+    path: String,
+    /// What it is, in a few words.
+    title: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
 struct PlanArgs {
     /// The parent todo.
     todo_id: i64,
@@ -167,6 +177,17 @@ impl Server {
     async fn unlink_session(&self, Parameters(a): Parameters<SessionArgs>) -> Result<String, String> {
         db()?.unlink_session(&a.session_id).map_err(|e| e.to_string())?;
         Ok(format!("unlinked session {}", a.session_id))
+    }
+
+    #[tool(description = "Register a file this session made (a report, a diagram, a document: anything but a PR) as an artifact of its todo, for the user's artifact list. claude.ai artifacts and docs are found on their own.")]
+    async fn add_artifact(&self, Parameters(a): Parameters<ArtifactArgs>) -> Result<String, String> {
+        let db = db()?;
+        let todo_id = db.get_session(&a.session_id).map_err(|e| e.to_string())?.and_then(|s| s.todo_id);
+        let kind = if a.path.starts_with("http") { cts_core::ArtifactKind::Artifact } else { cts_core::ArtifactKind::File };
+        let new = db
+            .add_artifact(cts_core::NewArtifact { url: a.path.clone(), title: a.title, kind, session_id: Some(a.session_id), todo_id, theme_id: None })
+            .map_err(|e| e.to_string())?;
+        Ok(if new { format!("registered {}", a.path) } else { format!("{} was registered already", a.path) })
     }
 
     #[tool(description = "Keep a parent todo's plan (shared memory): every subtask's session starts knowing it, and the user sees and edits it. Blank clears it.")]

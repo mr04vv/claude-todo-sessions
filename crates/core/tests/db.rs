@@ -1095,3 +1095,17 @@ fn reviews_that_ended_before_failures_were_shown_are_put_away_once() {
     let db = Db::open(&path).unwrap();
     assert!(!db.get_session("new").unwrap().unwrap().hidden);
 }
+
+#[test]
+fn artifacts_are_kept_once_newest_first_with_their_todo() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("比較")).unwrap();
+    assert!(db.add_artifact(cts_core::NewArtifact { url: "https://claude.ai/artifact/a".into(), title: Some("比較表".into()), kind: cts_core::ArtifactKind::Artifact, session_id: Some("s1".into()), todo_id: Some(t.id), theme_id: None }).unwrap());
+    assert!(!db.add_artifact(cts_core::NewArtifact { url: "https://claude.ai/artifact/a".into(), title: None, kind: cts_core::ArtifactKind::Artifact, session_id: Some("s1".into()), todo_id: Some(t.id), theme_id: None }).unwrap(), "once");
+    db.add_artifact(cts_core::NewArtifact { url: "/Users/me/report.pdf".into(), title: Some("報告".into()), kind: cts_core::ArtifactKind::File, session_id: None, todo_id: None, theme_id: None }).unwrap();
+    let all = db.artifacts().unwrap();
+    assert_eq!(all.iter().map(|a| a.url.as_str()).collect::<Vec<_>>(), ["/Users/me/report.pdf", "https://claude.ai/artifact/a"]);
+    assert_eq!((all[1].title.as_deref(), all[1].todo_id, all[1].kind), (Some("比較表"), Some(t.id), cts_core::ArtifactKind::Artifact));
+    db.delete_todo(t.id).unwrap();
+    assert_eq!(db.artifacts().unwrap()[1].todo_id, None, "it outlives its todo");
+}
