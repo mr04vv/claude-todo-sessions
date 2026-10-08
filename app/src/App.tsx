@@ -25,7 +25,7 @@ import {
   BROWSER_TO_INPUT_EVENT,
   OPEN_PALETTE_EVENT,
   OPEN_SESSIONS_EVENT,
-  OPEN_STUDY_EVENT,
+  THEME_DOC_EVENT,
   REVIEW_SUBMITTED_EVENT,
   OPEN_TODO_EVENT,
   BROWSER_TRANSLATED_EVENT,
@@ -55,7 +55,10 @@ import {
   MODELS,
   type Board,
   type Input,
-  type NoteFormat,
+  type Theme,
+  type Placement,
+  type ReviewQuestion,
+  type FeynmanAttempt,
   type Subject,
   type Issue,
   type HerdrSessions,
@@ -73,7 +76,6 @@ import {
   type Status,
   type Todo,
   type Agent,
-  type FeynmanState,
   type FeynmanSummary,
   type FeynmanVerdict,
   type PageText,
@@ -366,62 +368,28 @@ const PANEL_MIN_W = 320;
 const DOCK_MIN_W = 360;
 /// The browser pane starts at this share of the window.
 const DOCK_DEFAULT_SHARE = 0.44;
-/// The Input mode: the page a new space shows on the right, and that side's width.
+/// The study time (the Input mode): the page a new space shows on the right, and that side's width.
 const FOCUS_RIGHT_KEY = "focusRight";
-/// Each subject's space, saved to be resumed (SavedSpace by subjectKey).
+/// Each theme's space, saved to be resumed (SavedSpace by subjectKey).
 const INPUT_SPACES_KEY = "inputSpaces";
-/// The space of pages picked without a todo or an input; it closes with the Input mode.
+/// The space of pages picked without a theme; it closes with the study time.
 const FREE_SPACE = "free";
-/// A subject's spaces and notes are kept under this (letters and digits, as tab ids are).
-const subjectKey = (s: Subject | null) => (s === null ? FREE_SPACE : `${s.kind === "todo" ? "t" : "i"}${s.id}`);
+/// A theme's space is kept under this (letters and digits, as tab ids are).
+const subjectKey = (s: Subject | null) => (s === null ? FREE_SPACE : `h${s.id}`);
 const FOCUS_RIGHT_W_KEY = "focusRightWidth";
 const FOCUS_RIGHT_SHARE = 0.45;
-/// The focus mode's note: an artifact (a doc, page, deck or design) a
-/// session makes of the left's pages, commented on to ask it (FocusNote). Its
-/// tab on the right, its address, and the session making it for each todo
-/// (kept, as it goes on answering).
-const NOTE_TAB = "fnote";
-const NOTE_PAGE = /^https:\/\/claude\.ai\/(code\/)?artifact\//;
-const NOTE_SESSIONS_KEY = "noteSessions";
-const NOTE_FORMAT_KEY = "noteFormat";
-const NOTE_FORMATS: [NoteFormat, string][] = [
-  ["docs", "Docs"],
-  ["page", "HTML"],
-  ["slides", "スライド"],
-  ["design", "デザイン"],
-];
-interface NoteSession {
-  session: string;
-  cloud: boolean;
-}
-/// How often a note being made is looked for in its session.
-const NOTE_POLL_MS = 5000;
-/// The right pages a space may show.
-/// The right's 「説明する」 (ExplainPanel), the app's own, not a page.
-const EXPLAIN_TAB = "fexplain";
-const RIGHT_KINDS = [NOTE_TAB, EXPLAIN_TAB, "pinchatgpt", "pinclaude"];
-/// The explanation being written, by subjectKey.
-const FEYNMAN_DRAFTS_KEY = "feynmanDrafts";
-const DAY_S = 86_400;
-/// After how many days to explain again, by the last score (as feynman.rs decides it).
+/// The right pages a space may show: the LLM to ask while reading.
+const RIGHT_KINDS = ["pinchatgpt", "pinclaude"];
+/// After how many days to review again, by the last score (as feynman.rs decides it).
 const reviewAfterDays = (score: number) => (score < 60 ? 1 : score < 85 ? 3 : 7);
 const VERDICT_MARK: Record<FeynmanVerdict, string> = { said: "✓", vague: "△", missing: "✗" };
 const VERDICT_LABEL: Record<FeynmanVerdict, string> = { said: "言えた", vague: "あいまい", missing: "抜けている" };
 /// A space's tab for a right page (ids are letters and digits only).
 const rightTabId = (space: string, kind: string) => `s${space}${kind}`;
 const newSpace = (right: string): InputSpace => ({ lefts: [], active: null, right, pages: [], rightUrls: {} });
-/// The prefix a page's address allows: the page and the ones under it.
-const pagePrefix = (url: string) => {
-  try {
-    const u = new URL(url);
-    return u.origin + u.pathname;
-  } catch {
-    return url;
-  }
-};
 /// How often a parent's 経過 is read again while its sheet is open.
 const EVENTS_REFRESH_MS = 5000;
-/// How long a short note at the bottom ("input に追加しました") stays.
+/// How long a short note at the bottom ("学びに入れました") stays.
 const TOAST_MS = 4000;
 /// How long the toast about a finished download stays.
 const DOWNLOADED_MS = 8000;
@@ -2139,43 +2107,25 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
   );
 }
 
-/// A page kept for studying, offered when picking the focus mode's left page.
-interface StudyPage {
-  label: string;
-  url: string;
-}
-const STUDY_PAGES_KEY = "studyPages";
 /// What the focus mode's left opens: a page, or a terminal the pane has.
 type FocusItem = { url: string } | { terminal: string };
 
-/// Picks the focus mode's left page: a URL, a study page (kept and edited
-/// here) or a terminal the pane has open.
-function FocusPicker({ terminals, adding, onPick, onClose }: {
+/// Picks a page for the study time's left: a URL, one of the theme's
+/// inputs, or a terminal the pane has open.
+function FocusPicker({ terminals, inputs, onPick, onClose }: {
   terminals: BrowserTab[];
-  /// Adding to a running focus mode, rather than starting one.
-  adding: boolean;
+  /// The theme's inputs, their pages to pick from.
+  inputs: Input[];
   onPick: (item: FocusItem) => void;
   onClose: () => void;
 }) {
-  const [pages, setPagesState] = useState<StudyPage[]>(() => loadJson<StudyPage[]>(STUDY_PAGES_KEY, []));
-  const setPages = (list: StudyPage[]) => {
-    remember(STUDY_PAGES_KEY, JSON.stringify(list));
-    setPagesState(list);
-  };
-  const [addingPage, setAddingPage] = useState(false);
-  const nameRef = useRef<HTMLInputElement>(null);
   const toUrl = (text: string) => {
     const url = addressToUrl(text);
     return url && !url.startsWith(SEARCH_URL) ? url : null;
   };
-  const addPage = (address: string) => {
-    const url = toUrl(address);
-    if (!url) return;
-    setPages([...pages.filter((p) => p.url !== url), { label: nameRef.current?.value.trim() || hostOf(url), url }]);
-    setAddingPage(false);
-  };
+  const pages = inputs.flatMap((i) => i.links.map((l) => ({ label: l.title || i.title, url: l.url, done: i.done })));
   return (
-    <Modal title={adding ? "左に開くページ" : "Input モードで開くページ"} onClose={onClose}>
+    <Modal title="左に開くページ" onClose={onClose}>
       <div className="focus-picker">
         <input
           autoFocus
@@ -2187,29 +2137,18 @@ function FocusPicker({ terminals, adding, onPick, onClose }: {
             if (url) onPick({ url });
           }}
         />
-        <h3>学習ページ</h3>
-        {pages.length === 0 && !addingPage && <p className="muted">まだありません。よく読むページを足しておくと、ここから選べます。</p>}
+        {pages.length > 0 && <h3>このテーマで読むもの</h3>}
         {pages.map((p) => (
           <div key={p.url} className="start-page">
             <button onClick={() => onPick({ url: p.url })}>
               {p.label}
-              <span className="muted mono">{hostOf(p.url)}</span>
-            </button>
-            <button className="ghost icon" aria-label={`${p.label} を学習ページから外す`} title="外す" onClick={() => setPages(pages.filter((x) => x.url !== p.url))}>
-              <Icon name="close" size={12} />
+              <span className="muted mono">
+                {hostOf(p.url)}
+                {p.done ? " · 読み終わった" : ""}
+              </span>
             </button>
           </div>
         ))}
-        {addingPage ? (
-          <div className="start-page-add">
-            <input ref={nameRef} autoFocus placeholder="名前（なくてもよい）" aria-label="名前" />
-            <input className="mono" placeholder="URL を入力して Enter" aria-label="学習ページの URL" onKeyDown={(e) => isEnter(e) && addPage(e.currentTarget.value)} />
-          </div>
-        ) : (
-          <button className="ghost add-inline" onClick={() => setAddingPage(true)}>
-            <Icon name="plus" size={12} /> 学習ページを追加
-          </button>
-        )}
         {terminals.length > 0 && (
           <>
             <h3>ターミナル</h3>
@@ -2231,255 +2170,12 @@ function FocusPicker({ terminals, adding, onPick, onClose }: {
   );
 }
 
-/// The right side's note before it is published (NOTE_TAB): whether there is a
-/// todo to make it for, a session making it, and pages on the left for it.
-interface FocusNote {
-  subject: boolean;
-  making: boolean;
-  pages: boolean;
-  onCreate: (format: NoteFormat, cloud: boolean) => void;
-  /// Leaves the session making it (it goes on) to start another.
-  onReset: () => void;
-}
-
-/// Over the session making the note (its terminal or page): what it is, and
-/// a way out to make it again.
-function NoteMaking({ note }: { note: FocusNote }) {
-  return (
-    <div className="note-making">
-      <span className="spinner" aria-label="作成中" />
-      <span className="grow">ノートを作っています。できたらここに替わります。</span>
-      <button className="ghost small" title="このセッションは残したまま、作り直します" onClick={note.onReset}>
-        作り直す
-      </button>
-    </div>
-  );
-}
-
-/// The note's place on the right until there is a page to show: what it is
-/// and how to make it, or that it is being made (in herdr, out of sight).
-function NoteStart({ note }: { note: FocusNote }) {
-  const [format, setFormatState] = useState<NoteFormat>(() => load(NOTE_FORMAT_KEY, NOTE_FORMATS.map(([f]) => f), "docs"));
-  const setFormat = (f: NoteFormat) => {
-    remember(NOTE_FORMAT_KEY, f);
-    setFormatState(f);
-  };
-  if (!note.subject) return <p className="muted empty pad">ノートは、todo（Input など）から開いた Input モードで作れます。</p>;
-  // herdr runs it behind the app, with nothing to show here.
-  if (note.making) return <NoteMaking note={note} />;
-  // Cloud sessions have no Claude Docs connector.
-  const docs = format === "docs";
-  return (
-    <div className="note-start">
-      <p>左のページを Claude が整理し直して、コメントできる「ノート」を claude.ai に作ります（はじめは自分だけが見られます）。</p>
-      <div className="segmented" role="group" aria-label="ノートの形">
-        {NOTE_FORMATS.map(([f, label]) => (
-          <button key={f} className={format === f ? "on" : ""} aria-pressed={format === f} onClick={() => setFormat(f)}>
-            {label}
-          </button>
-        ))}
-      </div>
-      <div className="note-actions">
-        <button className="primary" disabled={!note.pages} onClick={() => note.onCreate(format, false)}>
-          Mac の Claude Code で作る
-        </button>
-        <button className="small" disabled={!note.pages || docs} title={docs ? "Docs は Mac の Claude Code でだけ作れます" : undefined} onClick={() => note.onCreate(format, true)}>
-          Cloud で作る
-        </button>
-      </div>
-      <p className="muted small">
-        {docs
-          ? "コメントで @Claude と書くと、claude.ai の Claude が答えます。"
-          : "Claude 宛てのコメントには、Mac の Claude Code で作ったときだけ、作ったセッションが返信します（アプリやターミナルを閉じると止まります）。Cloud で作ったノートには返信しません。"}
-        Mac の Claude Code は「ターミナル」の設定（アプリ内か herdr）で動きます。どちらもセッションを1本使います。
-      </p>
-    </div>
-  );
-}
-
-/// The Input mode's 「説明する」 (the Feynman technique; feynman.rs behind
-/// it): the key points of the left's pages, made once; the user's own
-/// explanation of them, graded point by point; and when to explain again.
-function ExplainPanel({ subject, title, pages, report, onAskByVoice }: {
-  subject: Subject | null;
-  title: string;
-  /// The left's pages (their tabs), read for the points.
-  pages: BrowserTab[];
-  report: (e: unknown) => void;
-  /// Hands a prompt to ChatGPT on the right, to be questioned by voice.
-  onAskByVoice: (prompt: string) => void;
-}) {
-  const key = subjectKey(subject);
-  const [state, setState] = useState<FeynmanState | null>(null);
-  const [busy, setBusy] = useState<"points" | "grade" | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [draft, setDraftState] = useState(() => loadJson<Record<string, string>>(FEYNMAN_DRAFTS_KEY, {})[key] ?? "");
-  const setDraft = (text: string) => {
-    setDraftState(text);
-    remember(FEYNMAN_DRAFTS_KEY, JSON.stringify({ ...loadJson<Record<string, string>>(FEYNMAN_DRAFTS_KEY, {}), [key]: text }));
-  };
-  useEffect(() => {
-    if (subject) api.feynmanState(subject).then(setState, report);
-  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
-  if (!subject) return <p className="muted empty pad">「説明する」は、input か todo から開いた Input モードで使えます。</p>;
-  const points = state?.points ?? [];
-  const attempts = state?.attempts ?? [];
-  const latest = attempts[0];
-  const work = async (what: "points" | "grade", f: () => Promise<void>) => {
-    setBusy(what);
-    setError(null);
-    try {
-      await f();
-    } catch (e) {
-      setError(String(e));
-    } finally {
-      setBusy(null);
-    }
-  };
-  // Each page's text from its tab, else fetched (a tab never shown has no page).
-  const makePoints = () =>
-    work("points", async () => {
-      const texts: PageText[] = [];
-      for (const t of pages) {
-        const fromTab = await api.browserText(t.id).catch(() => null);
-        const text = fromTab?.trim() ? fromTab : await api.pageText(t.url).catch(() => "");
-        texts.push({ url: t.url, title: t.title, text });
-      }
-      const made = await api.feynmanMakePoints(subject, title, texts);
-      setState((s) => ({ points: made, attempts: s?.attempts ?? [] }));
-    });
-  const grade = () =>
-    work("grade", async () => {
-      const attempt = await api.feynmanGrade(subject, title, draft);
-      setState((s) => ({ points: s?.points ?? [], attempts: [attempt, ...(s?.attempts ?? [])] }));
-    });
-  const verdictOf = (i: number) => latest?.grade.verdicts.find((v) => v.point === i);
-  const voicePrompt = () =>
-    `「${title}」を読みました。ファインマン・テクニックで理解を確かめたいので、先生役をお願いします。\n` +
-    `下の要点について1つずつ質問してください。私が自分の言葉で答えるので、曖昧なところや間違いがあれば「なぜ？」「どうなる？」と掘り下げてください。` +
-    `要点そのものは私に見せず、質問だけしてください。最後に、要点ごとに言えたかどうかと、理解度を100点満点で教えてください。\n\n要点:\n${points.map((p) => `- ${p.text}`).join("\n")}`;
-  const due = latest && latest.created_at + reviewAfterDays(latest.score) * DAY_S;
-  const dueLabel = due && (due * 1000 <= Date.now() ? "復習どきです" : `次は ${new Date(due * 1000).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" })}`);
-  return (
-    <div className="explain">
-      <section>
-        <h3>
-          要点 {points.length > 0 && <span className="muted">{points.length}</span>}
-          <span className="grow" />
-          {points.length > 0 && (
-            <button className="ghost small" disabled={busy !== null || pages.length === 0} title="左のページからもう一度作ります（採点の履歴は残ります）" onClick={makePoints}>
-              {busy === "points" ? "作っています…" : "要点を作り直す"}
-            </button>
-          )}
-        </h3>
-        {points.length === 0 ? (
-          <div className="explain-start">
-            <p className="muted">左のページを読んで「自分の言葉で説明できるべき要点」を Claude が作ります。そのあと、何も見ずに説明して採点してもらいます。</p>
-            <button className="primary" disabled={busy !== null || pages.length === 0} onClick={makePoints}>
-              {busy === "points" && <span className="spinner" />}
-              {busy === "points" ? "作っています…" : "要点を作る"}
-            </button>
-            {pages.length === 0 && <p className="muted hint">左にページを開いてください。</p>}
-          </div>
-        ) : (
-          <ol className="explain-points">
-            {points.map((p, i) => {
-              const v = verdictOf(i);
-              return (
-                <li key={p.id} className={v ? `verdict-${v.verdict}` : ""} title={v ? VERDICT_LABEL[v.verdict] : undefined}>
-                  <span className="mark">{v ? VERDICT_MARK[v.verdict] : "・"}</span>
-                  <span>
-                    {p.text}
-                    {v?.note && <span className="muted note">{v.note}</span>}
-                  </span>
-                </li>
-              );
-            })}
-          </ol>
-        )}
-      </section>
-      <section>
-        <h3>自分の言葉で説明する</h3>
-        <textarea
-          rows={8}
-          value={draft}
-          aria-label="説明"
-          placeholder="何も見ずに、子どもに教えるつもりで書きます。fn キーを2回押すと macOS の音声入力で話せます"
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (isEnter(e) && e.metaKey && points.length > 0 && busy === null) {
-              e.preventDefault();
-              grade();
-            }
-          }}
-        />
-        <div className="explain-actions">
-          <button className="primary" disabled={busy !== null || points.length === 0 || !draft.trim()} onClick={grade}>
-            {busy === "grade" && <span className="spinner" />}
-            {busy === "grade" ? "採点しています…" : "採点"} {busy === null && <span className="kbd">⌘↵</span>}
-          </button>
-          <button className="ghost" disabled={points.length === 0} title="右の ChatGPT に、要点について質問してもらうプロンプトを入れます（音声モードは ChatGPT の画面で押します）" onClick={() => onAskByVoice(voicePrompt())}>
-            声で質問される（ChatGPT）
-          </button>
-        </div>
-        {error && <p className="error-text">{error}</p>}
-      </section>
-      {latest && (
-        <section className="explain-result">
-          <h3>
-            理解度 <b>{latest.score}%</b>
-            <span className="muted">
-              {ago(latest.created_at)} · {dueLabel}
-            </span>
-          </h3>
-          {latest.grade.mistakes.length > 0 && (
-            <>
-              <h4>間違っているところ</h4>
-              <ul>
-                {latest.grade.mistakes.map((m) => (
-                  <li key={m}>{m}</li>
-                ))}
-              </ul>
-            </>
-          )}
-          {latest.grade.jargon.length > 0 && (
-            <>
-              <h4>説明せずに使った言葉</h4>
-              <p>{latest.grade.jargon.join("、")}</p>
-            </>
-          )}
-          {latest.grade.questions.length > 0 && (
-            <>
-              <h4>答えてみる</h4>
-              <ul>
-                {latest.grade.questions.map((q) => (
-                  <li key={q}>{q}</li>
-                ))}
-              </ul>
-            </>
-          )}
-        </section>
-      )}
-      {attempts.length > 1 && (
-        <section>
-          <h3>これまで</h3>
-          <ul className="explain-history">
-            {attempts.map((a) => (
-              <li key={a.id}>
-                <span className="muted">{new Date(a.created_at * 1000).toLocaleString("ja-JP", { month: "numeric", day: "numeric", hour: "numeric", minute: "2-digit" })}</span>
-                <b>{a.score}%</b>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-    </div>
-  );
-}
-
-/// The focus mode: its own pages (and terminals) on the left and a pinned
-/// page (ChatGPT or Claude Code), the note or 「説明する」 on the right, nothing else.
-function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit, typing }: {
+/// The study time: the theme's pages on the left, an LLM to ask on the
+/// right (its conversation the theme's own), after the review (`overlay`,
+/// over both while it is up); 「読み終わった」 writes what was read into the
+/// theme's document.
+function FocusMode({ theme, lefts, left, right, rightKind, overlay, finishing, onFinish, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit, typing }: {
+  theme: Theme | undefined;
   /// Which side has the keyboard: the browser's keys (⌘[ ⌘] ⌘L) are that side's only.
   typing: "left" | "right" | null;
   /// A click on the left's tab strip: its page shown (the tab picked) takes the keyboard.
@@ -2489,19 +2185,19 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
   lefts: BrowserTab[];
   left: BrowserTab | null;
   right: BrowserTab | undefined;
-  /// Which right page is picked (a FOCUS_PAGES id or NOTE_TAB).
+  /// Which right page is picked (a FOCUS_PAGES id).
   rightKind: string;
-  /// Set while the note is shown and not yet published.
-  note: FocusNote | null;
-  /// The right's 「説明する」 (ExplainPanel).
-  explain: React.ReactNode;
-  /// Set while a published note is shown: leaves it to make another.
-  onRemakeNote?: () => void;
+  /// The review, over the pages until it is done or skipped.
+  overlay: React.ReactNode;
+  /// While what was read goes into the theme's document.
+  finishing: boolean;
+  /// 「読み終わった」.
+  onFinish: () => void;
   covered: boolean;
   report: (e: unknown) => void;
   width: number;
   onResize: (w: number) => void;
-  /// A pinned page's id, or NOTE_TAB.
+  /// A pinned page's id.
   onRight: (id: string) => void;
   onAddress: (tab: string, url: string) => void;
   onSelectLeft: (id: string) => void;
@@ -2513,10 +2209,10 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
   onExit: () => void;
 }) {
   const leftWeb = left && !left.term ? left.id : undefined;
-  const noteShown = rightKind === NOTE_TAB;
+  const hidden = covered || !!overlay;
   return (
     <div className="focus-mode">
-      <section className="browser focus-left" aria-label="Input モードの左側">
+      <section className="browser focus-left" aria-label="学ぶ時間の左側">
         <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onLeftStrip()}>
           {lefts.map((t) => (
             <span key={t.id} className={`browser-tab${t.id === left?.id ? " on" : ""}`}>
@@ -2544,7 +2240,7 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
         {left?.term ? (
           <TerminalView key={left.id} id={left.id} run={left.term} report={report} />
         ) : left ? (
-          <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} keysOn={typing === "left"} />
+          <TabView tab={left} covered={hidden} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} keysOn={typing === "left"} />
         ) : (
           <NewTabPage onOpen={onOpenLeft} />
         )}
@@ -2553,13 +2249,8 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
         <Resizer label="右側の幅" cssVar="--focus-right-w" width={width} min={DOCK_MIN_W} max={() => window.innerWidth - FOCUS_LEFT_MIN_W} onResize={onResize} />
         <section className="browser">
           <div className="browser-tabs focus-head">
-            <div className="segmented" role="group" aria-label="右側のページ">
-              <button className={noteShown ? "on" : ""} aria-pressed={noteShown} onClick={() => onRight(NOTE_TAB)}>
-                <Icon name="list" size={12} /> ノート
-              </button>
-              <button className={rightKind === EXPLAIN_TAB ? "on" : ""} aria-pressed={rightKind === EXPLAIN_TAB} onClick={() => onRight(EXPLAIN_TAB)}>
-                <Icon name="check" size={12} /> 説明する
-              </button>
+            {theme && <b className="ellipsis study-theme">{theme.name}</b>}
+            <div className="segmented" role="group" aria-label="右側で聞く LLM">
               {FOCUS_PAGES.map((p) => (
                 <button key={p.id} className={rightKind === p.id ? "on" : ""} aria-pressed={rightKind === p.id} onClick={() => onRight(p.id)}>
                   <Icon name={p.icon} size={12} /> {p.label}
@@ -2567,27 +2258,138 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
               ))}
             </div>
             <span className="grow" />
-            {onRemakeNote && (
-              <button className="ghost small" title="このノートは claude.ai に残したまま、別のノートを作ります" onClick={onRemakeNote}>
-                ノートを作り直す
-              </button>
-            )}
-            <button className="ghost small" title="Input モードを終える（Esc）" onClick={onExit}>
+            <span className="muted small-text" title="学ぶ時間のあいだは macOS の通知を出しません。終えたときに、増えたあなた待ちを知らせます">
+              通知は止めています
+            </span>
+            <button className="small primary" disabled={finishing || !theme} title="左のページと右の会話から、要点とつまずいたところをテーマのノートに書き足します（Mac の Claude。少しかかります）" onClick={onFinish}>
+              {finishing ? "書き足しています…" : "読み終わった"}
+            </button>
+            <button className="ghost small" title="学ぶ時間を終える（Esc）" onClick={onExit}>
               終える <span className="kbd">Esc</span>
             </button>
           </div>
-          {right && note && <NoteMaking note={note} />}
-          {rightKind === EXPLAIN_TAB ? (
-            explain
-          ) : right?.term ? (
+          {right?.term ? (
             <TerminalView key={right.id} id={right.id} run={right.term} report={report} />
-          ) : right ? (
-            <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} keysOn={typing === "right"} />
           ) : (
-            note && <NoteStart note={note} />
+            right && <TabView key={right.id} tab={right} covered={hidden} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} keysOn={typing === "right"} />
           )}
         </section>
       </aside>
+      {overlay && <div className="study-overlay">{overlay}</div>}
+    </div>
+  );
+}
+
+/// A study time's review: the questions Claude asks from the theme's
+/// document, answered in one's own words (by voice too: macOS's dictation),
+/// graded; skipping it takes one step more.
+function ReviewPanel({ theme, report, onDone, onExit }: { theme: Theme; report: (e: unknown) => void; onDone: () => void; onExit: () => void }) {
+  const [questions, setQuestions] = useState<ReviewQuestion[] | null>(null);
+  const [failed, setFailed] = useState<string | null>(null);
+  const [answers, setAnswers] = useState<string[]>([]);
+  const [grading, setGrading] = useState(false);
+  const [result, setResult] = useState<FeynmanAttempt | null>(null);
+  const [skipping, setSkipping] = useState(false);
+  useEffect(() => {
+    api.reviewQuestions(theme.id).then(
+      (qs) => (qs.length === 0 ? onDone() : (setQuestions(qs), setAnswers(qs.map(() => "")))),
+      (e) => setFailed(String(e)),
+    );
+  }, [theme.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const grade = () => {
+    if (!questions || grading) return;
+    setGrading(true);
+    api
+      .reviewGrade(theme.id, questions, answers)
+      .then(setResult, report)
+      .finally(() => setGrading(false));
+  };
+  const gradeRef = useRef(grade);
+  gradeRef.current = grade;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!matches(e, "start") || e.isComposing) return;
+      e.preventDefault();
+      gradeRef.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  return (
+    <div className="review-panel">
+      <header>
+        <div className="actions">
+          <span className="study-steps grow">
+            <b>1 復習</b> · 2 読む · 3 残す　<span className="muted">通知は止めています</span>
+          </span>
+          <button className="ghost small" onClick={onExit}>
+            学ぶ時間を終える
+          </button>
+        </div>
+        <h2>前回までの「{theme.name}」から</h2>
+        <p className="muted">ノートは見ずに、自分の言葉で。話して答えるときは、fn キーを2回押すと音声入力になります。答えは採点されて、テーマのノートに残ります。</p>
+      </header>
+      {failed && (
+        <div className="notice danger-notice">
+          <span className="grow">質問を作れませんでした：{failed}</span>
+          <button onClick={onDone}>読みに進む</button>
+        </div>
+      )}
+      {!questions && !failed && (
+        <p className="muted">
+          <span className="spinner" /> テーマのノートを読んで、質問を作っています…
+        </p>
+      )}
+      {questions?.map((q, i) => {
+        const verdict = result?.grade.verdicts.find((v) => v.point === i);
+        return (
+          <section key={i} className="review-question">
+            <h3>
+              {i + 1} / {questions.length}　{q.question}
+            </h3>
+            <textarea rows={4} value={answers[i] ?? ""} disabled={!!result} aria-label={`問${i + 1}の答え`} placeholder="自分の言葉で" onChange={(e) => setAnswers((a) => a.map((x, j) => (j === i ? e.target.value : x)))} />
+            {verdict && (
+              <p className={`verdict verdict-${verdict.verdict}`}>
+                {VERDICT_MARK[verdict.verdict]} {VERDICT_LABEL[verdict.verdict]}：{verdict.note}
+              </p>
+            )}
+          </section>
+        );
+      })}
+      {questions && (
+        <footer>
+          {result ? (
+            <>
+              <span className="grow">
+                理解度 <b>{result.score}%</b>（次の復習は {reviewAfterDays(result.score)} 日後）
+              </span>
+              <button className="primary" onClick={onDone}>
+                読みに進む
+              </button>
+            </>
+          ) : skipping ? (
+            <>
+              <span className="grow">復習を飛ばしますか？ 復習どきは変わりません。</span>
+              <button className="ghost" onClick={() => setSkipping(false)}>
+                戻る
+              </button>
+              <button className="danger" onClick={onDone}>
+                飛ばす
+              </button>
+            </>
+          ) : (
+            <>
+              <button className="ghost small" onClick={() => setSkipping(true)}>
+                復習を飛ばす…
+              </button>
+              <span className="grow" />
+              <button className="primary" disabled={grading || answers.every((a) => !a.trim())} onClick={grade}>
+                {grading ? "採点しています…" : "採点する"} {!grading && <span className="kbd">⌘↵</span>}
+              </button>
+            </>
+          )}
+        </footer>
+      )}
     </div>
   );
 }
@@ -2803,8 +2605,8 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
             </button>
           )}
           {onToInput && (
-            <button className="ghost small" title={`このページを input に入れる（${keyLabel(keyOf("toInput"))}。先に作った input にも、新しい input にも）`} onClick={onToInput}>
-              Input に追加
+            <button className="ghost small" title={`このページを学びに入れる（${keyLabel(keyOf("toInput"))}。テーマか、まだテーマにないものに）`} onClick={onToInput}>
+              学びに入れる
             </button>
           )}
           {onArchive && (
@@ -3930,97 +3732,182 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   );
 }
 
-/// A subject's understanding (its last 「説明する」 score) and whether it is time to explain again.
-function StudyTags({ summary }: { summary: FeynmanSummary | undefined }) {
+/// A theme's understanding (its last review's score) and whether it is time to review.
+function ReviewTags({ summary }: { summary: FeynmanSummary | undefined }) {
   if (!summary) return null;
   return (
     <>
-      <span className="tag" title={`最後の採点 ${ago(summary.attempted_at)}`}>
+      <span className="tag" title={`最後の復習 ${ago(summary.attempted_at)}`}>
         理解度 {summary.score}%
       </span>
       {summary.due_at * 1000 <= Date.now() && (
-        <span className="tag due" title="もう一度、自分の言葉で説明してみる時期です">
+        <span className="tag due" title="前回の理解度から決めた、復習するとよい時期です">
           復習どき
         </span>
       )}
     </>
   );
 }
-/// The inputs: reading material, apart from the todos, each opening in the
-/// Input mode with its pages on the left. A URL here, the dialog, or
-/// ⌥-clicking a link in the browser adds one.
-function InputsPage({ inputs: all, feynman, resumable, run, onFocus, onDetail, onAdd }: {
+
+/// The learning page: the themes, and what waits unsorted (an article put in
+/// with ⌥-click, a URL pasted here). Claude proposes where the unsorted go,
+/// and what of a theme to read next; a study time starts from a theme.
+function ThemesPage({ themes, inputs, feynman, run, report, onStudy }: {
+  themes: Theme[];
   inputs: Input[];
-  /// Each subject's latest 「説明する」 attempt, by subjectKey.
+  /// Each theme's last review, by subjectKey.
   feynman: Map<string, FeynmanSummary>;
-  /// The dialog adding one.
-  onAdd: () => void;
-  /// Inputs whose Input mode pages are kept, to go on where they were left.
-  resumable: Set<number>;
   run: (f: () => Promise<unknown>) => void;
-  onFocus: (input: Input) => void;
-  onDetail: (id: number) => void;
+  report: (e: unknown) => void;
+  /// A study time for the theme, with these inputs' pages on the left (or what it had).
+  onStudy: (theme: Theme, inputs: Input[]) => void;
 }) {
-  const [showDone, setShowDone] = useState(false);
-  const rows = all.filter((i) => showDone || !i.done);
-  const done = all.filter((i) => i.done).length;
-  // ↑↓ or j k pick one, Enter opens it in the Input mode, ⌥Enter its panel.
-  const { cursorId, setCursor, list } = useRowCursor(
-    rows.map((i) => String(i.id)),
-    (id, alt) => {
-      const input = rows.find((i) => String(i.id) === id);
-      if (input) (alt ? onDetail(input.id) : onFocus(input));
-    },
-  );
-  /// One input for all the URLs typed; false when there is none.
+  const openInBrowser = useContext(BrowserContext);
+  const [picked, setPicked] = useState<number | "unsorted">(() => (inputs.some((i) => i.theme_id === null && !i.done) || themes.length === 0 ? "unsorted" : themes[0].id));
+  const theme = picked === "unsorted" ? undefined : themes.find((t) => t.id === picked);
+  const unsorted = inputs.filter((i) => i.theme_id === null && !i.done);
+  const [showRead, setShowRead] = useState(false);
+  const mine = theme ? inputs.filter((i) => i.theme_id === theme.id && (showRead || !i.done)) : unsorted;
+  const read = theme ? inputs.filter((i) => i.theme_id === theme.id && i.done).length : 0;
+  const [proposals, setProposals] = useState<Placement[] | null>(null);
+  const [nexts, setNexts] = useState<{ input_id: number; why: string }[] | null>(null);
+  const [thinking, setThinking] = useState(false);
+  const [naming, setNaming] = useState(false);
+  useEffect(() => setNexts(null), [picked]);
+  const ask = <T,>(f: () => Promise<T>, then: (v: T) => void) => {
+    setThinking(true);
+    f().then(then, report).finally(() => setThinking(false));
+  };
+  /// One input for all the URLs typed, in the theme shown (or unsorted).
   const add = (text: string) => {
     const input = parseInput(text);
-    if (input) run(async () => addInput(input.urls, await inputTitle(input.urls, input.title)));
+    if (input) run(async () => {
+      const made = await addInput(input.urls, await inputTitle(input.urls, input.title));
+      if (theme) await api.setInputTheme(made.id, theme.id);
+    });
     return input !== null;
   };
+  /// Claude's placements, as proposed: new themes made once each.
+  const apply = (list: Placement[]) =>
+    run(async () => {
+      const made = new Map<string, number>();
+      for (const p of list) {
+        let id = "theme" in p.place ? p.place.theme : made.get(p.place.new_theme);
+        if (id === undefined && "new_theme" in p.place) {
+          id = (await api.createTheme(p.place.new_theme)).id;
+          made.set(p.place.new_theme, id);
+        }
+        await api.setInputTheme(p.input, id ?? null);
+      }
+      setProposals(null);
+    });
+  const titleOf = (id: number) => inputs.find((i) => i.id === id)?.title ?? `#${id}`;
+  const themeName = (p: Placement) => ("theme" in p.place ? (themes.find((t) => t.id === (p.place as { theme: number }).theme)?.name ?? "") : `新しいテーマ「${p.place.new_theme}」`);
   return (
     <>
       <header className="toolbar">
-        <h1>Input</h1>
-        <span className="muted">{all.length - done}</span>
+        <h1>学び</h1>
         <input
           className="filter-search input-add"
-          placeholder="URL（いくつでも）とタイトルを入れて Enter で追加"
-          aria-label="input に追加する URL とタイトル"
-          title="URL をいくつ入れても 1 件にまとまります。URL 以外の言葉がタイトルになります"
+          placeholder={`URL を貼って Enter（${theme ? `「${theme.name}」` : "まだテーマにないもの"}に入れる）`}
+          aria-label="学びたいページの URL"
           onKeyDown={(e) => isEnter(e) && add(e.currentTarget.value) && (e.currentTarget.value = "")}
-          // Lines pasted in stay apart (a one-line field drops the line breaks).
-          onPaste={(e) => {
-            const text = e.clipboardData.getData("text/plain");
-            if (!/[\r\n]/.test(text)) return;
-            e.preventDefault();
-            document.execCommand("insertText", false, text.trim().replace(/\s*[\r\n]+\s*/g, " "));
-          }}
         />
         <span className="grow" />
-        {done > 0 && (
-          <button className={`filter${showDone ? " on" : ""}`} aria-pressed={showDone} onClick={() => setShowDone((v) => !v)}>
-            読み終わったものも表示 {done}
+        {naming ? (
+          <SubmitInput autoFocus placeholder="テーマの名前を入れて Enter" onSubmit={(name) => (setNaming(false), run(async () => setPicked((await api.createTheme(name)).id)))} onClose={() => setNaming(false)} />
+        ) : (
+          <button className="primary" onClick={() => setNaming(true)}>
+            <Icon name="plus" size={13} /> 新しいテーマ
           </button>
         )}
-        <button className="primary" onClick={onAdd}>
-          <Icon name="plus" size={13} /> 新しい input <span className="kbd">{keyLabel(keyOf("newTodo"))}</span>
-        </button>
       </header>
-      <div className="content" ref={list}>
-        {rows.length === 0 && (
-          <p className="muted empty">まだありません。「新しい input」か、上に URL を入れるか、ブラウザでリンクを ⌥ + クリックすると追加されます。URL をいくつか入れると 1 件にまとまり、Input モードで全部左に開きます。</p>
-        )}
-        <ul className="rows">
-          {rows.map((i) => {
-            const pages = pagesOf(i);
+      <div className="content learn">
+        <nav className="theme-list" aria-label="テーマ">
+          <button className={`theme-item${picked === "unsorted" ? " on" : ""}`} onClick={() => setPicked("unsorted")}>
+            <span className="grow">まだテーマにないもの</span>
+            <span className="muted">{unsorted.length}</span>
+          </button>
+          {themes.map((t) => {
+            const summary = feynman.get(subjectKey({ kind: "theme", id: t.id }));
+            const due = summary && summary.due_at * 1000 <= Date.now();
             return (
-              <li
-                key={i.id}
-                data-row={i.id}
-                className={`row${String(i.id) === cursorId ? " cursor" : ""}${i.done ? " done" : ""}`}
-                onClick={() => (setCursor(String(i.id)), onFocus(i))}
-              >
+              <button key={t.id} className={`theme-item${picked === t.id ? " on" : ""}`} onClick={() => setPicked(t.id)}>
+                <span className="grow ellipsis">{t.name}</span>
+                {due && <span className="tag due">復習</span>}
+                <span className="muted">{inputs.filter((i) => i.theme_id === t.id && !i.done).length}</span>
+              </button>
+            );
+          })}
+        </nav>
+        <section className="theme-detail">
+          {theme ? (
+            <>
+              <div className="theme-head">
+                <InlineInput key={`n${theme.id}`} className="panel-title" value={theme.name} label="テーマの名前" placeholder="テーマの名前" required onSave={(name) => run(() => api.updateTheme(theme.id, { name }))} />
+                <span className="grow" />
+                <ReviewTags summary={feynman.get(subjectKey({ kind: "theme", id: theme.id }))} />
+                <button className="primary" onClick={() => onStudy(theme, mine.filter((i) => !i.done && (!nexts || nexts.some((n) => n.input_id === i.id))))}>
+                  学ぶ時間を始める
+                </button>
+              </div>
+              <InlineInput key={`g${theme.id}`} value={theme.goal ?? ""} label="目標" placeholder="目標（何ができるようになりたいか）" onSave={(goal) => run(() => api.updateTheme(theme.id, { goal }))} />
+              <div className="actions">
+                {theme.doc_url ? (
+                  <button className="link-button" onClick={() => openInBrowser?.(theme.doc_url!)}>
+                    テーマのノートを開く
+                  </button>
+                ) : (
+                  <span className="muted">ノートは、学ぶ時間の「読み終わった」で claude.ai に作られます。</span>
+                )}
+                <span className="grow" />
+                <button disabled={thinking || mine.every((i) => i.done)} onClick={() => ask(() => api.nextReads(theme.id), setNexts)}>
+                  {thinking ? "考えています…" : "次に読むものを Claude に聞く"}
+                </button>
+              </div>
+              {nexts && (
+                <div className="proposals">
+                  {nexts.length === 0 && <p className="muted">提案はありませんでした。</p>}
+                  {nexts.map((n) => (
+                    <p key={n.input_id}>
+                      <b>{titleOf(n.input_id)}</b> <span className="muted">— {n.why}</span>
+                    </p>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="actions">
+              <span className="muted">⌥ + クリックしたリンクや、上に貼った URL がここに入ります。</span>
+              <span className="grow" />
+              <button disabled={thinking || unsorted.length === 0} onClick={() => ask(api.sortUnsorted, setProposals)}>
+                {thinking ? "考えています…" : "Claude に振り分けてもらう"}
+              </button>
+            </div>
+          )}
+          {proposals && !theme && (
+            <div className="proposals">
+              {proposals.length === 0 && <p className="muted">提案はありませんでした。</p>}
+              {proposals.map((p) => (
+                <p key={p.input}>
+                  <b>{titleOf(p.input)}</b> → {themeName(p)} <span className="muted">— {p.why}</span>
+                </p>
+              ))}
+              {proposals.length > 0 && (
+                <div className="actions">
+                  <button className="primary small" onClick={() => apply(proposals)}>
+                    この通りにする
+                  </button>
+                  <button className="ghost small" onClick={() => setProposals(null)}>
+                    やめる
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          <ul className="rows">
+            {mine.map((i) => (
+              <li key={i.id} className={`row${i.done ? " done" : ""}`} onClick={() => i.links[0] && openInBrowser?.(i.links[0].url)}>
                 <button
                   className="ghost icon"
                   aria-label={i.done ? `${i.title} を読み終わっていないことにする` : `${i.title} を読み終わったことにする`}
@@ -4029,108 +3916,43 @@ function InputsPage({ inputs: all, feynman, resumable, run, onFocus, onDetail, o
                 >
                   <StatusIcon status={i.done ? "done" : "todo"} />
                 </button>
-                <span className="row-title">{i.title}</span>
-                {pages[0] && <span className="muted mono ellipsis">{hostOf(pages[0].url)}</span>}
-                {pages.length > 1 && <span className="tag">{pages.length} ページ</span>}
-                {i.links.some((l) => NOTE_PAGE.test(l.url)) && <span className="tag">ノート</span>}
-                <StudyTags summary={feynman.get(subjectKey({ kind: "input", id: i.id }))} />
-                {resumable.has(i.id) && (
-                  <span className="tag" title="開くと、前に開いていたページの続きから始まります">
-                    続き
-                  </span>
-                )}
-                <span className="muted when">{ago(i.updated_at)}</span>
-                <button className="ghost icon" aria-label={`${i.title} の詳細`} title="詳細" onClick={(e) => (e.stopPropagation(), onDetail(i.id))}>
-                  <Icon name="more" size={14} />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      </div>
-    </>
-  );
-}
-
-/// An input's pages to read: its links but its note (NOTE_PAGE).
-const pagesOf = <L extends { url: string }>(i: { links: L[] }) => i.links.filter((l) => !NOTE_PAGE.test(l.url));
-
-/// An input's panel (InputsPage's ⌥Enter and …): its title, memo and pages,
-/// read or not, and deleting it.
-function InputPanel({ input, run, report, onFocus, onClose }: {
-  input: Input;
-  run: (f: () => Promise<unknown>) => void;
-  report: (e: unknown) => void;
-  onFocus: () => void;
-  onClose: () => void;
-}) {
-  const [deleting, setDeleting] = useState(false);
-  useEffect(() => setDeleting(false), [input.id]);
-  const update = (u: Parameters<typeof api.updateInput>[1]) => run(() => api.updateInput(input.id, u));
-  const note = input.links.find((l) => NOTE_PAGE.test(l.url));
-  return (
-    <aside className="panel" aria-label={input.title}>
-      <header className="panel-head">
-        <span className="muted">input</span>
-        <span className="grow" />
-        <button className="ghost small" title="Input モードで開く（Enter）" onClick={onFocus}>
-          Input モード
-        </button>
-        <button className="ghost small" onClick={() => setDeleting(true)}>
-          削除
-        </button>
-        <button className="ghost icon" aria-label="閉じる" onClick={onClose}>
-          <Icon name="close" size={14} />
-        </button>
-      </header>
-      {deleting && (
-        <div className="notice danger-notice">
-          <span>「{input.title}」を削除しますか？ ノートは claude.ai に残ります。</span>
-          <button className="danger" onClick={() => run(async () => (await api.deleteInput(input.id), onClose()))}>
-            削除する
-          </button>
-          <button className="ghost" onClick={() => setDeleting(false)}>
-            やめる
-          </button>
-        </div>
-      )}
-      <InlineInput className="panel-title" value={input.title} label="タイトル" placeholder="タイトル" required onSave={(title) => update({ title: title.trim() })} />
-      <div className="panel-body">
-        <label className="toggle">
-          <input type="checkbox" checked={input.done} onChange={() => update({ done: !input.done })} />
-          読み終わった
-        </label>
-        <section>
-          <h3>メモ</h3>
-          <MemoEditor value={input.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
-        </section>
-        <section>
-          <h3>
-            ページ <span className="muted">{pagesOf(input).length}</span>
-          </h3>
-          <ul className="rows compact">
-            {pagesOf(input).map((l) => (
-              <li key={l.id} className="row">
-                <span className="row-title ellipsis" title={l.url}>
-                  {l.title || l.url}
-                </span>
-                <span className="muted mono ellipsis">{hostOf(l.url)}</span>
-                <button className="ghost icon" aria-label={`${l.title || l.url} を外す`} onClick={() => run(() => api.removeInputLink(l.id))}>
+                <span className="row-title ellipsis">{i.title}</span>
+                {i.links[0] && <span className="muted mono ellipsis">{hostOf(i.links[0].url)}</span>}
+                {nexts?.some((n) => n.input_id === i.id) && <span className="tag due">次に読む</span>}
+                <select
+                  className="select compact"
+                  value={i.theme_id ?? ""}
+                  aria-label={`${i.title} のテーマ`}
+                  onClick={stop}
+                  onChange={(e) => run(() => api.setInputTheme(i.id, e.target.value ? Number(e.target.value) : null))}
+                >
+                  <option value="">まだテーマにない</option>
+                  {themes.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+                <button className="ghost icon" aria-label={`${i.title} を消す`} title="消す" onClick={(e) => (e.stopPropagation(), run(() => api.deleteInput(i.id)))}>
                   <Icon name="close" size={12} />
                 </button>
               </li>
             ))}
           </ul>
-          <SubmitInput placeholder="URL を貼って Enter で追加" onSubmit={(url) => run(() => api.addInputLink(input.id, url))} />
+          {mine.length === 0 && <p className="muted empty">{theme ? "このテーマで読むものは、まだありません。上に URL を貼ると入ります。" : "まだテーマにないものはありません。"}</p>}
+          {theme && read > 0 && (
+            <button className="ghost small show-ended" onClick={() => setShowRead((v) => !v)}>
+              {showRead ? "読み終わったものを隠す" : `読み終わったもの ${read} 件`}
+            </button>
+          )}
+          {theme && (
+            <button className="ghost small danger-text" onClick={() => run(() => api.deleteTheme(theme.id).then(() => setPicked("unsorted")))}>
+              このテーマを消す（読むものは「まだテーマにないもの」に戻ります）
+            </button>
+          )}
         </section>
-        {note && (
-          <section>
-            <h3>ノート</h3>
-            <p className="muted mono ellipsis">{note.url}</p>
-          </section>
-        )}
       </div>
-    </aside>
+    </>
   );
 }
 
@@ -4305,172 +4127,37 @@ function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo, o
   );
 }
 
-/// How long the pages typed in AddInputDialog rest before their title is read.
-const TITLE_LOOKUP_MS = 400;
-
-/// Adds input todos as AddTodoDialog adds todos: a title and the pages to
-/// read (none yet, or one or more, one per line). Without a title it takes
-/// the words among the pages, else the first page's own title, read as they
-/// are typed. One just added opens in the Input mode.
-function AddInputDialog({ openPages, run, onClose, onOpen }: {
-  /// The pages open in the 作業スペース (the one shown first), to pick from.
-  openPages: { url: string; title: string | null; shown: boolean }[];
-  run: (f: () => Promise<unknown>) => void;
-  onClose: () => void;
-  onOpen: (input: Input) => void;
-}) {
-  const [title, setTitle] = useState("");
-  const [pages, setPages] = useState("");
-  const [added, setAdded] = useState<Input[]>([]);
-  const pagesRef = useRef<HTMLTextAreaElement>(null);
-  const titleRef = useRef<HTMLInputElement>(null);
-  useEffect(() => titleRef.current?.focus(), []);
-  const input = parseInput(pages);
-  // A title alone makes one too, its pages added later.
-  const ready = input !== null || title.trim() !== "";
-  // The first page's own title, read once the pages stop changing: the title
-  // an input without one gets (undefined while it is read).
-  const first = input?.urls[0];
-  const [read, setRead] = useState<{ url: string; title: string | null } | null>(null);
-  useEffect(() => {
-    if (!first) return;
-    const t = setTimeout(
-      () => api.pageTitle(first).then((title) => setRead({ url: first, title }), () => setRead({ url: first, title: null })),
-      TITLE_LOOKUP_MS,
-    );
-    return () => clearTimeout(t);
-  }, [first]);
-  // A page open here has its title already, even one behind a sign-in.
-  const openTitle = openPages.find((p) => p.url === first)?.title;
-  const pageTitle = openTitle || (read && read.url === first ? read.title : undefined);
-  const picked = (url: string) => input?.urls.includes(url) ?? false;
-  /// Adds an open page to the URLs, or takes it out again.
-  const toggle = (url: string) => {
-    const lines = pages.split(/\s+/).filter(Boolean);
-    setPages((picked(url) ? lines.filter((l) => l !== url) : [...lines, url]).join("\n"));
-    pagesRef.current?.focus();
-  };
-  const submit = () => {
-    if (!ready) return;
-    run(async () => {
-      const urls = input?.urls ?? [];
-      const given = title.trim() || input?.title || "";
-      const name = given || pageTitle || (pageTitle === undefined ? await inputTitle(urls, "") : hostOf(urls[0]));
-      const todo = await addInput(urls, name);
-      setAdded((prev) => [todo, ...prev]);
-      setTitle("");
-      setPages("");
-      titleRef.current?.focus();
-    });
-  };
-  return (
-    <Modal
-      title="input を追加"
-      onClose={onClose}
-      footer={
-        <>
-          <span className="muted">⌘Enter で追加。続けて入力できます</span>
-          <span className="grow" />
-          <button className="ghost" onClick={onClose}>
-            閉じる
-          </button>
-          <button className="primary" disabled={!ready} onClick={submit}>
-            追加
-          </button>
-        </>
-      }
-    >
-      <label className="field">
-        <span>タイトル（URL を入れたときは空でも可。ページのタイトルが入ります）</span>
-        <input
-          ref={titleRef}
-          value={title}
-          placeholder={!first ? "何を読む？" : input?.title || pageTitle || (pageTitle === undefined ? "ページのタイトルを読み込み中…" : hostOf(first))}
-          onChange={(e) => setTitle(e.target.value)}
-          onKeyDown={(e) => isEnter(e) && submit()}
-        />
-      </label>
-      <label className="field">
-        <span>読むページの URL（任意。1行に1つ、いくつでも。あとから足せます）</span>
-        <textarea
-          ref={pagesRef}
-          rows={3}
-          value={pages}
-          placeholder="https://…"
-          onChange={(e) => setPages(e.target.value)}
-          onKeyDown={(e) => isEnter(e) && e.metaKey && (e.preventDefault(), submit())}
-        />
-      </label>
-      {openPages.length > 0 && (
-        <div className="field">
-          <span>作業スペースで開いているページ（押すと URL に入ります）</span>
-          <ul className="rows compact open-pages">
-            {openPages.map((p) => (
-              <li key={p.url} className={`row${picked(p.url) ? " on" : ""}`} onClick={() => toggle(p.url)}>
-                <Icon name={picked(p.url) ? "check" : "plus"} size={12} />
-                <span className="row-title">{p.title || hostOf(p.url)}</span>
-                {p.shown && <span className="tag">表示中</span>}
-                <span className="muted mono ellipsis">{hostOf(p.url)}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {added.length > 0 && (
-        <div className="added">
-          <span className="muted">追加済み {added.length} 件（押すと Input モードで開きます）</span>
-          <ul className="rows compact">
-            {added.map((t) => (
-              <li key={t.id} className="row" onClick={() => onOpen(t)}>
-                <span className="mono muted">#{t.id}</span>
-                <span className="row-title">{t.title}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </Modal>
-  );
-}
-
-/// Puts a page (the 作業スペース's shown one) in an input made before, or in a
-/// new one: ↑↓ (⌃j ⌃k) pick, Enter puts it there; the words typed narrow them.
-function AddToInputDialog({ page, inputs, run, onDone, onClose }: {
+/// ⌘⇧D: the page shown goes into a theme (or among the unsorted) to read.
+function AddToThemeDialog({ page, themes, run, onDone, onClose }: {
   page: { url: string; title: string | null };
-  /// The inputs not read yet, the latest first.
-  inputs: Input[];
+  themes: Theme[];
   run: (f: () => Promise<unknown>) => void;
-  /// Told what the page went into.
-  onDone: (title: string) => void;
+  /// Told where the page went.
+  onDone: (where: string) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = inputs.filter((t) => words.every((w) => t.title.toLowerCase().includes(w)));
-  const has = (t: Input) => t.links.some((l) => l.url === page.url);
-  // The new input comes last, as one more choice.
+  const shown = themes.filter((t) => words.every((w) => t.name.toLowerCase().includes(w)));
+  // The unsorted come last, as one more choice.
   const count = shown.length + 1;
-  const put = (t: Input | undefined) =>
+  const put = (t: Theme | undefined) =>
     run(async () => {
-      if (t) {
-        if (!has(t)) await api.addInputLink(t.id, page.url);
-        onDone(t.title);
-      } else {
-        const todo = await addInput([page.url], page.title || (await inputTitle([page.url], "")));
-        onDone(todo.title);
-      }
+      const input = await addInput([page.url], page.title || (await inputTitle([page.url], "")));
+      if (t) await api.setInputTheme(input.id, t.id);
+      onDone(t ? `「${t.name}」` : "まだテーマにないもの");
       onClose();
     });
   return (
-    <Modal title="このページを input に追加" onClose={onClose}>
+    <Modal title="このページを学びに入れる" onClose={onClose}>
       <p className="muted ellipsis">{page.title || page.url}</p>
       <input
         autoFocus
         className="filter-search"
         value={query}
-        placeholder="input を絞り込む"
-        aria-label="追加先の input を絞り込む"
+        placeholder="テーマを絞り込む"
+        aria-label="入れるテーマを絞り込む"
         onChange={(e) => {
           setQuery(e.target.value);
           setActive(0);
@@ -4487,13 +4174,11 @@ function AddToInputDialog({ page, inputs, run, onDone, onClose }: {
       <ul className="rows compact to-input" role="listbox">
         {shown.map((t, i) => (
           <li key={t.id} role="option" aria-selected={i === active} className={`row${i === active ? " cursor" : ""}`} onMouseEnter={() => setActive(i)} onClick={() => put(t)}>
-            <span className="row-title">{t.title}</span>
-            {has(t) ? <span className="tag">追加済み</span> : <span className="muted">{pagesOf(t).length} ページ</span>}
+            <span className="row-title">{t.name}</span>
           </li>
         ))}
         <li role="option" aria-selected={active === shown.length} className={`row${active === shown.length ? " cursor" : ""}`} onMouseEnter={() => setActive(shown.length)} onClick={() => put(undefined)}>
-          <Icon name="plus" size={12} />
-          <span className="row-title">新しい input にする</span>
+          <span className="row-title muted">まだテーマにないもの（あとで振り分ける）</span>
         </li>
       </ul>
     </Modal>
@@ -4656,14 +4341,15 @@ function commandMatches(label: string, query: string) {
 }
 
 /// ⌘K: the actions that used to crowd the sidebar, the screens, and a jump to any todo.
-function CommandPalette({ commands, todos, inputs, start, onOpenTodo, onOpenInput, onClose }: {
+function CommandPalette({ commands, todos, themes, start, onOpenTodo, onStudy, onClose }: {
   commands: Command[];
   /// A list to open on (a terminal's links), which Esc closes from.
   start?: Command;
   todos: Todo[];
-  inputs: Input[];
+  themes: Theme[];
   onOpenTodo: (id: number) => void;
-  onOpenInput: (input: Input) => void;
+  /// A study time for the theme.
+  onStudy: (theme: Theme) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -4682,12 +4368,12 @@ function CommandPalette({ commands, todos, inputs, start, onOpenTodo, onOpenInpu
           .slice(0, 20)
           .map((t) => ({ key: `todo:${t.id}`, label: `#${t.id} ${t.title}`, hint: t.status, run: () => onOpenTodo(t.id) }))
       : []),
-    // Inputs open in the Input mode.
+    // A theme starts its study time.
     ...(q
-      ? inputs
-          .filter((i) => i.title.toLowerCase().includes(q))
+      ? themes
+          .filter((t) => t.name.toLowerCase().includes(q))
           .slice(0, 20)
-          .map((i) => ({ key: `input:${i.id}`, label: `input: ${i.title}`, hint: i.done ? "読み終わった" : undefined, run: () => onOpenInput(i) }))
+          .map((t) => ({ key: `theme:${t.id}`, label: `学ぶ時間：${t.name}`, run: () => onStudy(t) }))
       : []),
   ];
   useEffect(() => setActive(0), [query, stack.length]);
@@ -4810,8 +4496,8 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
   );
 }
 
-type Selection = { kind: "todo"; id: number } | { kind: "input"; id: number } | null;
-type DialogKind = "add" | "addInput" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | "settings" | null;
+type Selection = { kind: "todo"; id: number } | null;
+type DialogKind = "add" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | "settings" | null;
 
 /// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
 const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
@@ -4861,7 +4547,7 @@ function ExitFocusDialog({ onExit, onStay }: { onExit: () => void; onStay: () =>
   }, [onExit, onStay]);
   return (
     <Modal
-      title="Input モードを終えますか？"
+      title="学ぶ時間を終えますか？"
       onClose={onStay}
       footer={
         <>
@@ -4885,7 +4571,7 @@ const FIXED_KEYS: [string, string][] = [
   ["↑↓←→", "一覧・カンバンの移動（変えたキーと一緒に使えます）"],
   ["Enter", "開く（todo のシート、セッション、メニューの項目）"],
   ["⌥Enter", "開き方を選ぶ（セッション）/ PR を開く（PR・通知）"],
-  ["Esc", "シートやパネル、メニューを閉じる（Input モードでは終えるか聞く）"],
+  ["Esc", "シートやパネル、メニューを閉じる（学ぶ時間では終えるか聞く）"],
 ];
 
 /// Every shortcut, and changing one: its key's button, then the new key
@@ -5247,12 +4933,12 @@ export default function App() {
       keysToTab(rest[0] ?? null, undefined, report);
     }
   };
-  // A todo's space is saved as it changes, to be resumed after a restart.
+  // A theme's space is saved as it changes, to be resumed after a restart.
   const savedSpace: SavedSpace | null =
     focusMode && focusSubject !== null
       ? (() => {
           const pages = focusLefts.filter((t) => !t.term);
-          const rights = tabs.filter((t) => t.space === spaceKey && t.kind && t.kind !== NOTE_TAB);
+          const rights = tabs.filter((t) => t.space === spaceKey && t.kind);
           return {
             lefts: pages.map((t) => ({ url: t.url, title: t.title })),
             active: Math.max(0, pages.findIndex((t) => t.id === focusLeft?.id)),
@@ -5267,78 +4953,28 @@ export default function App() {
     if (focusSubject === null || !savedSpaceJson) return;
     remember(INPUT_SPACES_KEY, JSON.stringify({ ...savedSpaces(), [spaceKey]: JSON.parse(savedSpaceJson) }));
   }, [savedSpaceJson]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The note (NOTE_TAB): the subject's, once published (one of its links),
-  // else the session making it.
-  const [noteSessions, setNoteSessionsState] = useState<Record<string, NoteSession>>(() => loadJson(NOTE_SESSIONS_KEY, {}));
-  /// The todo or input the Input mode is open for.
-  const subjectItem: { title: string; memo: string | null; links: { id: number; url: string }[] } | undefined =
-    focusSubject?.kind === "todo" ? board?.todos.find((t) => t.id === focusSubject.id) : focusSubject?.kind === "input" ? board?.inputs.find((i) => i.id === focusSubject.id) : undefined;
-  const noteUrl = subjectItem?.links.find((l) => NOTE_PAGE.test(l.url))?.url ?? null;
-  const noteSession = focusSubject === null ? undefined : noteSessions[spaceKey];
-  const noteTerminal = noteSession && tabs.find((t) => t.term?.session === noteSession.session);
-  // A note being made on Cloud shows its session's page meanwhile.
-  const notePage = noteUrl ?? (noteSession?.cloud ? cloudWebUrl(noteSession.session) : null);
-  useEffect(() => {
-    if (!focusMode || focusRight !== NOTE_TAB || !notePage) return;
-    const id = focusRightId;
-    setTabs((prev) =>
-      prev.some((t) => t.id === id)
-        ? prev.map((t) => (t.id === id && pagePrefix(t.url) !== pagePrefix(notePage) ? { ...t, url: notePage, loading: true, nav: t.nav + 1 } : t))
-        : [...prev, { id, url: notePage, title: "ノート", loading: true, nav: 0, focus: true, space: spaceKey, kind: NOTE_TAB }],
-    );
-  }, [focusMode, focusRightId, notePage]); // eslint-disable-line react-hooks/exhaustive-deps
-  /// The right side's tab: the space's page, or the note (its page, else the
-  /// terminal making it).
-  const focusRightTab = focusRight !== NOTE_TAB || notePage ? tabs.find((t) => t.id === focusRightId) : noteTerminal;
-  // The note is looked for in its session until it is published.
-  useEffect(() => {
-    if (!focusMode || focusSubject === null || !noteSession || noteUrl) return;
-    const subject = focusSubject;
-    const look = () => void api.noteUrl(subject, noteSession.session).then((url) => url && refresh(), report);
-    const timer = setInterval(look, NOTE_POLL_MS);
-    return () => clearInterval(timer);
-  }, [focusMode, focusSubject, noteSession?.session, noteUrl]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Spaces and notes were kept by todo id while inputs were todos (they kept
-  // their ids as they moved): the keys become subjectKey's, once.
-  useEffect(() => {
-    if (!board) return;
-    const rekey = <T,>(key: string) => {
-      const old = loadJson<Record<string, T>>(key, {});
-      if (!Object.keys(old).some((k) => /^\d+$/.test(k))) return null;
-      const kind = (id: number) => (board.inputs.some((i) => i.id === id) ? "input" : "todo");
-      const next = Object.fromEntries(Object.entries(old).map(([k, v]) => [/^\d+$/.test(k) ? subjectKey({ kind: kind(Number(k)), id: Number(k) }) : k, v]));
-      remember(key, JSON.stringify(next));
-      return next;
-    };
-    rekey<SavedSpace>(INPUT_SPACES_KEY);
-    const notes = rekey<NoteSession>(NOTE_SESSIONS_KEY);
-    if (notes) setNoteSessionsState(notes);
-  }, [board === null]); // eslint-disable-line react-hooks/exhaustive-deps
-  const setNoteSessions = (next: Record<string, NoteSession>) => {
-    remember(NOTE_SESSIONS_KEY, JSON.stringify(next));
-    setNoteSessionsState(next);
-  };
-  /// Leaves the note (published or being made) to make another; the old one
-  /// stays on claude.ai, and its session goes on.
-  const resetNote = () =>
+  /// The theme the study time is open for, and the right side's tab (its LLM).
+  const focusTheme = focusSubject ? board?.themes.find((t) => t.id === focusSubject.id) : undefined;
+  const focusRightTab = tabs.find((t) => t.id === focusRightId);
+  // The review a study time starts with, over the pages until done or skipped.
+  const [reviewing, setReviewing] = useState(false);
+  // 「読み終わった」: the left's pages and the right's conversation go into the
+  // theme's document (THEME_DOC_EVENT says when it is written).
+  const [finishing, setFinishing] = useState<Set<number>>(new Set());
+  const finishReading = () =>
     run(async () => {
-      if (focusSubject === null) return;
-      const { [spaceKey]: _, ...rest } = noteSessions;
-      setNoteSessions(rest);
-      const link = subjectItem?.links.find((l) => NOTE_PAGE.test(l.url));
-      if (link) await (focusSubject.kind === "todo" ? api.removeLink(link.id) : api.removeInputLink(link.id));
-      refresh();
-    });
-  /// Starts the session that makes the note of the left's pages.
-  const createNote = (format: NoteFormat, cloud: boolean) =>
-    run(async () => {
-      if (focusSubject === null) return;
-      const urls = focusLefts.filter((t) => !t.term).map((t) => t.url);
-      const started = await api.startNote(focusSubject, urls, format, cloud);
-      setNoteSessions({ ...noteSessions, [spaceKey]: { session: started.session, cloud } });
-      // Its terminal is the space's own, apart from the pane's, shown on the right while it works.
-      const term = started.run;
-      if (term) setTabs((prev) => [...prev, { id: `t${nextTab.current++}`, url: "", title: term.title, loading: false, nav: 0, term, focus: true, space: spaceKey }]);
+      if (!focusTheme) return;
+      const pages: PageText[] = [];
+      for (const t of focusLefts.filter((t) => !t.term && /^https?:/.test(t.url))) {
+        const text = (await api.browserText(t.id).catch(() => null)) ?? (await api.pageText(t.url).catch(() => ""));
+        pages.push({ url: t.url, title: t.title, text });
+      }
+      const conversation = focusRightTab ? await api.browserText(focusRightTab.id).catch(() => null) : null;
+      const shown = new Set(focusLefts.flatMap((t) => [t.url, t.openedFor].filter((u): u is string => !!u)));
+      const read = (board?.inputs ?? []).filter((i) => i.theme_id === focusTheme.id && i.links.some((l) => shown.has(l.url))).map((i) => i.id);
+      await api.finishReading(focusTheme.id, pages, conversation, read);
+      setFinishing((prev) => new Set(prev).add(focusTheme.id));
+      showToast(`「${focusTheme.name}」のノートに書き足しています（少しかかります）`);
     });
   // A short note at the bottom of what was done in the background (an input
   // added, a session sent what to fix).
@@ -5347,15 +4983,15 @@ export default function App() {
     setToastState(text);
     setTimeout(() => setToastState((now) => (now === text ? null : now)), TOAST_MS);
   };
-  // A link ⌥-clicked in a page becomes an input; the page says so (and the
-  // input a page went into, from AddToInputDialog).
-  const setAddedInput = (title: string) => showToast(`input に追加しました：${title}`);
+  // A link ⌥-clicked in a page waits unsorted in the learning page; the page
+  // says so (and where a page went, from AddToThemeDialog).
+  const setAddedInput = (where: string) => showToast(`学びに入れました：${where}`);
   const addInputFrom = (url: string, title: string) =>
     run(async () => {
       await addInput([url], title);
       setAddedInput(title);
     });
-  /// The page AddToInputDialog puts in an input: the 作業スペース's shown one.
+  /// The page AddToThemeDialog puts in a theme: the 作業スペース's shown one.
   const [toInputPage, setToInputPage] = useState<{ url: string; title: string | null } | null>(null);
   const toInputRef = useRef(() => {});
   const toInput = () => {
@@ -5373,42 +5009,21 @@ export default function App() {
   newFocusTabRef.current = newFocusTab;
   const closeFocusTabRef = useRef(closeFocusTab);
   closeFocusTabRef.current = closeFocusTab;
-  const [focusPicking, setFocusPicking] = useState<"start" | "add">("start");
-  const pickFocus = (mode: "start" | "add") => {
-    if (mode === "start") setFocusSubject(null);
-    setFocusPicking(mode);
-    setDialog("focusPick");
+  const pickFocus = () => setDialog("focusPick");
+  /// A study time for the theme: its space as it was left (or saved), with
+  /// the pages of `inputs` it lacks added; it starts with a review when the
+  /// theme has its document.
+  const studyTheme = (theme: Theme, inputs: Input[]) => {
+    setView("inputs");
+    enterFocus(inputs.flatMap((i) => i.links.slice(0, 1).map((l) => ({ url: l.url }))), { kind: "theme", id: theme.id });
+    setReviewing(!!theme.doc_url);
   };
-  /// The Input mode for a subject: its space as it was left (or saved), with
-  /// any of `urls` it lacks added, else `urls` on the left; with none, the
-  /// pages to pick from.
-  const focusOn = (subject: Subject, urls: string[]) => {
-    const key = subjectKey(subject);
-    if (spaces[key] || savedSpaces()[key] || urls.length > 0) return enterFocus(urls.map((url) => ({ url })), subject);
-    pickFocus("start");
-    setFocusSubject(subject);
-  };
-  /// A todo's pages: its links, PR and issue.
-  const focusTodo = (todo: Todo) =>
-    focusOn({ kind: "todo", id: todo.id }, [...new Set([...pagesOf(todo).map((l) => l.url), todo.pr_url, todo.issue_url].filter((u): u is string => !!u))]);
-  const focusInput = (input: Input) => focusOn({ kind: "input", id: input.id }, pagesOf(input).map((l) => l.url));
-  /// By subjectKey: each subject's latest 「説明する」 attempt.
+  /// Themes whose review is due (by their last score).
+  const reviewsDue = (board?.feynman ?? []).filter((f) => f.due_at * 1000 <= Date.now()).length;
+  /// A theme's inputs not read yet, the pages a study time opens with.
+  const unreadOf = (t: Theme) => (board?.inputs ?? []).filter((i) => i.theme_id === t.id && !i.done);
+  /// By subjectKey: each theme's latest review.
   const feynmanOf = new Map((board?.feynman ?? []).map((s) => [subjectKey(s.subject), s]));
-  /// The subject's Input mode on 「説明する」 (a study notice).
-  const openStudy = (subject: Subject) => {
-    if (subject.kind === "input") {
-      const input = board?.inputs.find((i) => i.id === subject.id);
-      if (!input) return;
-      focusInput(input);
-    } else {
-      const todo = board?.todos.find((t) => t.id === subject.id);
-      if (!todo) return;
-      focusTodo(todo);
-    }
-    remember(FOCUS_RIGHT_KEY, EXPLAIN_TAB);
-    setFocusRightPref(EXPLAIN_TAB);
-    patchSpace(subjectKey(subject), (s) => ({ ...s, right: EXPLAIN_TAB }));
-  };
   // A login a page sent, asked about before the app keeps it.
   const [loginAsk, setLoginAsk] = useState<{ host: string; user: string } | null>(null);
   useEffect(() => {
@@ -5424,10 +5039,6 @@ export default function App() {
     const site = activeTab && !activeTab.term ? hostOf(activeTab.url) : null;
     if (site) api.forgetLogin(site).catch(report);
   };
-  const openStudyRef = useRef(openStudy);
-  openStudyRef.current = openStudy;
-  /// 「声で質問される」: ChatGPT on the right, with the prompt typed into it.
-  const askByVoice = (prompt: string) => setFocusRight("pinchatgpt", prompt);
   const savedSpaces = () => loadJson<Record<string, SavedSpace>>(INPUT_SPACES_KEY, {});
   /// ⌘⇧[ ⌘⇧] in the Input mode: the previous or next tab of the side that has
   /// the keyboard, the left's own or the right's pages (which take the typing).
@@ -5552,11 +5163,6 @@ export default function App() {
           },
           focus: (sessionId) => {
             const tab = terminalTab(sessionId);
-            // A note's session runs in its Input mode space, apart from the pane (and is not started again).
-            if (!tab && tabs.some((t) => t.focus && t.term?.session === sessionId)) {
-              report("このセッションは Input モードのノートを作っています。その input（todo）の Input モードの右で見られます");
-              return true;
-            }
             if (!tab) return false;
             showTab(tab.id);
             // After the tab is shown, so its terminal is in the page.
@@ -5902,7 +5508,14 @@ export default function App() {
         dialogFromPage.current = true;
         openSessionsRef.current();
       }),
-      listen<{ subject: Subject }>(OPEN_STUDY_EVENT, ({ payload }) => openStudyRef.current(payload.subject)),
+      listen<{ theme_id: number; error: string | null }>(THEME_DOC_EVENT, ({ payload }) => {
+        setFinishing((prev) => {
+          const next = new Set(prev);
+          next.delete(payload.theme_id);
+          return next;
+        });
+        showToastRef.current(payload.error ? `ノートに書き足せませんでした：${payload.error}` : "テーマのノートに書き足しました");
+      }),
       listen<{ id: number }>(OPEN_TODO_EVENT, ({ payload }) => goTodoRef.current(payload.id)),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
@@ -6059,12 +5672,9 @@ export default function App() {
       setBoard(b);
     }, report);
   }, [report]);
-  const [panelW, setPanelWState] = useState(() => loadJson<number>(PANEL_W_KEY, PANEL_DEFAULT_W));
+  // The todo's sheet keeps the width it was given before the side panels went.
+  const [panelW] = useState(() => loadJson<number>(PANEL_W_KEY, PANEL_DEFAULT_W));
   const [dockW, setDockWState] = useState(() => loadJson<number>(DOCK_W_KEY, Math.max(DOCK_MIN_W, Math.round(window.innerWidth * DOCK_DEFAULT_SHARE))));
-  const setPanelW = (w: number) => {
-    remember(PANEL_W_KEY, String(w));
-    setPanelWState(w);
-  };
   const setDockW = (w: number) => {
     remember(DOCK_W_KEY, String(w));
     setDockWState(w);
@@ -6202,7 +5812,7 @@ export default function App() {
         ["prevTab", () => switchRef.current(-1)],
         ["nextTab", () => switchRef.current(1)],
         // On the Input page it adds an input.
-        ["newTodo", () => setDialog(viewRef.current === "inputs" ? "addInput" : "add")],
+        ["newTodo", () => setDialog("add")],
         // Again closes the commands.
         ["palette", () => setDialog((d) => (d === "palette" ? null : "palette"))],
         ["newTab", () => openNewTab()],
@@ -6415,7 +6025,15 @@ export default function App() {
         </span>
       ),
     },
-    { key: "inputs", label: "Input", icon: "import", count: allInputs.filter((i) => !i.done).length, on: view === "inputs", go: () => setView("inputs") },
+    {
+      key: "inputs",
+      label: "学び",
+      icon: "import",
+      count: allInputs.filter((i) => i.theme_id === null && !i.done).length || undefined,
+      on: view === "inputs",
+      go: () => setView("inputs"),
+      badge: reviewsDue > 0 && <span className="pill accent" title="理解度から決めた復習どきのテーマ">復習 {reviewsDue}</span>,
+    },
     { key: "prs", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
     { key: "artifacts", label: "成果物", icon: "open", count: board?.artifacts.length, on: view === "artifacts", go: () => setView("artifacts") },
   ];
@@ -6449,14 +6067,18 @@ export default function App() {
     { key: "browser", label: browserShown ? "作業スペースを隠す" : "作業スペース", run: toggleBrowser },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
-    { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
+    {
+      key: "study",
+      label: "学ぶ時間を始める（テーマを選ぶ）",
+      run: () => {},
+      items: () => (board?.themes ?? []).map((t) => ({ key: `theme:${t.id}`, label: t.name, hint: t.goal ?? undefined, run: () => studyTheme(t, unreadOf(t)) })),
+    },
     { key: "shortcuts", label: "キーの一覧", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "settings", label: "設定（開く場所・ターミナル・herdr・ログイン・サイトの許可）", run: () => setDialog("settings") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
-    { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },
     ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned
-      ? [{ key: "toInput", label: "表示中のページを input に追加", run: toInput }]
+      ? [{ key: "toInput", label: "表示中のページを学びに入れる", run: toInput }]
       : []),
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
@@ -6465,9 +6087,8 @@ export default function App() {
     { key: "newTab", label: "ブラウザで新しいタブを開く", hint: "⌘T", run: openNewTab },
   ];
 
-  const selectedInput = selection?.kind === "input" ? board?.inputs.find((i) => i.id === selection.id) ?? null : null;
   // A todo picked on the sessions page opens in the same sheet, over the sessions.
-  const panel = (view === "todos" || view === "sessions") && selectedTodo ? "todo" : view === "inputs" && selectedInput ? "input" : null;
+  const panel = (view === "todos" || view === "sessions") && selectedTodo ? "todo" : null;
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
@@ -6551,7 +6172,7 @@ export default function App() {
             <div className="banners">
               {heldWaiting > 0 && (
                 <div className="notice" role="status">
-                  <span className="grow">Input モードのあいだに、あなた待ちが {heldWaiting} 件増えました。</span>
+                  <span className="grow">学ぶ時間のあいだに、あなた待ちが {heldWaiting} 件増えました。</span>
                   <button className="primary small" onClick={() => (setHeldWaiting(0), showWaiting())}>
                     あなた待ちを見る
                   </button>
@@ -6684,17 +6305,7 @@ export default function App() {
               onQuick={() => setDialog("quick")}
             />
           )}
-          {view === "inputs" && board && (
-            <InputsPage
-              inputs={allInputs}
-              feynman={feynmanOf}
-              resumable={new Set([...Object.keys(spaces), ...Object.keys(savedSpaces())].filter((k) => k.startsWith("i")).map((k) => Number(k.slice(1))))}
-              run={run}
-              onFocus={focusInput}
-              onDetail={(id) => setSelection({ kind: "input", id })}
-              onAdd={() => setDialog("addInput")}
-            />
-          )}
+          {view === "inputs" && board && <ThemesPage themes={board.themes} inputs={allInputs} feynman={feynmanOf} run={run} report={report} onStudy={studyTheme} />}
           {view === "prs" && (
             <PrsPage
               prs={prs}
@@ -6732,16 +6343,12 @@ export default function App() {
           )}
         </main>
 
-        {panel === "input" && (
-          <div className="side">
-            <Resizer label="パネルの幅" cssVar="--panel-w" width={panelW} min={PANEL_MIN_W} max={() => maxPaneWidth(browserShown ? dockW : 0)} onResize={setPanelW} />
-        {panel === "input" && selectedInput && (
-          <InputPanel input={selectedInput} run={run} report={report} onFocus={() => focusInput(selectedInput)} onClose={() => setSelection(null)} />
-        )}
-          </div>
-        )}
         {focusMode && (
           <FocusMode
+            theme={focusTheme}
+            overlay={reviewing && focusTheme ? <ReviewPanel theme={focusTheme} report={report} onDone={() => setReviewing(false)} onExit={exitFocus} /> : null}
+            finishing={!!focusTheme && finishing.has(focusTheme.id)}
+            onFinish={finishReading}
             lefts={focusLefts}
             left={focusLeft}
             onSelectLeft={(id) => {
@@ -6750,20 +6357,13 @@ export default function App() {
             }}
             onLeftStrip={() => focusLeft && keysToTab(focusLeft, focusLeft.id, report)}
             onCloseLeft={removeFromFocus}
-            onAddLeft={() => pickFocus("add")}
+            onAddLeft={pickFocus}
             onOpenLeft={(url) => {
               const [id] = addToFocus([{ url }]);
               if (id) focusSoon(id);
             }}
             right={focusRightTab}
             rightKind={focusRight}
-            explain={<ExplainPanel subject={focusSubject} title={subjectItem?.title ?? ""} pages={focusLefts.filter((t) => !t.term)} report={report} onAskByVoice={askByVoice} />}
-            note={
-              focusRight !== NOTE_TAB || noteUrl
-                ? null
-                : { subject: focusSubject !== null, making: noteSession !== undefined, pages: focusLefts.some((t) => !t.term), onCreate: createNote, onReset: resetNote }
-            }
-            onRemakeNote={focusRight === NOTE_TAB && noteUrl ? resetNote : undefined}
             covered={covered}
             report={report}
             width={focusRightW}
@@ -6815,27 +6415,7 @@ export default function App() {
         )}
 
         {dialog === "toInput" && toInputPage && (
-          <AddToInputDialog
-            page={toInputPage}
-            inputs={allInputs.filter((i) => !i.done)}
-            run={run}
-            onDone={setAddedInput}
-            onClose={() => setDialog(null)}
-          />
-        )}
-        {dialog === "addInput" && (
-          <AddInputDialog
-            // The page shown first, then the other tabs' pages (the pinned chats aside).
-            openPages={[...(activeTab ? [activeTab] : []), ...paneTabs.filter((t) => t !== activeTab)]
-              .filter((t) => !t.term && !t.pinned && /^https?:\/\//.test(t.url))
-              .map((t) => ({ url: t.url, title: t.title, shown: browserShown && t === activeTab }))}
-            run={run}
-            onClose={() => setDialog(null)}
-            onOpen={(input) => {
-              setDialog(null);
-              focusInput(input);
-            }}
-          />
+          <AddToThemeDialog page={toInputPage} themes={board?.themes ?? []} run={run} onDone={setAddedInput} onClose={() => setDialog(null)} />
         )}
         {dialog === "add" && (
           <AddTodoDialog
@@ -6927,13 +6507,12 @@ export default function App() {
         )}
         {dialog === "focusPick" && (
           <FocusPicker
-            adding={focusPicking === "add"}
             terminals={paneTabs.filter((t) => t.term)}
+            inputs={focusTheme ? allInputs.filter((i) => i.theme_id === focusTheme.id) : []}
             onClose={() => setDialog(null)}
             onPick={(item) => {
               setDialog(null);
-              if (focusPicking !== "add") enterFocus([item]);
-              else addToFocus([item]);
+              addToFocus([item]);
             }}
           />
         )}
@@ -6941,10 +6520,10 @@ export default function App() {
           <CommandPalette
             commands={commands}
             todos={allTodos}
-            inputs={allInputs}
+            themes={board?.themes ?? []}
             start={paletteStart?.command}
             onOpenTodo={goTodo}
-            onOpenInput={focusInput}
+            onStudy={(t) => studyTheme(t, unreadOf(t))}
             onClose={() => {
               setDialog(null);
               // Back to the terminal the links were picked from (a link picked takes the keyboard after).

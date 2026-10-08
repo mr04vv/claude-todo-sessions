@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { TerminalRun } from "./Terminal";
 
 export type Status = "backlog" | "todo" | "doing" | "review" | "pending" | "done";
 export type SessionState = "running" | "needs_input" | "idle" | "ended";
@@ -81,6 +80,8 @@ export interface Input {
   memo: string | null;
   /** Read already. */
   done: boolean;
+  /** The theme it is in; null waits unsorted. */
+  theme_id: number | null;
   updated_at: number;
   /** Its pages and its note, in the order added. */
   links: InputLink[];
@@ -96,14 +97,31 @@ export interface InputLink {
   created_at: number;
 }
 
-/** What the Input mode is open for: a todo's pages, or an input. */
-export type Subject = { kind: "todo"; id: number } | { kind: "input"; id: number };
+/** What a study time (the Input mode) is open for: a learning theme. */
+export type Subject = { kind: "theme"; id: number };
 
-/** The Input mode's 「説明する」 (feynman.rs): a key point of the subject's pages. */
-export interface FeynmanPoint {
+/** Something to learn: its name, goal and claude.ai document. */
+export interface Theme {
   id: number;
-  text: string;
+  name: string;
+  goal: string | null;
+  doc_url: string | null;
+  updated_at: number;
 }
+
+/** Where Claude proposes an unsorted input goes. */
+export interface Placement {
+  input: number;
+  place: { theme: number } | { new_theme: string };
+  why: string;
+}
+
+/** A review's question, and the point an answer should make. */
+export interface ReviewQuestion {
+  question: string;
+  point: string;
+}
+
 export type FeynmanVerdict = "said" | "vague" | "missing";
 export interface FeynmanGrade {
   verdicts: { point: number; verdict: FeynmanVerdict; note: string }[];
@@ -111,7 +129,7 @@ export interface FeynmanGrade {
   jargon: string[];
   questions: string[];
 }
-/** One explanation and its grading. */
+/** One review (its answers) and its grading. */
 export interface FeynmanAttempt {
   id: number;
   explanation: string;
@@ -120,17 +138,12 @@ export interface FeynmanAttempt {
   score: number;
   created_at: number;
 }
-/** A subject's latest attempt, and when to explain again (seconds). */
+/** A theme's latest review, and when the next is due (seconds). */
 export interface FeynmanSummary {
   subject: Subject;
   score: number;
   attempted_at: number;
   due_at: number;
-}
-export interface FeynmanState {
-  points: FeynmanPoint[];
-  /** Newest first. */
-  attempts: FeynmanAttempt[];
 }
 /** A page's text, as read from its tab (or fetched). */
 export interface PageText {
@@ -169,8 +182,10 @@ export interface Board {
   todos: Todo[];
   inputs: Input[];
   inbox: Session[];
-  /** Each subject's latest 「説明する」 attempt. */
+  /** Each theme's latest review. */
   feynman: FeynmanSummary[];
+  /** The latest changed first. */
+  themes: Theme[];
   /** Newest first. */
   artifacts: Artifact[];
   sync_status: string;
@@ -356,16 +371,26 @@ export const api = {
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
   /// A session making the focus mode's note of `urls` for the todo; locally, the
   /// in-app terminal gets the command to run (`run`), herdr runs it itself.
-  startNote: (subject: Subject, urls: string[], format: NoteFormat, cloud: boolean) => invoke<NoteStart>("start_note", { subject, urls, format, cloud }),
   /// The note the session published, once it has (kept as a link of the todo).
-  noteUrl: (subject: Subject, sessionId: string) => invoke<string | null>("note_url", { subject, sessionId }),
   /// The text of a tab's page; null when the tab has no page open.
   browserText: (tab: string) => invoke<string | null>("browser_text", { tab }),
   /// A page's text fetched afresh (one behind a login comes back as its sign-in page).
   pageText: (url: string) => invoke<string>("page_text", { url }),
-  feynmanState: (subject: Subject) => invoke<FeynmanState>("feynman_state", { subject }),
-  feynmanMakePoints: (subject: Subject, title: string, pages: PageText[]) => invoke<FeynmanPoint[]>("feynman_make_points", { subject, title, pages }),
-  feynmanGrade: (subject: Subject, title: string, explanation: string) => invoke<FeynmanAttempt>("feynman_grade", { subject, title, explanation }),
+  createTheme: (name: string, goal?: string) => invoke<Theme>("create_theme", { name, goal: goal ?? null }),
+  updateTheme: (id: number, patch: { name?: string; goal?: string }) => invoke<Theme>("update_theme", { id, patch }),
+  deleteTheme: (id: number) => invoke<void>("delete_theme", { id }),
+  /// Puts an input in a theme, or (null) back among the unsorted.
+  setInputTheme: (inputId: number, themeId: number | null) => invoke<void>("set_input_theme", { inputId, themeId }),
+  /// Claude's proposal of where each unsorted input goes.
+  sortUnsorted: () => invoke<Placement[]>("sort_unsorted"),
+  /// Claude's picks of what of a theme to read next.
+  nextReads: (themeId: number) => invoke<{ input_id: number; why: string }[]>("next_reads", { themeId }),
+  /// A review's questions from the theme's document (none without one).
+  reviewQuestions: (themeId: number) => invoke<ReviewQuestion[]>("review_questions", { themeId }),
+  reviewGrade: (themeId: number, questions: ReviewQuestion[], answers: string[]) => invoke<FeynmanAttempt>("review_grade", { themeId, questions, answers }),
+  /// 「読み終わった」: what was read goes into the theme's document, behind.
+  finishReading: (themeId: number, pages: PageText[], conversation: string | null, inputIds: number[]) => invoke<void>("finish_reading", { themeId, pages, conversation, inputIds }),
+  themeReviews: (themeId: number) => invoke<FeynmanAttempt[]>("theme_reviews", { themeId }),
   createInput: (title: string) => invoke<Input>("create_input", { title }),
   updateInput: (id: number, update: { title?: string; memo?: string; done?: boolean }) => invoke<Input>("update_input", { id, update }),
   deleteInput: (id: number) => invoke<void>("delete_input", { id }),
@@ -410,14 +435,6 @@ export const api = {
   browserZoom: (tab: string, action: "in" | "out" | "reset") => invoke<void>("browser_zoom", { tab, action }),
 };
 
-/// What the note is made as (`NoteFormat` in launch.rs).
-export type NoteFormat = "page" | "docs" | "slides" | "design";
-
-export interface NoteStart {
-  session: string;
-  run: TerminalRun | null;
-}
-
 /** `{tab, url}` after a tab navigates. */
 export const BROWSER_URL_EVENT = "browser-url";
 /** `{tab, delta}` (-1 or 1) when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]). */
@@ -442,8 +459,8 @@ export const OPEN_PALETTE_EVENT = "open-palette";
 export const LOGIN_CAPTURED_EVENT = "login-captured";
 /** When a page's ⌘⇧K asks for the list of sessions. */
 export const OPEN_SESSIONS_EVENT = "open-sessions";
-/** `{subject}` when a notification says it is time to explain the subject again. */
-export const OPEN_STUDY_EVENT = "open-study";
+/** `{theme_id, error}` once a theme's document was written (or failed to be). */
+export const THEME_DOC_EVENT = "theme-doc-written";
 /// A review went in: `{url, title, verdict}` (APPROVED, CHANGES_REQUESTED or COMMENTED).
 export const REVIEW_SUBMITTED_EVENT = "review-submitted";
 /// `{id}`: a todo to open (a handover's notification).

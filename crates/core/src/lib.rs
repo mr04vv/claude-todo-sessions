@@ -306,8 +306,6 @@ pub enum NoticeKind {
     NeedsInput,
     /// Someone asked for the user's review on a PR (`url`).
     ReviewRequested,
-    /// Time to explain an input (or a todo's pages) again (`input_id` or `todo_id`).
-    Study,
 }
 
 impl NoticeKind {
@@ -316,14 +314,12 @@ impl NoticeKind {
             NoticeKind::Finished => "finished",
             NoticeKind::NeedsInput => "needs_input",
             NoticeKind::ReviewRequested => "review_requested",
-            NoticeKind::Study => "study",
         }
     }
     fn parse(s: &str) -> NoticeKind {
         match s {
             "needs_input" => NoticeKind::NeedsInput,
             "review_requested" => NoticeKind::ReviewRequested,
-            "study" => NoticeKind::Study,
             _ => NoticeKind::Finished,
         }
     }
@@ -376,13 +372,6 @@ impl Subject {
             _ => Subject::Input(id),
         }
     }
-}
-
-/// A key point of what a subject's pages say (feynman.rs).
-#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
-pub struct FeynmanPoint {
-    pub id: i64,
-    pub text: String,
 }
 
 /// One explanation of a subject and its grading.
@@ -1291,39 +1280,6 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Records that it is time to explain the subject again, for the in-app list.
-    pub fn add_study_notice(&self, subject: Subject, title: &str) -> Result<i64> {
-        let (todo_id, input_id) = match subject {
-            Subject::Todo(id) => (Some(id), None),
-            Subject::Input(id) => (None, Some(id)),
-            Subject::Theme(_) => (None, None),
-        };
-        self.conn.execute(
-            "INSERT INTO notifications (session_id, todo_id, input_id, kind, title, created_at) VALUES ('', ?1, ?2, ?3, ?4, ?5)",
-            params![todo_id, input_id, NoticeKind::Study.as_str(), title, now()],
-        )?;
-        Ok(self.conn.last_insert_rowid())
-    }
-
-    /// The subject's key points, replacing the ones it had.
-    pub fn set_feynman_points(&self, subject: Subject, points: &[String]) -> Result<Vec<FeynmanPoint>> {
-        self.conn.execute("DELETE FROM feynman_points WHERE subject_kind = ?1 AND subject_id = ?2", params![subject.kind(), subject.id()])?;
-        let at = now();
-        for (i, text) in points.iter().enumerate() {
-            self.conn.execute(
-                "INSERT INTO feynman_points (subject_kind, subject_id, position, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![subject.kind(), subject.id(), i as i64, text, at],
-            )?;
-        }
-        self.feynman_points(subject)
-    }
-
-    pub fn feynman_points(&self, subject: Subject) -> Result<Vec<FeynmanPoint>> {
-        let mut stmt = self.conn.prepare("SELECT id, text FROM feynman_points WHERE subject_kind = ?1 AND subject_id = ?2 ORDER BY position")?;
-        let rows = stmt.query_map(params![subject.kind(), subject.id()], |r| Ok(FeynmanPoint { id: r.get(0)?, text: r.get(1)? }))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
     pub fn add_feynman_attempt(&self, subject: Subject, explanation: &str, grade: &feynman::Grade, score: u8) -> Result<FeynmanAttempt> {
         let at = now();
         // Strings and enums only: it always serializes.
@@ -1365,38 +1321,6 @@ impl Db {
             Ok(FeynmanSummary { subject: Subject::from_row(&kind, id), score, attempted_at: at, due_at: at + feynman::review_after_days(score) * 86_400 })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// The subjects to explain again by `now` (with their titles): their
-    /// review is due, they are not done with, and no study notice went out
-    /// since their last attempt.
-    pub fn feynman_due(&self, now: i64) -> Result<Vec<(Subject, String)>> {
-        let mut due = Vec::new();
-        for s in self.feynman_summaries()? {
-            if s.due_at > now {
-                continue;
-            }
-            let title = match s.subject {
-                Subject::Input(id) => self.get_input(id)?.filter(|i| !i.done).map(|i| i.title),
-                Subject::Todo(id) => self.get_todo(id)?.filter(|t| t.status != Status::Done).map(|t| t.title),
-                Subject::Theme(id) => self.get_theme(id)?.map(|t| t.name),
-            };
-            let Some(title) = title else { continue };
-            let (todo_id, input_id) = match s.subject {
-                Subject::Todo(id) => (Some(id), None),
-                Subject::Input(id) => (None, Some(id)),
-                Subject::Theme(_) => (None, None),
-            };
-            let noticed: bool = self.conn.query_row(
-                "SELECT EXISTS (SELECT 1 FROM notifications WHERE kind = 'study' AND created_at >= ?1 AND ((?2 IS NOT NULL AND todo_id = ?2) OR (?3 IS NOT NULL AND input_id = ?3)))",
-                params![s.attempted_at, todo_id, input_id],
-                |r| r.get(0),
-            )?;
-            if !noticed {
-                due.push((s.subject, title));
-            }
-        }
-        Ok(due)
     }
 
     /// Records a review request on the PR unless one was recorded before, and

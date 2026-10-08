@@ -1,7 +1,6 @@
-//! The Input mode's 「説明する」 (the Feynman technique): the key points of
-//! what was read, made once; the user's own explanation of them, graded point
-//! by point; and when to explain again. Claude is asked through `claude -p`
-//! with a JSON schema; the prompts and the answers' parsing are here.
+//! Grading what the user explains in their own words (the Feynman
+//! technique), point by point, and when to explain again; and the pages read
+//! as prompts take them. A study time's review (study.rs) is graded so.
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -16,9 +15,6 @@ pub struct Page {
 /// How much of each page goes into the prompt, and how many pages.
 pub const PAGE_CHARS: usize = 12_000;
 pub const MAX_PAGES: usize = 8;
-/// How many points are asked for.
-const POINTS_MIN: usize = 5;
-const POINTS_MAX: usize = 8;
 
 /// The first `max` characters of `text`, with "…" when it was longer.
 pub fn excerpt(text: &str, max: usize) -> String {
@@ -27,39 +23,6 @@ pub fn excerpt(text: &str, max: usize) -> String {
         Some((i, _)) => format!("{}…", &text[..i]),
         None => text.to_string(),
     }
-}
-
-/// Asks for the key points of the pages read for `title`.
-pub fn points_prompt(title: &str, pages: &[Page]) -> String {
-    let pages: String = pages
-        .iter()
-        .take(MAX_PAGES)
-        .map(|p| format!("### {}\n{}\n\n{}\n\n", p.title.as_deref().unwrap_or(&p.url), p.url, excerpt(&p.text, PAGE_CHARS)))
-        .collect();
-    format!(
-        "インプット: {title}\n\n次のページを読んだ人が、内容を理解したと言えるために「自分の言葉で説明できるべき要点」を {POINTS_MIN}〜{POINTS_MAX} 個挙げてください。\n\
-         - 1つの要点は1文で、具体的に（「〜である」「〜だから〜する」）。用語の名前だけ挙げない。\n\
-         - 大事な順に並べる。\n\
-         - 日本語で書く。\n\n## ページ\n\n{pages}"
-    )
-}
-
-pub fn points_schema() -> Value {
-    json!({ "type": "object", "properties": { "points": { "type": "array", "items": { "type": "string" } } }, "required": ["points"] })
-}
-
-/// The points Claude answered with (its structured output).
-pub fn parse_points(output: &Value) -> Result<Vec<String>, String> {
-    let points: Vec<String> = output["points"]
-        .as_array()
-        .ok_or("要点が返ってきませんでした")?
-        .iter()
-        .filter_map(|p| p.as_str().map(str::trim).filter(|s| !s.is_empty()).map(Into::into))
-        .collect();
-    if points.is_empty() {
-        return Err("要点が返ってきませんでした".into());
-    }
-    Ok(points)
 }
 
 /// How well one point was explained.
@@ -212,22 +175,6 @@ mod tests {
     fn excerpt_cuts_on_characters() {
         assert_eq!(excerpt("日本語のテキスト", 3), "日本語…");
         assert_eq!(excerpt(" short ", 10), "short");
-    }
-
-    #[test]
-    fn points_prompt_names_the_pages_and_cuts_their_text() {
-        let pages = vec![Page { url: "https://a.b/".into(), title: Some("A".into()), text: "x".repeat(PAGE_CHARS + 5) }];
-        let prompt = points_prompt("本", &pages);
-        assert!(prompt.contains("### A\nhttps://a.b/\n"));
-        assert!(prompt.contains(&format!("{}…", "x".repeat(PAGE_CHARS))));
-        assert!(!prompt.contains(&"x".repeat(PAGE_CHARS + 1)));
-    }
-
-    #[test]
-    fn points_are_the_non_empty_strings() {
-        assert_eq!(parse_points(&json!({ "points": ["a", " ", "b "] })).unwrap(), ["a", "b"]);
-        assert!(parse_points(&json!({ "points": [] })).is_err());
-        assert!(parse_points(&json!({})).is_err());
     }
 
     #[test]

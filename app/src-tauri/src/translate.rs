@@ -83,7 +83,7 @@ fn translate_all(app: &AppHandle, texts: &[String]) -> Result<Vec<Option<String>
         return Ok(out);
     }
     let batch: Vec<String> = asked.iter().map(|&i| texts[i].clone()).collect();
-    let answer = crate::ask::claude(&translate::prompt(&batch), &translate::schema(), Some(MODEL), Some(EFFORT))?;
+    let answer = crate::ask::claude(&translate::prompt(&batch), Some(&translate::schema()), Some(MODEL), Some(EFFORT), false)?;
     let got = translate::parse(&answer, batch.len()).ok_or("訳の数が合いませんでした")?;
     let mut known = kept.texts.lock().map_err(err)?;
     if known.len() + got.len() > KEPT_MAX {

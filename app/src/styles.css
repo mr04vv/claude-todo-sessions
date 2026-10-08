@@ -2710,6 +2710,7 @@ body.resizing {
 }
 
 .focus-mode {
+  position: relative;
   flex: 1;
   display: flex;
   min-width: 0;
@@ -2730,155 +2731,124 @@ body.resizing {
   padding: 4px 8px;
 }
 
-/* The focus mode's note before it has a page (NoteStart). */
-.note-start {
+/* The study time's review (ReviewPanel), over both sides until it is done. */
+.study-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
   display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 24px 20px;
-  line-height: 1.7;
-}
-
-.note-start .segmented {
-  align-self: flex-start;
-}
-
-.note-actions {
-  display: flex;
-  gap: 8px;
-}
-
-/* Over the session making the note (NoteMaking). */
-.note-making {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-
-/* SlackReviewDialog: a message to copy, under whom it asks. */
-/* The Input mode's 「説明する」 (ExplainPanel). */
-.explain {
-  flex-grow: 1;
-  min-height: 0;
+  justify-content: center;
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-  padding: 16px 20px 32px;
-  line-height: 1.6;
+  padding: 32px 20px;
+  background: var(--bg);
 }
 
-.explain section {
+.review-panel {
+  width: min(720px, 100%);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 16px;
 }
 
-.explain h3 {
+.review-panel h2 {
+  margin: 6px 0;
+  font-size: 18px;
+}
+
+.review-question h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.review-question textarea {
+  width: 100%;
+}
+
+.review-panel footer {
   display: flex;
   align-items: center;
-  gap: 6px;
-  margin: 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-
-.explain h4 {
-  margin: 6px 0 0;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-2);
-}
-
-.explain p,
-.explain ul {
-  margin: 0;
-}
-
-.explain ul {
-  padding-left: 18px;
-}
-
-.explain-start {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 10px;
-}
-
-.explain-points {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.explain-points li {
-  display: flex;
   gap: 8px;
 }
 
-.explain-points .mark {
-  flex-shrink: 0;
-  width: 16px;
-  text-align: center;
-  font-weight: 700;
+.study-steps {
+  font-size: 12px;
   color: var(--text-3);
 }
 
-.explain-points .note {
-  display: block;
+.study-theme {
+  max-width: 180px;
+  margin-right: 8px;
+}
+
+.verdict {
+  margin: 6px 0 0;
   font-size: 12px;
 }
 
-.explain-points .verdict-said .mark {
-  color: var(--st-done);
+.verdict-said {
+  color: var(--running-text);
 }
 
-.explain-points .verdict-vague .mark {
+.verdict-vague {
   color: var(--waiting-text);
 }
 
-.explain-points .verdict-missing .mark {
+.verdict-missing {
   color: var(--danger);
 }
 
-.explain textarea {
-  width: 100%;
-  resize: vertical;
+/* The learning page: the themes on the left, the one picked on the right. */
+.content.learn {
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  gap: 20px;
 }
 
-.explain-actions {
+.theme-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.theme-item {
+  justify-content: flex-start;
+  border: 0;
+  background: none;
+  text-align: left;
+}
+
+.theme-item.on {
+  background: var(--card-hover);
+}
+
+.theme-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.theme-head {
+  display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.explain-result h3 b {
-  font-size: 16px;
-  color: var(--text);
-}
-
-.explain-history {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+.proposals {
+  padding: 10px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: 8px;
+  background: var(--accent-soft);
   font-size: 12px;
 }
 
-.explain-history li {
-  display: flex;
-  gap: 10px;
+.proposals p {
+  margin: 0 0 6px;
+}
+
+.danger-text {
+  align-self: flex-start;
+  color: var(--danger);
 }
 
 .tag.due {
@@ -2902,7 +2872,7 @@ body.resizing {
   opacity: 1;
 }
 
-/* A short word that something happened (an input todo added from a page). */
+/* A short word that something happened in the background. */
 .toast {
   /* Over the Todo side: the pane's pages draw above the page. */
   position: fixed;

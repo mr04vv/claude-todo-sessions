@@ -276,6 +276,9 @@ mod tests {
         let page = Page { url: "https://e.com/csrf".into(), title: Some("CSRF".into()), text: "Cross-site request forgery...".into() };
         let p = doc_prompt(&SEC, None, std::slice::from_ref(&page), Some("Q: SameSite は？"), None);
         assert!(p.contains("「セキュリティ のノート」") && p.contains("https://e.com/csrf") && p.contains("つまずいたところ") && p.contains(DOC_LINE), "{p}");
+        let long = Page { url: "https://a.b/".into(), title: Some("A".into()), text: "x".repeat(PAGE_CHARS + 5) };
+        let p = doc_prompt(&SEC, None, &[long], None, None);
+        assert!(p.contains("### A\nhttps://a.b/\n") && p.contains(&format!("{}…", "x".repeat(PAGE_CHARS))) && !p.contains(&"x".repeat(PAGE_CHARS + 1)), "a page's text is cut");
         let p = doc_prompt(&SEC, Some("https://claude.ai/code/artifact/x"), &[], None, Some("問1 …"));
         assert!(p.contains("https://claude.ai/code/artifact/x に書き足して") && p.contains("復習") && !p.contains("読み終わったページ"), "{p}");
     }

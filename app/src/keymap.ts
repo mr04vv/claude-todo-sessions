@@ -52,8 +52,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["sessions", "セッション一覧（⌘K の一番上）"],
       ["newTodo", "新しい todo（Input の画面では input）"],
       ["reload", "今の画面を取り直す（ページでは再読み込み）"],
-      ["sideApp", "入力先を Todo 側へ（Input モードでは左へ）"],
-      ["sidePane", "入力先を右のペインへ（Input モードでは右へ）"],
+      ["sideApp", "入力先を Todo 側へ（学ぶ時間では左へ）"],
+      ["sidePane", "入力先を右のペインへ（学ぶ時間では右へ）"],
     ],
   },
   {
@@ -61,8 +61,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     items: [
       ["newTab", "新しいタブ"],
       ["closeTab", "タブを閉じる"],
-      ["prevTab", "前のタブ（Input モードでは入力先の側のタブ、Todo では前のレーン）"],
-      ["nextTab", "次のタブ（Input モードでは入力先の側のタブ、Todo では次のレーン）"],
+      ["prevTab", "前のタブ（学ぶ時間では入力先の側のタブ、Todo では前のレーン）"],
+      ["nextTab", "次のタブ（学ぶ時間では入力先の側のタブ、Todo では次のレーン）"],
       ["focusUrl", "アドレス欄へ"],
       ["terminalLinks", "ターミナルに出ているリンクを選んで開く（⌘ クリックで後ろのタブ、⌘⇧ クリックで前に開く）"],
       ["back", "戻る"],
@@ -71,7 +71,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["zoomOut", "縮小"],
       ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
       ["archive", "Cloud セッションのページをアーカイブ（セッション一覧では、行のセッションを片付ける）"],
-      ["toInput", "表示中のページを input に追加"],
+      ["toInput", "表示中のページを学びに入れる"],
     ],
   },
   {

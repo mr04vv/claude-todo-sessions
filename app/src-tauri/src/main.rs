@@ -2,8 +2,8 @@
 
 mod ask;
 mod cef_browser;
-mod feynman;
 mod logins;
+mod study;
 mod terminal;
 mod translate;
 
@@ -15,7 +15,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use cts_core::launch::StartOptions;
-use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, SessionState, Status, Subject, Todo, TodoPatch};
+use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
@@ -32,8 +32,6 @@ const HERDR_EVERY_TICKS: u32 = 3;
 /// `claude agents --json` runs every this many watch ticks: it starts Node
 /// (about 0.4 s), and hooks and herdr already report most state changes.
 const AGENTS_EVERY_TICKS: u32 = 10;
-/// How often (in watch ticks) the 「説明する」 reviews due are looked for.
-const STUDY_EVERY_TICKS: u32 = 20;
 /// A local session missing from `claude agents` is ended only after this long
 /// without a state change, so one just started by a hook is not cut off.
 const DISCOVER_GRACE_SECS: i64 = 60;
@@ -152,8 +150,10 @@ struct Board {
     /// The Input page's reading material, apart from the todos.
     inputs: Vec<Input>,
     inbox: Vec<SessionView>,
-    /// Each subject's latest 「説明する」 attempt (feynman.rs).
+    /// Each theme's latest review, and when the next is due.
     feynman: Vec<cts_core::FeynmanSummary>,
+    /// The learning themes, the latest changed first.
+    themes: Vec<cts_core::Theme>,
     /// What sessions made besides PRs, newest first.
     artifacts: Vec<cts_core::Artifact>,
     sync_status: String,
@@ -225,7 +225,7 @@ struct TodoUpdate {
 
 #[tauri::command(async)]
 fn board(state: State<AppState>) -> Result<Board, String> {
-    let (todos, inputs, inbox, feynman, artifacts) = {
+    let (todos, inputs, inbox, feynman, artifacts, themes) = {
         let db = state.db.lock().map_err(err)?;
         let (mut sessions, mut links) = (db.sessions_by_todo().map_err(err)?, db.links_by_todo().map_err(err)?);
         let todos = db
@@ -242,7 +242,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             // A review that ended without being put away stopped before submitting: it waits on the user.
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .collect();
-        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?)
+        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?, db.list_themes().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -262,7 +262,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, inputs, inbox, feynman, artifacts, sync_status })
+    Ok(Board { todos, inputs, inbox, feynman, artifacts, themes, sync_status })
 }
 
 #[tauri::command(async)]
@@ -921,90 +921,6 @@ fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions, body: Optio
         None => db.session_prompt(&todo, false).map_err(err)?,
     };
     cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &body, opts)
-}
-
-/// A note session (the focus mode's "ノート"): where it runs, and the command
-/// for the in-app terminal when it runs there.
-#[derive(Serialize)]
-struct NoteStart {
-    session: String,
-    run: Option<TerminalRun>,
-}
-
-/// Starts a session that turns `urls` into a note (in `format`) for the
-/// subject: on Cloud, or locally where "herdr" sessions run (the in-app
-/// terminal, whose command comes back to run, or herdr behind the app). A
-/// todo's session is linked to it; an input's is linked to nothing.
-#[tauri::command(async)]
-fn start_note(state: State<AppState>, subject: Subject, urls: Vec<String>, format: launch::NoteFormat, cloud: bool) -> Result<NoteStart, String> {
-    if urls.is_empty() {
-        return Err("ノートにするページを左に開いてください".into());
-    }
-    let opts = StartOptions::default();
-    let input_id = match subject {
-        Subject::Input(id) => id,
-        Subject::Theme(_) => return Err("テーマのノートは「読み終わった」で書き足します".into()),
-        Subject::Todo(todo_id) => {
-            let title = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?.title;
-            let body = Some(launch::note_prompt(&title, &urls, format));
-            if cloud {
-                return Ok(NoteStart { session: launch_cloud(&state, todo_id, &opts, body)?, run: None });
-            }
-            if state.in_app_terminal.load(Ordering::Relaxed) {
-                let run = prepare_terminal(&state, todo_id, &opts, body)?;
-                return Ok(NoteStart { session: run.session.clone().unwrap_or_default(), run: Some(run) });
-            }
-            return Ok(NoteStart { session: launch_terminal(&state, todo_id, false, &opts, body)?, run: None });
-        }
-    };
-    let title = state.db.lock().map_err(err)?.get_input(input_id).map_err(err)?.ok_or("input が見つかりません")?.title;
-    let prompt = launch::note_prompt(&title, &urls, format);
-    if cloud {
-        let db = state.db.lock().map_err(err)?;
-        return Ok(NoteStart { session: cts_core::cloud::create_loose_session(&db, &title, &prompt)?, run: None });
-    }
-    let run = quick_run(Some(&prompt), None, Some(title));
-    let session = run.session.clone().unwrap_or_default();
-    if state.in_app_terminal.load(Ordering::Relaxed) {
-        return Ok(NoteStart { session, run: Some(run) });
-    }
-    start_in_herdr(&state, &run.cwd, &run.title, &run.command, false).or_else(|herdr_err| {
-        start_in_ghostty(&run.cwd, &format!("cd {} && {}", launch::shell_quote(&run.cwd), run.command)).map_err(|e| format!("{herdr_err} / {e}"))
-    })?;
-    Ok(NoteStart { session, run: None })
-}
-
-/// Title the note's link gets, in place of its page's (which needs a login).
-const NOTE_TITLE: &str = "ノート";
-
-/// The note session `session_id` published for the subject, once it has; it
-/// is kept as one of its links from then on.
-#[tauri::command(async)]
-fn note_url(state: State<AppState>, subject: Subject, session_id: String) -> Result<Option<String>, String> {
-    let text = if launch::is_cloud_session(&session_id) {
-        serde_json::to_string(&cts_core::cloud::recent_entries(&session_id)?).map_err(err)?
-    } else {
-        transcript_tail(&session_id).unwrap_or_default()
-    };
-    let Some(url) = cts_core::transcript::note_url(&text) else { return Ok(None) };
-    let db = state.db.lock().map_err(err)?;
-    match subject {
-        Subject::Todo(id) => {
-            if !db.links_for(id).map_err(err)?.iter().any(|l| l.url == url) {
-                let link = db.add_link(id, &url).map_err(err)?;
-                db.set_link_meta(link.id, Some(NOTE_TITLE), None).map_err(err)?;
-            }
-        }
-        Subject::Input(id) => {
-            let input = db.get_input(id).map_err(err)?.ok_or("input が見つかりません")?;
-            if !input.links.iter().any(|l| l.url == url) {
-                let link = db.add_input_link(id, &url).map_err(err)?;
-                db.set_input_link_meta(link.id, Some(NOTE_TITLE), None).map_err(err)?;
-            }
-        }
-        Subject::Theme(_) => {}
-    }
-    Ok(Some(url))
 }
 
 #[tauri::command(async)]
@@ -2550,11 +2466,6 @@ fn watch_loop(app: AppHandle) {
                 eprintln!("{e}");
             }
         }
-        if tick % STUDY_EVERY_TICKS == 0 {
-            if let Err(e) = feynman::notify_study_due(&app, &db) {
-                eprintln!("{e}");
-            }
-        }
         tick = tick.wrapping_add(1);
         if let Ok(todos) = db.list_todos(None) {
             let ids: HashSet<i64> = todos.iter().filter(|t| t.status == Status::Done).map(|t| t.id).collect();
@@ -2790,8 +2701,6 @@ fn main() {
             terminal_quick,
             terminal_resume,
             set_in_app_terminal,
-            start_note,
-            note_url,
             create_input,
             update_input,
             delete_input,
@@ -2812,11 +2721,18 @@ fn main() {
             forget_site_permission,
             herdr_focused,
             codex_models,
-            feynman::browser_text,
-            feynman::page_text,
-            feynman::feynman_state,
-            feynman::feynman_make_points,
-            feynman::feynman_grade,
+            study::browser_text,
+            study::page_text,
+            study::create_theme,
+            study::update_theme,
+            study::delete_theme,
+            study::set_input_theme,
+            study::sort_unsorted,
+            study::next_reads,
+            study::review_questions,
+            study::review_grade,
+            study::finish_reading,
+            study::theme_reviews,
             terminal::term_open,
             terminal::term_write,
             terminal::term_resize,

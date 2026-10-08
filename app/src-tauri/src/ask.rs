@@ -1,5 +1,7 @@
-// Claude asked once through `claude -p` with a JSON schema, without a
-// session or tools: the 「説明する」 grading and the page translations.
+// Claude asked once through `claude -p`, without a session or the built-in
+// tools: translations, the learning themes' sorting, picks and reviews (in
+// a JSON schema), and writing a theme's document (with the Claude Docs
+// connector's tools).
 use std::io::{Read, Write};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -11,12 +13,25 @@ use crate::err;
 /// How long one answer may take (the points of eight pages take a while).
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
 
-/// Asks Claude once, with no tools and no session, for an answer in `schema`
-/// (with `model` and `effort` when given).
-/// The prompt goes in on stdin (a long one would not fit in an argument).
-pub fn claude(prompt: &str, schema: &Value, model: Option<&str>, effort: Option<&str>) -> Result<Value, String> {
+/// The MCP server whose tools a theme's document is read and written with.
+const DOCS_TOOLS: &str = "mcp__claude_ai_Claude_Docs";
+
+/// Asks Claude once, without a session or the built-in tools, for an answer
+/// in `schema` (its structured output), or without one for its text (a
+/// string). `docs` lets it use the Claude Docs connector; otherwise no MCP
+/// server loads. The prompt goes in on stdin (a long one would not fit in
+/// an argument).
+pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>, docs: bool) -> Result<Value, String> {
     let mut cmd = crate::cli("claude");
-    cmd.args(["-p", "--output-format", "json", "--json-schema", &schema.to_string(), "--tools", "", "--no-session-persistence", "--strict-mcp-config"]);
+    cmd.args(["-p", "--output-format", "json", "--tools", "", "--no-session-persistence"]);
+    if let Some(schema) = schema {
+        cmd.args(["--json-schema", &schema.to_string()]);
+    }
+    if docs {
+        cmd.args(["--allowedTools", DOCS_TOOLS]);
+    } else {
+        cmd.arg("--strict-mcp-config");
+    }
     if let Some(model) = model {
         cmd.args(["--model", model]);
     }
@@ -49,6 +64,9 @@ pub fn claude(prompt: &str, schema: &Value, model: Option<&str>, effort: Option<
                 })?;
                 if answer["is_error"].as_bool() == Some(true) {
                     return Err(format!("claude: {}", answer["result"].as_str().unwrap_or("error")));
+                }
+                if schema.is_none() {
+                    return Ok(answer["result"].clone());
                 }
                 return match answer.get("structured_output") {
                     Some(output) if output.is_object() => Ok(output.clone()),

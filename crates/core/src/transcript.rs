@@ -41,7 +41,7 @@ const PUBLISHED: &str = "Published ";
 const PUBLISHED_AT: &str = " at ";
 /// The Docs connector's ack for a new doc: `"artifactUrl":"<url>"`.
 const DOC_BORN: &str = "artifactUrl";
-/// The line a note session ends its first answer with (launch::note_prompt).
+/// The line a theme's document's writer ends with (study::doc_prompt).
 pub const NOTE_LINE: &str = "NOTE_URL: ";
 
 /// The note a session made (the focus mode's "ノート"): the first artifact it
