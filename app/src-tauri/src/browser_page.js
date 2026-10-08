@@ -1,7 +1,7 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
 // commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling (and
-// picking a Google result), as the user set them), right-click offers translation (a Chromium view has no translate item),
+// picking a Google result), as the user set them), the page translates where it is (Claude, through the app),
 // and ⌥ + click keeps a link as an input todo.
 // It runs in the page's frames too (a doc's editor on claude.ai is one), which
 // get the app's keys as the page does and tell the app themselves (FRAME), but
@@ -38,8 +38,9 @@
   const ZOOM_IN = "todo-sessions://zoom-in";
   const ZOOM_OUT = "todo-sessions://zoom-out";
   const ZOOM_RESET = "todo-sessions://zoom-reset";
-  const TRANSLATE_TEXT = "https://translate.google.com/?sl=auto&tl=ja&op=translate&text=";
-  const TRANSLATE_PAGE = "https://translate.google.com/translate?sl=auto&tl=ja&u=";
+  const TRANSLATE = "todo-sessions://translate";
+  const TRANSLATED = "todo-sessions://translated";
+  const TRANSLATE_SELECTION = "todo-sessions://translate-selection";
 
   // The app's keys (keymap.ts), which the app sets on the page as
   // __todoSessionsKeys: action → "cmd+shift+[" and the like.
@@ -291,6 +292,102 @@
     true,
   );
 
+  // Translating the page where it is (the app asks Claude): its innermost
+  // blocks of text, the ones on screen first and the rest as they come into
+  // view, a batch at a time; each one's own markup is kept to put back.
+  const BLOCKS = "p, li, h1, h2, h3, h4, h5, h6, td, th, blockquote, figcaption, dt, dd, summary";
+  const BATCH = 12;
+  const FLUSH_MS = 400;
+  const SCAN_MS = 800;
+  const originals = new Map();
+  const blocks = new Map();
+  let translating = false;
+  let nextBlock = 1;
+  let queue = [];
+  let seen = null;
+  let scanTimer = 0;
+  const scan = () => {
+    for (const el of document.querySelectorAll(BLOCKS)) {
+      if (el.dataset.tsId || el.querySelector(BLOCKS) || !el.innerText?.trim()) continue;
+      el.dataset.tsId = String(nextBlock++);
+      blocks.set(el.dataset.tsId, el);
+      seen.observe(el);
+    }
+  };
+  const growing = new MutationObserver(() => {
+    clearTimeout(scanTimer);
+    scanTimer = setTimeout(() => translating && scan(), SCAN_MS);
+  });
+  window.__todoSessionsTranslate = (on) => {
+    if (FRAME || on === translating) return;
+    translating = on;
+    send(`${TRANSLATED}?on=${on ? 1 : 0}`);
+    if (!on) {
+      seen?.disconnect();
+      growing.disconnect();
+      queue = [];
+      for (const [el, html] of originals) el.innerHTML = html;
+      originals.clear();
+      for (const el of blocks.values()) delete el.dataset.tsAsked;
+      return;
+    }
+    seen = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (!e.isIntersecting || e.target.dataset.tsAsked) continue;
+          e.target.dataset.tsAsked = "1";
+          queue.push(e.target);
+        }
+      },
+      { rootMargin: "300px" },
+    );
+    for (const el of blocks.values()) seen.observe(el);
+    scan();
+    growing.observe(document.body, { childList: true, subtree: true });
+  };
+  setInterval(() => {
+    if (!translating || queue.length === 0) return;
+    const batch = queue.splice(0, BATCH).map((el) => [el.dataset.tsId, el.innerText.trim()]);
+    send(`${TRANSLATE}?b=${encodeURIComponent(JSON.stringify(batch))}`);
+  }, FLUSH_MS);
+  /// The app's translations: [[block, text], ...].
+  window.__todoSessionsTranslated = (pairs) => {
+    if (!translating) return;
+    for (const [id, text] of pairs) {
+      const el = blocks.get(id);
+      if (!el || originals.has(el)) continue;
+      originals.set(el, el.innerHTML);
+      el.textContent = text;
+    }
+  };
+
+  // A selection's translation, in a bubble under it.
+  let bubble = null;
+  let bubbleId = 0;
+  const closeBubble = () => {
+    bubble?.remove();
+    bubble = null;
+  };
+  const translateSelection = (text) => {
+    const range = getSelection()?.rangeCount ? getSelection().getRangeAt(0).getBoundingClientRect() : null;
+    closeBubble();
+    bubble = document.createElement("div");
+    const root = bubble.attachShadow({ mode: "closed" });
+    root.innerHTML = `<style>
+      .b { position: fixed; z-index: 2147483647; max-width: 420px; padding: 10px 12px; border-radius: 8px;
+           background: rgba(30, 31, 35, 0.97); border: 1px solid rgba(255, 255, 255, 0.12); color: #e8e9ec;
+           box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45); font: 13px/1.6 -apple-system, "Hiragino Sans", sans-serif; white-space: pre-wrap; }
+    </style><div class="b">訳しています…</div>`;
+    const box = root.querySelector(".b");
+    document.documentElement.appendChild(bubble);
+    box.style.left = `${Math.max(4, Math.min(range?.left ?? 20, innerWidth - 430))}px`;
+    box.style.top = `${Math.min((range?.bottom ?? 20) + 6, innerHeight - 60)}px`;
+    const id = ++bubbleId;
+    window.__todoSessionsSelectionTranslated = (asked, translation) => asked === id && bubble && (box.textContent = translation);
+    send(`${TRANSLATE_SELECTION}?i=${id}&t=${encodeURIComponent(text)}`);
+  };
+  window.addEventListener("mousedown", (e) => bubble && !e.composedPath().includes(bubble) && closeBubble(), true);
+
   let menu = null;
   const close = () => {
     menu?.remove();
@@ -342,10 +439,10 @@
       const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
       const items = [];
       if (text) {
-        items.push(["選択したテキストを翻訳", () => window.open(TRANSLATE_TEXT + encodeURIComponent(text))]);
+        items.push(["選択したテキストを日本語に訳す", () => translateSelection(text)]);
         items.push(["コピー", () => document.execCommand("copy")]);
       }
-      items.push(["このページを翻訳", () => window.open(TRANSLATE_PAGE + encodeURIComponent(location.href))]);
+      if (!FRAME) items.push([translating ? "原文に戻す" : "このページを日本語に訳す", () => window.__todoSessionsTranslate(!translating)]);
       if (link) items.push(["リンクを新しいタブで開く", () => window.open(link.href)]);
       items.push(["再読み込み", () => location.reload()]);
       show(e.clientX, e.clientY, items);

@@ -1,75 +1,21 @@
 // The Input mode's 「説明する」 (cts_core::feynman): Claude asked through
-// `claude -p` with a JSON schema, without a session or tools; the text of a
-// tab's page for it to read; and the notices when it is time to explain again.
-use std::io::{Read, Write};
-use std::process::Stdio;
-use std::time::{Duration, Instant};
+// `claude -p` (ask.rs); the text of a tab's page for it to read; and the
+// notices when it is time to explain again.
+use std::time::Duration;
 
 use cts_core::feynman::{self, Page};
 use cts_core::{FeynmanAttempt, FeynmanPoint, Subject};
 use serde::Serialize;
-use serde_json::Value;
 use tauri::{AppHandle, Emitter, State};
 
 
 use crate::{err, AppState};
 
-/// How long one answer may take (the points of eight pages take a while).
-const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
 /// The grading, done over and over, goes to a faster model; the points once.
 const GRADE_MODEL: &str = "sonnet";
 const PAGE_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 /// When a notice says it is time to explain a subject again: `{subject}`.
 pub const OPEN_STUDY_EVENT: &str = "open-study";
-
-/// Asks Claude once, with no tools and no session, for an answer in `schema`.
-/// The prompt goes in on stdin (a long one would not fit in an argument).
-fn ask_claude(prompt: &str, schema: &Value, model: Option<&str>) -> Result<Value, String> {
-    let mut cmd = crate::cli("claude");
-    cmd.args(["-p", "--output-format", "json", "--json-schema", &schema.to_string(), "--tools", "", "--no-session-persistence", "--strict-mcp-config"]);
-    if let Some(model) = model {
-        cmd.args(["--model", model]);
-    }
-    cmd.current_dir(crate::home()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| format!("claude を起動できません: {e}"))?;
-    let mut stdin = child.stdin.take().ok_or("claude の入力を開けません")?;
-    let prompt = prompt.to_string();
-    std::thread::spawn(move || drop(stdin.write_all(prompt.as_bytes())));
-    let mut stdout = child.stdout.take().ok_or("claude の出力を開けません")?;
-    let reader = std::thread::spawn(move || {
-        let mut out = Vec::new();
-        let _ = stdout.read_to_end(&mut out);
-        out
-    });
-    let started = Instant::now();
-    loop {
-        match child.try_wait().map_err(err)? {
-            Some(status) => {
-                let out = reader.join().map_err(|_| "claude の出力を読めませんでした")?;
-                let mut stderr = String::new();
-                if let Some(mut e) = child.stderr.take() {
-                    let _ = e.read_to_string(&mut stderr);
-                }
-                let answer: Value = serde_json::from_slice(&out).map_err(|_| {
-                    let said = String::from_utf8_lossy(&out);
-                    format!("claude の答えが読めませんでした ({status}): {}{}", said.trim(), stderr.trim())
-                })?;
-                if answer["is_error"].as_bool() == Some(true) {
-                    return Err(format!("claude: {}", answer["result"].as_str().unwrap_or("error")));
-                }
-                return match answer.get("structured_output") {
-                    Some(output) if output.is_object() => Ok(output.clone()),
-                    _ => Err("claude が決まった形で答えませんでした".into()),
-                };
-            }
-            None if started.elapsed() > CLAUDE_TIMEOUT => {
-                let _ = child.kill();
-                return Err("claude の答えを待ちきれませんでした".into());
-            }
-            None => std::thread::sleep(Duration::from_millis(200)),
-        }
-    }
-}
 
 /// The text of tab `tab`'s page (its body), or None when the tab has no page open.
 #[tauri::command(async)]
@@ -104,7 +50,7 @@ pub fn feynman_make_points(state: State<'_, AppState>, subject: Subject, title: 
     if pages.iter().all(|p| p.text.trim().is_empty()) {
         return Err("読めたページがありません".into());
     }
-    let output = ask_claude(&feynman::points_prompt(&title, &pages), &feynman::points_schema(), None)?;
+    let output = crate::ask::claude(&feynman::points_prompt(&title, &pages), &feynman::points_schema(), None, None)?;
     let points = feynman::parse_points(&output)?;
     state.db.lock().map_err(err)?.set_feynman_points(subject, &points).map_err(err)
 }
@@ -119,7 +65,7 @@ pub fn feynman_grade(state: State<'_, AppState>, subject: Subject, title: String
     if explanation.trim().is_empty() {
         return Err("説明を書いてください".into());
     }
-    let output = ask_claude(&feynman::grade_prompt(&title, &points, &explanation), &feynman::grade_schema(), Some(GRADE_MODEL))?;
+    let output = crate::ask::claude(&feynman::grade_prompt(&title, &points, &explanation), &feynman::grade_schema(), Some(GRADE_MODEL), None)?;
     let grade = feynman::parse_grade(&output, points.len())?;
     let score = feynman::score(&grade);
     state.db.lock().map_err(err)?.add_feynman_attempt(subject, &explanation, &grade, score).map_err(err)

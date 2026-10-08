@@ -1,9 +1,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod ask;
 mod cef_browser;
 mod feynman;
 mod logins;
 mod terminal;
+mod translate;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1680,6 +1682,14 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         }
         return;
     }
+    // Translating where it is (translate.rs): the page keeps the keyboard.
+    let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
+    match url.host_str() {
+        Some("translate") => return translate::on_blocks(app, tab, &param("b")),
+        Some("translate-selection") => return translate::on_selection(app, tab, param("i").parse().unwrap_or(0), param("t")),
+        Some("translated") => return translate::on_translated(app, tab, param("on") == "1"),
+        _ => {}
+    }
     // Only telling: the page keeps the keyboard.
     if url.host_str() == Some("page-focused") {
         let _ = app.emit(PAGE_FOCUSED_EVENT, TabOnly { tab: tab.to_string() });
@@ -1743,6 +1753,7 @@ fn tab_load(app: &AppHandle, tab: &str, url: String, loading: bool) {
     // A page asked to take the typing (see `browser_focus`) once it has loaded.
     if !loading {
         keep_site_zoom(app, tab, &url);
+        translate::on_load(app, tab, &url);
         // A site with a kept login has it filled in (and sent) by the page's script.
         if let Some(host) = site_of(&url) {
             if let Some(login) = kept_login(&state, &host) {
@@ -2672,6 +2683,7 @@ fn main() {
     }
     tauri::Builder::default()
         .manage(terminal::Terminals::default())
+        .manage(translate::Kept::load())
         .manage(AppState {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
@@ -2748,6 +2760,7 @@ fn main() {
             set_plan,
             todo_events,
             open_path,
+            translate::browser_translate,
             start_terminal,
             start_cloud,
             gh_issues,

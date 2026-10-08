@@ -28,6 +28,7 @@ import {
   OPEN_STUDY_EVENT,
   REVIEW_SUBMITTED_EVENT,
   OPEN_TODO_EVENT,
+  BROWSER_TRANSLATED_EVENT,
   type ReviewRunner,
   LOGIN_CAPTURED_EVENT,
   FOCUS_APP_EVENT,
@@ -1729,6 +1730,8 @@ interface BrowserTab {
   /// A review's session page, in the strip's review group (made again from
   /// the sessions after a restart, not kept).
   review?: ReviewTab;
+  /// Its page is translated where it is (原文 / 日本語).
+  translated?: boolean;
 }
 
 /// A review tab's PR, and the session reviewing it once it is made (`seen`
@@ -2784,6 +2787,16 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
               giveKeys(active.id, report);
             }}
           />
+          {/^https?:/.test(active.url) && (
+            <div className="segmented translate-toggle" role="group" aria-label="ページの言葉" title="ページをその場で日本語に訳します（Claude。見えているところから）。訳したページは、次に開いたときも訳します">
+              <button className={active.translated ? "" : "on"} aria-pressed={!active.translated} onClick={() => active.translated && api.browserTranslate(active.id, false).catch(report)}>
+                原文
+              </button>
+              <button className={active.translated ? "on" : ""} aria-pressed={!!active.translated} onClick={() => !active.translated && api.browserTranslate(active.id, true).catch(report)}>
+                日本語
+              </button>
+            </div>
+          )}
           {active.zoom && active.zoom !== 1 && (
             <button className="ghost small" title={`クリックで 100% に戻す（${keyLabel(keyOf("zoomReset"))}）`} onClick={() => api.browserZoom(active.id, "reset").catch(report)}>
               {Math.round(active.zoom * 100)}%
@@ -5830,6 +5843,8 @@ export default function App() {
   useEffect(() => {
     const offs = [
       listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) => {
+        // A new page starts in its own words (one translated before says so as it loads).
+        if (payload.loading) setTabs((prev) => prev.map((t) => (t.id === payload.tab && t.translated ? { ...t, translated: false } : t)));
         // A page loaded is a visit, for the address field's suggestions.
         if (!payload.loading) {
           tabUrls.set(payload.tab, payload.url);
@@ -5838,6 +5853,9 @@ export default function App() {
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url, loading: payload.loading } : t)));
       }),
       listen<{ tab: string; url: string }>(BROWSER_ADDRESS_EVENT, ({ payload }) => setTabUrl(payload.tab, payload.url)),
+      listen<{ tab: string; on: boolean }>(BROWSER_TRANSLATED_EVENT, ({ payload }) =>
+        setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, translated: payload.on } : t))),
+      ),
       listen<{ tab: string; zoom: number }>(BROWSER_ZOOM_EVENT, ({ payload }) =>
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, zoom: payload.zoom } : t))),
       ),

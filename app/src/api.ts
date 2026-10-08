@@ -312,6 +312,8 @@ export const api = {
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
   /// A plain claude in herdr, at home unless `cwd` is given.
+  /// Translates a tab's page where it is, or puts it back.
+  browserTranslate: (tab: string, on: boolean) => invoke<void>("browser_translate", { tab, on }),
   /// Opens a file an artifact is, with its app.
   openPath: (path: string) => invoke<void>("open_path", { path }),
   /// The todo's handover is dealt with.
@@ -446,6 +448,8 @@ export const OPEN_STUDY_EVENT = "open-study";
 export const REVIEW_SUBMITTED_EVENT = "review-submitted";
 /// `{id}`: a todo to open (a handover's notification).
 export const OPEN_TODO_EVENT = "open-todo";
+/// `{tab, on}`: a tab's page was translated where it is, or put back.
+export const BROWSER_TRANSLATED_EVENT = "browser-translated";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
 /** `{tab}` when a page asks to go into an input (⌘⇧D). */

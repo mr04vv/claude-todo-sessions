@@ -9,6 +9,7 @@ pub mod herdr;
 pub mod launch;
 pub mod ogp;
 pub mod transcript;
+pub mod translate;
 pub mod usage;
 
 use std::path::Path;
