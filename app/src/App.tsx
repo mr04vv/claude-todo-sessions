@@ -78,7 +78,7 @@ import {
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
-import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
+import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
 import { addressToUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
 import { ciFailureLine, isFailedReview, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -4554,7 +4554,7 @@ const SEARCH_ALIASES: Record<string, string[]> = {
   モード: ["focus", "フォーカス", "集中", "mode"],
   リスト: ["list"],
   フィルター: ["filter", "絞り込み", "view", "ビュー"],
-  ショートカット: ["shortcut", "key", "keys", "キー", "keymap"],
+  キー: ["shortcut", "ショートカット", "key", "keys", "keymap"],
   ブラウザ: ["browser", "web", "タブ", "tab"],
   作業スペース: ["ブラウザ", "browser", "web", "タブ", "tab", "ターミナル", "terminal", "pane", "ペイン", "workspace"],
   タブ: ["tab"],
@@ -4810,64 +4810,22 @@ const FIXED_KEYS: [string, string][] = [
 /// Every shortcut, and changing one: its key's button, then the new key
 /// (Esc keeps the old one). ? and ⌘K's "ショートカット" open it.
 function ShortcutsDialog({ onClose }: { onClose: () => void }) {
-  const keys = useKeymap();
-  const [recording, setRecording] = useState<Action | null>(null);
-  useEffect(() => {
-    if (!recording) return;
-    // Ahead of everything else, the app's own shortcuts too.
-    const onKey = (e: KeyboardEvent) => {
-      const combo = comboOf(e);
-      if (!combo) return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      if (e.key !== "Escape") setKeys({ [recording]: combo });
-      setRecording(null);
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [recording]);
-  const labelOf = new Map(ACTIONS.flatMap((g) => g.items));
   return (
-    <Modal
-      title="ショートカット"
-      wide
-      onClose={() => !recording && onClose()}
-      footer={
-        <>
-          <span className="muted">キーのボタンを押してから、新しいキーを押します（Esc でやめる）。⌘Q ⌘H ⌘. など macOS が使うキーは効きません</span>
-          <span className="grow" />
-          <button className="ghost" onClick={resetKeys}>
-            すべて既定に戻す
-          </button>
-        </>
-      }
-    >
+    <Modal title="キーの一覧" wide onClose={onClose}>
       <div className="shortcuts">
         {ACTIONS.map((g) => (
           <section key={g.group}>
             <h3>{g.group}</h3>
-            {g.items.map(([action, what]) => {
-              // Another action on the same key in this list (the lists' keys are one set).
-              const same = (Object.keys(keys) as Action[]).find((a) => a !== action && keys[a] === keys[action]);
-              return (
-                <div key={action} className="shortcut-row">
-                  <span className="grow">{what}</span>
-                  {same && <span className="error-text small">「{labelOf.get(same)}」と同じ</span>}
-                  {keys[action] !== DEFAULT_KEYS[action] && (
-                    <button className="ghost small" title={`既定（${keyLabel(DEFAULT_KEYS[action])}）に戻す`} onClick={() => setKeys({ [action]: DEFAULT_KEYS[action] })}>
-                      既定に
-                    </button>
-                  )}
-                  <button className={`kbd shortcut-key${recording === action ? " recording" : ""}`} onClick={() => setRecording(action)}>
-                    {recording === action ? "キーを押す…" : keyLabel(keys[action])}
-                  </button>
-                </div>
-              );
-            })}
+            {g.items.map(([action, what]) => (
+              <div key={action} className="shortcut-row">
+                <span className="grow">{what}</span>
+                <span className="kbd">{keyLabel(keyOf(action))}</span>
+              </div>
+            ))}
           </section>
         ))}
         <section>
-          <h3>変えられないキー</h3>
+          <h3>そのほかのキー</h3>
           {FIXED_KEYS.map(([k, what]) => (
             <div key={k} className="shortcut-row">
               <span className="grow">{what}</span>
@@ -5027,8 +4985,7 @@ export default function App() {
     focusSoon(rightTabId(spaceKey, kind), true, text);
   };
   // The pages take the keys as they are set (their script reads them).
-  const keymap = useKeymap();
-  useEffect(() => void api.setPageKeys(JSON.stringify(keymap)).catch((e) => setError(String(e))), [keymap]);
+  useEffect(() => void api.setPageKeys(JSON.stringify(allKeys())).catch((e) => setError(String(e))), []);
   const focusModeRef = useRef(focusMode);
   focusModeRef.current = focusMode;
   useEffect(() => void api.setFocusMode(focusMode).catch((e) => setError(String(e))), [focusMode]);
@@ -6280,7 +6237,7 @@ export default function App() {
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "focus", label: "Input モード（ページを選んで左に、右に ChatGPT）", run: () => pickFocus("start") },
-    { key: "shortcuts", label: "ショートカットを見る・変える", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
+    { key: "shortcuts", label: "キーの一覧", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
     { key: "addInput", label: "新しい input（読むページを追加）", run: () => setDialog("addInput") },

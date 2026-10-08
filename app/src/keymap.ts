@@ -1,8 +1,7 @@
-// The app's shortcuts, each an action with one key the user can change
-// (ShortcutsDialog in App.tsx). A key is written as modifiers and a key, like
-// "cmd+shift+[" or "ctrl+h" or "j", with the key as a key event names it.
-// The arrow keys, Enter, Esc and the editing keys stay as they are.
-import { useSyncExternalStore } from "react";
+// The app's shortcuts, each an action with one key (listed in ShortcutsDialog
+// in App.tsx). A key is written as modifiers and a key, like "cmd+shift+[" or
+// "ctrl+h" or "j", with the key as a key event names it. The arrow keys,
+// Enter, Esc and the editing keys stay as they are.
 
 export type Action =
   | "palette"
@@ -113,7 +112,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
   },
 ];
 
-export const DEFAULT_KEYS: Record<Action, string> = {
+const KEYS: Record<Action, string> = {
   palette: "cmd+k",
   sessions: "cmd+shift+k",
   newTodo: "cmd+n",
@@ -156,65 +155,26 @@ export const DEFAULT_KEYS: Record<Action, string> = {
   paletteUp: "ctrl+k",
 };
 
-const KEYS_KEY = "shortcuts";
 const MODIFIERS = ["cmd", "ctrl", "alt", "shift"] as const;
 /// A shifted key names its own character on some keyboards: ⇧[ is "{".
 const SHIFTED: Record<string, string> = { "{": "[", "}": "]" };
 
-function loadKeys(): Record<Action, string> {
-  try {
-    return { ...DEFAULT_KEYS, ...JSON.parse(localStorage.getItem(KEYS_KEY) ?? "{}") };
-  } catch {
-    return { ...DEFAULT_KEYS };
-  }
-}
-
-let keys = loadKeys();
-const listeners = new Set<() => void>();
-
-export const keyOf = (action: Action) => keys[action];
-export const allKeys = () => keys;
-
-export function setKeys(next: Partial<Record<Action, string>>) {
-  keys = { ...keys, ...next };
-  try {
-    localStorage.setItem(KEYS_KEY, JSON.stringify(keys));
-  } catch {
-    // The keys still apply until the app closes.
-  }
-  listeners.forEach((f) => f());
-}
-
-export const resetKeys = () => setKeys({ ...DEFAULT_KEYS });
-
-/// Re-renders when a key changes.
-export function useKeymap() {
-  return useSyncExternalStore(
-    (f) => (listeners.add(f), () => listeners.delete(f)),
-    () => keys,
-  );
-}
+export const keyOf = (action: Action) => KEYS[action];
+export const allKeys = () => KEYS;
 
 const normal = (key: string) => {
   const k = key.length === 1 ? key.toLowerCase() : key;
   return SHIFTED[k] ?? k;
 };
 
-/// The key as written here, from a key event; null for a lone modifier.
-export function comboOf(e: KeyboardEvent): string | null {
-  if (["Meta", "Control", "Alt", "Shift"].includes(e.key)) return null;
-  const mods = [e.metaKey && "cmd", e.ctrlKey && "ctrl", e.altKey && "alt", e.shiftKey && "shift"].filter(Boolean);
-  return [...mods, normal(e.key)].join("+");
-}
-
 /// Whether the event is `action`'s key. A symbol typed with ⇧ (? on most
 /// keyboards) matches a key written without it, unless another key matches
 /// the ⇧ too: ⌘⇧[ (which macOS reports as "[" with ⇧, ⌘ keeping the key
 /// unshifted) is the previous tab, never ⌘[.
 export function matches(e: KeyboardEvent, action: Action): boolean {
-  const combo = keys[action];
+  const combo = KEYS[action];
   if (matchesCombo(e, combo, true)) return true;
-  return matchesCombo(e, combo) && !Object.values(keys).some((c) => matchesCombo(e, c, true));
+  return matchesCombo(e, combo) && !Object.values(KEYS).some((c) => matchesCombo(e, c, true));
 }
 
 /// `exact` leaves out the ⇧ a symbol may come with.
