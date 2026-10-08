@@ -593,6 +593,17 @@ pub struct SyncReport {
     pub errors: Vec<String>,
 }
 
+/// How often Cloud sessions are synced: often while one works or waits for a
+/// reply (their state moves), else seldom (asking for a sync, as the window
+/// coming forward does, takes it at once).
+pub const SYNC_BUSY: std::time::Duration = std::time::Duration::from_secs(30);
+pub const SYNC_QUIET: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// The wait until the next sync, by the live Cloud sessions' states.
+pub fn sync_interval(states: &[SessionState]) -> std::time::Duration {
+    if states.iter().any(|s| matches!(s, SessionState::Running | SessionState::NeedsInput)) { SYNC_BUSY } else { SYNC_QUIET }
+}
+
 pub fn sync(db: &Db) -> Result<SyncReport, String> {
     let (seen, recorded, linked, errors) = sync_all(db)?;
     Ok(SyncReport { seen, recorded, linked, errors })
@@ -752,5 +763,19 @@ mod tests {
         let no_rotate = json!({"access_token": "new", "expires_in": 10});
         assert_eq!(apply_refresh(&creds, &no_rotate, 0).unwrap()["claudeAiOauth"]["refreshToken"], "r1");
         assert!(apply_refresh(&creds, &json!({}), 0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod interval_tests {
+    use super::*;
+    use crate::SessionState::*;
+
+    #[test]
+    fn cloud_syncs_often_only_while_a_session_works_or_asks() {
+        assert_eq!(sync_interval(&[Idle, Running]), SYNC_BUSY);
+        assert_eq!(sync_interval(&[NeedsInput]), SYNC_BUSY);
+        assert_eq!(sync_interval(&[Idle, Ended]), SYNC_QUIET);
+        assert_eq!(sync_interval(&[]), SYNC_QUIET);
     }
 }

@@ -23,7 +23,6 @@ const DB_ENV: &str = "CTS_DB";
 const DATA_DIR: &str = "Library/Application Support/claude-todo-sessions";
 const DB_FILE: &str = "db.sqlite";
 const DESKTOP_SESSIONS_DIR: &str = "Library/Application Support/Claude/claude-code-sessions";
-const CLOUD_SYNC_INTERVAL: Duration = Duration::from_secs(30);
 /// How often the notifications look at the DB.
 const WATCH_INTERVAL: Duration = Duration::from_secs(3);
 /// herdr's agent states are read every this many watch ticks (they are cheap).
@@ -2442,8 +2441,10 @@ fn sync_loop(wake: std::sync::mpsc::Receiver<()>, status: impl Fn(String)) {
             Err(e) => msg.push_str(&format!(" / アーカイブ失敗: {e}")),
         }
         status(msg);
-        // Sleep until the interval passes or someone asks for a sync now.
-        if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = wake.recv_timeout(CLOUD_SYNC_INTERVAL) {
+        // Sleep until the interval passes (shorter while a Cloud session works
+        // or asks) or someone asks for a sync now.
+        let states: Vec<SessionState> = db.live_cloud_sessions().unwrap_or_default().iter().map(|s| s.state).collect();
+        if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = wake.recv_timeout(cts_core::cloud::sync_interval(&states)) {
             return;
         }
     }
