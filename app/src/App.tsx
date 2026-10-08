@@ -3570,15 +3570,18 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   const rowId = (kind: string, url: string) => `${kind}:${url}`;
   const shownReview = filter !== "mine" ? review : [];
   const shownMine = filter !== "review" ? mine : [];
-  // ↑↓ or j k pick a PR, Enter opens it in the pane, ⌘Enter starts reviewing it.
-  const { cursorId, setCursor, list } = useRowCursor([...shownReview.map((p) => rowId("review", p.url)), ...shownMine.map((p) => rowId("mine", p.url))], (_, __, row) => row.click());
+  // ↑↓ or j k pick a PR, Enter starts reviewing a request not started yet
+  // (other rows it opens in the pane), ⌘Enter opens it in the pane.
+  const { cursorId, setCursor, list } = useRowCursor([...shownReview.map((p) => rowId("review", p.url)), ...shownMine.map((p) => rowId("mine", p.url))], (id, _, row) => {
+    const p = review.find((x) => rowId("review", x.url) === id);
+    if (p && !starting.has(p.url) && reviewStanding(p, sessions, submitted, now).word === "未着手") return startReview(p);
+    row.click();
+  });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!matches(e, "start") || (e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .sheet-backdrop")) return;
-      const p = review.find((x) => rowId("review", x.url) === cursorId);
-      if (!p) return;
+      if (!matches(e, "start") || !cursorId || (e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .sheet-backdrop")) return;
       e.preventDefault();
-      startReview(p);
+      list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(cursorId)}"]`)?.click();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -3679,7 +3682,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
                       </span>
                     </span>
                     {st.word === "未着手" && (
-                      <button className="small primary" disabled={busy} title="上の選び方でレビューを始めます（⌘Enter。画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), startReview(p))}>
+                      <button className="small primary" disabled={busy} title="上の選び方でレビューを始めます（Enter。画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), startReview(p))}>
                         レビューを始める
                       </button>
                     )}
