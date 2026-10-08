@@ -1049,6 +1049,36 @@ button.lane-toggle:hover .lane-name {
   outline: 1px dashed var(--accent-line);
 }
 
+/* A folded column: a narrow strip with its count, still taking cards. */
+.cell.folded {
+  align-items: center;
+  min-height: 48px;
+  background: var(--card-hover);
+  opacity: 0.8;
+}
+
+.folded-count {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.col-heads h2 .col-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 24px;
+  padding: 0 4px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+}
+
+.col-heads h2.folded {
+  justify-content: center;
+}
+
 .add-inline {
   align-self: flex-start;
   height: 24px;

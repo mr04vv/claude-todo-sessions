@@ -115,11 +115,9 @@ function useOnVisible(f: () => void) {
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
 /// Done cards kept per lane while "Done は直近のみ" is on.
-const DONE_RECENT = 3;
 const VIEW_KEY = "view";
 const LAYOUT_KEY = "layout";
 const COLLAPSED_KEY = "collapsedLanes";
-const DONE_RECENT_KEY = "doneRecent";
 const GROUP_KEY = "groupBy";
 /// The launch sheet's choice from before LAUNCH_KEY, carried over once.
 const START_KEY = "startChoice";
@@ -1043,10 +1041,10 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
   );
 }
 
-function LaneColumn({ status, lane, children, onAdd }: { status: Status; lane: Lane; children: React.ReactNode; onAdd?: (title: string) => void }) {
+function LaneColumn({ status, lane, children, onAdd, folded }: { status: Status; lane: Lane; children: React.ReactNode; onAdd?: (title: string) => void; folded?: boolean }) {
   const { setNodeRef, isOver } = useDroppable({ id: `col:${status}:${lane.key}` });
   return (
-    <div ref={setNodeRef} className={`cell${isOver ? " drop-target" : ""}`} data-col={status}>
+    <div ref={setNodeRef} className={`cell${isOver ? " drop-target" : ""}${folded ? " folded" : ""}`} data-col={status}>
       {children}
       {onAdd && <AddInline label="新規" onAdd={onAdd} />}
     </div>
@@ -1102,22 +1100,24 @@ function LaneHeader({ lane, collapsed, onToggle, onOpenTodo, report }: {
   );
 }
 
-/// Done cards the lane shows: all, or the most recently updated few.
-function visibleDone(todos: Todo[], doneRecent: boolean) {
-  const done = todos.filter((t) => t.status === "done").sort((a, b) => b.updated_at - a.updated_at);
-  return doneRecent ? done.slice(0, DONE_RECENT) : done;
-}
-
 /// What the Todo kanban and list show: words in the title or memo, some
-/// statuses, some places (lanes by repository), only ones waiting for input.
-/// Empty parts do not narrow anything.
+/// statuses (the others fold), some places (lanes by repository). Empty parts
+/// do not narrow anything.
 interface TodoFilter {
   text: string;
   statuses: Status[];
   places: string[];
-  waiting: boolean;
 }
-const NO_FILTER: TodoFilter = { text: "", statuses: [], places: [], waiting: false };
+const NO_FILTER: TodoFilter = { text: "", statuses: [], places: [] };
+/// Statuses folded by hand (FOLDED_COLUMNS_KEY): the kanban's column is a
+/// narrow strip still taking cards, the list's rows a line with their count.
+const FOLDED_COLUMNS_KEY = "foldedColumns";
+const FOLDED_BY_DEFAULT_COLUMNS: Status[] = ["done"];
+/// The kanban's columns' widths: a folded one is a narrow strip.
+const FOLDED_COLUMN_W = "44px";
+const columnsTemplate = (folded: Set<Status>) => COLUMNS.map((c) => (folded.has(c.status) ? FOLDED_COLUMN_W : "minmax(0, 1fr)")).join(" ");
+/// The statuses folded: by hand, or left out by the filter.
+const foldedStatuses = (byHand: Set<Status>, f: TodoFilter) => new Set(COLUMNS.map((c) => c.status).filter((st) => byHand.has(st) || (f.statuses.length > 0 && !f.statuses.includes(st))));
 /// The kanban's and the list's filters, each its own.
 const TODO_FILTERS_KEY = "todoFilters";
 /// Filters kept under a name, listed in the sidebar and ⌘K; each opens the
@@ -1129,17 +1129,13 @@ interface SavedFilter {
   layout: Layout;
 }
 const SAVED_FILTERS_KEY = "savedFilters";
-const filterCount = (f: TodoFilter) => (f.text.trim() ? 1 : 0) + f.statuses.length + f.places.length + (f.waiting ? 1 : 0);
+const filterCount = (f: TodoFilter) => (f.text.trim() ? 1 : 0) + f.statuses.length + f.places.length;
 const sameFilter = (a: TodoFilter, b: TodoFilter) => JSON.stringify(a) === JSON.stringify(b);
+/// The statuses are not matched here: theirs fold instead (foldedStatuses).
 function matchesFilter(t: Todo, f: TodoFilter) {
   const words = f.text.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const hay = `${t.title} ${t.memo ?? ""} #${t.id}`.toLowerCase();
-  return (
-    words.every((w) => hay.includes(w)) &&
-    (f.statuses.length === 0 || f.statuses.includes(t.status)) &&
-    (f.places.length === 0 || f.places.includes(laneKey(t.repos))) &&
-    (!f.waiting || liveSessions(t).some((s) => s.state === "needs_input"))
-  );
+  return words.every((w) => hay.includes(w)) && (f.places.length === 0 || f.places.includes(laneKey(t.repos)));
 }
 
 /// The toolbar's filter: a search box, and a menu of statuses and places
@@ -1195,10 +1191,6 @@ function TodoFilterBar({ filter, version, places, onChange, onSave }: {
                 </label>
               ))}
             </div>
-            <label className="toggle">
-              <input type="checkbox" checked={filter.waiting} onChange={() => onChange({ ...filter, waiting: !filter.waiting })} />
-              返事待ちだけ
-            </label>
             <div className="filter-actions">
               {naming ? (
                 <SubmitInput
@@ -1230,7 +1222,7 @@ function TodoFilterBar({ filter, version, places, onChange, onSave }: {
   );
 }
 
-function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report, allTodos, doneRecent, onAdd }: {
+function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report, allTodos, folded, onAdd }: {
   lane: Lane;
   collapsed: boolean;
   onToggle: () => void;
@@ -1238,16 +1230,28 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
   onSelectTodo: (id: number) => void;
   report: (e: unknown) => void;
   allTodos: Todo[];
-  doneRecent: boolean;
+  /// Folded columns: their cards are counted, and cards still drop there.
+  folded: Set<Status>;
   onAdd: (status: Status, title: string) => void;
 }) {
   return (
     <section className={`lane${collapsed ? " collapsed" : ""}`} data-lane={lane.key}>
       <LaneHeader lane={lane} collapsed={collapsed} onToggle={onToggle} onOpenTodo={onSelectTodo} report={report} />
       {!collapsed && (
-        <div className="lane-grid">
+        <div className="lane-grid" style={{ gridTemplateColumns: columnsTemplate(folded) }}>
           {COLUMNS.map((c) => {
-            const todos = c.status === "done" ? visibleDone(lane.todos, doneRecent) : lane.todos.filter((t) => t.status === c.status).sort((a, b) => a.id - b.id);
+            const todos = lane.todos.filter((t) => t.status === c.status).sort((a, b) => (c.status === "done" ? b.updated_at - a.updated_at : a.id - b.id));
+            if (folded.has(c.status)) {
+              return (
+                <LaneColumn key={c.status} status={c.status} lane={lane} folded>
+                  {todos.length > 0 && (
+                    <span className="folded-count" title={`${c.label} ${todos.length} 件（畳んでいます）`}>
+                      {todos.length}
+                    </span>
+                  )}
+                </LaneColumn>
+              );
+            }
             return (
               <LaneColumn key={c.status} status={c.status} lane={lane} onAdd={c.status === "done" ? undefined : (title) => onAdd(c.status, title)}>
                 {todos.map((t) => (
@@ -1320,7 +1324,7 @@ function StatusSelect({ todo, setStatus }: { todo: Todo; setStatus: (todo: Todo,
   );
 }
 
-function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allTodos, doneRecent, collapsed, onToggle, onAdd }: {
+function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allTodos, folded, onUnfold, collapsed, onToggle, onAdd }: {
   lane: Lane;
   selectedId: number | null;
   onSelectTodo: (id: number) => void;
@@ -1328,15 +1332,15 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
   run: (f: () => Promise<unknown>) => void;
   setStatus: (todo: Todo, status: Status) => void;
   allTodos: Todo[];
-  doneRecent: boolean;
+  /// Statuses folded to a line with their count, which opens them.
+  folded: Set<Status>;
+  onUnfold: (status: Status) => void;
   collapsed: boolean;
   onToggle: () => void;
   onAdd: (title: string) => void;
 }) {
-  // Backlog is set aside: folded to a count until opened, then after the rest.
-  const [showBacklog, setShowBacklog] = useState(false);
-  const open = lane.todos.filter((t) => t.status !== "done" && t.status !== "backlog").sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.id - b.id);
-  const backlog = lane.todos.filter((t) => t.status === "backlog").sort((a, b) => a.id - b.id);
+  const open = lane.todos.filter((t) => !folded.has(t.status)).sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || (a.status === "done" ? b.updated_at - a.updated_at : a.id - b.id));
+  const foldedCounts = COLUMNS.map((c) => ({ ...c, n: lane.todos.filter((t) => t.status === c.status).length })).filter((c) => folded.has(c.status) && c.n > 0);
   const row = (t: Todo) => {
     const urgent = urgentState(liveSessions(t));
     const direct = directSession(t);
@@ -1369,16 +1373,14 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
       {!collapsed && (
         <ul className="rows">
           {open.map(row)}
-          {backlog.length > 0 && (
-            <li className="row backlog-toggle" onClick={() => setShowBacklog(!showBacklog)} aria-expanded={showBacklog}>
-              <StatusIcon status="backlog" />
+          {foldedCounts.map((c) => (
+            <li key={c.status} className="row backlog-toggle" onClick={() => onUnfold(c.status)}>
+              <StatusIcon status={c.status} />
               <span className="muted">
-                Backlog {backlog.length} 件{showBacklog ? "" : "（クリックで表示）"}
+                {c.label} {c.n} 件（畳んでいます。クリックで表示）
               </span>
             </li>
-          )}
-          {showBacklog && backlog.map(row)}
-          {visibleDone(lane.todos, doneRecent).map(row)}
+          ))}
         </ul>
       )}
       {!collapsed && (
@@ -3129,6 +3131,21 @@ const WAIT_WORD: Record<WaitItem["reasons"][number], string> = {
   review_failed: "レビュー失敗",
 };
 
+/// A page's filter by place (a repository, a group, or none).
+function PlaceFilter({ places, value, onChange }: { places: string[]; value: string | null; onChange: (place: string | null) => void }) {
+  if (places.length < 2 && value === null) return null;
+  return (
+    <select className="select compact" value={value ?? ""} aria-label="場所で絞り込む" title="場所で絞り込む" onChange={(e) => onChange(e.target.value || null)}>
+      <option value="">すべての場所</option>
+      {places.map((p) => (
+        <option key={p} value={p}>
+          {isGithubRepo(p) ? repoName(p) : p}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 /// Every session the board knows, with the todo it belongs to.
 function sessionItemsOf(board: Board): SessionItem[] {
   return [...board.todos.flatMap((todo) => todo.sessions.map((session) => ({ session, todo }))), ...board.inbox.map((session) => ({ session }))];
@@ -3147,18 +3164,18 @@ const placeOf = (s: Session) => `${isCloud(s) ? "Cloud" : "herdr"} · ${s.agent 
 
 /// The sessions page, the place to keep up with what runs: あなた待ち pinned
 /// on top, then the sessions as they changed last (a parent's under it).
-function SessionsPage({ board, waiting, filter, onFilter, repoFilter, run, report, onOpenTodo, onQuick }: {
+function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTodo, onQuick }: {
   board: Board;
   waiting: WaitItem[];
   filter: SessionFilter;
   onFilter: (f: SessionFilter) => void;
-  repoFilter: string | null;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   onOpenTodo: (id: number) => void;
   onQuick: () => void;
 }) {
   const [showEnded, setShowEnded] = useState(false);
+  const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const openInBrowser = useContext(BrowserContext);
   const openCloud = useContext(OpenCloudContext);
   const terminal = useContext(TerminalContext);
@@ -3251,6 +3268,7 @@ function SessionsPage({ board, waiting, filter, onFilter, repoFilter, run, repor
             </button>
           ))}
         </div>
+        <PlaceFilter places={[...new Set(sessionItemsOf(board).map((i) => laneKey(i.todo?.repos ?? i.session.repos)))]} value={repoFilter} onChange={setRepoFilter} />
         <span className="grow" />
         {confirmArchive ? (
           <span className="inline-confirm">
@@ -3487,7 +3505,7 @@ function reviewStanding(p: Pr, sessions: Session[], submitted: Map<string, strin
   return { word: s.review_auto ? "レビュー中（自動で提出）" : "レビュー中", cls: "state-running" };
 }
 
-function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, repoFilter, browserUrl, run, onRefresh, onOpenTodo }: {
+function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, browserUrl, run, onRefresh, onOpenTodo }: {
   prs: PrLists | null;
   /// While the PRs are being taken again, so ↻ turns.
   prsLoading: boolean;
@@ -3498,7 +3516,6 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   /// Reviews that went in since the PRs were taken: their verdicts by URL.
   submitted: Map<string, string>;
   local: LocalRepo[];
-  repoFilter: string | null;
   /// The page the browser pane shows, to mark its row.
   browserUrl: string | null;
   run: (f: () => Promise<unknown>) => void;
@@ -3507,6 +3524,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
 }) {
   // Review requests first: they are what waits on the user.
   const [filter, setFilter] = useState<PrFilter>("review");
+  const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const openInBrowser = useContext(BrowserContext);
   const fix = useContext(FixContext);
   const [prefs, setPrefsState] = useState<ReviewPrefs>(loadReviewPrefs);
@@ -3567,6 +3585,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
             自分の PR {mine.length}
           </button>
         </div>
+        <PlaceFilter places={[...new Set([...(prs?.review ?? []), ...(prs?.mine ?? [])].map((p) => p.repo))].sort()} value={repoFilter} onChange={setRepoFilter} />
         <span className="grow" />
         <button className={`ghost icon${prsLoading ? " turning" : ""}`} aria-label="PR を取り直す（⌘R）" title="PR を取り直す（⌘R）" aria-busy={prsLoading} onClick={onRefresh}>
           <Icon name="sync" size={14} />
@@ -5630,7 +5649,7 @@ export default function App() {
   viewRef.current = view;
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
   const [groupBy, setGroupByState] = useState<GroupBy>(() => load(GROUP_KEY, ["repo", "parent"] as const, "repo"));
-  const [doneRecent, setDoneRecentState] = useState<boolean>(() => load(DONE_RECENT_KEY, ["1", "0"] as const, "1") === "1");
+  const [foldedByHand, setFoldedByHand] = useState<Set<Status>>(() => new Set(loadJson<Status[]>(FOLDED_COLUMNS_KEY, FOLDED_BY_DEFAULT_COLUMNS)));
   // The kanban's and the list's filters, kept across launches, and the saved ones.
   const [todoFilters, setTodoFiltersState] = useState<Record<Layout, TodoFilter>>(() => {
     const saved = loadJson<Partial<Record<Layout, Partial<TodoFilter>>>>(TODO_FILTERS_KEY, {});
@@ -5657,7 +5676,6 @@ export default function App() {
     setTodoFilter(f.filter, true, f.layout);
     showTodos(f.layout);
   };
-  const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [local, setLocal] = useState<LocalRepo[]>([]);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const [limits, setLimits] = useState<Limit[] | null>(null);
@@ -5683,9 +5701,15 @@ export default function App() {
     remember(GROUP_KEY, v);
     setGroupByState(v);
   };
-  const setDoneRecent = (v: boolean) => {
-    remember(DONE_RECENT_KEY, v ? "1" : "0");
-    setDoneRecentState(v);
+  /// A column's head (or a list's folded line): a status left out by the
+  /// filter comes back into it, else it folds or opens by hand.
+  const toggleColumn = (st: Status) => {
+    if (todoFilter.statuses.length > 0 && !todoFilter.statuses.includes(st)) return setTodoFilter({ ...todoFilter, statuses: [...todoFilter.statuses, st] });
+    const next = new Set(foldedByHand);
+    if (next.has(st)) next.delete(st);
+    else next.add(st);
+    remember(FOLDED_COLUMNS_KEY, JSON.stringify([...next]));
+    setFoldedByHand(next);
   };
   const toggleLane = (key: string) =>
     setCollapsed((prev) => {
@@ -5920,11 +5944,11 @@ export default function App() {
     if (todo && todo.status !== status) setStatus(todo, status);
   };
 
-  const inRepo = (repos: string[] | undefined) => repoFilter === null || laneKey(repos) === repoFilter;
   // Subtasks of a Done parent are finished business; the parent stands for them.
   const doneParents = new Set(allTodos.filter((t) => t.status === "done").map((t) => t.id));
   const shownTodos = allTodos.filter((t) => t.parent_id === null || !doneParents.has(t.parent_id));
-  const visibleTodos = shownTodos.filter((t) => inRepo(t.repos) && matchesFilter(t, todoFilter));
+  const visibleTodos = shownTodos.filter((t) => matchesFilter(t, todoFilter));
+  const foldedCols = foldedStatuses(foldedByHand, todoFilter);
   // A Done parent without shown subtasks is a card like any other.
   const lanes = buildLanes(visibleTodos, groupBy, shownTodos);
   const repoLanes = buildLanes(shownTodos, "repo", shownTodos);
@@ -6190,28 +6214,6 @@ export default function App() {
               ))}
             </div>
           )}
-          <div className="sidebar-section">
-            <div className="section-title">場所</div>
-            {repoLanes.map((lane) => {
-              const w = lane.todos.flatMap(liveSessions).concat((board?.inbox ?? []).filter((s) => laneKey(s.repos) === lane.key)).filter((s) => s.state === "needs_input").length;
-              return (
-                <div key={lane.key} className={`repo${repoFilter === lane.key ? " on" : ""}`}>
-                  <button className="repo-main" title={lane.key} aria-pressed={repoFilter === lane.key} onClick={() => setRepoFilter(repoFilter === lane.key ? null : lane.key)}>
-                    <RepoDot repo={lane.key} />
-                    <span className="ellipsis grow">{isGithubRepo(lane.key) ? repoName(lane.key) : lane.key}</span>
-                    {w > 0 && <span className="pill waiting">{w}</span>}
-                    <span className="muted">{lane.todos.filter((t) => t.status !== "done").length}</span>
-                  </button>
-                  {isGithubRepo(lane.key) && (
-                    <button className="ghost icon repo-gh" aria-label={`${lane.key} を GitHub で開く`} title="GitHub で開く" onClick={() => openInBrowser(GITHUB + lane.key)}>
-                      <Icon name="open" size={12} />
-                    </button>
-                  )}
-                </div>
-              );
-            })}
-            {repoLanes.length === 0 && <p className="muted hint">まだありません</p>}
-          </div>
           <div className="sidebar-foot">
             <div className="link-target">
               <span className="muted">Cloud を開く</span>
@@ -6328,25 +6330,13 @@ export default function App() {
                     </button>
                   ))}
                 </div>
-                {repoFilter && (
-                  <button className="filter on" onClick={() => setRepoFilter(null)} title="絞り込みを外す">
-                    <RepoDot repo={repoFilter} />
-                    {repoFilter} <Icon name="close" size={11} />
-                  </button>
-                )}
-                <TodoFilterBar
+                  <TodoFilterBar
                   filter={todoFilter}
                   version={`${layout}:${filterVersion}`}
                   places={repoLanes.map((l) => l.key)}
                   onChange={(f) => setTodoFilter(f, f === NO_FILTER)}
                   onSave={saveFilter}
                 />
-                <button className={`filter${todoFilter.waiting ? " on" : ""}`} aria-pressed={todoFilter.waiting} onClick={() => setTodoFilter({ ...todoFilter, waiting: !todoFilter.waiting })}>
-                  返事待ちだけ
-                </button>
-                <button className={`filter${doneRecent ? " on" : ""}`} aria-pressed={doneRecent} onClick={() => setDoneRecent(!doneRecent)}>
-                  Done は直近{DONE_RECENT}件
-                </button>
                 <span className="grow" />
                 <button className="primary" onClick={() => setDialog("add")}>
                   <Icon name="plus" size={13} /> 新しい todo <span className="kbd">⌘N</span>
@@ -6356,11 +6346,13 @@ export default function App() {
               <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
                 <div className="content" ref={todoPage}>
                   {layout === "board" && lanes.length > 0 && (
-                    <div className="col-heads">
+                    <div className="col-heads" style={{ gridTemplateColumns: columnsTemplate(foldedCols) }}>
                       {COLUMNS.map((c) => (
-                        <h2 key={c.status}>
-                          <StatusIcon status={c.status} />
-                          {c.label} <span className="muted">{colCounts[c.status]}</span>
+                        <h2 key={c.status} className={foldedCols.has(c.status) ? "folded" : undefined}>
+                          <button className="col-toggle" title={foldedCols.has(c.status) ? `${c.label} を開く` : `${c.label} を畳む（カードはここへ動かせます）`} onClick={() => toggleColumn(c.status)}>
+                            <StatusIcon status={c.status} />
+                            {!foldedCols.has(c.status) && c.label} <span className="muted">{colCounts[c.status]}</span>
+                          </button>
                         </h2>
                       ))}
                     </div>
@@ -6376,7 +6368,7 @@ export default function App() {
                         onSelectTodo={openTodo}
                         report={report}
                         allTodos={allTodos}
-                        doneRecent={doneRecent}
+                        folded={foldedCols}
                         onAdd={(status, title) => addTodoIn(lane, status, title)}
                       />
                     ) : (
@@ -6391,7 +6383,8 @@ export default function App() {
                         run={run}
                         setStatus={setStatus}
                         allTodos={allTodos}
-                        doneRecent={doneRecent}
+                        folded={foldedCols}
+                        onUnfold={toggleColumn}
                         onAdd={(title) => addTodoIn(lane, "todo", title)}
                       />
                     ),
@@ -6413,7 +6406,6 @@ export default function App() {
               waiting={waiting}
               filter={sessionFilter}
               onFilter={setSessionFilter}
-              repoFilter={repoFilter}
               run={run}
               report={report}
               onOpenTodo={openTodo}
@@ -6440,7 +6432,6 @@ export default function App() {
               sessions={board?.inbox ?? []}
               submitted={submittedReviews}
               local={local}
-              repoFilter={repoFilter}
               browserUrl={browserUrl}
               run={run}
               onRefresh={loadPrs}
@@ -6575,7 +6566,7 @@ export default function App() {
           <AddTodoDialog
             local={local}
             groups={groups}
-            initialRepo={repoFilter}
+            initialRepo={todoFilter.places.length === 1 ? todoFilter.places[0] : null}
             run={run}
             onClose={() => setDialog(null)}
             onOpenTodo={(id) => {
