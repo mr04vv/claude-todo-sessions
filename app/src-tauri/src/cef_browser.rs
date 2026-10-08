@@ -322,6 +322,26 @@ wrap_client! {
         fn permission_handler(&self) -> Option<PermissionHandler> {
             Some(PagePermission::new())
         }
+
+        fn keyboard_handler(&self) -> Option<KeyboardHandler> {
+            Some(SwallowCloseKey::new())
+        }
+    }
+}
+
+/// CEF's `EVENTFLAG_COMMAND_DOWN` and the Windows key code of W.
+const COMMAND_DOWN: u32 = 1 << 7;
+const KEY_W: i32 = 0x57;
+
+wrap_keyboard_handler! {
+    struct SwallowCloseKey;
+
+    impl KeyboardHandler {
+        // A ⌘W the page did not take (its script answers first) goes on to macOS
+        // as Close Window and hides the app's window; closing a tab is the app's job.
+        fn on_key_event(&self, _browser: Option<&mut Browser>, event: Option<&KeyEvent>, _os_event: *mut u8) -> ::std::os::raw::c_int {
+            i32::from(event.is_some_and(|e| e.modifiers & COMMAND_DOWN != 0 && e.windows_key_code == KEY_W))
+        }
     }
 }
 
