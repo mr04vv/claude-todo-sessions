@@ -140,7 +140,7 @@ type GroupBy = "repo" | "parent";
 
 const GROUPINGS: { key: GroupBy; label: string }[] = [
   { key: "repo", label: "リポジトリ" },
-  { key: "parent", label: "親タスク" },
+  { key: "parent", label: "親 Todo" },
 ];
 
 /// Opens a page in the browser pane docked on the right. It stays open across
@@ -674,7 +674,7 @@ function CiChip({ todo }: { todo: Todo }) {
 function relationLabel(todo: Todo, allTodos: Todo[]): string | null {
   if (todo.parent_id) return `親 #${todo.parent_id}`;
   const children = allTodos.filter((c) => c.parent_id === todo.id);
-  if (children.length > 0) return `サブ ${children.filter((c) => c.status === "done").length}/${children.length} 完了`;
+  if (children.length > 0) return `サブタスク ${children.filter((c) => c.status === "done").length}/${children.length}`;
   if (todo.repos.length > 1) return `+${todo.repos.length - 1} リポジトリ`;
   return null;
 }
@@ -1156,7 +1156,7 @@ function TodoFilterBar({ filter, version, places, onChange, onSave }: {
               ))}
             </div>
             <div className="filter-group">
-              <span className="muted">場所</span>
+              <span className="muted">リポジトリ</span>
               {places.map((p) => (
                 <label key={p} className="toggle">
                   <input type="checkbox" checked={filter.places.includes(p)} onChange={() => onChange({ ...filter, places: toggle(filter.places, p) })} />
@@ -1359,7 +1359,7 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
       )}
       {!collapsed && (
         <div className="row-add">
-          <AddInline label="新しい todo" onAdd={onAdd} />
+          <AddInline label="新しい Todo" onAdd={onAdd} />
         </div>
       )}
     </section>
@@ -2798,7 +2798,7 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
           <dd>
             <StatusSelect todo={todo} setStatus={setStatus} />
           </dd>
-          <dt>場所</dt>
+          <dt>リポジトリ</dt>
           <dd>
             <RepoChips todo={todo} local={local} groups={groups} update={update} />
           </dd>
@@ -3122,8 +3122,8 @@ function ArtifactsPage({ artifacts, todos, report, onOpenTodo }: { artifacts: Ar
 function PlaceFilter({ places, value, onChange }: { places: string[]; value: string | null; onChange: (place: string | null) => void }) {
   if (places.length < 2 && value === null) return null;
   return (
-    <select className="select compact" value={value ?? ""} aria-label="場所で絞り込む" title="場所で絞り込む" onChange={(e) => onChange(e.target.value || null)}>
-      <option value="">すべての場所</option>
+    <select className="select compact" value={value ?? ""} aria-label="リポジトリで絞り込む" title="リポジトリで絞り込む" onChange={(e) => onChange(e.target.value || null)}>
+      <option value="">すべてのリポジトリ</option>
       {places.map((p) => (
         <option key={p} value={p}>
           {isGithubRepo(p) ? repoName(p) : p}
@@ -5215,7 +5215,7 @@ export default function App() {
   const [sideCursor, setSideCursor] = useState(0);
   const sideCursorRef = useRef(sideCursor);
   sideCursorRef.current = sideCursor;
-  const sideItems = () => [...document.querySelectorAll<HTMLElement>(".sidebar nav button, .sidebar .repo-main")];
+  const sideItems = () => [...document.querySelectorAll<HTMLElement>(".sidebar nav button")];
   const setSideZone = (on: boolean) => {
     sideZoneRef.current = on;
     setSideZoneState(on);
@@ -6006,16 +6006,20 @@ export default function App() {
     if (selection?.kind === "todo") setTodoCursor(`todo:${selection.id}`);
   }, [selection]); // eslint-disable-line react-hooks/exhaustive-deps
   const draggedTodo = dragging !== null ? allTodos.find((t) => t.id === dragging) : undefined;
-  const reviewCount = prs?.review.length ?? 0;
+  // Review requests no review session has taken yet.
+  const reviewCount = waiting.filter((w) => w.reasons.includes("review")).length;
 
-  const nav: { key: string; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
-    { key: "board", label: "Todo カンバン", icon: "board", count: openTodoCount, on: view === "todos" && layout === "board", go: () => showTodos("board") },
-    { key: "list", label: "Todo リスト", icon: "list", on: view === "todos" && layout === "list", go: () => showTodos("list") },
+  // The sidebar lists the objects only, each with what of it waits on the
+  // user (or how many there are); how a list shows is chosen on its page.
+  const nav: { key: string; group: "仕事" | "学び"; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
+    { key: "todos", group: "仕事", label: "Todo", icon: "board", count: openTodoCount, on: view === "todos", go: () => setView("todos") },
     {
+      group: "仕事",
       key: "sessions",
       label: "セッション",
       icon: "spark",
-      count: allSessions.length,
+      // Its badge is what waits on the user; the count only without it.
+      count: waiting.length > 0 ? undefined : allSessions.length,
       on: view === "sessions",
       go: () => setView("sessions"),
       badge: waiting.length > 0 && (
@@ -6025,17 +6029,17 @@ export default function App() {
         </span>
       ),
     },
+    { key: "prs", group: "仕事", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent" title="まだレビューを始めていないレビュー依頼">レビュー {reviewCount}</span> },
+    { key: "artifacts", group: "仕事", label: "成果物", icon: "open", count: board?.artifacts.length, on: view === "artifacts", go: () => setView("artifacts") },
     {
       key: "inputs",
-      label: "学び",
+      group: "学び",
+      label: "テーマ",
       icon: "import",
-      count: allInputs.filter((i) => i.theme_id === null && !i.done).length || undefined,
       on: view === "inputs",
       go: () => setView("inputs"),
       badge: reviewsDue > 0 && <span className="pill accent" title="理解度から決めた復習どきのテーマ">復習 {reviewsDue}</span>,
     },
-    { key: "prs", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent">レビュー {reviewCount}</span> },
-    { key: "artifacts", label: "成果物", icon: "open", count: board?.artifacts.length, on: view === "artifacts", go: () => setView("artifacts") },
   ];
 
   // ⌘K lists the sidebar's entries first, in its order, then the actions.
@@ -6064,7 +6068,7 @@ export default function App() {
   const commands: Command[] = [
     sessionsCommand,
     ...nav.map((n) => ({ key: `nav:${n.key}`, label: n.label, run: n.go })),
-    { key: "browser", label: browserShown ? "作業スペースを隠す" : "作業スペース", run: toggleBrowser },
+    { key: "browser", label: browserShown ? "ペインを隠す" : "ペインを出す", run: toggleBrowser },
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     {
@@ -6076,7 +6080,7 @@ export default function App() {
     { key: "shortcuts", label: "キーの一覧", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "settings", label: "設定（開く場所・ターミナル・herdr・ログイン・サイトの許可）", run: () => setDialog("settings") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
-    { key: "add", label: "新しい todo", hint: "⌘N", run: () => setDialog("add") },
+    { key: "add", label: "新しい Todo", hint: "⌘N", run: () => setDialog("add") },
     ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned
       ? [{ key: "toInput", label: "表示中のページを学びに入れる", run: toInput }]
       : []),
@@ -6115,47 +6119,31 @@ export default function App() {
             <span className="grow ellipsis">検索・操作</span>
             <span className="kbd">⌘K</span>
           </button>
-          <nav className="nav" aria-label="画面">
-            {nav.map((n) => (
-              <button key={n.key} className={n.on ? "on" : ""} aria-current={n.on ? "page" : undefined} onClick={n.go}>
-                <Icon name={n.icon} />
-                <span className="grow">{n.label}</span>
-                {n.badge}
-                {n.count !== undefined && <span className="muted">{n.count}</span>}
-              </button>
-            ))}
-            <button className={browserShown ? "on" : ""} aria-pressed={browserShown} title="作業スペース（右のページとターミナル）を表示・隠す（⌘T で新しいタブ）" onClick={toggleBrowser}>
-              <Icon name="globe" />
-              <span className="grow">作業スペース</span>
-              {paneTabs.some((t) => !t.pinned) && <span className="muted">{paneTabs.filter((t) => !t.pinned).length}</span>}
-            </button>
-            {PINNED_PAGES.map((p) => (
-              <button key={p.id} className={browserShown && activeTab?.id === p.id ? "on" : ""} title={`${p.label} を右のペインで開く（開いたままになります）`} onClick={() => showPinned(p.id)}>
-                <Icon name={p.icon} />
-                <span className="grow">{p.label}</span>
-              </button>
-            ))}
-          </nav>
-          {savedFilters.length > 0 && (
-            <div className="sidebar-section">
-              <div className="section-title">フィルター</div>
-              {savedFilters.map((f) => (
-                <div key={f.id} className={`repo${view === "todos" && layout === f.layout && sameFilter(todoFilter, f.filter) ? " on" : ""}`}>
-                  <button className="repo-main" title={`${f.name} で絞り込む`} onClick={() => applyFilter(f)}>
-                    <Icon name={f.layout === "board" ? "board" : "list"} size={12} />
-                    <span className="ellipsis grow">{f.name}</span>
+          {(["仕事", "学び"] as const).map((group) => (
+            <nav key={group} className="nav" aria-label={group}>
+              <div className="section-title">{group}</div>
+              {nav
+                .filter((n) => n.group === group)
+                .map((n) => (
+                  <button key={n.key} className={n.on ? "on" : ""} aria-current={n.on ? "page" : undefined} onClick={n.go}>
+                    <Icon name={n.icon} />
+                    <span className="grow">{n.label}</span>
+                    {n.badge}
+                    {n.count !== undefined && <span className="muted">{n.count}</span>}
                   </button>
-                  <button className="ghost icon repo-gh" aria-label={`フィルター ${f.name} を消す`} title="消す" onClick={() => setSavedFilters(savedFilters.filter((x) => x.id !== f.id))}>
-                    <Icon name="close" size={11} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
+                ))}
+            </nav>
+          ))}
           <div className="sidebar-foot">
-            <button className="ghost small settings-button" onClick={() => setDialog("settings")}>
-              設定
-            </button>
+            <div className="foot-row">
+              <button className={`ghost small${browserShown ? " on" : ""}`} aria-pressed={browserShown} title="右のペイン（開いたページとターミナル）を出す・隠す。⌘T で新しいタブ" onClick={toggleBrowser}>
+                <Icon name="globe" size={13} /> ペイン
+              </button>
+              <span className="grow" />
+              <button className="ghost small" onClick={() => setDialog("settings")}>
+                設定
+              </button>
+            </div>
             <UsageBox limits={limits} error={usageError} />
             <div className="sync-line">
               <span className="dot state-running" />
@@ -6218,6 +6206,13 @@ export default function App() {
             <>
               <header className="toolbar">
                 <h1>Todo</h1>
+                <div className="segmented" role="group" aria-label="見え方">
+                  {(["board", "list"] as const).map((l) => (
+                    <button key={l} className={layout === l ? "on" : ""} aria-pressed={layout === l} onClick={() => showTodos(l)}>
+                      {l === "board" ? "カンバン" : "リスト"}
+                    </button>
+                  ))}
+                </div>
                 <div className="segmented" role="group" aria-label="まとめ方">
                   {GROUPINGS.map((g) => (
                     <button key={g.key} className={groupBy === g.key ? "on" : ""} aria-pressed={groupBy === g.key} onClick={() => setGroupBy(g.key)}>
@@ -6232,9 +6227,38 @@ export default function App() {
                   onChange={(f) => setTodoFilter(f, f === NO_FILTER)}
                   onSave={saveFilter}
                 />
+                {savedFilters.length > 0 && (
+                  <select
+                    className="select compact"
+                    value={savedFilters.find((f) => f.layout === layout && sameFilter(todoFilter, f.filter))?.id ?? ""}
+                    aria-label="保存したビュー"
+                    title="保存したビュー（絞り込みとフィルター）"
+                    onChange={(e) => {
+                      const f = savedFilters.find((x) => x.id === e.target.value);
+                      if (f) applyFilter(f);
+                    }}
+                  >
+                    <option value="">ビュー</option>
+                    {savedFilters.map((f) => (
+                      <option key={f.id} value={f.id}>
+                        {f.name}（{f.layout === "board" ? "カンバン" : "リスト"}）
+                      </option>
+                    ))}
+                  </select>
+                )}
+                {savedFilters.some((f) => f.layout === layout && sameFilter(todoFilter, f.filter)) && (
+                  <button
+                    className="ghost icon"
+                    aria-label="このビューを消す"
+                    title="このビューを消す（絞り込みはそのまま）"
+                    onClick={() => setSavedFilters(savedFilters.filter((f) => !(f.layout === layout && sameFilter(todoFilter, f.filter))))}
+                  >
+                    <Icon name="close" size={11} />
+                  </button>
+                )}
                 <span className="grow" />
                 <button className="primary" onClick={() => setDialog("add")}>
-                  <Icon name="plus" size={13} /> 新しい todo <span className="kbd">⌘N</span>
+                  <Icon name="plus" size={13} /> 新しい Todo <span className="kbd">⌘N</span>
                 </button>
               </header>
               <WaitingStrip items={waiting} onShow={showWaiting} />

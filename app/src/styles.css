@@ -125,13 +125,13 @@ select {
 button {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 28px;
-  padding: 0 10px;
+  gap: 8px;
+  height: 32px;
+  padding: 0 12px;
   background: var(--card);
   border: 1px solid var(--border-2);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   white-space: nowrap;
 }
@@ -490,14 +490,12 @@ a:hover {
 }
 
 .nav button,
-.repo-main,
 .search {
   justify-content: flex-start;
   text-align: left;
 }
 
-.nav button,
-.repo-main {
+.nav button {
   height: 30px;
   padding: 0 10px;
   background: none;
@@ -507,15 +505,13 @@ a:hover {
   gap: 10px;
 }
 
-.nav button:hover:not(:disabled),
-.repo-main:hover:not(:disabled) {
+.nav button:hover:not(:disabled) {
   background: var(--card-hover);
   border-color: transparent;
   color: var(--text);
 }
 
-.nav button.on,
-.repo.on .repo-main {
+.nav button.on {
   background: var(--card-hover);
   color: var(--text);
   font-weight: 500;
@@ -534,28 +530,6 @@ a:hover {
   gap: 1px;
 }
 
-.repo {
-  display: flex;
-  align-items: center;
-}
-
-.repo-main {
-  flex-grow: 1;
-  min-width: 0;
-  height: 28px;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--text);
-}
-
-.repo-gh {
-  opacity: 0.6;
-}
-
-.repo:hover .repo-gh {
-  opacity: 1;
-}
-
 .repo-dot {
   width: 8px;
   height: 8px;
@@ -570,8 +544,14 @@ a:hover {
   gap: 8px;
 }
 
-.settings-button {
-  align-self: flex-start;
+.foot-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.foot-row button.on {
+  color: var(--accent);
 }
 
 .usage {
