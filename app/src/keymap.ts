@@ -38,6 +38,9 @@ export type Action =
   | "editMemo"
   | "addSubtask"
   | "start"
+  | "reviewAgent"
+  | "reviewSubmit"
+  | "reviewRunner"
   | "search"
   | "help"
   | "paletteDown"
@@ -98,7 +101,15 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["editTitle", "タイトルを編集"],
       ["editMemo", "メモを編集"],
       ["addSubtask", "サブタスクを追加"],
-      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ）"],
+      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ。PR の画面では PR を開く）"],
+    ],
+  },
+  {
+    group: "PR の画面（Enter でレビューを始める）",
+    items: [
+      ["reviewAgent", "レビューのエージェントを切り替える（Claude / Codex）"],
+      ["reviewSubmit", "レビューの提出を切り替える（提出前に確認する / 自動で提出する）"],
+      ["reviewRunner", "レビューが動く場所を切り替える（Cloud / herdr）"],
     ],
   },
   {
@@ -146,6 +157,9 @@ const KEYS: Record<Action, string> = {
   editMemo: "m",
   addSubtask: "a",
   start: "cmd+Enter",
+  reviewAgent: "a",
+  reviewSubmit: "s",
+  reviewRunner: "r",
   search: "/",
   help: "?",
   paletteDown: "ctrl+j",

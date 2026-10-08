@@ -3573,17 +3573,22 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   const shownReview = filter !== "mine" ? review : [];
   const shownMine = filter !== "review" ? mine : [];
   // ↑↓ or j k pick a PR, Enter starts reviewing a request not started yet
-  // (other rows it opens in the pane), ⌘Enter opens it in the pane.
-  const { cursorId, setCursor, list } = useRowCursor([...shownReview.map((p) => rowId("review", p.url)), ...shownMine.map((p) => rowId("mine", p.url))], (id, _, row) => {
+  // (other rows it opens in the pane), ⌘Enter (and ⌥Enter) opens it in the
+  // pane; a, s and r switch how reviews start.
+  const { cursorId, setCursor, list } = useRowCursor([...shownReview.map((p) => rowId("review", p.url)), ...shownMine.map((p) => rowId("mine", p.url))], (id, alt, row) => {
     const p = review.find((x) => rowId("review", x.url) === id);
-    if (p && !starting.has(p.url) && reviewStanding(p, sessions, submitted, now).word === "未着手") return startReview(p);
+    if (p && !alt && !starting.has(p.url) && reviewStanding(p, sessions, submitted, now).word === "未着手") return startReview(p);
     row.click();
   });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!matches(e, "start") || !cursorId || (e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .sheet-backdrop")) return;
+      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app.focus, .app[data-zone=sidebar], .sheet-backdrop")) return;
+      if (matches(e, "start") && cursorId) list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(cursorId)}"]`)?.click();
+      else if (filter !== "mine" && matches(e, "reviewAgent")) setPrefs({ agent: prefs.agent === "claude" ? "codex" : "claude" });
+      else if (filter !== "mine" && matches(e, "reviewSubmit")) setPrefs({ auto: !prefs.auto });
+      else if (filter !== "mine" && matches(e, "reviewRunner") && prefs.agent !== "codex") setPrefs({ runner: prefs.runner === "cloud" ? "herdr" : "cloud" });
+      else return;
       e.preventDefault();
-      list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(cursorId)}"]`)?.click();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -3619,7 +3624,9 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
               <b>レビュー依頼</b>
               <span className="muted">{review.length}</span>
               <span className="grow" />
-              <span className="muted">エージェント</span>
+              <span className="muted">
+                エージェント <span className="kbd">{keyLabel(keyOf("reviewAgent"))}</span>
+              </span>
               <div className="segmented" role="group" aria-label="レビューするエージェント">
                 {(["claude", "codex"] as const).map((a) => (
                   <button key={a} className={prefs.agent === a ? "on" : ""} aria-pressed={prefs.agent === a} onClick={() => setPrefs({ agent: a })}>
@@ -3627,7 +3634,9 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
                   </button>
                 ))}
               </div>
-              <span className="muted">提出</span>
+              <span className="muted">
+                提出 <span className="kbd">{keyLabel(keyOf("reviewSubmit"))}</span>
+              </span>
               <div className="segmented" role="group" aria-label="レビューの提出">
                 <button className={!prefs.auto ? "on" : ""} aria-pressed={!prefs.auto} title="指摘がまとまると、Request changes・Comment・Approve のどれで出すかを聞いてきます（あなた待ちに入ります）" onClick={() => setPrefs({ auto: false })}>
                   提出前に確認する
@@ -3636,7 +3645,9 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
                   自動で提出する
                 </button>
               </div>
-              <span className="muted">動く場所</span>
+              <span className="muted">
+                動く場所 <span className="kbd">{keyLabel(keyOf("reviewRunner"))}</span>
+              </span>
               <div className="segmented" role="group" aria-label="レビューが動く場所">
                 <button className={prefs.runner === "cloud" ? "on" : ""} aria-pressed={prefs.runner === "cloud"} disabled={prefs.agent === "codex"} title={prefs.agent === "codex" ? "Codex は herdr でだけ動きます" : undefined} onClick={() => setPrefs({ runner: "cloud" })}>
                   Cloud
@@ -3685,7 +3696,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
                     </span>
                     {st.word === "未着手" && (
                       <button className="small primary" disabled={busy} title="上の選び方でレビューを始めます（Enter。画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), startReview(p))}>
-                        レビューを始める
+                        レビューを始める <span className="kbd">↵</span>
                       </button>
                     )}
                     {st.failed && (
@@ -4596,7 +4607,7 @@ function ExitFocusDialog({ onExit, onStay }: { onExit: () => void; onStay: () =>
 const FIXED_KEYS: [string, string][] = [
   ["↑↓←→", "一覧・カンバンの移動（変えたキーと一緒に使えます）"],
   ["Enter", "開く（todo のシート、セッション、メニューの項目）"],
-  ["⌥Enter", "開き方を選ぶ（セッション）/ PR を開く（PR・通知）"],
+  ["⌥Enter", "開き方を選ぶ（セッション）/ PR を開く（PR）"],
   ["Esc", "シートやパネル、メニューを閉じる（学ぶ時間では終えるか聞く）"],
 ];
 
