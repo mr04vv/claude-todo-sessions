@@ -179,6 +179,31 @@ pub fn session_command(agent: crate::Agent, session_id: Option<&str>, opts: &Sta
     format!("{program}{flags} {}", shell_quote(prompt))
 }
 
+/// Where an orchestrator starts a subtask: as asked (`cloud`), else on Cloud
+/// when it has a GitHub repository to check out, else in herdr. Codex runs in
+/// herdr only.
+pub fn subtask_on_cloud(repos: &[String], agent: crate::Agent, cloud: Option<bool>) -> bool {
+    agent != crate::Agent::Codex && cloud.unwrap_or_else(|| !github_repos(repos).is_empty())
+}
+
+/// Starts the todo's session in a new herdr workspace at `cwd`, behind (the
+/// view stays where it is), with its first prompt (`Db::session_prompt`):
+/// Claude registered and linked before it starts, Codex linked by its
+/// prompt's marker once herdr reports it. `run` runs the herdr CLI. Gives
+/// back Claude's session id.
+pub fn start_todo_in_herdr(db: &crate::Db, todo: &crate::Todo, opts: &StartOptions, cwd: &str, herdr_session: Option<&str>, run: impl Fn(&[&str]) -> Result<String, String>) -> Result<Option<String>, String> {
+    let body = db.session_prompt(todo, opts.plan).map_err(|e| e.to_string())?;
+    let codex = opts.agent == crate::Agent::Codex;
+    let session = (!codex).then(|| uuid::Uuid::new_v4().to_string());
+    if let Some(id) = &session {
+        db.register_session(id, cwd, &todo.title, Some(todo.id)).map_err(|e| e.to_string())?;
+    }
+    let prompt = start_prompt(todo.id, &if codex { codex_body(&body) } else { body });
+    let command = session_command(opts.agent, session.as_deref(), opts, &prompt);
+    crate::herdr::start_workspace(run, herdr_session, cwd, &todo.title, &command, false)?;
+    Ok(session)
+}
+
 /// A todo's repo list may hold free group names ("調査"); only `owner/repo`
 /// entries are GitHub repositories a cloud session can work on.
 pub fn github_repos(repos: &[String]) -> Vec<String> {
@@ -629,5 +654,20 @@ mod command_tests {
     fn codex_picks_its_own_session_id() {
         let opts = StartOptions { model: Some("gpt-5".into()), ..Default::default() };
         assert_eq!(session_command(Agent::Codex, Some("ignored"), &opts, "go"), "codex '-m' 'gpt-5' 'go'");
+    }
+}
+
+#[cfg(test)]
+mod subtask_tests {
+    use super::*;
+    use crate::Agent;
+
+    #[test]
+    fn a_subtask_runs_on_cloud_when_it_has_a_github_repository() {
+        assert!(subtask_on_cloud(&["acme/web".to_string()], Agent::Claude, None));
+        assert!(!subtask_on_cloud(&["調査".to_string()], Agent::Claude, None), "no repository to check out");
+        assert!(!subtask_on_cloud(&["acme/web".to_string()], Agent::Codex, None), "Codex runs in herdr");
+        assert!(!subtask_on_cloud(&["acme/web".to_string()], Agent::Claude, Some(false)), "asked for herdr");
+        assert!(subtask_on_cloud(&[], Agent::Claude, Some(true)), "asked for Cloud");
     }
 }

@@ -355,6 +355,11 @@ fn planning_splits_any_todo_into_subtasks() {
     assert!(body.starts_with("/grilling ダッシュボード刷新"), "{body}");
     assert!(body.contains("create_todo") && body.contains(&format!("parent_id={}", t.id)), "{body}");
     assert!(!body.contains("--add-reviewer"), "planning makes no PR: {body}");
+    // Then it stays as the subtasks' orchestrator.
+    for tool in ["set_plan", "start_subtask", "reply_to_subtask", "fix_subtask", "escalate", "log_progress"] {
+        assert!(body.contains(tool), "{tool}: {body}");
+    }
+    assert!(body.contains("AskUserQuestion"), "asks where to start them: {body}");
     // A custom prompt is planned too.
     let c = db.update_todo(t.id, TodoPatch { prompt: Some("分けて進めたい".into()), ..Default::default() }).unwrap();
     let body = c.prompt_body(true);

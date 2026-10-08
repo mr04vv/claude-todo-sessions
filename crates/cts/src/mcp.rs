@@ -1,4 +1,6 @@
 use cts_core::{NewTodo, Status, TodoPatch};
+
+use crate::orchestra;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{ServerCapabilities, ServerConfig},
@@ -7,7 +9,8 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const INSTRUCTIONS: &str = "Manage todos linked to Claude Code sessions. \
+const INSTRUCTIONS: &str = "Manage todos linked to Claude Code sessions, and orchestrate a parent todo's subtasks \
+(set_plan, start_subtask, reply_to_subtask, fix_subtask, escalate, log_progress). \
 The current session_id is given in the session context by the SessionStart hook.";
 
 #[derive(Deserialize, JsonSchema)]
@@ -61,6 +64,35 @@ struct LinkArgs {
 #[derive(Deserialize, JsonSchema)]
 struct SessionArgs {
     session_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct PlanArgs {
+    /// The parent todo.
+    todo_id: i64,
+    /// The plan in Markdown: the approach, what was decided, when it is done.
+    plan: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct StartArgs {
+    /// The subtask to start.
+    todo_id: i64,
+    /// true: on Cloud, false: in herdr on this Mac. Default: Cloud when the
+    /// subtask has a GitHub repository, else herdr. Codex runs in herdr only.
+    cloud: Option<bool>,
+    /// claude (default) or codex.
+    agent: Option<String>,
+    /// Model and effort; blank keeps the default.
+    model: Option<String>,
+    effort: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct TextArgs {
+    /// The subtask (or, for log_progress, the parent) todo.
+    todo_id: i64,
+    text: String,
 }
 
 #[derive(Serialize)]
@@ -135,6 +167,40 @@ impl Server {
     async fn unlink_session(&self, Parameters(a): Parameters<SessionArgs>) -> Result<String, String> {
         db()?.unlink_session(&a.session_id).map_err(|e| e.to_string())?;
         Ok(format!("unlinked session {}", a.session_id))
+    }
+
+    #[tool(description = "Keep a parent todo's plan (shared memory): every subtask's session starts knowing it, and the user sees and edits it. Blank clears it.")]
+    async fn set_plan(&self, Parameters(a): Parameters<PlanArgs>) -> Result<String, String> {
+        let db = db()?;
+        db.set_plan(a.todo_id, &a.plan).map_err(|e| e.to_string())?;
+        db.add_event(a.todo_id, "計画を書きました").map_err(|e| e.to_string())?;
+        Ok(format!("kept the plan of todo {}", a.todo_id))
+    }
+
+    #[tool(description = "Start a subtask's session, behind (nothing comes forward): on Cloud or in a new herdr workspace on this Mac, linked to the subtask. Ask the user where (AskUserQuestion) before starting.")]
+    async fn start_subtask(&self, Parameters(a): Parameters<StartArgs>) -> Result<String, String> {
+        orchestra::start_subtask(a.todo_id, a.cloud, a.agent.as_deref(), a.model, a.effort)
+    }
+
+    #[tool(description = "Answer a subtask's session (one waiting for a reply, or tell it something) in its herdr pane. A Cloud subtask cannot be sent anything: escalate instead, with the answer you propose.")]
+    async fn reply_to_subtask(&self, Parameters(a): Parameters<TextArgs>) -> Result<String, String> {
+        orchestra::reply(a.todo_id, &a.text)
+    }
+
+    #[tool(description = "Have a subtask's session fix its PR (the CI's failed checks, the changes a reviewer asked for). After two fixes the CI still failing goes to the user instead.")]
+    async fn fix_subtask(&self, Parameters(a): Parameters<IdArgs>) -> Result<String, String> {
+        orchestra::fix(a.id)
+    }
+
+    #[tool(description = "Hand a subtask to the user (it waits on them, and they are notified), with why: a choice the plan does not cover, money, permissions or deleting data, a CI still failing after two fixes, or an answer you propose for a Cloud subtask.")]
+    async fn escalate(&self, Parameters(a): Parameters<TextArgs>) -> Result<String, String> {
+        orchestra::escalate(a.todo_id, &a.text)
+    }
+
+    #[tool(description = "Write what you did or decided in the parent todo's 経過 (the user reads it there).")]
+    async fn log_progress(&self, Parameters(a): Parameters<TextArgs>) -> Result<String, String> {
+        db()?.add_event(a.todo_id, &a.text).map_err(|e| e.to_string())?;
+        Ok("logged".into())
     }
 }
 

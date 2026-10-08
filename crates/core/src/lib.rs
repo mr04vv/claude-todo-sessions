@@ -151,10 +151,15 @@ impl Todo {
     fn plan_instructions(&self) -> String {
         let repos: Vec<&str> = self.repos.iter().filter(|r| r.contains('/')).map(String::as_str).collect();
         let span = if repos.len() > 1 { format!("複数リポジトリ（{}）にまたがる", repos.join(", ")) } else { "いくつかの作業に分けて進める".into() };
-        format!(
-            "これは{span}計画用の todo です。ここでは実装せず、詳細を詰めたあと、作業ごとにサブタスクを todo-sessions の create_todo で登録してください（parent_id={}、repos はそのサブタスクのリポジトリ1つ、memo にそのサブタスクの実装方針と完了条件）。",
-            self.id
-        )
+        let id = self.id;
+        [
+            format!("これは{span}計画用の todo です。ここでは実装せず、詳細を詰めたあと、作業ごとにサブタスクを todo-sessions の create_todo で登録してください（parent_id={id}、repos はそのサブタスクのリポジトリ1つ、cwd はそのリポジトリのローカルのフォルダ、memo にそのサブタスクの実装方針と完了条件）。"),
+            format!("登録したら、決めたこと（方針・決定事項・完了条件）を set_plan で todo #{id} の計画に書いてください。サブタスクのセッションは、これを最初から知った状態で始まります。"),
+            "どのサブタスクを、どこで（Cloud か herdr、Claude か Codex）始めるかを AskUserQuestion で確かめてから、start_subtask で始めてください（既定は、GitHub のリポジトリがあれば Cloud、なければ herdr）。".into(),
+            "始めたあとも、このセッションは指揮役として残ってください。サブタスクの出来事（返事待ち・CI 失敗・修正依頼・Done）は、このセッションにメッセージで届きます。計画で答えられる質問は reply_to_subtask で答え、CI 失敗と修正依頼は fix_subtask で直させてください。次のことは自分で決めず、escalate で理由を添えて私に回してください：計画に書いていない仕様の選択／お金・権限・データの削除に関わる判断／同じサブタスクで2回直させても CI が通らないとき。Cloud のサブタスクには送れないので、答えの案を escalate の理由に書いてください。".into(),
+            "答えたこと・させたこと・決めたことは log_progress で残してください。サブタスクが全部 Done になったら、終わったことを私に知らせてください。".into(),
+        ]
+        .join("\n\n")
     }
 }
 
@@ -378,6 +383,9 @@ pub struct TodoEvent {
 
 /// Events a todo's 経過 lists.
 const EVENTS_LIMIT: i64 = 200;
+
+/// Times an orchestrator has a subtask fix its PR before the user takes over.
+pub const MAX_FIXES: i64 = 2;
 
 /// Notifications kept for the in-app list, newest first.
 const NOTICES_LIMIT: i64 = 200;

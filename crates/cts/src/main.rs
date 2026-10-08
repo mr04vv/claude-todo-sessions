@@ -1,6 +1,7 @@
 mod cloud;
 mod hook;
 mod mcp;
+mod orchestra;
 
 use std::io::Write;
 use std::path::PathBuf;
