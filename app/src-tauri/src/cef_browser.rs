@@ -15,7 +15,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use cef::application_mac::{CefAppProtocol, CrAppControlProtocol, CrAppProtocol};
-use cef::{args::Args, *};
+use cef::*;
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{define_class, extern_methods, msg_send, DefinedClass, MainThreadMarker};
@@ -193,9 +193,18 @@ pub fn init() -> bool {
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     // Kept, not released (see `content_view`): the application lives as long as the process.
     std::mem::forget(CefApplication::shared_application());
-    let args = Args::new();
+    // The switch is on the command line itself: set from `on_before_command_line_processing`
+    // alone it came too late, and Chromium still asked the Keychain for its cookie key.
+    let argv: &'static [*mut std::os::raw::c_char] = Box::leak(
+        std::env::args()
+            .chain([format!("--{MOCK_KEYCHAIN_SWITCH}")])
+            .map(|a| std::ffi::CString::new(a).unwrap().into_raw())
+            .collect::<Vec<_>>()
+            .into_boxed_slice(),
+    );
+    let main_args = MainArgs { argc: argv.len() as i32, argv: argv.as_ptr() as *mut *mut _ };
     // The browser process: -1, so it goes on (the helper binary is the others).
-    let ran = execute_process(Some(args.as_main_args()), None::<&mut App>, std::ptr::null_mut());
+    let ran = execute_process(Some(&main_args), None::<&mut App>, std::ptr::null_mut());
     if ran != -1 {
         std::process::exit(ran);
     }
@@ -216,7 +225,7 @@ pub fn init() -> bool {
     let _ = PUMP.set(tx);
     *PUMP_RX.lock().unwrap() = Some(rx);
     let mut app = BrowserApp::new();
-    if initialize(Some(args.as_main_args()), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {
+    if initialize(Some(&main_args), Some(&settings), Some(&mut app), std::ptr::null_mut()) != 1 {
         eprintln!("cef: initialize failed");
         return false;
     }
