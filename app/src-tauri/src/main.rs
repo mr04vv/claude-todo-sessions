@@ -1663,22 +1663,24 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
 
 /// A tab's page began or finished loading.
 fn tab_load(app: &AppHandle, tab: &str, url: String, loading: bool) {
+    // The page begins without the keys and the focus mode, which are set by eval. At the
+    // start of a load as well as its end: a page slow to finish (a session's, just opened)
+    // would leave the app's keys (⌃h ⌃l) dead until then.
+    let state = app.state::<AppState>();
+    if state.focus_mode.load(Ordering::Relaxed) {
+        let _ = cef_browser::eval(app, tab, &focus_mode_script(true));
+    }
+    if let Ok(keys) = state.page_keys.lock() {
+        let _ = cef_browser::eval(app, tab, &page_keys_script(&keys));
+    }
     // A page asked to take the typing (see `browser_focus`) once it has loaded.
     if !loading {
-        let state = app.state::<AppState>();
         // A site with a kept login has it filled in (and sent) by the page's script.
         if let Some(host) = url.parse::<tauri::Url>().ok().and_then(|u| u.host_str().map(String::from)) {
             if let Some(login) = kept_login(&state, &host) {
                 let args = serde_json::to_string(&(host, &login.user, &login.password)).unwrap_or_default();
                 let _ = cef_browser::eval(app, tab, &format!("window.__todoSessionsFill?.(...{args})"));
             }
-        }
-        if state.focus_mode.load(Ordering::Relaxed) {
-            let _ = cef_browser::eval(app, tab, &focus_mode_script(true));
-        }
-        // The keys as they are now; the page began without them.
-        if let Ok(keys) = state.page_keys.lock() {
-            let _ = cef_browser::eval(app, tab, &page_keys_script(&keys));
         }
         let asked = state.focus_input.lock().ok().and_then(|mut m| m.remove(tab));
         if asked.is_some_and(|at| at.elapsed() < FOCUS_INPUT_WITHIN) {
