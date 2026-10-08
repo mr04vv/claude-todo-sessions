@@ -3,6 +3,7 @@ pub mod cloud;
 pub mod codex;
 pub mod desktop;
 pub mod feynman;
+pub mod files;
 pub mod github;
 pub mod herdr;
 pub mod launch;
