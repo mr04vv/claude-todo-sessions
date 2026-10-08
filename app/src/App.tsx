@@ -60,6 +60,7 @@ import {
   type Pr,
   type PrLists,
   type PrState,
+  type CiState,
   type Runner,
   type Session,
   type SessionDetail,
@@ -731,6 +732,27 @@ function GhChip({ todo, report }: { todo: Todo; report: (e: unknown) => void }) 
   );
 }
 
+/// What a PR's CI says, in words (the colour backs it).
+const CI_LABEL: Record<CiState, string> = { pending: "CI 実行中", success: "CI 成功", failure: "CI 失敗" };
+/// "acme/api#120 の test-api が失敗（2件）": why a PR's CI waits on the user.
+const ciFailureLine = (todo: Todo) =>
+  `${todo.pr_url ? `${prRef(todo.pr_url)} の` : ""}${todo.ci_failed.length > 0 ? `${todo.ci_failed.slice(0, CI_NAMES_SHOWN).join("・")}${todo.ci_failed.length > CI_NAMES_SHOWN ? " ほか" : ""}が失敗（${todo.ci_failed.length}件）` : "CI が失敗"}`;
+/// Checks named in a failure's line before "ほか".
+const CI_NAMES_SHOWN = 2;
+/// "acme/api#120" for a PR's URL.
+const prRef = (url: string) => url.match(/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/)?.slice(1).join("#") ?? url;
+
+/// The CI of a todo's open PR, in words; nothing without checks or once the PR is done.
+function CiChip({ todo }: { todo: Todo }) {
+  if (!todo.ci_state || !todo.pr_url || todo.pr_state === "merged" || todo.pr_state === "closed") return null;
+  return (
+    <span className={`gh ci-${todo.ci_state}`} title={todo.ci_state === "failure" ? ciFailureLine(todo) : undefined}>
+      {CI_LABEL[todo.ci_state]}
+      {todo.ci_state === "failure" && todo.ci_failed.length > 0 && ` ${todo.ci_failed.length}`}
+    </span>
+  );
+}
+
 /// "親 #3", "サブ 1/4 完了" or "+1 リポジトリ": how the todo relates to others.
 function relationLabel(todo: Todo, allTodos: Todo[]): string | null {
   if (todo.parent_id) return `親 #${todo.parent_id}`;
@@ -1066,6 +1088,7 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
       {(todo.pr_url || todo.issue_url || rel || direct || todo.queue_runner) && (
         <div className="card-foot">
           <GhChip todo={todo} report={report} />
+          <CiChip todo={todo} />
           {rel && <span className="tag">{rel}</span>}
           {todo.queue_runner && <span className={`tag${todo.queue_error ? " failed" : ""}`}>{todo.queue_error ? "起動失敗" : "起動待ち"}</span>}
           <span className="grow" />
@@ -1380,6 +1403,7 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
         <span className="row-title">{t.title}</span>
         {urgent && <StateBadge state={urgent} unread={t.sessions.some((s) => s.unread) || undefined} />}
         <GhChip todo={t} report={report} />
+        <CiChip todo={t} />
         {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
         {t.repos[0] && !lane.repo && (
           <span className="tag repo-tag">
@@ -3029,6 +3053,7 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
                   {issueRef(todo.pr_url) ?? todo.pr_url}
                 </button>
                 {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
+                <CiChip todo={todo} />
                 {todo.pr_state !== "merged" && todo.pr_state !== "closed" && (
                   <button
                     className="ghost small"
@@ -3067,6 +3092,7 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
                   <span className="row-title">{c.title}</span>
                   {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
                   <GhChip todo={c} report={report} />
+                  <CiChip todo={c} />
                 </li>
               ))}
             </ul>

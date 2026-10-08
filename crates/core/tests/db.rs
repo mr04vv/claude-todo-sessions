@@ -997,3 +997,38 @@ fn questions_and_review_modes_work_on_databases_made_before_them() {
     assert_eq!((s.question, s.review_auto, s.review_url.as_deref()), (None, false, Some("https://github.com/o/r/pull/1")));
     db.set_session_question("s1", Some("q")).unwrap();
 }
+
+#[test]
+fn a_todo_keeps_its_prs_ci() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("ship")).unwrap();
+    assert_eq!((t.ci_state.clone(), t.ci_failed.clone()), (None, Vec::<String>::new()));
+    let ci = cts_core::github::Ci { state: "failure".into(), failed: vec!["test-api".into(), "lint, fmt".into()] };
+    assert_eq!(db.set_ci(t.id, Some(&ci)).unwrap(), None, "nothing before");
+    let got = db.get_todo(t.id).unwrap().unwrap();
+    assert_eq!((got.ci_state.as_deref(), got.ci_failed.clone()), (Some("failure"), vec!["test-api".to_string(), "lint, fmt".to_string()]));
+    assert_eq!(db.set_ci(t.id, None).unwrap().as_deref(), Some("failure"), "the state before comes back");
+    let got = db.get_todo(t.id).unwrap().unwrap();
+    assert_eq!((got.ci_state, got.ci_failed), (None, Vec::<String>::new()));
+}
+
+#[test]
+fn ci_works_on_databases_made_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('backlog', 'todo', 'doing', 'review', 'pending', 'done')),
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL, repos TEXT, prompt TEXT, issue_state TEXT,
+         pr_url TEXT, pr_state TEXT, queue_runner TEXT, queue_pos INTEGER, queue_error TEXT, kind TEXT,
+         parent_id INTEGER REFERENCES todos(id) ON DELETE SET NULL);
+         INSERT INTO todos (title, status, updated_at) VALUES ('old', 'doing', 5);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let ci = cts_core::github::Ci { state: "success".into(), failed: vec![] };
+    db.set_ci(1, Some(&ci)).unwrap();
+    assert_eq!(db.get_todo(1).unwrap().unwrap().ci_state.as_deref(), Some("success"));
+}

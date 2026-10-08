@@ -54,6 +54,10 @@ export interface Todo {
   kind: Kind;
   prompt_preview: string;
   parent_id: number | null;
+  /** Its PR's CI (null: no checks). */
+  ci_state: CiState | null;
+  /** The checks that failed. */
+  ci_failed: string[];
   is_orchestrator: boolean;
   links: Link[];
 }
@@ -132,6 +136,8 @@ export interface PageText {
   title: string | null;
   text: string;
 }
+
+export type CiState = "pending" | "success" | "failure";
 
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 

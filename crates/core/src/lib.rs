@@ -135,6 +135,10 @@ pub struct Todo {
     pub kind: Kind,
     /// The orchestrator todo this one was split from.
     pub parent_id: Option<i64>,
+    /// Its PR's CI: "pending", "success" or "failure" (None: no checks).
+    pub ci_state: Option<String>,
+    /// The checks that failed.
+    pub ci_failed: Vec<String>,
 }
 
 impl Todo {
@@ -450,7 +454,9 @@ CREATE TABLE IF NOT EXISTS {name} (
     queue_pos INTEGER,
     queue_error TEXT,
     kind TEXT,
-    parent_id INTEGER REFERENCES todos(id) ON DELETE SET NULL
+    parent_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
+    ci_state TEXT,
+    ci_failed TEXT
 );
 ";
 
@@ -541,7 +547,7 @@ const LINK_COLS: &str = "id, todo_id, url, title, image, created_at";
 const INPUT_COLS: &str = "id, title, memo, done, updated_at";
 const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER)";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_error, CAST(queue_pos AS INTEGER), kind, CAST(parent_id AS INTEGER), ci_state, ci_failed";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at),
     (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0)),
     COALESCE(agent, 'claude'),
@@ -618,6 +624,8 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         queue_pos: r.get(14)?,
         kind: Kind::parse(r.get(15)?),
         parent_id: r.get(16)?,
+        ci_state: r.get(17)?,
+        ci_failed: r.get::<_, Option<String>>(18)?.map(|f| f.split(CI_FAILED_SEPARATOR).map(Into::into).collect()).unwrap_or_default(),
     })
 }
 
@@ -666,7 +674,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -720,7 +728,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Every column of the todos table, for copying rows between versions.
-const TODO_TABLE_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_pos, queue_error, kind, parent_id";
+const TODO_TABLE_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_pos, queue_error, kind, parent_id, ci_state, ci_failed";
+
+/// Check names are kept one per line (a name may have commas).
+const CI_FAILED_SEPARATOR: char = '\n';
 
 const REMINDER_OPEN: &str = "<system-reminder>";
 const REMINDER_CLOSE: &str = "</system-reminder>";
@@ -1360,6 +1371,14 @@ impl Db {
     pub fn set_pr_state(&self, id: i64, state: &str) -> Result<Option<String>> {
         let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.pr_state;
         self.conn.execute("UPDATE todos SET pr_state = ?2 WHERE id = ?1", params![id, state])?;
+        Ok(before)
+    }
+
+    /// Records the CI of the todo's PR and returns the state seen before.
+    pub fn set_ci(&self, id: i64, ci: Option<&github::Ci>) -> Result<Option<String>> {
+        let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.ci_state;
+        let failed = ci.filter(|c| !c.failed.is_empty()).map(|c| c.failed.join(&CI_FAILED_SEPARATOR.to_string()));
+        self.conn.execute("UPDATE todos SET ci_state = ?2, ci_failed = ?3 WHERE id = ?1", params![id, ci.map(|c| c.state.as_str()), failed])?;
         Ok(before)
     }
 

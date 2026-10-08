@@ -2067,9 +2067,14 @@ fn refresh_states(db: &Db, todos: &[Todo]) {
         let query = cts_core::github::status_query(chunk);
         let Ok(json) = gh(&["api", "graphql", "-f", &format!("query={query}")]) else { continue };
         let Ok(resp) = serde_json::from_str::<serde_json::Value>(&json) else { continue };
-        for (url, now) in cts_core::github::parse_statuses(&resp, chunk) {
+        for cts_core::github::ItemStatus { url, state: now, ci } in cts_core::github::parse_statuses(&resp, chunk) {
             for &(id, is_pr) in by_url.get(&url).into_iter().flatten() {
                 let Some(todo) = todos.iter().find(|t| t.id == id) else { continue };
+                if is_pr {
+                    if let Err(e) = db.set_ci(id, ci.as_ref()) {
+                        eprintln!("{e}");
+                    }
+                }
                 let before = if is_pr { db.set_pr_state(id, &now) } else { db.set_issue_state(id, &now) };
                 let finished = if is_pr { now == "merged" } else { now == "closed" };
                 let just_finished = match &before {

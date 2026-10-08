@@ -830,6 +830,16 @@ a:hover {
   color: var(--waiting-text);
 }
 
+.ci-success {
+  background: var(--running-soft);
+  color: var(--running-text);
+}
+
+.ci-failure {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
 button.gh:hover:not(:disabled) {
   filter: brightness(1.15);
   border: 0;
