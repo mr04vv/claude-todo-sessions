@@ -303,6 +303,10 @@ pub struct Session {
     pub review_url: Option<String>,
     /// Taken off the session lists (a Local one, which cannot be archived from here).
     pub hidden: bool,
+    /// What it asked when it last started waiting for a reply (transcript::question).
+    pub question: Option<String>,
+    /// A review that submits on its own, without asking first.
+    pub review_auto: bool,
 }
 
 /// Why the app notified about a session.
@@ -461,14 +465,16 @@ CREATE TABLE IF NOT EXISTS sessions (
     repos TEXT,
     branch TEXT,
     started_at INTEGER,
-    agent TEXT
+    agent TEXT,
+    question TEXT
 );
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
 );
 CREATE TABLE IF NOT EXISTS review_sessions (
     session_id TEXT PRIMARY KEY,
-    pr_url TEXT NOT NULL
+    pr_url TEXT NOT NULL,
+    auto INTEGER
 );
 CREATE TABLE IF NOT EXISTS session_hidden (
     session_id TEXT PRIMARY KEY,
@@ -540,7 +546,9 @@ const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, re
     (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0)),
     COALESCE(agent, 'claude'),
     (SELECT pr_url FROM review_sessions WHERE review_sessions.session_id = sessions.session_id),
-    EXISTS (SELECT 1 FROM session_hidden WHERE session_hidden.session_id = sessions.session_id)";
+    EXISTS (SELECT 1 FROM session_hidden WHERE session_hidden.session_id = sessions.session_id),
+    question,
+    COALESCE((SELECT auto FROM review_sessions WHERE review_sessions.session_id = sessions.session_id), 0)";
 
 impl Status {
     fn as_str(self) -> &'static str {
@@ -636,6 +644,8 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         agent: Agent::parse(&r.get::<_, String>(10)?),
         review_url: r.get(11)?,
         hidden: r.get(12)?,
+        question: r.get(13)?,
+        review_auto: r.get(14)?,
     })
 }
 
@@ -656,7 +666,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -665,7 +675,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if !exists {
             // Integer columns keep integer affinity; older builds added them as TEXT,
             // which TODO_COLS casts back when reading.
-            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at" | "input_id") { "INTEGER" } else { "TEXT" };
+            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto") { "INTEGER" } else { "TEXT" };
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
@@ -1365,9 +1375,16 @@ impl Db {
         Ok(())
     }
 
-    /// The session reviews the PR at `url` (the app started it so).
-    pub fn record_review_session(&self, id: &str, url: &str) -> Result<()> {
-        self.conn.execute("INSERT OR REPLACE INTO review_sessions (session_id, pr_url) VALUES (?1, ?2)", params![id, url])?;
+    /// The session reviews the PR at `url` (the app started it so), and
+    /// submits the review on its own with `auto`.
+    pub fn record_review_session(&self, id: &str, url: &str, auto: bool) -> Result<()> {
+        self.conn.execute("INSERT OR REPLACE INTO review_sessions (session_id, pr_url, auto) VALUES (?1, ?2, ?3)", params![id, url, auto])?;
+        Ok(())
+    }
+
+    /// What the session asks (None clears it).
+    pub fn set_session_question(&self, id: &str, question: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE sessions SET question = ?2 WHERE session_id = ?1", params![id, question])?;
         Ok(())
     }
 

@@ -702,7 +702,7 @@ fn start_review_cloud(repo: String, title: String, prompt: String, desktop: bool
     let id = cts_core::cloud::create_review_session(&db, &repo, &title, &prompt, &options.unwrap_or_default())?;
     // Its PR, for putting it away once the review is in (clean_reviews).
     if let Some(url) = url {
-        db.record_review_session(&id, &url).map_err(err)?;
+        db.record_review_session(&id, &url, false).map_err(err)?;
     }
     if desktop {
         open_url(&launch::jump_url(&id, None))?;
@@ -1216,6 +1216,20 @@ fn transcript_tail(session_id: &str) -> Option<String> {
 /// Latest non-default branch a local session worked on, from its transcript.
 fn transcript_branch(session_id: &str) -> Option<String> {
     launch::last_git_branch(&transcript_tail(session_id)?)
+}
+
+/// What a session waiting for a reply asks, from its transcript (local) or
+/// events (cloud). Codex's rollouts are not read.
+fn session_question(session: &Session) -> Option<String> {
+    if session.agent == cts_core::Agent::Codex {
+        return None;
+    }
+    let entries = if launch::is_cloud_session(&session.session_id) {
+        cts_core::cloud::recent_entries(&session.session_id).map_err(|e| eprintln!("{e}")).ok()?
+    } else {
+        cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id)?)
+    };
+    cts_core::transcript::question(&entries)
 }
 
 /// What a session is doing: its last message, context size and recent tool
@@ -2437,6 +2451,12 @@ fn watch_loop(app: AppHandle) {
             }
             waiting.retain(|s| !archived.contains(&s.session_id));
             let now: HashSet<String> = waiting.iter().map(|s| s.session_id.clone()).collect();
+            // What each session asks, read once as it starts waiting (the lists show it).
+            for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
+                if let Err(e) = db.set_session_question(&s.session_id, session_question(s).as_deref()) {
+                    eprintln!("{e}");
+                }
+            }
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
             if !first {
                 for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {

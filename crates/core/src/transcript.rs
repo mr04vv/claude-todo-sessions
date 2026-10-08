@@ -65,6 +65,36 @@ pub fn detail<'a>(entries: impl IntoIterator<Item = &'a Value>) -> Detail {
     d
 }
 
+/// Characters kept of what a session asks (a list's one line).
+pub const QUESTION_MAX_CHARS: usize = 200;
+const ASK_TOOL: &str = "AskUserQuestion";
+
+/// What a session waiting for a reply asks, in one line: the questions of
+/// its last AskUserQuestion, or else (when a message came after it) the first
+/// line of its last message. Entries oldest first.
+pub fn question<'a>(entries: impl IntoIterator<Item = &'a Value>) -> Option<String> {
+    let mut asked = None;
+    for e in entries.into_iter().filter(|e| e["type"] == "assistant") {
+        for block in e["message"]["content"].as_array().into_iter().flatten() {
+            match block["type"].as_str() {
+                Some("text") => {
+                    if let Some(line) = block["text"].as_str().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())) {
+                        asked = Some(line.to_string());
+                    }
+                }
+                Some("tool_use") if block["name"] == ASK_TOOL => {
+                    let questions: Vec<&str> = block["input"]["questions"].as_array().into_iter().flatten().filter_map(|q| q["question"].as_str()).collect();
+                    if !questions.is_empty() {
+                        asked = Some(questions.join(" / "));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    asked.map(|q| q.chars().take(QUESTION_MAX_CHARS).collect())
+}
+
 /// First line of the input field that best says what the call touched.
 fn tool_summary(input: &Value) -> String {
     TOOL_SUMMARY_KEYS
@@ -230,6 +260,38 @@ mod tests {
         );
         assert_eq!(note_url("NOTE_URL: まだありません\nhttps://claude.ai/artifact/Ab3dEf6hIj9kLm2nOp5qRs"), None);
         assert_eq!(note_url("nothing published"), None);
+    }
+
+    #[test]
+    fn the_question_is_what_ask_user_question_asks() {
+        let entries = [
+            assistant(json!([{"type": "text", "text": "調べました。"}]), json!({})),
+            assistant(
+                json!([{"type": "tool_use", "name": "AskUserQuestion", "input": {"questions": [
+                    {"question": "どちらの方式にしますか？", "header": "方式", "options": []},
+                    {"question": "テストも書きますか？", "header": "テスト", "options": []}
+                ]}}]),
+                json!({}),
+            ),
+        ];
+        assert_eq!(question(&entries).as_deref(), Some("どちらの方式にしますか？ / テストも書きますか？"));
+    }
+
+    #[test]
+    fn without_a_question_it_is_the_last_messages_first_line() {
+        let entries = [
+            assistant(json!([{"type": "tool_use", "name": "AskUserQuestion", "input": {"questions": [{"question": "前の質問"}]}}]), json!({})),
+            assistant(json!([{"type": "text", "text": "\n実装しました。PR を作りますか？\n詳細は下に。"}]), json!({})),
+        ];
+        assert_eq!(question(&entries).as_deref(), Some("実装しました。PR を作りますか？"));
+        assert_eq!(question(&[]), None);
+    }
+
+    #[test]
+    fn a_long_question_is_cut() {
+        let long = "あ".repeat(QUESTION_MAX_CHARS + 50);
+        let entries = [assistant(json!([{"type": "text", "text": long}]), json!({}))];
+        assert_eq!(question(&entries).unwrap().chars().count(), QUESTION_MAX_CHARS);
     }
 
     #[test]

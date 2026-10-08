@@ -947,11 +947,53 @@ fn agents_work_on_databases_made_before_them() {
 fn a_review_session_keeps_its_pr_and_a_session_can_be_hidden() {
     let (_d, db) = open();
     db.record_session("r1", "/r", SessionState::Running).unwrap();
-    db.record_review_session("r1", "https://github.com/o/r/pull/1").unwrap();
+    db.record_review_session("r1", "https://github.com/o/r/pull/1", false).unwrap();
     let s = db.get_session("r1").unwrap().unwrap();
     assert_eq!(s.review_url.as_deref(), Some("https://github.com/o/r/pull/1"));
     assert!(!s.hidden);
     db.hide_session("r1").unwrap();
     assert!(db.get_session("r1").unwrap().unwrap().hidden);
     assert!(db.unlinked_sessions().unwrap()[0].hidden, "the lists say so too");
+}
+
+#[test]
+fn a_waiting_session_keeps_what_it_asks() {
+    let (_d, db) = open();
+    db.record_session("q1", "/w", SessionState::NeedsInput).unwrap();
+    assert_eq!(db.get_session("q1").unwrap().unwrap().question, None);
+    db.set_session_question("q1", Some("どちらにしますか？")).unwrap();
+    assert_eq!(db.get_session("q1").unwrap().unwrap().question.as_deref(), Some("どちらにしますか？"));
+    db.set_session_question("q1", None).unwrap();
+    assert_eq!(db.get_session("q1").unwrap().unwrap().question, None);
+}
+
+#[test]
+fn a_review_session_knows_whether_it_submits_on_its_own() {
+    let (_d, db) = open();
+    db.record_session("auto", "/r", SessionState::Running).unwrap();
+    db.record_review_session("auto", "https://github.com/o/r/pull/1", true).unwrap();
+    db.record_session("ask", "/r", SessionState::Running).unwrap();
+    db.record_review_session("ask", "https://github.com/o/r/pull/2", false).unwrap();
+    assert!(db.get_session("auto").unwrap().unwrap().review_auto);
+    assert!(!db.get_session("ask").unwrap().unwrap().review_auto);
+}
+
+#[test]
+fn questions_and_review_modes_work_on_databases_made_before_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, todo_id INTEGER, cwd TEXT NOT NULL,
+         state TEXT NOT NULL CHECK (state IN ('running', 'needs_input', 'idle', 'ended')), state_at INTEGER NOT NULL);
+         CREATE TABLE review_sessions (session_id TEXT PRIMARY KEY, pr_url TEXT NOT NULL);
+         INSERT INTO sessions VALUES ('s1', NULL, '/r', 'needs_input', 0);
+         INSERT INTO review_sessions VALUES ('s1', 'https://github.com/o/r/pull/1');",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let s = db.get_session("s1").unwrap().unwrap();
+    assert_eq!((s.question, s.review_auto, s.review_url.as_deref()), (None, false, Some("https://github.com/o/r/pull/1")));
+    db.set_session_question("s1", Some("q")).unwrap();
 }

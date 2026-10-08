@@ -21,6 +21,10 @@ export interface Session {
   review_url: string | null;
   /** Taken off the session lists. */
   hidden: boolean;
+  /** What it asked when it last started waiting for a reply. */
+  question: string | null;
+  /** A review that submits on its own, without asking first. */
+  review_auto: boolean;
 }
 
 /** The program a session runs: Claude Code, or Codex (local, in herdr). */
