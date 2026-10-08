@@ -64,6 +64,7 @@ import {
   type PrLists,
   type PrState,
   type CiState,
+  type TodoEvent,
   type Session,
   type SessionState,
   type StartOptions,
@@ -416,6 +417,8 @@ const pagePrefix = (url: string) => {
     return url;
   }
 };
+/// How often a parent's 経過 is read again while its sheet is open.
+const EVENTS_REFRESH_MS = 5000;
 /// How long a short note at the bottom ("input に追加しました") stays.
 const TOAST_MS = 4000;
 /// How long the toast about a finished download stays.
@@ -1496,7 +1499,7 @@ function Linkify({ text, report }: { text: string; report: (e: unknown) => void 
 }
 
 /// Memo text with clickable links; click to edit in place, leave to save.
-function MemoEditor({ value, report, onSave }: { value: string; report: (e: unknown) => void; onSave: (v: string) => void }) {
+function MemoEditor({ value, report, onSave, label = "メモ", plan }: { value: string; report: (e: unknown) => void; onSave: (v: string) => void; label?: string; plan?: boolean }) {
   const [editing, setEditing] = useState(false);
   if (editing) {
     return (
@@ -1504,7 +1507,7 @@ function MemoEditor({ value, report, onSave }: { value: string; report: (e: unkn
         autoFocus
         rows={6}
         defaultValue={value}
-        aria-label="メモ"
+        aria-label={label}
         // Esc keeps what was written and leaves the field, as clicking out does.
         onKeyDown={(e) => e.key === "Escape" && e.currentTarget.blur()}
         onBlur={(e) => {
@@ -1515,8 +1518,8 @@ function MemoEditor({ value, report, onSave }: { value: string; report: (e: unkn
     );
   }
   return (
-    <div className={`memo editable${value ? "" : " muted"}`} onClick={() => setEditing(true)} title="クリックで編集">
-      {value ? <Linkify text={value} report={report} /> : "メモを書く…"}
+    <div className={`memo${plan ? " plan" : " editable"}${value ? "" : " muted"}`} onClick={() => setEditing(true)} title="クリックで編集">
+      {value ? <Linkify text={value} report={report} /> : `${label}を書く…`}
     </div>
   );
 }
@@ -2848,8 +2851,10 @@ function StartDialog({ todo, allTodos, run, onClose }: { todo: Todo; allTodos: T
   );
 }
 
-function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOpenTodo, onStart, onClose }: {
+function TodoPanel({ todo, allTodos, waiting, local, groups, run, report, setStatus, onOpenTodo, onStart, onClose }: {
   todo: Todo;
+  /// あなた待ち, for what of it is under this todo.
+  waiting: WaitItem[];
   allTodos: Todo[];
   local: LocalRepo[];
   groups: string[];
@@ -2896,6 +2901,19 @@ function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOp
   }, [todo.id]);
   const gh = githubTarget(todo);
   const addChild = (title: string) => run(() => createSubtask(todo, title));
+  // A parent: its orchestrator (its own session), its plan, what waits under it, and what happened (経過).
+  const isParent = children.length > 0 || !!todo.plan;
+  const orchestrator = isParent ? liveSessions(todo).sort((a, b) => b.state_at - a.state_at)[0] : undefined;
+  const under = waiting.filter((w) => w.todo && (w.todo.id === todo.id || w.todo.parent_id === todo.id));
+  const [events, setEvents] = useState<TodoEvent[]>([]);
+  useEffect(() => {
+    if (!isParent) return setEvents([]);
+    const load = () => void api.todoEvents(todo.id).then(setEvents, report);
+    load();
+    const timer = setInterval(load, EVENTS_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [todo.id, isParent]); // eslint-disable-line react-hooks/exhaustive-deps
+  const latestOf = (t: Todo) => [...t.sessions].sort((a, b) => b.state_at - a.state_at)[0];
   return (
     <aside ref={root} className="panel" aria-label={`#${todo.id} ${todo.title}`} onClick={stop}>
       <header className="panel-head">
@@ -3018,6 +3036,46 @@ function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOp
           </dd>
         </dl>
 
+        {isParent && (
+          <section className="parent-head">
+            <h3>指揮役</h3>
+            {orchestrator ? (
+              <div className="session-row">
+                <StateBadge state={orchestrator.state} unread={orchestrator.unread} />
+                <span className="session-main">
+                  <span className="ellipsis">{sessionLabel(orchestrator)}</span>
+                  <span className="muted">{placeOf(orchestrator)} · {ago(orchestrator.state_at)}</span>
+                </span>
+                <OpenMenu session={orchestrator} report={report} primary={orchestrator.state === "needs_input"} />
+              </div>
+            ) : (
+              <p className="muted hint">動いていません。「計画させる」で始めると、指揮役がサブタスクを始めて見守ります。</p>
+            )}
+            {under.length > 0 && (
+              <>
+                <h3>
+                  <span className="pill waiting">あなた待ち {under.length}</span>
+                </h3>
+                <ul className="rows compact">
+                  {under.map((w) => (
+                    <li key={w.key} className="row" onClick={() => w.todo && onOpenTodo(w.todo.id)}>
+                      <span className="state state-needs_input">
+                        <i />
+                        {w.reasons.map((r) => WAIT_WORD[r]).join("・")}
+                      </span>
+                      <span className="mono muted">#{w.todo?.id}</span>
+                      <span className="row-title ellipsis" title={w.line}>
+                        {w.line}
+                      </span>
+                      {w.session && <OpenMenu session={w.session} report={report} primary />}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </section>
+        )}
+
         {!parent && (
           <section>
             <h3>
@@ -3027,15 +3085,19 @@ function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOp
               <p className="muted hint">セッションを Local で始めると、Claude がリポジトリごとのサブタスクを登録します。</p>
             )}
             <ul className="rows compact">
-              {children.map((c) => (
-                <li key={c.id} className="row" onClick={() => onOpenTodo(c.id)}>
-                  <StatusIcon status={c.status} />
-                  <span className="row-title">{c.title}</span>
-                  {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
-                  <GhChip todo={c} report={report} />
-                  <CiChip todo={c} />
-                </li>
-              ))}
+              {children.map((c) => {
+                const s = latestOf(c);
+                return (
+                  <li key={c.id} className="row" onClick={() => onOpenTodo(c.id)}>
+                    <StatusIcon status={c.status} />
+                    <span className="row-title">{c.title}</span>
+                    {s && c.status !== "done" && <StateBadge state={s.state} unread={s.unread} />}
+                    {c.repos[0] && <span className="tag">{repoName(c.repos[0])}</span>}
+                    <GhChip todo={c} report={report} />
+                    <CiChip todo={c} />
+                  </li>
+                );
+              })}
             </ul>
             <AddInline label="サブタスクを追加" onAdd={addChild} />
           </section>
@@ -3077,6 +3139,27 @@ function TodoPanel({ todo, allTodos, local, groups, run, report, setStatus, onOp
           <h3>メモ</h3>
           <MemoEditor value={todo.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
         </section>
+
+        {isParent && (
+          <section>
+            <h3>計画 <span className="muted">サブタスクのセッションが最初から知っています</span></h3>
+            <MemoEditor value={todo.plan ?? ""} label="計画" plan report={report} onSave={(plan) => run(() => api.setPlan(todo.id, plan))} />
+          </section>
+        )}
+
+        {isParent && events.length > 0 && (
+          <section>
+            <h3>経過</h3>
+            <ul className="events">
+              {events.map((e) => (
+                <li key={e.id}>
+                  <span className="muted when">{ago(e.at)}</span>
+                  <span>{e.text.replace(/^\[todo-sessions\] /, "")}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
       </div>
     </aside>
@@ -6527,6 +6610,7 @@ export default function App() {
               <TodoPanel
                 todo={selectedTodo}
                 allTodos={allTodos}
+                waiting={waiting}
                 local={local}
                 groups={groups}
                 run={run}
