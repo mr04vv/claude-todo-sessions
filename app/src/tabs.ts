@@ -44,3 +44,11 @@ export function insertAfter<T extends { id: string }>(tabs: T[], tab: T, after: 
   if (i < 0) return [...tabs, tab];
   return [...tabs.slice(0, i + 1), tab, ...tabs.slice(i + 1)];
 }
+
+/// The review tabs on the strip and the ones folded into "レビュー n ▾": all
+/// shown while there is `room` for them, else folded but the `urgent` ones
+/// (waiting for a reply), which stay out.
+export function foldReviews<T>(reviews: T[], urgent: (t: T) => boolean, room: number): { shown: T[]; folded: T[] } {
+  if (reviews.length <= room) return { shown: reviews, folded: [] };
+  return { shown: reviews.filter(urgent), folded: reviews.filter((t) => !urgent(t)) };
+}

@@ -79,7 +79,7 @@ import {
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { ACTIONS, comboOf, DEFAULT_KEYS, keyLabel, keyOf, matches, resetKeys, setKeys, useKeymap, type Action } from "./keymap";
-import { addressToUrl, findTabFor, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
+import { addressToUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
 import { ciFailureLine, isFailedReview, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
 import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
@@ -168,7 +168,8 @@ const BrowserContext = createContext<OpenInBrowser | null>(null);
 /// Creating a cloud session takes seconds, so its tab opens at once on
 /// claude.ai (loading alongside) and moves to the session once it exists.
 /// Call the returned function with the session id, or null if it failed.
-type BeginWeb = () => (sessionId: string | null) => void;
+/// With `review`, the tab goes in the strip's review group.
+type BeginWeb = (review?: ReviewTab) => (sessionId: string | null) => void;
 const BeginWebContext = createContext<BeginWeb | null>(null);
 
 /// Where "開く" takes a cloud session: its web page, or Claude Desktop.
@@ -1806,7 +1807,25 @@ interface BrowserTab {
   kind?: string;
   /// A Cloud session being made for it (BeginWeb): not kept across restarts.
   creating?: boolean;
+  /// A review's session page, in the strip's review group (made again from
+  /// the sessions after a restart, not kept).
+  review?: ReviewTab;
 }
+
+/// A review tab's PR, and the session reviewing it once it is made (`seen`
+/// once the board has it, so it goes when the board no longer does).
+interface ReviewTab {
+  url: string;
+  /// "web#61", the tab's label.
+  ref: string;
+  title: string;
+  session?: string;
+  seen?: boolean;
+}
+/// Review tabs the strip shows before folding them into "レビュー n ▾", and
+/// the pane width under which they fold anyway.
+const REVIEW_TABS_MAX = 3;
+const REVIEW_FOLD_W = 560;
 
 /// The pane's tabs kept from the last run (PANE_TABS_KEY), with new ids; the
 /// pages load when shown.
@@ -1871,7 +1890,14 @@ const FOCUS_PAGES: typeof PINNED_PAGES = [...PINNED_PAGES, { id: "pinnotion", la
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
-function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClose, onNewTab, onHide, onOpen, onAddress, onMove, onArchive, onToInput, onStrip }: {
+function BrowserDock({ tabs, reviews, narrow, sessionOf, active, covered, report, onSelect, onPinned, onClose, onStopReview, onNewTab, onHide, onOpen, onAddress, onMove, onArchive, onToInput, onStrip }: {
+  /// The review group's tabs, apart from `tabs` (the others).
+  reviews: BrowserTab[];
+  /// Too narrow for review tabs: they fold.
+  narrow: boolean;
+  sessionOf: (id: string | undefined) => Session | undefined;
+  /// × on a review's tab, once confirmed: the review stops.
+  onStopReview: (id: string) => void;
   /// A click on the tab strip: the page shown (the tab picked) takes the keyboard.
   onStrip: () => void;
   /// Puts the shown page in an input (AddToInputDialog).
@@ -1898,6 +1924,38 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
   // one's place. (Pointer events rather than HTML drag and drop, which the
   // webview's file drop handling can swallow.)
   const [dragging, setDragging] = useState<string | null>(null);
+  // Reviews waiting for a reply stay out when the others fold.
+  const urgent = (t: BrowserTab) => sessionOf(t.review?.session)?.state === "needs_input";
+  const { shown: shownReviews, folded } = foldReviews(reviews, urgent, narrow ? 0 : REVIEW_TABS_MAX);
+  const [foldOpen, setFoldOpen] = useState(false);
+  // The review whose × asks once before it stops it.
+  const [stopping, setStopping] = useState<string | null>(null);
+  const reviewTab = (t: BrowserTab) => {
+    const r = t.review!;
+    const s = sessionOf(r.session);
+    return (
+      <span key={t.id} data-tab={t.id} className={`browser-tab review${t.id === active?.id ? " on" : ""}${urgent(t) ? " urgent" : ""}`}>
+        <button role="tab" aria-selected={t.id === active?.id} className="browser-tab-main" title={`${r.ref} ${r.title}${urgent(t) ? "（返事待ち）" : ""}`} onClick={() => onSelect(t.id)}>
+          {(t.creating || s?.state === "running") && <span className="spinner" aria-label="作業中" />}
+          <span className="mono">{r.ref}</span>
+        </button>
+        {stopping === t.id ? (
+          <span className="review-stop">
+            <button className="small danger" onClick={() => (setStopping(null), onStopReview(t.id))}>
+              やめる
+            </button>
+            <button className="ghost small" onClick={() => setStopping(null)}>
+              戻す
+            </button>
+          </span>
+        ) : (
+          <button className="ghost icon browser-tab-close" aria-label={`${r.ref} のレビューをやめる`} title="このレビューをやめる（セッションも止めます）" onClick={() => setStopping(t.id)}>
+            <Icon name="close" size={11} />
+          </button>
+        )}
+      </span>
+    );
+  };
   const dragTab = (e: React.PointerEvent, id: string) => {
     if (e.button !== 0) return;
     const startX = e.clientX;
@@ -1933,6 +1991,22 @@ function BrowserDock({ tabs, active, covered, report, onSelect, onPinned, onClos
           );
         })}
         <span className="browser-tabs-sep" />
+        {reviews.length > 0 && (
+          <>
+            {/* Folded, the reviews open in the strip itself (a menu would go under the page). */}
+            {folded.length > 0 && (
+              <span className={`browser-tab review-fold${!foldOpen && folded.some((t) => t.id === active?.id) ? " on" : ""}`}>
+                <button className="browser-tab-main" aria-expanded={foldOpen} title={folded.map((t) => `${t.review!.ref} ${t.review!.title}`).join("\n")} onClick={() => setFoldOpen((o) => !o)}>
+                  レビュー {folded.length}
+                  <Icon name={foldOpen ? "chevron" : "chevronRight"} size={10} />
+                </button>
+              </span>
+            )}
+            {foldOpen && folded.map(reviewTab)}
+            {shownReviews.map(reviewTab)}
+            <span className="browser-tabs-sep" />
+          </>
+        )}
         {tabs.filter((t) => !t.pinned && !t.focus).map((t) => (
           <span
             key={t.id}
@@ -3554,7 +3628,7 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
     const picked = loadReviewOptions()[prefs.agent];
     run(async () => {
       // A review asking before it submits on Cloud gets its tab, made behind; one submitting on its own none.
-      const finish = prefs.runner === "cloud" && !prefs.auto ? beginWeb?.() : undefined;
+      const finish = prefs.runner === "cloud" && !prefs.auto ? beginWeb?.({ url: p.url, ref: `${repoName(p.repo)}#${p.number}`, title: p.title }) : undefined;
       try {
         const id = await api.startReview({
           url: p.url,
@@ -4840,12 +4914,15 @@ export default function App() {
   const nextTab = useRef(tabs.filter((t) => !t.pinned).length + 1);
   // The pane's tabs: the focus mode's own pages are apart from them.
   const paneTabs = tabs.filter((t) => !t.focus);
+  // The strip: the pinned pages, the reviews, then the others.
+  const reviewTabs = paneTabs.filter((t) => t.review);
+  const normalTabs = paneTabs.filter((t) => !t.pinned && !t.review);
   const activeTab = newTab ? null : (paneTabs.find((t) => t.id === activeTabId) ?? paneTabs[paneTabs.length - 1] ?? null);
   const browserUrl = browserShown ? (activeTab?.url ?? null) : null;
   /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]), in the order
   /// of the strip: the pinned pages (a page not opened yet opens), then the others.
   const switchTab = (delta: number) => {
-    const shown = [...PINNED_PAGES.map((p) => p.id), ...tabs.filter((t) => !t.focus && !t.pinned).map((t) => t.id)];
+    const shown = [...PINNED_PAGES.map((p) => p.id), ...reviewTabs.map((t) => t.id), ...normalTabs.map((t) => t.id)];
     if (!browserShown || shown.length === 0) return;
     const i = activeTab ? shown.indexOf(activeTab.id) : delta > 0 ? -1 : shown.length;
     const nextId = shown[(i + delta + shown.length) % shown.length];
@@ -4916,14 +4993,16 @@ export default function App() {
   /// Starting a Cloud session to be watched on the web: its tab is made
   /// behind the one shown (starting does not change what is seen or where the
   /// keyboard is), marked while the session is made, and then goes to it.
-  const beginWeb: BeginWeb = () => {
+  const beginWeb: BeginWeb = (review) => {
     if (linkTarget === "dia") return (sessionId) => sessionId && api.openInDia(cloudWebUrl(sessionId)).catch(report);
     const id = `t${nextTab.current++}`;
-    setTabs((prev) => insertAfter(prev, { id, url: CLOUD_HOME, title: "セッションを作成中…", loading: true, nav: 0, creating: true }, activeTab?.id ?? null));
+    setTabs((prev) => insertAfter(prev, { id, url: CLOUD_HOME, title: "セッションを作成中…", loading: true, nav: 0, creating: true, review }, activeTab?.id ?? null));
     return (sessionId) => {
       if (sessionId) {
         const url = cloudWebUrl(sessionId);
-        setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, url, openedFor: url, title: null, loading: false, nav: t.nav + 1, creating: undefined } : t)));
+        setTabs((prev) =>
+          prev.map((t) => (t.id === id ? { ...t, url, openedFor: url, title: null, loading: false, nav: t.nav + 1, creating: undefined, review: t.review && { ...t.review, session: sessionId } } : t)),
+        );
       } else {
         api.browserClose(id).catch(report);
         setTabs((prev) => prev.filter((t) => t.id !== id));
@@ -5370,7 +5449,7 @@ export default function App() {
     // The tab shown next is its right neighbour (else its left one) on the
     // strip, among the pane's own tabs; with none left, a new tab page. It
     // takes the keyboard only if the pane had it.
-    const next = nextAfterClose(paneTabs.filter((t) => !t.pinned), id);
+    const next = nextAfterClose(tabs.find((t) => t.id === id)?.review ? [...reviewTabs, ...normalTabs] : normalTabs, id);
     setTabs((prev) => prev.filter((t) => t.id !== id));
     if (id !== activeTab?.id) return;
     const typing = typingSideRef.current === "pane";
@@ -5538,9 +5617,9 @@ export default function App() {
   // state), the pinned pages' too, and terminals attached to herdr sessions.
   const savedTabsJson = JSON.stringify({
     tabs: paneTabs
-      .filter((t) => !t.creating && (!t.term || t.term.herdr))
+      .filter((t) => !t.creating && !t.review && (!t.term || t.term.herdr))
       .map((t): SavedTabs["tabs"][number] => ({ url: t.url, openedFor: t.openedFor, title: t.title, pinned: t.pinned ? t.id : undefined, term: t.term })),
-    active: paneTabs.filter((t) => !t.creating && (!t.term || t.term.herdr)).findIndex((t) => t.id === activeTab?.id),
+    active: paneTabs.filter((t) => !t.creating && !t.review && (!t.term || t.term.herdr)).findIndex((t) => t.id === activeTab?.id),
   });
   useEffect(() => remember(PANE_TABS_KEY, savedTabsJson), [savedTabsJson]);
   // A kept terminal comes back only while its herdr session still runs.
@@ -6046,6 +6125,40 @@ export default function App() {
   useEffect(() => {
     if (watchedSession && watchedUnread && pageVisible()) api.markSessionSeen(watchedSession).then(refresh, report);
   }, [watchedSession, watchedUnread]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The review group follows the reviews asking before they submit on Cloud:
+  // one put away (submitted, stopped) loses its tab, and one without a tab
+  // (after a restart) gets it again, behind.
+  useEffect(() => {
+    if (!board) return;
+    const known = new Map(board.inbox.map((s) => [s.session_id, s]));
+    const live = (s: Session | undefined) => !!s && !s.hidden && s.state !== "ended";
+    const gone = tabs.filter((t) => t.review?.session && (t.review.seen || known.has(t.review.session)) && !live(known.get(t.review.session)));
+    for (const t of gone) api.browserClose(t.id).catch(report);
+    const wanted = board.inbox.filter((s) => s.review_url && isCloud(s) && !s.review_auto && live(s) && !tabs.some((t) => t.review?.session === s.session_id || (t.creating && t.review?.url === s.review_url)));
+    if (gone.length === 0 && wanted.length === 0 && !tabs.some((t) => t.review?.session && !t.review.seen && known.has(t.review.session))) return;
+    setTabs((prev) => [
+      ...prev
+        .filter((t) => !gone.some((g) => g.id === t.id))
+        .map((t) => (t.review?.session && !t.review.seen && known.has(t.review.session) ? { ...t, review: { ...t.review, seen: true } } : t)),
+      ...wanted.map((s): BrowserTab => {
+        const url = cloudWebUrl(s.session_id);
+        const pr = s.review_url!;
+        return { id: `t${nextTab.current++}`, url, openedFor: url, title: null, loading: false, nav: 0, review: { url: pr, ref: prRef(pr).split("/").pop() ?? pr, title: (s.title ?? "").replace(REVIEW_TITLE_PREFIX, ""), session: s.session_id, seen: true } };
+      }),
+    ]);
+    // The tab shown went: the first of the others comes up, else a new tab page.
+    if (gone.some((t) => t.id === activeTab?.id)) {
+      const rest = normalTabs.filter((t) => !gone.includes(t));
+      if (rest.length > 0) setActiveTabId(rest[0].id);
+      else setNewTab(true);
+    }
+  }, [board]); // eslint-disable-line react-hooks/exhaustive-deps
+  /// ×  on a review's tab: the review stops (its session archived or closed) and the tab goes.
+  const stopReview = (id: string) => {
+    const session = tabs.find((t) => t.id === id)?.review?.session;
+    if (session) run(() => api.stopReview(session));
+    closeTab(id);
+  };
   const waiting = waitingOnYou({ todos: allTodos, inbox: board?.inbox ?? [], reviews: prs?.review ?? [], now: Date.now() / 1000 });
   waitingKeys.current = waiting.map((w) => w.key);
   /// The sessions page on あなた待ち (the strip over the kanban, the banner after the focus mode).
@@ -6604,7 +6717,11 @@ export default function App() {
           <aside className="browser-dock">
             <Resizer label="ブラウザの幅" cssVar="--dock-w" width={dockW} min={DOCK_MIN_W} max={() => maxPaneWidth(0)} onResize={setDockW} />
             <BrowserDock
-              tabs={tabs}
+              tabs={paneTabs.filter((t) => !t.review)}
+              reviews={reviewTabs}
+              narrow={dockW < REVIEW_FOLD_W}
+              sessionOf={(id) => (id ? board?.inbox.find((s) => s.session_id === id) : undefined)}
+              onStopReview={stopReview}
               active={activeTab}
               covered={covered}
               report={report}

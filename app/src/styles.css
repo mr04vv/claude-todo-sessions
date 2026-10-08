@@ -2091,6 +2091,49 @@ input.panel-title:focus-visible {
   background: none;
 }
 
+/* The review group: a PR's number only, 朱 while it waits for a reply. */
+.browser-tab.review {
+  min-width: 0;
+  max-width: none;
+}
+
+.browser-tab.review .browser-tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: 2px;
+  font-size: 11px;
+}
+
+.browser-tab.review.urgent {
+  background: var(--waiting-soft);
+  color: var(--waiting-text);
+  box-shadow: inset 0 -2px 0 var(--waiting);
+}
+
+.review-stop {
+  display: inline-flex;
+  gap: 2px;
+  margin-right: 4px;
+}
+
+.review-stop button {
+  height: 20px;
+  padding: 0 6px;
+}
+
+.browser-tab.review-fold {
+  min-width: 0;
+}
+
+.browser-tab.review-fold .browser-tab-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 8px;
+  font-size: 11px;
+}
+
 .browser-tab-close {
   width: 20px !important;
   height: 20px !important;
