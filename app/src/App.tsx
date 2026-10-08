@@ -126,12 +126,9 @@ const DONE_RECENT_KEY = "doneRecent";
 const GROUP_KEY = "groupBy";
 const START_KEY = "startChoice";
 const REVIEW_RUNNER_KEY = "reviewRunner";
-const LINK_TARGET_KEY = "linkTarget";
 const BROWSER_SHOWN_KEY = "browserShown";
 const HERDR_SESSION_KEY = "herdrSession";
 
-/// Where pages open: the app's browser pane, or Dia with its own sign-ins.
-type LinkTarget = "app" | "dia";
 
 type View = "todos" | "inputs" | "sessions" | "prs";
 type Layout = "board" | "list";
@@ -675,8 +672,7 @@ function RepoDot({ repo }: { repo: string }) {
 /// Clicks inside cards and rows must not also select them or start a drag.
 const stop = (e: React.SyntheticEvent) => e.stopPropagation();
 
-/// Opens a link where the sidebar's "リンクを開く" says: the browser pane or
-/// Dia (the default browser outside the app's tree of providers).
+/// Opens a link in the browser pane (the default browser outside the app's tree of providers).
 function useOpenLink(report: (e: unknown) => void) {
   const openInBrowser = useContext(BrowserContext);
   return (url: string) => (openInBrowser ? openInBrowser(url) : api.openLink(url).catch(report));
@@ -2623,7 +2619,7 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
         {left?.term ? (
           <TerminalView key={left.id} id={left.id} run={left.term} report={report} />
         ) : left ? (
-          <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} noDia keysOn={typing === "left"} />
+          <TabView tab={left} covered={covered} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} keysOn={typing === "left"} />
         ) : (
           <NewTabPage onOpen={onOpenLeft} />
         )}
@@ -2661,7 +2657,7 @@ function FocusMode({ lefts, left, right, rightKind, note, explain, onRemakeNote,
           ) : right?.term ? (
             <TerminalView key={right.id} id={right.id} run={right.term} report={report} />
           ) : right ? (
-            <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} noDia keysOn={typing === "right"} />
+            <TabView key={right.id} tab={right} covered={covered} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} keysOn={typing === "right"} />
           ) : (
             note && <NoteStart note={note} />
           )}
@@ -2697,7 +2693,7 @@ function keysToTab(next: BrowserTab | null, shown: string | undefined, report: (
 /// with the same one leaves its page where the user moved it.
 const sentNav = new Map<string, number>();
 
-function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onToInput, keep, noDia, keysOn = true }: {
+function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onToInput, keep, keysOn = true }: {
   /// Whether the browser's keys (⌘[ ⌘] ⌘L, zoom) are this tab's: in the Input
   /// mode, only the side that has the keyboard's.
   keysOn?: boolean;
@@ -2711,8 +2707,6 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
   onArchive?: () => void;
   /// The tab shown beside this one (the focus mode's other side), left shown.
   keep?: string;
-  /// In the focus mode, which keeps its pages here.
-  noDia?: boolean;
 }) {
   const slot = useRef<HTMLDivElement>(null);
   // The address field's suggestions show where the page is, so it steps aside.
@@ -2881,11 +2875,6 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
           {onArchive && (
             <button className="ghost small" title="この Cloud セッションをアーカイブしてタブを閉じる（⌘⇧A）" onClick={onArchive}>
               アーカイブ
-            </button>
-          )}
-          {!noDia && (
-            <button className="ghost small" title="このページを Dia で開く" onClick={() => api.openInDia(active.url).catch(report)}>
-              Dia で開く
             </button>
           )}
         </div>
@@ -4948,21 +4937,12 @@ export default function App() {
     remember(CLOUD_TARGET_KEY, t);
     setCloudTargetState(t);
   };
-  const [linkTarget, setLinkTargetState] = useState<LinkTarget>(() => load(LINK_TARGET_KEY, ["app", "dia"] as const, "app"));
-  const setLinkTarget = (t: LinkTarget) => {
-    remember(LINK_TARGET_KEY, t);
-    setLinkTargetState(t);
-  };
   /// Opens a page of the app's own (a session, a PR) in the pane: the tab
-  /// opened for it comes to the front, else a new tab next to the one shown;
-  /// with Dia chosen, pages go there instead. Opening is the user's action, so
+  /// opened for it comes to the front, else a new tab next to the one shown.
+  /// Opening is the user's action, so
   /// the page takes the keyboard (`keys` false leaves it), its text box with
   /// `text` typed in; `behind` leaves the tab shown as it is.
   const openInBrowser = (url: string, keys = true, behind = false, text?: string) => {
-    if (linkTarget === "dia") {
-      api.openInDia(url).catch(report);
-      return;
-    }
     const open = findTabFor(paneTabs.filter((t) => !t.pinned && !t.term), url);
     if (open) {
       if (behind) return;
@@ -4981,7 +4961,6 @@ export default function App() {
   /// A link a page opens in a new window: a new tab right after that page's
   /// tab, in front with the keyboard (the user clicked it), or `behind` (⌘-click).
   const openFromPage = (url: string, from: string, behind: boolean) => {
-    if (linkTarget === "dia") return void api.openInDia(url).catch(report);
     const id = `t${nextTab.current++}`;
     if (!behind) focusSoon(id);
     setTabs((prev) => insertAfter(prev, { id, url, title: null, loading: true, nav: 0 }, prev.some((t) => t.id === from && !t.pinned) ? from : (activeTab?.id ?? null)));
@@ -4994,7 +4973,6 @@ export default function App() {
   /// behind the one shown (starting does not change what is seen or where the
   /// keyboard is), marked while the session is made, and then goes to it.
   const beginWeb: BeginWeb = (review) => {
-    if (linkTarget === "dia") return (sessionId) => sessionId && api.openInDia(cloudWebUrl(sessionId)).catch(report);
     const id = `t${nextTab.current++}`;
     setTabs((prev) => insertAfter(prev, { id, url: CLOUD_HOME, title: "セッションを作成中…", loading: true, nav: 0, creating: true, review }, activeTab?.id ?? null));
     return (sessionId) => {
@@ -6314,9 +6292,6 @@ export default function App() {
     { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
     ...(filterCount(todoFilter) > 0 ? [{ key: "clearFilter", label: "フィルターを外す", run: () => setTodoFilter(NO_FILTER, true) }] : []),
     { key: "newTab", label: "ブラウザで新しいタブを開く", hint: "⌘T", run: openNewTab },
-    linkTarget === "app"
-      ? { key: "linkDia", label: "リンクを Dia で開くようにする", run: () => setLinkTarget("dia") }
-      : { key: "linkApp", label: "リンクをアプリ内のブラウザで開くようにする", run: () => setLinkTarget("app") },
   ];
 
   const selectedInput = selection?.kind === "input" ? board?.inputs.find((i) => i.id === selection.id) ?? null : null;
@@ -6405,17 +6380,6 @@ export default function App() {
             {repoLanes.length === 0 && <p className="muted hint">まだありません</p>}
           </div>
           <div className="sidebar-foot">
-            <div className="link-target">
-              <span className="muted">リンクを開く</span>
-              <div className="segmented" role="group" aria-label="リンクを開く場所">
-                <button className={linkTarget === "app" ? "on" : ""} aria-pressed={linkTarget === "app"} onClick={() => setLinkTarget("app")}>
-                  アプリ内
-                </button>
-                <button className={linkTarget === "dia" ? "on" : ""} aria-pressed={linkTarget === "dia"} onClick={() => setLinkTarget("dia")}>
-                  Dia
-                </button>
-              </div>
-            </div>
             <div className="link-target">
               <span className="muted">Cloud を開く</span>
               <div className="segmented" role="group" aria-label="Cloud のセッションを開く場所">

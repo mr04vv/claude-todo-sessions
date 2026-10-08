@@ -591,19 +591,6 @@ fn is_web_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
 
-/// Dia, by bundle id so it opens wherever it is installed.
-const DIA_BUNDLE_ID: &str = "company.thebrowser.dia";
-
-/// Opens a page in Dia, with the user's own sign-ins there.
-#[tauri::command(async)]
-fn open_in_dia(url: String) -> Result<(), String> {
-    if !is_web_url(&url) {
-        return Err(format!("開けない URL です: {url}"));
-    }
-    let status = cli("open").args(["-b", DIA_BUNDLE_ID, &url]).status().map_err(err)?;
-    status.success().then_some(()).ok_or_else(|| format!("Dia で開けませんでした（{status}）。Dia が入っているか確認してください"))
-}
-
 #[tauri::command(async)]
 fn open_link(url: String) -> Result<(), String> {
     if !is_web_url(&url) {
@@ -696,7 +683,7 @@ fn open_session(state: State<AppState>, session_id: String, target: Option<Strin
 /// Shows a session where it runs: its herdr pane, else Desktop (which
 /// resumes a finished or archived one). `desktop` skips the herdr lookup.
 /// Asks the page to open a cloud session as it is set to: its web page in
-/// the browser pane (or Dia), or Claude Desktop.
+/// the browser pane, or Claude Desktop.
 const OPEN_CLOUD_EVENT: &str = "open-cloud";
 /// Asks the page to open a local session in the in-app terminal (see `terminal_resume`).
 const OPEN_LOCAL_EVENT: &str = "open-local";
@@ -2703,7 +2690,6 @@ fn main() {
             add_link,
             remove_link,
             open_link,
-            open_in_dia,
             link_session,
             unlink_session,
             open_session,

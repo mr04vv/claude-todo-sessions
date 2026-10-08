@@ -2,7 +2,7 @@
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
 // commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling (and
 // picking a Google result), as the user set them), right-click offers translation (a Chromium view has no translate item),
-// ⌥ + click keeps a link as an input todo, and X shows its bookmarks only.
+// and ⌥ + click keeps a link as an input todo.
 // It runs in the page's frames too (a doc's editor on claude.ai is one), which
 // get the app's keys as the page does and tell the app themselves (FRAME), but
 // for the page's own history keys.
@@ -11,26 +11,6 @@
   if (window.__todoSessionsPage) return;
   window.__todoSessionsPage = true;
   const FRAME = window !== window.top;
-
-  // X (Twitter) opens its bookmarks only, with the posts they lead to and
-  // signing in; anything else (the timeline) goes back to the bookmarks.
-  // Its pages move without loading, so the history calls are watched too.
-  const X_HOSTS = /(^|\.)(x|twitter)\.com$/;
-  const X_ALLOWED = /^\/(i\/bookmarks|i\/flow\/|login|logout|[^/]+\/status\/)/;
-  const X_HOME = "https://x.com/i/bookmarks";
-  if (!FRAME && X_HOSTS.test(location.hostname)) {
-    const guard = () => X_ALLOWED.test(location.pathname) || location.replace(X_HOME);
-    for (const name of ["pushState", "replaceState"]) {
-      const original = history[name];
-      history[name] = function (...args) {
-        const result = original.apply(this, args);
-        guard();
-        return result;
-      };
-    }
-    window.addEventListener("popstate", guard);
-    guard();
-  }
 
   // The app hears a page through the console: a message that is one of these
   // URLs (todo-sessions://...) is acted on, and kept out of the console.

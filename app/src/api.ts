@@ -335,7 +335,6 @@ export const api = {
   codexModels: () => invoke<{ id: string; label: string; efforts: string[] }[]>("codex_models"),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openLink: (url: string) => invoke<void>("open_link", { url }),
-  openInDia: (url: string) => invoke<void>("open_in_dia", { url }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
   addLink: (todoId: number, url: string) => invoke<Link>("add_link", { todoId, url }),
