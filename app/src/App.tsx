@@ -1828,7 +1828,9 @@ function BrowserDock({ tabs, reviews, narrow, sessionOf, active, covered, report
       <span key={t.id} data-tab={t.id} className={`browser-tab review${t.id === active?.id ? " on" : ""}${urgent(t) ? " urgent" : ""}`}>
         <button role="tab" aria-selected={t.id === active?.id} className="browser-tab-main" title={`${r.ref} ${r.title}${urgent(t) ? "（返事待ち）" : ""}`} onClick={() => onSelect(t.id)}>
           {(t.creating || s?.state === "running") && <span className="spinner" aria-label="作業中" />}
-          <span className="mono">{r.ref}</span>
+          <span className="mono review-ref">
+            <span className="ellipsis">{r.ref.split("#")[0]}</span>#{r.ref.split("#")[1]}
+          </span>
         </button>
         {stopping === t.id ? (
           <span className="review-stop">

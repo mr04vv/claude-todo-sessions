@@ -2075,10 +2075,18 @@ input.panel-title:focus-visible {
   background: none;
 }
 
-/* The review group: a PR's number only, 朱 while it waits for a reply. */
+/* The review group: a PR by its repository and number (a long repository
+   cut short), 朱 while it waits for a reply. They keep their width; the
+   other tabs shrink, and too many reviews fold. */
 .browser-tab.review {
   min-width: 0;
-  max-width: none;
+  max-width: 170px;
+  flex-shrink: 0;
+}
+
+.review-ref {
+  display: inline-flex;
+  min-width: 0;
 }
 
 .browser-tab.review .browser-tab-main {
@@ -2108,6 +2116,7 @@ input.panel-title:focus-visible {
 
 .browser-tab.review-fold {
   min-width: 0;
+  flex-shrink: 0;
 }
 
 .browser-tab.review-fold .browser-tab-main {
