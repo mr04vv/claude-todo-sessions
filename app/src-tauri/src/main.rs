@@ -353,6 +353,18 @@ fn focus_herdr_pane(session_id: &str) -> Option<String> {
     cli("herdr").args(["--session", &name, "agent", "focus", &pane]).status().is_ok_and(|s| s.success()).then_some(name)
 }
 
+/// What happened under a (parent) todo, newest first: its 経過.
+#[tauri::command(async)]
+fn todo_events(state: State<AppState>, todo_id: i64) -> Result<Vec<cts_core::TodoEvent>, String> {
+    state.db.lock().map_err(err)?.events(todo_id).map_err(err)
+}
+
+/// Keeps a parent's plan (its subtasks start knowing it).
+#[tauri::command(async)]
+fn set_plan(state: State<AppState>, todo_id: i64, plan: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_plan(todo_id, &plan).map_err(err)
+}
+
 /// What `fix_in_session` did: sent the prompt to the session, or (a Cloud
 /// one, which cannot be sent anything from here) left it to the page.
 #[derive(Serialize)]
@@ -2051,8 +2063,13 @@ fn refresh_states(db: &Db, todos: &[Todo]) {
             for &(id, is_pr) in by_url.get(&url).into_iter().flatten() {
                 let Some(todo) = todos.iter().find(|t| t.id == id) else { continue };
                 if is_pr {
-                    if let Err(e) = db.set_ci(id, ci.as_ref()) {
-                        eprintln!("{e}");
+                    match db.set_ci(id, ci.as_ref()) {
+                        // A subtask's CI failing just now goes to its orchestrator.
+                        Ok(before) if ci.as_ref().is_some_and(|c| c.state == "failure") && before.as_deref() != Some("failure") => {
+                            relay_to_orchestrator(db, todo, launch::SubtaskEvent::CiFailed(ci.as_ref().map(|c| c.failed.clone()).unwrap_or_default()));
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("{e}"),
                     }
                 }
                 let before = if is_pr { db.set_pr_state(id, &now) } else { db.set_issue_state(id, &now) };
@@ -2073,6 +2090,9 @@ fn refresh_states(db: &Db, todos: &[Todo]) {
                     };
                     if let Some(next) = next.filter(|n| *n != todo.status) {
                         let _ = db.update_todo(todo.id, TodoPatch { status: Some(next), ..Default::default() });
+                    }
+                    if now == "changes_requested" {
+                        relay_to_orchestrator(db, todo, launch::SubtaskEvent::ChangesRequested);
                     }
                 }
                 if just_finished {
@@ -2402,8 +2422,50 @@ fn close_done_workspaces(todo_id: i64) {
     }
 }
 
+/// Tells a subtask's orchestrator (its parent's session running in herdr)
+/// what happened, into its pane, and keeps it in the parent's 経過. False
+/// when the subtask has no orchestrator to tell.
+fn relay_to_orchestrator(db: &Db, subtask: &Todo, event: launch::SubtaskEvent) -> bool {
+    let Some(parent) = subtask.parent_id else { return false };
+    let Ok(sessions) = db.sessions_for_todo(parent) else { return false };
+    let orchestrator = sessions.iter().filter(|s| s.state != SessionState::Ended && !launch::is_cloud_session(&s.session_id)).find_map(|s| herdr_pane(&s.session_id));
+    let Some((name, pane)) = orchestrator else { return false };
+    let message = event.message(subtask.id, &subtask.title);
+    if let Err(e) = herdr(&["--session", &name, "agent", "prompt", &pane, &message]) {
+        eprintln!("{e}");
+        return false;
+    }
+    if let Err(e) = db.add_event(parent, &message) {
+        eprintln!("{e}");
+    }
+    true
+}
+
+/// Notifies that an orchestrator handed a todo to the user; clicking it opens the todo.
+fn notify_escalation(app: &AppHandle, todo: &Todo, why: &str) {
+    let id = todo.id;
+    post_banner(app, "あなたに回されました", format!("#{id} {}：{why}", todo.title), None, move |app| {
+        show_window(app);
+        app.emit(OPEN_TODO_EVENT, OpenTodo { id }).map_err(err)
+    });
+}
+
+/// Asks the page to open a todo's sheet: `{id}`.
+const OPEN_TODO_EVENT: &str = "open-todo";
+
+#[derive(Clone, Serialize)]
+struct OpenTodo {
+    id: i64,
+}
+
+/// The todo's handover is dealt with: it no longer waits on the user.
+#[tauri::command(async)]
+fn clear_escalation(state: State<AppState>, todo_id: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.escalate(todo_id, None).map_err(err)
+}
+
 /// Finds sessions, notifies once per session that starts waiting for a
-/// reply, and tidies up after todos as they get Done.
+/// reply (or tells its orchestrator), and tidies up after todos as they get Done.
 fn watch_loop(app: AppHandle) {
     let db = match open_db() {
         Ok(db) => db,
@@ -2415,6 +2477,8 @@ fn watch_loop(app: AppHandle) {
     let mut tick: u32 = 0;
     // Todos Done already (seeded on the first tick), to tell the ones done just now.
     let mut done: Option<HashSet<i64>> = None;
+    // Handovers notified already (seeded on the first tick), by todo.
+    let mut escalated: Option<HashMap<i64, String>> = None;
     let mut records = cts_core::desktop::RecordCache::default();
     let desktop_dir = home().join(DESKTOP_SESSIONS_DIR);
     loop {
@@ -2430,14 +2494,23 @@ fn watch_loop(app: AppHandle) {
             }
         }
         tick = tick.wrapping_add(1);
-        if let Ok(now_done) = db.list_todos(Some(Status::Done)) {
-            let ids: HashSet<i64> = now_done.iter().map(|t| t.id).collect();
+        if let Ok(todos) = db.list_todos(None) {
+            let ids: HashSet<i64> = todos.iter().filter(|t| t.status == Status::Done).map(|t| t.id).collect();
             if let Some(before) = &done {
-                for &id in ids.difference(before) {
+                for t in todos.iter().filter(|t| ids.contains(&t.id) && !before.contains(&t.id)) {
+                    relay_to_orchestrator(&db, t, launch::SubtaskEvent::Done);
+                    let id = t.id;
                     std::thread::spawn(move || close_done_workspaces(id));
                 }
             }
             done = Some(ids);
+            let now: HashMap<i64, String> = todos.iter().filter_map(|t| t.escalation.clone().map(|why| (t.id, why))).collect();
+            if let Some(before) = &escalated {
+                for t in todos.iter().filter(|t| now.get(&t.id).is_some_and(|why| before.get(&t.id) != Some(why))) {
+                    notify_escalation(&app, t, &now[&t.id]);
+                }
+            }
+            escalated = Some(now);
         }
         if let Ok(mut waiting) = db.needs_input_sessions() {
             // Sessions archived in Claude Desktop stay out of the inbox and notifications.
@@ -2454,8 +2527,14 @@ fn watch_loop(app: AppHandle) {
                 }
             }
             // Sessions already waiting at startup were notified by an earlier run, or never will be.
+            // A subtask's question goes to its orchestrator first, not to the user.
             if !first {
                 for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
+                    let subtask = s.todo_id.and_then(|id| db.get_todo(id).ok().flatten());
+                    let question = db.get_session(&s.session_id).ok().flatten().and_then(|s| s.question);
+                    if subtask.is_some_and(|t| relay_to_orchestrator(&db, &t, launch::SubtaskEvent::Asks(question))) {
+                        continue;
+                    }
                     notify_needs_input(&app, &db, s.clone());
                 }
             }
@@ -2613,6 +2692,9 @@ fn main() {
             sync_now,
             quick_claude,
             fix_in_session,
+            clear_escalation,
+            set_plan,
+            todo_events,
             start_terminal,
             start_cloud,
             gh_issues,

@@ -27,6 +27,7 @@ import {
   OPEN_SESSIONS_EVENT,
   OPEN_STUDY_EVENT,
   REVIEW_SUBMITTED_EVENT,
+  OPEN_TODO_EVENT,
   type ReviewRunner,
   LOGIN_CAPTURED_EVENT,
   FOCUS_APP_EVENT,
@@ -3124,6 +3125,7 @@ const TODO_ROW: Record<"none" | "ended", [string, string]> = {
 
 /// Why something waits on the user, as its row's word.
 const WAIT_WORD: Record<WaitItem["reasons"][number], string> = {
+  escalated: "回されました",
   needs_input: "返事待ち",
   changes: "修正依頼",
   ci: "CI 失敗",
@@ -3325,6 +3327,11 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
                       {[todo?.parent_id ? `親 #${todo.parent_id}` : null, s ? placeOf(s) : null, s ? ago(s.state_at) : null].filter(Boolean).join(" · ")}
                     </span>
                     <span className="row-actions">
+                      {todo && w.reasons.includes("escalated") && (
+                        <button className="small" title="指揮役から回されたことに対応しました（あなた待ちから外します）" onClick={(e) => (e.stopPropagation(), run(() => api.clearEscalation(todo.id)))}>
+                          対応した
+                        </button>
+                      )}
                       {s && todo && fix && (w.reasons.includes("ci") || w.reasons.includes("changes")) && (
                         <button className="small" title="元のセッションに、直すところを送ります（画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), fix(s, todo))}>
                           再開して直させる
@@ -5708,6 +5715,7 @@ export default function App() {
         openSessionsRef.current();
       }),
       listen<{ subject: Subject }>(OPEN_STUDY_EVENT, ({ payload }) => openStudyRef.current(payload.subject)),
+      listen<{ id: number }>(OPEN_TODO_EVENT, ({ payload }) => goTodoRef.current(payload.id)),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
@@ -6132,6 +6140,8 @@ export default function App() {
     setView("todos");
     openTodo(id);
   };
+  const goTodoRef = useRef(goTodo);
+  goTodoRef.current = goTodo;
   const [syncing, setSyncing] = useState(false);
   const syncAll = () => {
     setSyncing(true);

@@ -2,11 +2,12 @@
 // for a reply; a todo's PR whose CI failed or that was sent back for changes
 // (through the todo's latest session, unless it is fixing them already); a
 // review asked of the user that no review session has taken; and a review
-// session that stopped without submitting. One session counts once,
-// whatever its reasons.
+// session that stopped without submitting; and what an orchestrator handed
+// over. A subtask's PR is its orchestrator's to have fixed while one runs on
+// the Mac. One session counts once, whatever its reasons.
 import type { Session, Todo } from "./api";
 
-export type WaitReason = "needs_input" | "changes" | "ci" | "review" | "review_failed";
+export type WaitReason = "escalated" | "needs_input" | "changes" | "ci" | "review" | "review_failed";
 
 /// A PR asking for the user's review.
 export interface ReviewAsk {
@@ -56,6 +57,7 @@ export function ciFailureLine(todo: Todo) {
 }
 
 const LINE: Record<WaitReason, (i: WaitItem) => string> = {
+  escalated: (i) => i.todo?.escalation ?? "指揮役から回されました",
   needs_input: (i) => i.session?.question ?? "返事を待っています",
   changes: (i) => `${i.todo?.pr_url ? prRef(i.todo.pr_url) : "PR"} に修正を頼まれました`,
   ci: (i) => (i.todo ? ciFailureLine(i.todo) : "CI が失敗"),
@@ -78,12 +80,24 @@ export function waitingOnYou({ todos, inbox, reviews, now }: { todos: Todo[]; in
   for (const { s, t } of sessions) {
     if (s.state === "needs_input") add(s.session_id, "needs_input", { session: s, todo: t, at: s.state_at });
   }
+  // A todo's latest session stands for it (the board lists them newest first).
+  const latestOf = (t: Todo) => [...t.sessions].sort((a, b) => b.state_at - a.state_at)[0];
   for (const t of todos) {
-    if (t.status === "done" || !t.pr_url || (t.pr_state && PR_DONE.includes(t.pr_state))) continue;
+    if (t.status === "done" || !t.escalation) continue;
+    const latest = latestOf(t);
+    if (latest) add(latest.session_id, "escalated", { session: latest, todo: t, at: latest.state_at });
+    else add(`todo:${t.id}`, "escalated", { todo: t, at: t.updated_at });
+  }
+  // A subtask's PR is its orchestrator's to have fixed while it runs on the Mac.
+  const orchestrated = (t: Todo) => {
+    const parent = todos.find((p) => p.id === t.parent_id);
+    return !!parent?.sessions.some((s) => s.state !== "ended" && !s.session_id.startsWith("cse_"));
+  };
+  for (const t of todos) {
+    if (t.status === "done" || !t.pr_url || (t.pr_state && PR_DONE.includes(t.pr_state)) || orchestrated(t)) continue;
     const reasons: WaitReason[] = [...(t.pr_state === "changes_requested" ? ["changes" as const] : []), ...(t.ci_state === "failure" ? ["ci" as const] : [])];
     if (reasons.length === 0) continue;
-    // The board lists a todo's sessions newest first.
-    const latest = [...t.sessions].sort((a, b) => b.state_at - a.state_at)[0];
+    const latest = latestOf(t);
     if (latest?.state === "running") continue;
     for (const reason of reasons) {
       if (latest) add(latest.session_id, reason, { session: latest, todo: t, at: latest.state_at });

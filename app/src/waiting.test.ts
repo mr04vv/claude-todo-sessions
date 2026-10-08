@@ -31,6 +31,10 @@ const todo = (id: number, patch: Partial<Todo> = {}): Todo =>
     pr_state: null,
     ci_state: null,
     ci_failed: [],
+    plan: null,
+    fix_count: 0,
+    escalation: null,
+    parent_id: null,
     ...patch,
   }) as Todo;
 
@@ -119,4 +123,24 @@ test("the newest comes first", () => {
   const a = session("a", { state: "needs_input", state_at: NOW - 50 });
   const b = session("b", { state: "needs_input", state_at: NOW - 5 });
   assert.deepEqual(keys(waitingOnYou({ todos: [], inbox: [a, b], reviews: [], now: NOW })), ["b", "a"]);
+});
+
+test("a todo handed over by its orchestrator waits on you, with why", () => {
+  const s = session("a", { todo_id: 2, state: "running" });
+  const t = todo(2, { sessions: [s], escalation: "計画にない仕様の選択です", parent_id: 1 });
+  const items = waitingOnYou({ todos: [todo(1), t], inbox: [], reviews: [], now: NOW });
+  assert.deepEqual(keys(items), ["a"]);
+  assert.deepEqual(items[0].reasons, ["escalated"]);
+  assert.equal(items[0].line, "計画にない仕様の選択です");
+  assert.deepEqual(waitingOnYou({ todos: [todo(1), { ...t, status: "done" }], inbox: [], reviews: [], now: NOW }), [], "not once it is done");
+});
+
+test("a subtask's failed CI is its orchestrator's to fix, not yours", () => {
+  const orchestrator = session("o", { todo_id: 1, state: "idle" });
+  const parent = todo(1, { sessions: [orchestrator] });
+  const failing = todo(2, { parent_id: 1, sessions: [session("s", { todo_id: 2 })], pr_url: "https://github.com/o/r/pull/2", pr_state: "changes_requested", ci_state: "failure" });
+  assert.deepEqual(waitingOnYou({ todos: [parent, failing], inbox: [], reviews: [], now: NOW }), []);
+  // With the orchestrator gone (or on Cloud, which cannot be told), it is yours.
+  const gone = todo(1, { sessions: [session("o", { todo_id: 1, state: "ended" })] });
+  assert.equal(waitingOnYou({ todos: [gone, failing], inbox: [], reviews: [], now: NOW }).length, 1);
 });

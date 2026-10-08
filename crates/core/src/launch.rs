@@ -179,6 +179,39 @@ pub fn session_command(agent: crate::Agent, session_id: Option<&str>, opts: &Sta
     format!("{program}{flags} {}", shell_quote(prompt))
 }
 
+/// What happened to a subtask, as its orchestrator is told it.
+pub enum SubtaskEvent {
+    /// Its session waits for a reply: what it asks.
+    Asks(Option<String>),
+    /// Its PR's CI failed: the checks that failed.
+    CiFailed(Vec<String>),
+    ChangesRequested,
+    Done,
+}
+
+/// How a message to the orchestrator starts, so it tells them from the user's.
+const RELAY_HEAD: &str = "[todo-sessions]";
+
+impl SubtaskEvent {
+    /// The message sent into the orchestrator's pane.
+    pub fn message(&self, todo_id: i64, title: &str) -> String {
+        let who = format!("サブタスク #{todo_id}「{title}」");
+        let what = match self {
+            SubtaskEvent::Asks(q) => format!(
+                "{who}が返事を待っています{}。計画で答えられるなら reply_to_subtask（todo_id={todo_id}）で答え、決められないことなら escalate で私に回してください。",
+                q.as_deref().map(|q| format!("：「{q}」")).unwrap_or_default()
+            ),
+            SubtaskEvent::CiFailed(names) => format!(
+                "{who}の PR の CI が失敗しました{}。fix_subtask（id={todo_id}）で直させてください。",
+                if names.is_empty() { String::new() } else { format!("（{}）", names.join("、")) }
+            ),
+            SubtaskEvent::ChangesRequested => format!("{who}の PR に修正依頼が来ました。fix_subtask（id={todo_id}）で直させてください。"),
+            SubtaskEvent::Done => format!("{who}が Done になりました。"),
+        };
+        format!("{RELAY_HEAD} {what}")
+    }
+}
+
 /// Where an orchestrator starts a subtask: as asked (`cloud`), else on Cloud
 /// when it has a GitHub repository to check out, else in herdr. Codex runs in
 /// herdr only.
@@ -669,5 +702,22 @@ mod subtask_tests {
         assert!(!subtask_on_cloud(&["acme/web".to_string()], Agent::Codex, None), "Codex runs in herdr");
         assert!(!subtask_on_cloud(&["acme/web".to_string()], Agent::Claude, Some(false)), "asked for herdr");
         assert!(subtask_on_cloud(&[], Agent::Claude, Some(true)), "asked for Cloud");
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+
+    #[test]
+    fn the_orchestrator_is_told_what_happened_and_what_to_do() {
+        let asks = SubtaskEvent::Asks(Some("どちらにしますか？".into())).message(42, "グラフ");
+        assert!(asks.contains("#42") && asks.contains("グラフ") && asks.contains("どちらにしますか？") && asks.contains("reply_to_subtask") && asks.contains("escalate"), "{asks}");
+        let ci = SubtaskEvent::CiFailed(vec!["test-api".into()]).message(42, "グラフ");
+        assert!(ci.contains("test-api") && ci.contains("fix_subtask"), "{ci}");
+        let changes = SubtaskEvent::ChangesRequested.message(42, "グラフ");
+        assert!(changes.contains("修正依頼") && changes.contains("fix_subtask"), "{changes}");
+        let done = SubtaskEvent::Done.message(42, "グラフ");
+        assert!(done.contains("Done") && done.contains("#42"), "{done}");
     }
 }

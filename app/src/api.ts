@@ -54,6 +54,12 @@ export interface Todo {
   ci_state: CiState | null;
   /** The checks that failed. */
   ci_failed: string[];
+  /** A parent's plan, which its subtasks start knowing. */
+  plan: string | null;
+  /** Times its session was sent to fix its PR. */
+  fix_count: number;
+  /** Why its orchestrator handed it to the user. */
+  escalation: string | null;
   is_orchestrator: boolean;
   links: Link[];
 }
@@ -134,6 +140,14 @@ export interface PageText {
 }
 
 export type CiState = "pending" | "success" | "failure";
+
+/** Something that happened under a (parent) todo: its 経過. */
+export interface TodoEvent {
+  id: number;
+  todo_id: number;
+  at: number;
+  text: string;
+}
 
 export type PrState = "draft" | "open" | "review_requested" | "changes_requested" | "approved" | "merged" | "closed";
 
@@ -283,6 +297,12 @@ export const api = {
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
   /// A plain claude in herdr, at home unless `cwd` is given.
+  /// The todo's handover is dealt with.
+  clearEscalation: (todoId: number) => invoke<void>("clear_escalation", { todoId }),
+  /// What happened under a (parent) todo, newest first: its 経過.
+  todoEvents: (todoId: number) => invoke<TodoEvent[]>("todo_events", { todoId }),
+  /// A parent's plan, which its subtasks start knowing.
+  setPlan: (todoId: number, plan: string) => invoke<void>("set_plan", { todoId, plan }),
   /// Sends the session what to fix in the todo's PR; a Cloud one is not sent it (`sent` false).
   fixInSession: (sessionId: string, todoId: number) => invoke<{ sent: boolean; prompt: string }>("fix_in_session", { sessionId, todoId }),
   quickClaude: (prompt: string, cwd?: string, title?: string, agent?: Agent, options?: StartOptions) =>
@@ -407,6 +427,8 @@ export const OPEN_SESSIONS_EVENT = "open-sessions";
 export const OPEN_STUDY_EVENT = "open-study";
 /// A review went in: `{url, title, verdict}` (APPROVED, CHANGES_REQUESTED or COMMENTED).
 export const REVIEW_SUBMITTED_EVENT = "review-submitted";
+/// `{id}`: a todo to open (a handover's notification).
+export const OPEN_TODO_EVENT = "open-todo";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
 /** `{tab}` when a page asks to go into an input (⌘⇧D). */
