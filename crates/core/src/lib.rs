@@ -8,6 +8,7 @@ pub mod github;
 pub mod herdr;
 pub mod launch;
 pub mod ogp;
+pub mod study;
 pub mod transcript;
 pub mod translate;
 pub mod usage;
