@@ -160,6 +160,25 @@ pub fn review_of_prompt(prompt: &str) -> Option<(String, bool)> {
     (url.starts_with(GITHUB_HTTPS) && url.contains("/pull/")).then(|| (url.to_string(), prompt.contains(AUTO_SUBMIT)))
 }
 
+/// A word for the shell, quoted as it is.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
+}
+
+/// The command a terminal runs to start a session with `prompt`: Claude with
+/// the session id picked here (so it is linked before it starts), or Codex,
+/// which picks its own; with the options' model and effort.
+pub fn session_command(agent: crate::Agent, session_id: Option<&str>, opts: &StartOptions, prompt: &str) -> String {
+    let codex = agent == crate::Agent::Codex;
+    let flags: String = (if codex { opts.codex_args() } else { opts.claude_args() }).iter().map(|a| format!(" {}", shell_quote(a))).collect();
+    let program = match session_id {
+        Some(id) if !codex => format!("claude --session-id {id}"),
+        _ if codex => "codex".to_string(),
+        _ => "claude".to_string(),
+    };
+    format!("{program}{flags} {}", shell_quote(prompt))
+}
+
 /// A todo's repo list may hold free group names ("調査"); only `owner/repo`
 /// entries are GitHub repositories a cloud session can work on.
 pub fn github_repos(repos: &[String]) -> Vec<String> {
@@ -592,5 +611,23 @@ mod review_tests {
         assert_eq!(review_of_prompt("/review"), None);
         assert_eq!(review_of_prompt("PR https://github.com/o/r/pull/1 を見て"), None);
         assert_eq!(review_of_prompt("fix the bug"), None);
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    use crate::Agent;
+
+    #[test]
+    fn claude_runs_with_its_session_id_and_options() {
+        let opts = StartOptions { model: Some("opus".into()), effort: Some("high".into()), ..Default::default() };
+        assert_eq!(session_command(Agent::Claude, Some("s-1"), &opts, "it's [todo:3]"), r#"claude --session-id s-1 '--model' 'opus' '--effort' 'high' 'it'\''s [todo:3]'"#);
+    }
+
+    #[test]
+    fn codex_picks_its_own_session_id() {
+        let opts = StartOptions { model: Some("gpt-5".into()), ..Default::default() };
+        assert_eq!(session_command(Agent::Codex, Some("ignored"), &opts, "go"), "codex '-m' 'gpt-5' 'go'");
     }
 }

@@ -378,7 +378,7 @@ fn fix_in_session(state: State<AppState>, session_id: String, todo_id: i64) -> R
         herdr(&["--session", &name, "agent", "prompt", &pane, &prompt])?;
     } else {
         let TerminalRun { cwd, title, command, .. } = resume_run(&state, &session_id)?;
-        let command = format!("{command} {}", shell_quote(&prompt));
+        let command = format!("{command} {}", launch::shell_quote(&prompt));
         start_in_herdr(&state, &cwd, &title, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
     }
     Ok(FixSent { sent: true, prompt })
@@ -403,8 +403,8 @@ fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<Stri
 fn quick_agent_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, opts: &StartOptions) -> TerminalRun {
     let mut run = quick_run(prompt, cwd, title);
     let codex = agent == Some(cts_core::Agent::Codex);
-    let flags: String = (if codex { opts.codex_args() } else { opts.claude_args() }).iter().map(|a| format!(" {}", shell_quote(a))).collect();
-    let first = prompt.map(str::trim).filter(|p| !p.is_empty()).map(|p| format!(" {}", shell_quote(p))).unwrap_or_default();
+    let flags: String = (if codex { opts.codex_args() } else { opts.claude_args() }).iter().map(|a| format!(" {}", launch::shell_quote(a))).collect();
+    let first = prompt.map(str::trim).filter(|p| !p.is_empty()).map(|p| format!(" {}", launch::shell_quote(p))).unwrap_or_default();
     if codex {
         run.command = format!("codex{flags}{first}");
         run.session = None;
@@ -417,7 +417,7 @@ fn quick_agent_run(prompt: Option<&str>, cwd: Option<String>, title: Option<Stri
 fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -> TerminalRun {
     let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
     let session = uuid::Uuid::new_v4().to_string();
-    let first = prompt.map(|p| format!(" {}", shell_quote(p))).unwrap_or_default();
+    let first = prompt.map(|p| format!(" {}", launch::shell_quote(p))).unwrap_or_default();
     TerminalRun {
         cwd: cwd.filter(|c| std::path::Path::new(c).is_dir()).unwrap_or_else(|| home().to_string_lossy().to_string()),
         title: title.or_else(|| prompt.map(|p| p.chars().take(24).collect())).unwrap_or_else(|| "claude".into()),
@@ -458,7 +458,7 @@ fn herdr_attach_run(name: String) -> TerminalRun {
     TerminalRun {
         cwd: home().to_string_lossy().into(),
         title: format!("herdr: {name}"),
-        command: format!("herdr session attach {}", shell_quote(&name)),
+        command: format!("herdr session attach {}", launch::shell_quote(&name)),
         session: None,
         herdr: Some(name),
     }
@@ -775,10 +775,6 @@ fn put_review_away(db: &Db, session_id: &str) -> Result<(), String> {
     db.hide_session(session_id).map_err(err)
 }
 
-fn shell_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
 fn herdr(args: &[&str]) -> Result<String, String> {
     let out = cli("herdr").args(args).output().map_err(|e| format!("herdr: {e}"))?;
     if !out.status.success() {
@@ -805,11 +801,7 @@ fn herdr_target(state: &AppState) -> Option<String> {
 /// Without `--session` herdr talks to its default session, which may not run.
 fn start_in_herdr(state: &AppState, cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
     let session = herdr_target(state).ok_or("herdr のセッションが動いていません")?;
-    let focus_flag = if focus { "--focus" } else { "--no-focus" };
-    let created = herdr(&["--session", &session, "workspace", "create", "--cwd", cwd, "--label", label, focus_flag])?;
-    let v: serde_json::Value = serde_json::from_str(&created).map_err(|e| format!("herdr output: {e}"))?;
-    let pane = launch::herdr_pane_id(&v).ok_or("herdr output has no pane id")?;
-    herdr(&["--session", &session, "pane", "run", &pane, command]).map(|_| ())
+    cts_core::herdr::start_workspace(herdr, Some(&session), cwd, label, command, focus)
 }
 
 #[derive(Serialize)]
@@ -862,29 +854,27 @@ struct TerminalRun {
 fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: Option<String>) -> Result<TerminalRun, String> {
     if opts.agent == cts_core::Agent::Codex {
         // Codex picks its own session id: herdr finds the session, and its first prompt's marker links it.
-        let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
-        let prompt = launch::start_prompt(todo.id, &launch::codex_body(&body.unwrap_or_else(|| todo.prompt_body(false))));
-        let flags: String = opts.codex_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
-        let command = format!("codex{flags} {}", shell_quote(&prompt));
-        return Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: None, herdr: None });
-    }
-    let (todo, session_id) = {
         let db = state.db.lock().map_err(err)?;
         let todo = todo_or_err(&db, todo_id)?;
-        let cwd = terminal_cwd(&todo);
-        // Registered up front so the session is linked before it starts.
-        let session_id = uuid::Uuid::new_v4().to_string();
-        db.record_session(&session_id, &cwd, SessionState::Idle).map_err(err)?;
-        db.set_session_title(&session_id, &todo.title).map_err(err)?;
-        db.link_session(&session_id, todo.id).map_err(err)?;
-        (todo, session_id)
+        let body = match body {
+            Some(b) => b,
+            None => db.session_prompt(&todo, false).map_err(err)?,
+        };
+        let command = launch::session_command(opts.agent, None, opts, &launch::start_prompt(todo.id, &launch::codex_body(&body)));
+        return Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: None, herdr: None });
+    }
+    let db = state.db.lock().map_err(err)?;
+    let todo = todo_or_err(&db, todo_id)?;
+    let cwd = terminal_cwd(&todo);
+    let body = match body {
+        Some(b) => b,
+        None => db.session_prompt(&todo, opts.plan).map_err(err)?,
     };
-    let flags: String = opts.claude_args().iter().map(|a| format!(" {}", shell_quote(a))).collect();
-    let command = format!(
-        "claude --session-id {session_id}{flags} {}",
-        shell_quote(&launch::start_prompt(todo.id, &body.unwrap_or_else(|| todo.prompt_body(opts.plan))))
-    );
-    Ok(TerminalRun { cwd: terminal_cwd(&todo), title: todo.title, command, session: Some(session_id), herdr: None })
+    // Registered up front so the session is linked before it starts.
+    let session_id = uuid::Uuid::new_v4().to_string();
+    db.register_session(&session_id, &cwd, &todo.title, Some(todo.id)).map_err(err)?;
+    let command = launch::session_command(opts.agent, Some(&session_id), opts, &launch::start_prompt(todo.id, &body));
+    Ok(TerminalRun { cwd, title: todo.title, command, session: Some(session_id), herdr: None })
 }
 
 /// Starts `claude --session-id` for the todo in herdr (Ghostty if herdr is
@@ -893,7 +883,7 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: O
 fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOptions, body: Option<String>) -> Result<String, String> {
     let TerminalRun { cwd, title, command, session, .. } = prepare_terminal(state, todo_id, opts, body)?;
     start_in_herdr(state, &cwd, &title, &command, focus).or_else(|herdr_err| {
-        start_in_ghostty(&cwd, &format!("cd {} && {command}", shell_quote(&cwd)))
+        start_in_ghostty(&cwd, &format!("cd {} && {command}", launch::shell_quote(&cwd)))
             .map_err(|e| format!("{herdr_err} / {e}"))
     })?;
     Ok(session.unwrap_or_default())
@@ -910,7 +900,11 @@ fn launch_cloud(state: &AppState, todo_id: i64, opts: &StartOptions, body: Optio
     // Without a GitHub repository the session runs with no checkout, which is fine for a question.
     let repos = launch::github_repos(&repos_of_todo(state, &todo));
     let db = state.db.lock().map_err(err)?;
-    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &body.unwrap_or_else(|| todo.prompt_body(false)), opts)
+    let body = match body {
+        Some(b) => b,
+        None => db.session_prompt(&todo, false).map_err(err)?,
+    };
+    cts_core::cloud::create_session(&db, todo.id, &repos, &todo.title, &body, opts)
 }
 
 /// A note session (the focus mode's "ノート"): where it runs, and the command
@@ -958,7 +952,7 @@ fn start_note(state: State<AppState>, subject: Subject, urls: Vec<String>, forma
         return Ok(NoteStart { session, run: Some(run) });
     }
     start_in_herdr(&state, &run.cwd, &run.title, &run.command, false).or_else(|herdr_err| {
-        start_in_ghostty(&run.cwd, &format!("cd {} && {}", shell_quote(&run.cwd), run.command)).map_err(|e| format!("{herdr_err} / {e}"))
+        start_in_ghostty(&run.cwd, &format!("cd {} && {}", launch::shell_quote(&run.cwd), run.command)).map_err(|e| format!("{herdr_err} / {e}"))
     })?;
     Ok(NoteStart { session, run: None })
 }

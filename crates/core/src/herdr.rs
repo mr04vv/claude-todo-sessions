@@ -30,6 +30,20 @@ pub fn pick_session(running: &[String], picked: Option<&str>) -> Option<String> 
         .or_else(|| running.first().cloned())
 }
 
+/// Opens a workspace in herdr session `session` (None: the one herdr talks
+/// to from here, as in its own panes) at `cwd`, and runs `command` in it.
+/// `run` runs the herdr CLI with its arguments and gives back what it
+/// printed. Without `focus` herdr's view stays where it is.
+pub fn start_workspace(run: impl Fn(&[&str]) -> Result<String, String>, session: Option<&str>, cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
+    let with_session = |args: &[&str]| -> Vec<String> { session.map(|s| vec!["--session".to_string(), s.to_string()]).unwrap_or_default().into_iter().chain(args.iter().map(|a| a.to_string())).collect() };
+    let create = with_session(&["workspace", "create", "--cwd", cwd, "--label", label, if focus { "--focus" } else { "--no-focus" }]);
+    let created = run(&create.iter().map(String::as_str).collect::<Vec<_>>())?;
+    let v: Value = serde_json::from_str(&created).map_err(|e| format!("herdr output: {e}"))?;
+    let pane = crate::launch::herdr_pane_id(&v).ok_or("herdr output has no pane id")?;
+    let run_args = with_session(&["pane", "run", &pane, command]);
+    run(&run_args.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ())
+}
+
 /// Pane id of the agent whose Claude session id matches, from
 /// `herdr agent list` JSON.
 pub fn find_pane(agents: &Value, session_id: &str) -> Option<String> {
@@ -169,5 +183,35 @@ mod tests {
         assert_eq!(find_workspace(&agents, "aaa").as_deref(), Some("w1"));
         assert_eq!(find_workspace(&agents, "bbb"), None, "no workspace said");
         assert_eq!(find_workspace(&agents, "zzz"), None);
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+    use std::cell::RefCell;
+
+    #[test]
+    fn a_workspace_opens_behind_and_runs_the_command_in_its_pane() {
+        let calls = RefCell::new(Vec::<Vec<String>>::new());
+        let run = |args: &[&str]| {
+            calls.borrow_mut().push(args.iter().map(|a| a.to_string()).collect());
+            Ok(if args.contains(&"create") { r#"{"result": {"root_pane": {"pane_id": "w9:p1"}}}"#.to_string() } else { String::new() })
+        };
+        start_workspace(run, Some("implement"), "/w", "label", "claude go", false).unwrap();
+        let calls = calls.into_inner();
+        assert_eq!(calls[0], ["--session", "implement", "workspace", "create", "--cwd", "/w", "--label", "label", "--no-focus"]);
+        assert_eq!(calls[1], ["--session", "implement", "pane", "run", "w9:p1", "claude go"]);
+    }
+
+    #[test]
+    fn without_a_session_named_herdr_takes_the_one_it_runs_in() {
+        let calls = RefCell::new(Vec::<Vec<String>>::new());
+        let run = |args: &[&str]| {
+            calls.borrow_mut().push(args.iter().map(|a| a.to_string()).collect());
+            Ok(r#"{"result": {"root_pane": {"pane_id": "w1:p1"}}}"#.to_string())
+        };
+        start_workspace(run, None, "/w", "l", "c", true).unwrap();
+        assert_eq!(calls.into_inner()[0], ["workspace", "create", "--cwd", "/w", "--label", "l", "--focus"]);
     }
 }

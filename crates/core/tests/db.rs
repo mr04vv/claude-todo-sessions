@@ -1004,3 +1004,62 @@ fn ci_works_on_databases_made_before_it() {
     db.set_ci(1, Some(&ci)).unwrap();
     assert_eq!(db.get_todo(1).unwrap().unwrap().ci_state.as_deref(), Some("success"));
 }
+
+#[test]
+fn a_parent_keeps_its_plan_and_its_subtasks_start_knowing_it() {
+    let (_d, db) = open();
+    let p = db.create_todo(new_todo("ダッシュボード刷新")).unwrap();
+    let c = db.create_todo(NewTodo { title: "グラフ".into(), parent_id: Some(p.id), ..Default::default() }).unwrap();
+    assert_eq!(db.session_prompt(&c, false).unwrap(), c.prompt_body(false), "no plan yet");
+    db.set_plan(p.id, "既存の chart ライブラリに合わせる").unwrap();
+    assert_eq!(db.get_todo(p.id).unwrap().unwrap().plan.as_deref(), Some("既存の chart ライブラリに合わせる"));
+    let body = db.session_prompt(&c, false).unwrap();
+    assert!(body.starts_with(&c.prompt_body(false)), "{body}");
+    assert!(body.contains(&format!("親 todo #{}", p.id)) && body.contains("既存の chart ライブラリに合わせる"), "{body}");
+    db.set_plan(p.id, " ").unwrap();
+    assert_eq!(db.get_todo(p.id).unwrap().unwrap().plan, None, "blank clears it");
+}
+
+#[test]
+fn a_parent_keeps_what_happened_newest_first() {
+    let (_d, db) = open();
+    let p = db.create_todo(new_todo("p")).unwrap();
+    db.add_event(p.id, "#2 を Cloud で始めました").unwrap();
+    db.add_event(p.id, "#2 の質問に答えました").unwrap();
+    let texts: Vec<String> = db.events(p.id).unwrap().into_iter().map(|e| e.text).collect();
+    assert_eq!(texts, vec!["#2 の質問に答えました".to_string(), "#2 を Cloud で始めました".to_string()]);
+}
+
+#[test]
+fn a_subtask_counts_its_fixes_and_can_be_handed_to_the_user() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("t")).unwrap();
+    assert_eq!(t.fix_count, 0);
+    assert_eq!(db.count_fix(t.id).unwrap(), 1);
+    assert_eq!(db.count_fix(t.id).unwrap(), 2);
+    db.escalate(t.id, Some("CI が2回直しても通りません")).unwrap();
+    let got = db.get_todo(t.id).unwrap().unwrap();
+    assert_eq!((got.fix_count, got.escalation.as_deref()), (2, Some("CI が2回直しても通りません")));
+    db.escalate(t.id, None).unwrap();
+    assert_eq!(db.get_todo(t.id).unwrap().unwrap().escalation, None);
+}
+
+#[test]
+fn plans_fixes_and_events_work_on_databases_made_before_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE todos (id INTEGER PRIMARY KEY, title TEXT NOT NULL,
+         status TEXT NOT NULL DEFAULT 'todo' CHECK (status IN ('backlog', 'todo', 'doing', 'review', 'pending', 'done')),
+         issue_url TEXT, cwd TEXT, memo TEXT, updated_at INTEGER NOT NULL);
+         INSERT INTO todos (title, status, updated_at) VALUES ('old', 'doing', 5);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    db.set_plan(1, "plan").unwrap();
+    assert_eq!(db.count_fix(1).unwrap(), 1);
+    db.add_event(1, "x").unwrap();
+    assert_eq!(db.get_todo(1).unwrap().unwrap().plan.as_deref(), Some("plan"));
+}

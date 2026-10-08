@@ -106,6 +106,13 @@ pub struct Todo {
     pub ci_state: Option<String>,
     /// The checks that failed.
     pub ci_failed: Vec<String>,
+    /// A parent's plan, which its subtasks' sessions start knowing (the
+    /// shared memory its planning session keeps).
+    pub plan: Option<String>,
+    /// Times its session was sent to fix its PR (CI, changes asked for).
+    pub fix_count: i64,
+    /// Why it waits on the user, as its orchestrator handed it over.
+    pub escalation: Option<String>,
 }
 
 impl Todo {
@@ -359,6 +366,19 @@ pub struct FeynmanSummary {
     pub due_at: i64,
 }
 
+/// Something that happened under a todo: what its orchestrator did, or what
+/// it was told of its subtasks (its 経過).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TodoEvent {
+    pub id: i64,
+    pub todo_id: i64,
+    pub at: i64,
+    pub text: String,
+}
+
+/// Events a todo's 経過 lists.
+const EVENTS_LIMIT: i64 = 200;
+
 /// Notifications kept for the in-app list, newest first.
 const NOTICES_LIMIT: i64 = 200;
 
@@ -401,7 +421,10 @@ CREATE TABLE IF NOT EXISTS {name} (
     kind TEXT,
     parent_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
     ci_state TEXT,
-    ci_failed TEXT
+    ci_failed TEXT,
+    plan TEXT,
+    fix_count INTEGER,
+    escalation TEXT
 );
 ";
 
@@ -478,6 +501,12 @@ CREATE TABLE IF NOT EXISTS inputs (
     done INTEGER NOT NULL DEFAULT 0,
     updated_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS todo_events (
+    id INTEGER PRIMARY KEY,
+    todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+    at INTEGER NOT NULL,
+    text TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS input_links (
     id INTEGER PRIMARY KEY,
     input_id INTEGER NOT NULL REFERENCES inputs(id) ON DELETE CASCADE,
@@ -492,7 +521,7 @@ const LINK_COLS: &str = "id, todo_id, url, title, image, created_at";
 const INPUT_COLS: &str = "id, title, memo, done, updated_at";
 const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
-const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, CAST(parent_id AS INTEGER), ci_state, ci_failed";
+const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, CAST(parent_id AS INTEGER), ci_state, ci_failed, plan, COALESCE(CAST(fix_count AS INTEGER), 0), escalation";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at),
     (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0)),
     COALESCE(agent, 'claude'),
@@ -567,6 +596,9 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
         parent_id: r.get(12)?,
         ci_state: r.get(13)?,
         ci_failed: r.get::<_, Option<String>>(14)?.map(|f| f.split(CI_FAILED_SEPARATOR).map(Into::into).collect()).unwrap_or_default(),
+        plan: r.get(15)?,
+        fix_count: r.get(16)?,
+        escalation: r.get(17)?,
     })
 }
 
@@ -615,7 +647,7 @@ fn split_repos(raw: Option<String>) -> Vec<String> {
 
 /// Upgrades databases created before a column existed.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -624,7 +656,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if !exists {
             // Integer columns keep integer affinity; older builds added them as TEXT,
             // which TODO_COLS casts back when reading.
-            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto") { "INTEGER" } else { "TEXT" };
+            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto" | "fix_count") { "INTEGER" } else { "TEXT" };
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
@@ -669,7 +701,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// Every column of the todos table, for copying rows between versions.
-const TODO_TABLE_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_pos, queue_error, kind, parent_id, ci_state, ci_failed";
+const TODO_TABLE_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, queue_runner, queue_pos, queue_error, kind, parent_id, ci_state, ci_failed, plan, fix_count, escalation";
 
 /// Check names are kept one per line (a name may have commas).
 const CI_FAILED_SEPARATOR: char = '\n';
@@ -930,6 +962,17 @@ impl Db {
                  state_at = CASE WHEN state = ?3 THEN state_at ELSE ?4 END",
             params![id, cwd, state.as_str(), now()],
         )?;
+        Ok(())
+    }
+
+    /// Records a session about to start (idle until its hooks say more),
+    /// named and linked to the todo before it starts.
+    pub fn register_session(&self, id: &str, cwd: &str, title: &str, todo_id: Option<i64>) -> Result<()> {
+        self.record_session(id, cwd, SessionState::Idle)?;
+        self.set_session_title(id, title)?;
+        if let Some(todo_id) = todo_id {
+            self.link_session(id, todo_id)?;
+        }
         Ok(())
     }
 
@@ -1252,6 +1295,54 @@ impl Db {
         let before = self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.pr_state;
         self.conn.execute("UPDATE todos SET pr_state = ?2 WHERE id = ?1", params![id, state])?;
         Ok(before)
+    }
+
+    /// Keeps a parent's plan (blank clears it).
+    pub fn set_plan(&self, id: i64, plan: &str) -> Result<()> {
+        let plan = Some(plan.trim()).filter(|p| !p.is_empty());
+        match self.conn.execute("UPDATE todos SET plan = ?2, updated_at = ?3 WHERE id = ?1", params![id, plan, now()])? {
+            0 => Err(Error::TodoNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// The first prompt of a session for the todo (see `Todo::prompt_body`),
+    /// with its parent's plan when it has one.
+    pub fn session_prompt(&self, todo: &Todo, plan: bool) -> Result<String> {
+        let mut body = todo.prompt_body(plan);
+        if let Some(parent) = todo.parent_id.map(|id| self.get_todo(id)).transpose()?.flatten() {
+            if let Some(p) = parent.plan {
+                body.push_str(&format!("\n\n## 親 todo #{} の計画（全サブタスクで共有）\n\n{p}", parent.id));
+            }
+        }
+        Ok(body)
+    }
+
+    /// One more time the todo's session was sent to fix its PR; the count now.
+    pub fn count_fix(&self, id: i64) -> Result<i64> {
+        self.conn.execute("UPDATE todos SET fix_count = COALESCE(CAST(fix_count AS INTEGER), 0) + 1 WHERE id = ?1", [id])?;
+        Ok(self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.fix_count)
+    }
+
+    /// Hands the todo to the user with `why` (None takes it back).
+    pub fn escalate(&self, id: i64, why: Option<&str>) -> Result<()> {
+        match self.conn.execute("UPDATE todos SET escalation = ?2 WHERE id = ?1", params![id, why])? {
+            0 => Err(Error::TodoNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Records what happened under a (parent) todo, for its 経過.
+    pub fn add_event(&self, todo_id: i64, text: &str) -> Result<()> {
+        self.conn.execute("INSERT INTO todo_events (todo_id, at, text) VALUES (?1, ?2, ?3)", params![todo_id, now(), text])?;
+        Ok(())
+    }
+
+    /// What happened under the todo, newest first.
+    pub fn events(&self, todo_id: i64) -> Result<Vec<TodoEvent>> {
+        let mut stmt = self.conn.prepare("SELECT id, todo_id, at, text FROM todo_events WHERE todo_id = ?1 ORDER BY id DESC LIMIT ?2")?;
+        let rows = stmt.query_map(params![todo_id, EVENTS_LIMIT], |r| Ok(TodoEvent { id: r.get(0)?, todo_id: r.get(1)?, at: r.get(2)?, text: r.get(3)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Records the CI of the todo's PR and returns the state seen before.
