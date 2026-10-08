@@ -2331,7 +2331,24 @@ fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Finds sessions, and notifies once per session that starts waiting for a reply.
+/// A todo just Done: the herdr workspaces of its sessions done with their
+/// turn (or ended) close; one working or waiting for a reply stays. Its
+/// record stays too (`claude --resume` brings it back), and Claude Desktop's
+/// sessions are not touched.
+fn close_done_workspaces(todo_id: i64) {
+    let sessions = match open_db().and_then(|db| db.sessions_for_todo(todo_id).map_err(err)) {
+        Ok(s) => s,
+        Err(e) => return eprintln!("{e}"),
+    };
+    for s in sessions.iter().filter(|s| !launch::is_cloud_session(&s.session_id) && matches!(s.state, SessionState::Idle | SessionState::Ended)) {
+        if let Err(e) = close_herdr_workspace(&s.session_id) {
+            eprintln!("{e}");
+        }
+    }
+}
+
+/// Finds sessions, notifies once per session that starts waiting for a
+/// reply, and tidies up after todos as they get Done.
 fn watch_loop(app: AppHandle) {
     let db = match open_db() {
         Ok(db) => db,
@@ -2341,6 +2358,8 @@ fn watch_loop(app: AppHandle) {
     let mut last_state: HashMap<String, SessionState> = HashMap::new();
     let mut first = true;
     let mut tick: u32 = 0;
+    // Todos Done already (seeded on the first tick), to tell the ones done just now.
+    let mut done: Option<HashSet<i64>> = None;
     let mut records = cts_core::desktop::RecordCache::default();
     let desktop_dir = home().join(DESKTOP_SESSIONS_DIR);
     loop {
@@ -2356,6 +2375,15 @@ fn watch_loop(app: AppHandle) {
             }
         }
         tick = tick.wrapping_add(1);
+        if let Ok(now_done) = db.list_todos(Some(Status::Done)) {
+            let ids: HashSet<i64> = now_done.iter().map(|t| t.id).collect();
+            if let Some(before) = &done {
+                for &id in ids.difference(before) {
+                    std::thread::spawn(move || close_done_workspaces(id));
+                }
+            }
+            done = Some(ids);
+        }
         if let Ok(mut waiting) = db.needs_input_sessions() {
             // Sessions archived in Claude Desktop stay out of the inbox and notifications.
             let archived = records.archived_cli_ids(&desktop_dir);
