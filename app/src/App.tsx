@@ -1259,6 +1259,8 @@ function WaitingStrip({ items, onShow }: { items: WaitItem[]; onShow: () => void
     </button>
   );
 }
+/// The sessions page's one line for the review requests, as its row.
+const ASKS_ROW = "w:reviews";
 /// Items the strip over the board names; the rest are counted.
 const WAITING_STRIP_MAX = 3;
 
@@ -3151,7 +3153,7 @@ const placeOf = (s: Session) => `${isCloud(s) ? "Cloud" : "herdr"} · ${s.agent 
 
 /// The sessions page, the place to keep up with what runs: あなた待ち pinned
 /// on top, then the sessions as they changed last (a parent's under it).
-function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTodo, onQuick }: {
+function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTodo, onQuick, onShowPrs }: {
   board: Board;
   waiting: WaitItem[];
   filter: SessionFilter;
@@ -3160,6 +3162,7 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
   report: (e: unknown) => void;
   onOpenTodo: (id: number) => void;
   onQuick: () => void;
+  onShowPrs: () => void;
 }) {
   const [showEnded, setShowEnded] = useState(false);
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
@@ -3198,7 +3201,11 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
       return next;
     });
   const rows: TreeRow[] = ordered.flatMap((g) => g.filter((r) => r.kind === "group" || !folded.has(r.group ?? -1)));
-  const shownWaits = filter === "all" || filter === "waiting" ? waits : [];
+  const waitsShown = filter === "all" || filter === "waiting" ? waits : [];
+  // Review requests are no sessions: one line for them, which opens the PR page.
+  const isAsk = (w: WaitItem) => !!w.review && !w.session;
+  const asks = waitsShown.filter(isAsk).length;
+  const shownWaits = waitsShown.filter((w) => !isAsk(w));
   const ended = all.length - live.length;
   // Cloud sessions done with their turn, which the bulk archive takes.
   const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
@@ -3211,11 +3218,12 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
   // ↑↓ or j k pick a row, Enter opens it (a group's head its todo, a
   // subtask not started its launch sheet), ⌥Enter the ways to open it; h
   // folds the group the row is in, l opens it.
-  const ids = [...shownWaits.map((w) => `w:${w.key}`), ...rows.map((r) => r.id)];
+  const ids = [...shownWaits.map((w) => `w:${w.key}`), ...(asks > 0 ? [ASKS_ROW] : []), ...rows.map((r) => r.id)];
   const { cursorId, setCursor, list: listRef } = useRowCursor(
     ids,
     (id, alt, row) => {
       if (alt) return row.querySelector<HTMLButtonElement>(".open-caret")?.click();
+      if (id === ASKS_ROW) return onShowPrs();
       const w = shownWaits.find((x) => `w:${x.key}` === id);
       if (w) return openWait(w);
       const r = rows.find((x) => x.id === id);
@@ -3280,12 +3288,12 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
         </button>
       </header>
       <div className="content" ref={listRef}>
-        {shownWaits.length > 0 && (
+        {waitsShown.length > 0 && (
           <section className="waiting-section">
             <div className="section-head">
               <span className="pill waiting">
                 <i />
-                あなた待ち {shownWaits.length}
+                あなた待ち {waitsShown.length}
               </span>
               <span className="muted">返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼</span>
             </div>
@@ -3327,13 +3335,26 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
                   </li>
                 );
               })}
+              {asks > 0 && (
+                <li data-row={ASKS_ROW} className={`row wait-row${ASKS_ROW === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(ASKS_ROW), onShowPrs())}>
+                  <span className="state state-needs_input">
+                    <i />
+                    {WAIT_WORD.review}
+                  </span>
+                  <span className="row-title">新着のレビュー依頼が {asks} 件あります</span>
+                  <span className="muted wait-meta">PR の画面で始めます</span>
+                  <span className="row-actions">
+                    <Icon name="pr" size={13} />
+                  </span>
+                </li>
+              )}
             </ul>
           </section>
         )}
 
         {filter !== "waiting" && (
           <section>
-            {rows.length === 0 && shownWaits.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
+            {rows.length === 0 && waitsShown.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
             <ul className="rows">
               {rows.map((r) => {
                 const cursor = r.id === cursorId ? " cursor" : "";
@@ -6329,6 +6350,7 @@ export default function App() {
               report={report}
               onOpenTodo={openTodo}
               onQuick={() => setDialog("quick")}
+              onShowPrs={() => setView("prs")}
             />
           )}
           {view === "inputs" && board && <ThemesPage themes={board.themes} inputs={allInputs} feynman={feynmanOf} run={run} report={report} onStudy={studyTheme} />}
