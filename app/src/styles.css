@@ -1400,6 +1400,12 @@ button.lane-toggle:hover .lane-name {
   min-width: 0;
 }
 
+.row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .wait-line {
   color: var(--waiting-text);
   font-size: 12px;

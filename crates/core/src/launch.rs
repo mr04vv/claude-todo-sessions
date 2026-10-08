@@ -117,6 +117,24 @@ impl StartOptions {
     }
 }
 
+/// What a session is sent to fix its PR: the CI's failed checks (`ci`,
+/// with their names when known) and the changes a reviewer asked for.
+pub fn fix_prompt(pr_url: &str, ci: Option<&[String]>, changes: bool) -> String {
+    let mut parts = Vec::new();
+    if changes {
+        parts.push(format!(
+            "PR {pr_url} に修正の依頼が来ています。`gh pr view {pr_url} --comments` とレビューのコメント（`gh api` で PR の review comments）を読んで直し、push して、依頼してきた人に再レビューを頼んでください。"
+        ));
+    }
+    if let Some(failed) = ci {
+        let which = if failed.is_empty() { String::new() } else { format!("（{}）", failed.join("、")) };
+        parts.push(format!(
+            "PR {pr_url} の CI が失敗しています{which}。`gh pr checks {pr_url}` と、失敗したジョブのログ（`gh run view <run-id> --log-failed`）を見て原因を直し、push してください。"
+        ));
+    }
+    parts.join("\n\n")
+}
+
 /// A todo's repo list may hold free group names ("調査"); only `owner/repo`
 /// entries are GitHub repositories a cloud session can work on.
 pub fn github_repos(repos: &[String]) -> Vec<String> {
@@ -488,5 +506,40 @@ mod pr_tests {
         ]);
         assert_eq!(pr_for_todo(&prs, 1).as_deref(), Some("https://github.com/o/r/pull/2"));
         assert_eq!(pr_for_todo(&prs, 3), None);
+    }
+}
+
+#[cfg(test)]
+mod fix_tests {
+    use super::*;
+
+    const PR: &str = "https://github.com/acme/api/pull/120";
+
+    #[test]
+    fn a_failed_ci_names_its_checks_and_how_to_read_them() {
+        let p = fix_prompt(PR, Some(&["test-api".into(), "lint".into()]), false);
+        assert!(p.contains(PR) && p.contains("test-api、lint"), "{p}");
+        assert!(p.contains("gh pr checks") && p.contains("--log-failed"), "{p}");
+        assert!(p.contains("push"), "{p}");
+        assert!(!p.contains("修正の依頼"), "{p}");
+    }
+
+    #[test]
+    fn changes_asked_for_send_it_to_the_review_and_back() {
+        let p = fix_prompt(PR, None, true);
+        assert!(p.contains("修正の依頼") && p.contains("gh pr view") && p.contains("再レビュー"), "{p}");
+        assert!(!p.contains("CI"), "{p}");
+    }
+
+    #[test]
+    fn a_failure_without_names_still_asks_to_look() {
+        let p = fix_prompt(PR, Some(&[]), false);
+        assert!(p.contains("CI が失敗") && p.contains("gh pr checks"), "{p}");
+    }
+
+    #[test]
+    fn both_at_once_ask_for_both() {
+        let p = fix_prompt(PR, Some(&["e2e".into()]), true);
+        assert!(p.contains("修正の依頼") && p.contains("e2e"), "{p}");
     }
 }

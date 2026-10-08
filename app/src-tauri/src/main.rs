@@ -337,17 +337,52 @@ fn focus_in_herdr(session_id: &str) -> bool {
     true
 }
 
+/// The herdr session and pane running the session, if herdr hosts it.
+fn herdr_pane(session_id: &str) -> Option<(String, String)> {
+    let table = cli("herdr").args(["session", "list"]).output().ok()?;
+    cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)).into_iter().find_map(|name| {
+        let out = cli("herdr").args(["--session", &name, "agent", "list"]).output().ok()?;
+        let agents = serde_json::from_slice::<serde_json::Value>(&out.stdout).ok()?;
+        cts_core::herdr::find_pane(&agents, session_id).map(|pane| (name, pane))
+    })
+}
+
 /// Focuses the herdr pane running the session, inside herdr only, and
 /// returns the herdr session it is in.
 fn focus_herdr_pane(session_id: &str) -> Option<String> {
-    let table = cli("herdr").args(["session", "list"]).output().ok()?;
-    cts_core::herdr::running_sessions(&String::from_utf8_lossy(&table.stdout)).into_iter().find(|name| {
-        let Ok(out) = cli("herdr").args(["--session", name, "agent", "list"]).output() else { return false };
-        let Ok(agents) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return false };
-        cts_core::herdr::find_pane(&agents, session_id).is_some_and(|pane| {
-            cli("herdr").args(["--session", name, "agent", "focus", &pane]).status().is_ok_and(|s| s.success())
-        })
-    })
+    let (name, pane) = herdr_pane(session_id)?;
+    cli("herdr").args(["--session", &name, "agent", "focus", &pane]).status().is_ok_and(|s| s.success()).then_some(name)
+}
+
+/// What `fix_in_session` did: sent the prompt to the session, or (a Cloud
+/// one, which cannot be sent anything from here) left it to the page.
+#[derive(Serialize)]
+struct FixSent {
+    sent: bool,
+    prompt: String,
+}
+
+/// Sends the todo's session what to fix in its PR (the CI's failed checks,
+/// the changes asked for): into its herdr pane while it runs there, else
+/// resumed with it in a new herdr workspace that is not shown. Neither moves
+/// the keyboard.
+#[tauri::command(async)]
+fn fix_in_session(state: State<AppState>, session_id: String, todo_id: i64) -> Result<FixSent, String> {
+    let todo = todo_or_err(&*state.db.lock().map_err(err)?, todo_id)?;
+    let pr = todo.pr_url.as_deref().ok_or("この todo には PR がありません")?;
+    let ci = (todo.ci_state.as_deref() == Some("failure")).then_some(todo.ci_failed.as_slice());
+    let prompt = launch::fix_prompt(pr, ci, todo.pr_state.as_deref() == Some("changes_requested"));
+    if launch::is_cloud_session(&session_id) {
+        return Ok(FixSent { sent: false, prompt });
+    }
+    if let Some((name, pane)) = herdr_pane(&session_id) {
+        herdr(&["--session", &name, "agent", "prompt", &pane, &prompt])?;
+    } else {
+        let TerminalRun { cwd, title, command, .. } = resume_run(&state, &session_id)?;
+        let command = format!("{command} {}", shell_quote(&prompt));
+        start_in_herdr(&state, &cwd, &title, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
+    }
+    Ok(FixSent { sent: true, prompt })
 }
 
 /// Opens a session in `target`: "herdr" focuses its pane, "desktop" opens
@@ -2635,6 +2670,7 @@ fn main() {
             open_session,
             sync_now,
             quick_claude,
+            fix_in_session,
             start_desktop,
             start_terminal,
             start_cloud,

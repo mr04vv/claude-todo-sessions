@@ -175,6 +175,10 @@ type CloudTarget = "web" | "desktop";
 const CLOUD_TARGET_KEY = "cloudTarget";
 const OpenCloudContext = createContext<((sessionId: string) => void) | null>(null);
 
+/// 「再開して直させる」: sends the todo's session what to fix in its PR.
+type FixInSession = (session: Session, todo: Todo) => void;
+const FixContext = createContext<FixInSession | null>(null);
+
 /// With the in-app terminal chosen: opens a run in a terminal tab, and brings
 /// up the tab a session already runs in (false when there is none).
 interface InAppTerminal {
@@ -432,8 +436,8 @@ const pagePrefix = (url: string) => {
     return url;
   }
 };
-/// How long "input に追加しました" stays.
-const ADDED_INPUT_MS = 3000;
+/// How long a short note at the bottom ("input に追加しました") stays.
+const TOAST_MS = 4000;
 /// How long the toast about a finished download stays.
 const DOWNLOADED_MS = 8000;
 /// A page's alert, confirm or prompt (PAGE_DIALOG_EVENT).
@@ -2603,15 +2607,16 @@ function giveKeys(tab: string, report: (e: unknown) => void, input?: boolean, te
 /// Gives the tab coming up the keyboard, as a browser does: a page once it is
 /// shown (now, if it is `shown` already), a terminal, or with none (a new tab
 /// page, whose field takes it) this page. Only for the user's own action.
-function keysToTab(next: BrowserTab | null, shown: string | undefined, report: (e: unknown) => void) {
+/// With `text`, a page's text box takes it, typed in.
+function keysToTab(next: BrowserTab | null, shown: string | undefined, report: (e: unknown) => void, text?: string) {
   if (!next) {
     noteFocusRequest();
     api.focusAppPage().catch(report);
   } else if (next.term) {
     focusSoon(next.id);
     requestAnimationFrame(() => focusTerminal(next.id));
-  } else if (next.id === shown) giveKeys(next.id, report);
-  else focusSoon(next.id);
+  } else if (next.id === shown) giveKeys(next.id, report, !!text, text);
+  else focusSoon(next.id, !!text, text);
 }
 /// Each tab's `nav` when it was last sent to its address: showing it again
 /// with the same one leaves its page where the user moved it.
@@ -2879,6 +2884,11 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
   onClose: () => void;
 }) {
   const browse = useOpenLink(report);
+  const fix = useContext(FixContext);
+  // The session to send what to fix when the PR's CI failed or changes were asked
+  // for: the latest one, unless it is at it already.
+  const latest = [...todo.sessions].sort((a, b) => b.state_at - a.state_at)[0];
+  const fixable = (todo.ci_state === "failure" || todo.pr_state === "changes_requested") && latest?.state !== "running" ? latest : undefined;
   // e m a: its title, memo and a new subtask (the other keys are todoKeys.ts's).
   const root = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -3015,6 +3025,11 @@ function TodoPanel({ todo, allTodos, local, groups, feynman, run, report, setSta
                 </button>
                 {todo.pr_state && <span className={`gh gh-pr-${todo.pr_state}`}>{PR_LABEL[todo.pr_state]}</span>}
                 <CiChip todo={todo} />
+                {fix && fixable && (
+                  <button className="small" title="元のセッションに、直すところを送ります（画面もフォーカスも動きません）" onClick={() => fix(fixable, todo)}>
+                    再開して直させる
+                  </button>
+                )}
                 {todo.pr_state !== "merged" && todo.pr_state !== "closed" && (
                   <button
                     className="ghost small"
@@ -3227,6 +3242,7 @@ function SessionsPage({ board, waiting, filter, onFilter, repoFilter, run, repor
   const openInBrowser = useContext(BrowserContext);
   const openCloud = useContext(OpenCloudContext);
   const terminal = useContext(TerminalContext);
+  const fix = useContext(FixContext);
   // A row opens its session as 開く does (⌥Enter: the ways to open it).
   const open = (s: Session) => (isCloud(s) && openCloud ? openCloud(s.session_id) : openLocal(terminal, s.session_id, report, true));
   const inRepo = (repos: string[] | undefined) => repoFilter === null || laneKey(repos) === repoFilter;
@@ -3400,7 +3416,14 @@ function SessionsPage({ board, waiting, filter, onFilter, repoFilter, run, repor
                     <span className="muted ellipsis wait-meta">
                       {[todo?.parent_id ? `親 #${todo.parent_id}` : null, s ? placeOf(s) : null, s ? ago(s.state_at) : null].filter(Boolean).join(" · ")}
                     </span>
-                    {s ? <OpenMenu session={s} report={report} primary /> : <span />}
+                    <span className="row-actions">
+                      {s && todo && fix && (w.reasons.includes("ci") || w.reasons.includes("changes")) && (
+                        <button className="small" title="元のセッションに、直すところを送ります（画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), fix(s, todo))}>
+                          再開して直させる
+                        </button>
+                      )}
+                      {s && <OpenMenu session={s} report={report} primary={w.reasons.includes("needs_input")} />}
+                    </span>
                   </li>
                 );
               })}
@@ -4921,9 +4944,9 @@ export default function App() {
   /// Opens a page of the app's own (a session, a PR) in the pane: the tab
   /// opened for it comes to the front, else a new tab next to the one shown;
   /// with Dia chosen, pages go there instead. Opening is the user's action, so
-  /// the page takes the keyboard (`keys` false leaves it); `behind` leaves the
-  /// tab shown as it is.
-  const openInBrowser = (url: string, keys = true, behind = false) => {
+  /// the page takes the keyboard (`keys` false leaves it), its text box with
+  /// `text` typed in; `behind` leaves the tab shown as it is.
+  const openInBrowser = (url: string, keys = true, behind = false, text?: string) => {
     if (linkTarget === "dia") {
       api.openInDia(url).catch(report);
       return;
@@ -4932,11 +4955,11 @@ export default function App() {
     if (open) {
       if (behind) return;
       setBrowserShown(true);
-      if (keys) keysToTab(open, activeTab?.id, report);
+      if (keys) keysToTab(open, activeTab?.id, report, text);
       return setActiveTabId(open.id);
     }
     const id = `t${nextTab.current++}`;
-    if (keys && !behind) focusSoon(id);
+    if (keys && !behind) focusSoon(id, !!text, text);
     setTabs((prev) => insertAfter(prev, { id, url, openedFor: url, title: null, loading: true, nav: 0 }, activeTab?.id ?? null));
     if (!behind) {
       setBrowserShown(true);
@@ -5173,13 +5196,16 @@ export default function App() {
       const term = started.run;
       if (term) setTabs((prev) => [...prev, { id: `t${nextTab.current++}`, url: "", title: term.title, loading: false, nav: 0, term, focus: true, space: spaceKey }]);
     });
-  // A link ⌥-clicked in a page becomes an input todo; the page says so (and
-  // the input a page went into, from AddToInputDialog).
-  const [addedInput, setAddedInputState] = useState<string | null>(null);
-  const setAddedInput = (title: string) => {
-    setAddedInputState(title);
-    setTimeout(() => setAddedInputState(null), ADDED_INPUT_MS);
+  // A short note at the bottom of what was done in the background (an input
+  // added, a session sent what to fix).
+  const [toast, setToastState] = useState<string | null>(null);
+  const showToast = (text: string) => {
+    setToastState(text);
+    setTimeout(() => setToastState((now) => (now === text ? null : now)), TOAST_MS);
   };
+  // A link ⌥-clicked in a page becomes an input; the page says so (and the
+  // input a page went into, from AddToInputDialog).
+  const setAddedInput = (title: string) => showToast(`input に追加しました：${title}`);
   const addInputFrom = (url: string, title: string) =>
     run(async () => {
       await addInput([url], title);
@@ -5630,6 +5656,16 @@ export default function App() {
     api.markSessionSeen(sessionId).catch(report);
     return cloudTarget === "desktop" ? api.openSession(sessionId, "desktop").catch(report) : openInBrowser(cloudWebUrl(sessionId));
   };
+  /// 「再開して直させる」: the todo's session is sent what to fix in its PR,
+  /// without the keyboard or the screen moving. A Cloud session cannot be
+  /// sent anything from here yet: its page opens with the request typed in.
+  const fixInSession: FixInSession = (s, todo) =>
+    run(async () => {
+      const r = await api.fixInSession(s.session_id, todo.id);
+      if (r.sent) return showToast(`#${todo.id} のセッションに、直すように送りました`);
+      api.markSessionSeen(s.session_id).catch(report);
+      openInBrowser(cloudWebUrl(s.session_id), true, false, r.prompt);
+    });
   const openCloudRef = useRef(openCloud);
   openCloudRef.current = openCloud;
   useEffect(() => {
@@ -6232,6 +6268,7 @@ export default function App() {
     <BrowserContext.Provider value={openInBrowser}>
     <BeginWebContext.Provider value={beginWeb}>
     <OpenCloudContext.Provider value={openCloud}>
+    <FixContext.Provider value={fixInSession}>
     <TerminalContext.Provider value={inAppTerminal}>
     <SessionTitleContext.Provider value={sessionTitle}>
       <div
@@ -6688,9 +6725,9 @@ export default function App() {
             }}
           />
         )}
-        {addedInput && (
+        {toast && (
           <div className="toast" role="status">
-            input に追加しました：{addedInput}
+            {toast}
           </div>
         )}
         {downloaded && (
@@ -6766,6 +6803,7 @@ export default function App() {
       </div>
     </SessionTitleContext.Provider>
     </TerminalContext.Provider>
+    </FixContext.Provider>
     </OpenCloudContext.Provider>
     </BeginWebContext.Provider>
     </BrowserContext.Provider>

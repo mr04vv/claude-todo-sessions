@@ -295,6 +295,8 @@ export const api = {
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
   /// A plain claude in herdr, at home unless `cwd` is given.
+  /// Sends the session what to fix in the todo's PR; a Cloud one is not sent it (`sent` false).
+  fixInSession: (sessionId: string, todoId: number) => invoke<{ sent: boolean; prompt: string }>("fix_in_session", { sessionId, todoId }),
   quickClaude: (prompt: string, cwd?: string, title?: string, agent?: Agent, options?: StartOptions) =>
     invoke<void>("quick_claude", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null, options: options ?? null }),
   /// A PR review in a cloud session linked to no todo; returns its id.
