@@ -1881,7 +1881,6 @@ const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[]
 /// (⌃l), and the focus mode's selection pasted in.
 const CHAT_PAGES = ["pinchatgpt", "pinclaude"];
 /// What the focus mode's right side can keep: the pinned pages.
-/// which is pinned (kept open) only there.
 const FOCUS_PAGES = PINNED_PAGES;
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
