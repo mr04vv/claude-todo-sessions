@@ -3200,7 +3200,8 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
   };
   const pass = (i: SessionItem) => filter === "all" || (filter === "unread" ? i.session.unread : filter === "running" && i.session.state === "running");
   // Todos with subtasks head groups (sessionTree.ts); a folded group shows its head only.
-  const { ordered } = sessionTree(filter === "waiting" ? [] : (showEnded ? all : live).filter(pass), all, board.todos, showEnded, filter === "all");
+  // Whether a subtask ever had a session goes by all of them (one asking is above, in あなた待ち).
+  const { ordered } = sessionTree(filter === "waiting" ? [] : (showEnded ? all : live).filter(pass), sessionItemsOf(board), board.todos, showEnded, filter === "all");
   const [folded, setFolded] = useState<Set<number>>(new Set());
   const fold = (id: number, on?: boolean) =>
     setFolded((prev) => {
