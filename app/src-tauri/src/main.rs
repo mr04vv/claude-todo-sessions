@@ -2266,10 +2266,10 @@ fn tray_menu(app: &AppHandle, sessions: &[Session]) -> tauri::Result<Menu<tauri:
     let sep = PredefinedMenuItem::separator(app)?;
     let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = vec![Box::new(open), Box::new(sep)];
     if sessions.is_empty() {
-        items.push(Box::new(MenuItem::with_id(app, "none", "入力待ち・待機中のセッションはありません", false, None::<&str>)?));
+        items.push(Box::new(MenuItem::with_id(app, "none", "返事待ち・ひと区切りのセッションはありません", false, None::<&str>)?));
     }
     for s in sessions {
-        let state = if s.state == SessionState::NeedsInput { "入力待ち" } else { "待機中" };
+        let state = if s.state == SessionState::NeedsInput { "返事待ち" } else { "ひと区切り" };
         let label = format!("{state}: {}", s.title.as_deref().unwrap_or(&s.session_id));
         let id = format!("{MENU_SESSION_PREFIX}{}", s.session_id);
         items.push(Box::new(MenuItem::with_id(app, id, label, true, None::<&str>)?));
@@ -2285,7 +2285,7 @@ fn tray_menu(app: &AppHandle, sessions: &[Session]) -> tauri::Result<Menu<tauri:
 /// notification is clicked or removed from Notification Center.
 fn notify_session(app: &AppHandle, db: &Db, session: Session, kind: NoticeKind) {
     let headline = match kind {
-        NoticeKind::NeedsInput => "入力待ち",
+        NoticeKind::NeedsInput => "返事待ち",
         _ => "作業が終わりました",
     };
     let id = db.add_notification(&session, kind).map_err(|e| eprintln!("{e}")).ok();

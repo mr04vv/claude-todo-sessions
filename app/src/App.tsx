@@ -205,9 +205,9 @@ const COLUMNS: { status: Status; label: string }[] = [
 ];
 
 const STATE_LABEL: Record<SessionState, string> = {
-  running: "実行中",
-  needs_input: "入力待ち",
-  idle: "待機中",
+  running: "作業中",
+  needs_input: "返事待ち",
+  idle: "ひと区切り",
   ended: "終了",
 };
 /// Where a todo's PR stands, apart from its sessions: its badge's class and name.
@@ -660,7 +660,7 @@ function StatusIcon({ status }: { status: Status }) {
 function StateBadge({ state, unread }: { state: SessionState; unread?: boolean }) {
   return (
     <span className={`state state-${state}`}>
-      {unread !== undefined && <span className={`unread-dot${unread ? " on" : ""}`} title={unread ? "作業が終わってから、まだ見ていません" : undefined} />}
+      {unread !== undefined && <span className={`unread-dot${unread ? " on" : ""}`} title={unread ? "新着：ひと区切りしてから、まだ見ていません" : undefined} />}
       <i />
       {STATE_LABEL[state]}
     </span>
@@ -1122,7 +1122,7 @@ function LaneHeader({ lane, collapsed, onToggle, onOpenTodo, report }: {
         {waiting > 0 && (
           <span className="pill waiting">
             <i />
-            入力待ち {waiting}
+            返事待ち {waiting}
           </span>
         )}
         {collapsed && lane.key === NO_REPO_LANE && <span className="muted">場所を選ぶとそのレーンへ移ります</span>}
@@ -1232,7 +1232,7 @@ function TodoFilterBar({ filter, version, places, onChange, onSave }: {
             </div>
             <label className="toggle">
               <input type="checkbox" checked={filter.waiting} onChange={() => onChange({ ...filter, waiting: !filter.waiting })} />
-              入力待ちだけ
+              返事待ちだけ
             </label>
             <div className="filter-actions">
               {naming ? (
@@ -1304,7 +1304,7 @@ function WaitingStrip({ sessions, report }: { sessions: Session[]; report: (e: u
     <div className="waiting-strip" role="status">
       <span className="pill waiting">
         <i />
-        入力待ち {sessions.length}
+        返事待ち {sessions.length}
       </span>
       {sessions.map((s) => (
         <span key={s.session_id} className="waiting-item">
@@ -3241,9 +3241,9 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
   };
   const FILTERS: { key: SessionFilter; label: string }[] = [
     { key: "all", label: "すべて" },
-    { key: "unread", label: "未読" },
-    { key: "needs_input", label: "入力待ち" },
-    { key: "running", label: "実行中" },
+    { key: "unread", label: "新着" },
+    { key: "needs_input", label: "返事待ち" },
+    { key: "running", label: "作業中" },
     { key: "unlinked", label: "未紐づけ" },
   ];
   const pass = (i: SessionItem) =>
@@ -3313,7 +3313,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
         <span className="grow" />
         {confirmArchive ? (
           <span className="inline-confirm">
-            待機中の Cloud {archivable.length} 件をアーカイブしますか？
+            ひと区切りの Cloud {archivable.length} 件をアーカイブしますか？
             <button className="primary small" onClick={() => (setConfirmArchive(false), run(() => api.archiveSessions(archivable)))}>
               アーカイブ
             </button>
@@ -3323,8 +3323,8 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
           </span>
         ) : (
           archivable.length > 0 && (
-            <button onClick={() => setConfirmArchive(true)} title="待機中（入力待ち・実行中でない）の Cloud セッションをまとめてアーカイブ">
-              待機中の Cloud をアーカイブ {archivable.length}
+            <button onClick={() => setConfirmArchive(true)} title="ひと区切り（返事待ち・作業中でない）の Cloud セッションをまとめてアーカイブ">
+              ひと区切りの Cloud をアーカイブ {archivable.length}
             </button>
           )
         )}
@@ -3384,7 +3384,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
 
         <section>
           <div className="table-head sessions-grid">
-            <span title="PR の段階（色。マウスを重ねると名前）。セッションの状態は行の色：緑は実行中、橙は入力待ち、青は未読">PR</span>
+            <span title="PR の段階（色。マウスを重ねると名前）。セッションの状態は行の色：緑は作業中、橙は返事待ち、青は新着">PR</span>
             <span>セッション</span>
             <span>todo</span>
             <span>リポジトリ</span>
@@ -3444,7 +3444,7 @@ function SessionsPage({ board, repoFilter, selectedId, run, report, onSelect, on
                   key={r.id}
                   data-row={r.id}
                   className={`row sessions-grid${tree}${s.session_id === selectedId ? " selected" : ""}${cursor}${s.state === "ended" ? " done" : ""}${rowState(s)}`}
-                  title={`${STATE_LABEL[s.state]}${s.unread ? "・未読" : ""}`}
+                  title={`${STATE_LABEL[s.state]}${s.unread ? "・新着" : ""}`}
                   onClick={() => (setCursor(r.id), open(s))}
                 >
                   <StateMarks todo={todo} />
@@ -3985,7 +3985,7 @@ function PrsPage({ prs, prsLoading, prError, todos, local, repoFilter, browserUr
 
 const NOTICE_LABEL: Record<Notice["kind"], string> = {
   finished: "作業が終わりました",
-  needs_input: "入力待ち",
+  needs_input: "返事待ち",
   review_requested: "レビュー依頼",
   study: "復習どき",
 };
@@ -4289,7 +4289,7 @@ function NoticesPage({ board, local, report, onOpenTodo, onOpenStudy, run }: {
         </button>
       </header>
       <div className="content" ref={list}>
-        {rows.length === 0 && <p className="muted empty">通知はありません。セッションの作業が終わる、入力待ちになる、レビューを頼まれると、ここに出ます。</p>}
+        {rows.length === 0 && <p className="muted empty">通知はありません。セッションの作業が終わる、返事待ちになる、レビューを頼まれると、ここに出ます。</p>}
         <ul className="rows">
           {rows.map((n) => {
             const todo = todoOf(n);
@@ -6474,7 +6474,7 @@ export default function App() {
         icon: <StateBadge state={s.state} unread={s.unread} />,
         label: todo ? `${sessionLabel(s)} · #${todo.id} ${todo.title}` : sessionLabel(s),
         hint: [prStageLabel(todo), s.agent === "codex" ? "Codex" : isCloud(s) ? "Cloud" : "Local", ago(s.state_at)].filter(Boolean).join(" · "),
-        keywords: [STATE_LABEL[s.state], s.unread ? "未読" : ""].join(" "),
+        keywords: [STATE_LABEL[s.state], s.unread ? "新着" : ""].join(" "),
         run: () => (isCloud(s) ? openCloud(s.session_id) : openLocal(inAppTerminal, s.session_id, report, true)),
       }));
   const sessionsCommand: Command = { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands };
@@ -6736,7 +6736,7 @@ export default function App() {
                   onSave={saveFilter}
                 />
                 <button className={`filter${todoFilter.waiting ? " on" : ""}`} aria-pressed={todoFilter.waiting} onClick={() => setTodoFilter({ ...todoFilter, waiting: !todoFilter.waiting })}>
-                  入力待ちだけ
+                  返事待ちだけ
                 </button>
                 <button className={`filter${doneRecent ? " on" : ""}`} aria-pressed={doneRecent} onClick={() => setDoneRecent(!doneRecent)}>
                   Done は直近{DONE_RECENT}件
