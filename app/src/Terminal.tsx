@@ -35,7 +35,7 @@ export const terminalApi = {
   /// A session running in herdr comes back as attaching herdr (its pane
   /// focused); null when (with `desktop`) Claude Desktop knows it and opens it.
   resume: (sessionId: string, desktop: boolean) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop }),
-  /// Lets the menu bar and notifications open local sessions through the page.
+  /// Lets notifications open local sessions through the page.
   setInApp: (on: boolean) => invoke<void>("set_in_app_terminal", { on }),
   /// The Claude session a herdr session shows (its focused pane), if any.
   herdrFocused: (name: string) => invoke<string | null>("herdr_focused", { name }),
@@ -44,7 +44,7 @@ export const terminalApi = {
 /// Names a session as the app's lists do (null: no name known), for a terminal's title.
 export const SessionTitleContext = createContext<(sessionId: string) => string | null>(() => null);
 
-/// `{session_id}` from the menu bar or a notification, for a local session.
+/// `{session_id}` from a notification, for a local session.
 export const OPEN_LOCAL_EVENT = "open-local";
 
 /// Where "herdr" targets run: herdr in Ghostty, or a tab of this app.

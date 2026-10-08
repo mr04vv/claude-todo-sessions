@@ -453,7 +453,7 @@ export const BROWSER_ADDRESS_EVENT = "browser-address";
 export const BROWSER_TITLE_EVENT = "browser-title";
 /** `{tab, zoom}` when a tab's zoom changes (1 is none). */
 export const BROWSER_ZOOM_EVENT = "browser-zoom";
-/** `{session_id}` of a cloud session picked in the menu bar or a notification. */
+/** `{session_id}` of a cloud session picked in a notification. */
 export const OPEN_CLOUD_EVENT = "open-cloud";
 /** `{url, tab, behind}` for a link a page opens in a new window; it becomes a new tab next to `tab`. */
 export const BROWSER_NEW_TAB_EVENT = "browser-new-tab";

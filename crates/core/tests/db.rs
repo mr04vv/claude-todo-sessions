@@ -615,19 +615,6 @@ fn set_parent_keeps_one_level() {
 }
 
 #[test]
-fn tray_lists_waiting_then_idle_linked_sessions() {
-    let (_d, db) = open();
-    let t = db.create_todo(new_todo("t")).unwrap();
-    for (id, state) in [("run", SessionState::Running), ("idle", SessionState::Idle), ("wait", SessionState::NeedsInput), ("gone", SessionState::Ended)] {
-        db.record_session(id, "/w", state).unwrap();
-        db.link_session(id, t.id).unwrap();
-    }
-    db.record_session("loose", "/w", SessionState::Idle).unwrap();
-    let ids: Vec<String> = db.tray_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
-    assert_eq!(ids, ["wait", "idle"]);
-}
-
-#[test]
 fn notifications_are_listed_newest_first_until_read() {
     let (_d, db) = open();
     let t = db.create_todo(new_todo("t")).unwrap();

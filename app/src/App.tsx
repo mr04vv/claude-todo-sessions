@@ -99,8 +99,8 @@ const ADDRESS_POLL_MS = 500;
 /// A tab starts moving once the pointer has gone this far with the button down.
 const TAB_DRAG_PX = 4;
 
-/// The window is on screen. Closing it only hides it (the app stays in the
-/// menu bar), and there is no point polling for a page nobody sees.
+/// The window is on screen. Closing it only hides it (the app goes on
+/// behind, back from the Dock), and there is no point polling for a page nobody sees.
 const pageVisible = () => document.visibilityState === "visible";
 
 /// Runs `f` whenever the window comes back on screen.
@@ -5734,7 +5734,7 @@ export default function App() {
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
       listen(FOCUS_APP_EVENT, () => (focusModeRef.current ? focusSideRef.current(false) : (document.activeElement as HTMLElement | null)?.blur())),
-      // The menu bar and notifications open cloud sessions as set here.
+      // Notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
     return () => offs.forEach((off) => off.then((f) => f()));

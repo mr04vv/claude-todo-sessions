@@ -16,7 +16,6 @@ use cts_core::launch::StartOptions;
 use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, SessionState, Status, Subject, Todo, TodoPatch};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
-use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 use mac_notification_sys::{Notification, NotificationResponse};
 
@@ -25,7 +24,7 @@ const DATA_DIR: &str = "Library/Application Support/claude-todo-sessions";
 const DB_FILE: &str = "db.sqlite";
 const DESKTOP_SESSIONS_DIR: &str = "Library/Application Support/Claude/claude-code-sessions";
 const CLOUD_SYNC_INTERVAL: Duration = Duration::from_secs(30);
-/// How often the tray menu and notifications look at the DB.
+/// How often the notifications look at the DB.
 const WATCH_INTERVAL: Duration = Duration::from_secs(3);
 /// herdr's agent states are read every this many watch ticks (they are cheap).
 const HERDR_EVERY_TICKS: u32 = 3;
@@ -40,13 +39,8 @@ const DISCOVER_GRACE_SECS: i64 = 60;
 /// Where the CLIs live when the app is launched from Finder with a bare PATH.
 const EXTRA_PATH: &[&str] = &[".local/bin", ".cargo/bin"];
 const SYSTEM_PATHS: &[&str] = &["/opt/homebrew/bin", "/usr/local/bin", "/run/current-system/sw/bin"];
-const TRAY_ID: &str = "main";
-const MENU_OPEN: &str = "open";
-const MENU_QUIT: &str = "quit";
 /// The app menu's ⌘W, which closes a browser tab rather than the window.
 const MENU_CLOSE_TAB: &str = "close-tab";
-
-const MENU_SESSION_PREFIX: &str = "session:";
 const GH_ISSUE_LIMIT: &str = "100";
 /// How often linked issues are checked for open/closed.
 const ISSUE_SYNC_INTERVAL: Duration = Duration::from_secs(60);
@@ -693,7 +687,7 @@ struct OpenCloud {
     session_id: String,
 }
 
-/// Opens a session from the menu bar or a notification: a cloud one as the
+/// Opens a session from a notification: a cloud one as the
 /// page is set to open them, a local one where it runs (see `jump_to_session`).
 /// With the in-app terminal chosen, the page opens local sessions too.
 fn open_from_outside(app: &AppHandle, session_id: &str) -> Result<(), String> {
@@ -2309,27 +2303,6 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     Menu::with_items(app, &[&name, &file, &edit, &window])
 }
 
-/// Linked sessions waiting for input or idle, as the menu bar lists them.
-fn tray_menu(app: &AppHandle, sessions: &[Session]) -> tauri::Result<Menu<tauri::Wry>> {
-    let open = MenuItem::with_id(app, MENU_OPEN, "Todo Sessions を開く", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, MENU_QUIT, "終了", true, None::<&str>)?;
-    let sep = PredefinedMenuItem::separator(app)?;
-    let mut items: Vec<Box<dyn tauri::menu::IsMenuItem<tauri::Wry>>> = vec![Box::new(open), Box::new(sep)];
-    if sessions.is_empty() {
-        items.push(Box::new(MenuItem::with_id(app, "none", "返事待ち・ひと区切りのセッションはありません", false, None::<&str>)?));
-    }
-    for s in sessions {
-        let state = if s.state == SessionState::NeedsInput { "返事待ち" } else { "ひと区切り" };
-        let label = format!("{state}: {}", s.title.as_deref().unwrap_or(&s.session_id));
-        let id = format!("{MENU_SESSION_PREFIX}{}", s.session_id);
-        items.push(Box::new(MenuItem::with_id(app, id, label, true, None::<&str>)?));
-    }
-    items.push(Box::new(PredefinedMenuItem::separator(app)?));
-    items.push(Box::new(quit));
-    let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = items.iter().map(|i| i.as_ref()).collect();
-    Menu::with_items(app, &refs)
-}
-
 /// Records that the session waits for a reply, posts it, and opens the
 /// session when it is clicked. The thread lives until the notification is
 /// clicked or removed from Notification Center.
@@ -2467,15 +2440,13 @@ fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// Keeps the tray menu current and notifies once per session that starts
-/// waiting for input.
+/// Finds sessions, and notifies once per session that starts waiting for a reply.
 fn watch_loop(app: AppHandle) {
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => return eprintln!("watch loop stopped: {e}"),
     };
     let mut known: HashSet<String> = HashSet::new();
-    let mut tray_shown: Option<Vec<(String, SessionState)>> = None;
     let mut last_state: HashMap<String, SessionState> = HashMap::new();
     let mut first = true;
     let mut tick: u32 = 0;
@@ -2525,16 +2496,6 @@ fn watch_loop(app: AppHandle) {
                             let _ = tx.send(Some(todo_id));
                         }
                     }
-                }
-            }
-            if let Ok(mut listed) = db.tray_sessions() {
-                listed.retain(|s| !archived.contains(&s.session_id));
-                let shown: Vec<(String, SessionState)> = listed.iter().map(|s| (s.session_id.clone(), s.state)).collect();
-                if tray_shown.as_ref() != Some(&shown) {
-                    if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY_ID), tray_menu(&app, &listed)) {
-                        let _ = tray.set_menu(Some(menu));
-                    }
-                    tray_shown = Some(shown);
                 }
             }
             known = now;
@@ -2625,30 +2586,10 @@ fn main() {
         })
         .setup(|app| {
             cef_browser::start_pump(app.handle());
-            // Menu bar app: no Dock icon, closing the window only hides it.
-            app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             // Without this the crate would post notifications as another app.
             if let Err(e) = mac_notification_sys::set_application(APP_ID) {
                 eprintln!("notification app id: {e}");
             }
-            TrayIconBuilder::with_id(TRAY_ID)
-                .icon(app.default_window_icon().cloned().ok_or("no app icon")?)
-                .icon_as_template(true)
-                .menu(&tray_menu(app.handle(), &[])?)
-                .show_menu_on_left_click(true)
-                .on_menu_event(|app, event| {
-                    let id = event.id().as_ref();
-                    if id == MENU_OPEN {
-                        show_window(app);
-                    } else if id == MENU_QUIT {
-                        app.exit(0);
-                    } else if let Some(session_id) = id.strip_prefix(MENU_SESSION_PREFIX) {
-                        if let Err(e) = open_from_outside(app, session_id) {
-                            eprintln!("{e}");
-                        }
-                    }
-                })
-                .build(app)?;
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 sync_loop(cloud_rx, |msg| {
@@ -2672,6 +2613,8 @@ fn main() {
             }
         })
         .on_window_event(|window, event| match event {
+            // The app goes on behind (its loops, the notifications); the Dock
+            // icon brings the window back, and ⌘Q ends it.
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();

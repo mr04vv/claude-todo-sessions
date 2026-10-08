@@ -1041,13 +1041,6 @@ impl Db {
         self.query_sessions("todo_id IS NOT NULL AND state != 'ended'", None)
     }
 
-    /// Linked sessions for the menu bar: waiting for input first, then idle.
-    pub fn tray_sessions(&self) -> Result<Vec<Session>> {
-        let mut sessions = self.query_sessions("todo_id IS NOT NULL AND state IN ('needs_input', 'idle')", None)?;
-        sessions.sort_by_key(|s| s.state != SessionState::NeedsInput);
-        Ok(sessions)
-    }
-
     /// Every session waiting for the user, with a todo or not (and put away
     /// or not: asking brings it back); these get notified.
     pub fn needs_input_sessions(&self) -> Result<Vec<Session>> {
