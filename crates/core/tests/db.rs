@@ -1111,6 +1111,18 @@ fn slack_mentions_are_kept_once_newest_first_and_read_in_the_app() {
 }
 
 #[test]
+fn a_slack_message_kept_without_a_picture_gets_it_when_found_again() {
+    let (_d, db) = open();
+    let bare = cts_core::NewSlackMessage { user_image: None, ..slack_message("1700000000.000100", None) };
+    db.add_slack_messages(&[bare], false).unwrap();
+    let again = db.add_slack_messages(&[slack_message("1700000000.000100", None)], false).unwrap();
+    assert!(again.is_empty(), "not new, so not notified again");
+    let kept = &db.slack_messages(10).unwrap()[0];
+    assert_eq!(kept.user_image.as_deref(), Some("https://avatars.slack-edge.com/a_72.png"));
+    assert!(!kept.read, "its read mark untouched");
+}
+
+#[test]
 fn every_unread_slack_message_comes_with_the_newest_read_ones() {
     let (_d, db) = open();
     db.add_slack_messages(&[slack_message("1700000000.000100", None)], false).unwrap();

@@ -1549,7 +1549,8 @@ impl Db {
     }
 
     /// Keeps the Slack messages not kept yet (`read` for the first check's,
-    /// which only records what is there); returns those it kept.
+    /// which only records what is there); returns those it kept. One kept
+    /// before without its sender's picture gets it.
     pub fn add_slack_messages(&self, messages: &[NewSlackMessage], read: bool) -> Result<Vec<SlackMessage>> {
         let mut kept = Vec::new();
         for m in messages {
@@ -1557,7 +1558,12 @@ impl Db {
                 "INSERT OR IGNORE INTO slack_messages (channel, ts, thread_ts, channel_name, user_name, text, permalink, via, user_image, read) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![m.channel, m.ts, m.thread_ts, m.channel_name, m.user_name, m.text, m.permalink, m.via, m.user_image, read],
             )?;
-            if n > 0 {
+            if n == 0 {
+                self.conn.execute(
+                    "UPDATE slack_messages SET user_image = ?3 WHERE channel = ?1 AND ts = ?2 AND user_image IS NULL",
+                    params![m.channel, m.ts, m.user_image],
+                )?;
+            } else {
                 kept.push(SlackMessage {
                     channel: m.channel.clone(),
                     ts: m.ts.clone(),
