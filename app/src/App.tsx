@@ -72,7 +72,7 @@ import {
   type TodoEvent,
   type Artifact,
   type SlackAccount,
-  type SlackMessage,
+  type SlackMentionable,
   type SlackThreadMessage,
   type SlackView,
   SLACK_POSTED_EVENT,
@@ -88,6 +88,8 @@ import {
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { parseSlack, type Inline } from "./slackText";
+// The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
+import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
 import { addressToUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
@@ -3142,25 +3144,80 @@ function ArtifactsPage({ artifacts, todos, report, onOpenTodo }: { artifacts: Ar
   );
 }
 
-type SlackFilter = "unread" | "mention" | "read";
-const slackKey = (m: { channel: string; ts: string }) => `${m.channel}:${m.ts}`;
-const SLACK_FILTER_LABEL: Record<SlackFilter, string> = { unread: "未読", mention: "メンション", read: "既読" };
+type SlackFilter = "unread" | "mention" | "thread" | "read";
+const SLACK_FILTERS: SlackFilter[] = ["unread", "mention", "thread", "read"];
+const SLACK_FILTER_LABEL: Record<SlackFilter, string> = { unread: "未読", mention: "メンション", thread: "スレッド", read: "既読" };
 /// The Slack page's list width (px), dragged by its edge and kept.
 const SLACK_LIST_KEY = "slackListWidth";
 const SLACK_LIST_WIDTH = { min: 260, max: 720, initial: 380, step: 40 };
 /// How far ⇧J / ⇧K scroll the thread.
 const SLACK_SCROLL_PX = 160;
-const SLACK_FILTERS: SlackFilter[] = ["unread", "mention", "read"];
+
+/// A row of the Slack page: a mention (#27) or a thread with new replies (#28).
+interface SlackItem {
+  key: string;
+  kind: "mention" | "thread";
+  channel: string;
+  /// The thread it opens (a message not in one is its own).
+  threadTs: string;
+  /// The message it stands for: the mention, or the thread's latest reply.
+  ts: string;
+  channelName: string;
+  userName: string;
+  userImage: string | null;
+  text: string;
+  /// The user group mentioned, for a group's mention.
+  via: string | null;
+  read: boolean;
+  permalink: string;
+  newReplies: number;
+}
+
+const mentionKey = (m: { channel: string; ts: string }) => `m:${m.channel}:${m.ts}`;
+
+function slackItems(slack: SlackView): SlackItem[] {
+  const mentions: SlackItem[] = slack.messages.map((m) => ({
+    key: mentionKey(m),
+    kind: "mention",
+    channel: m.channel,
+    threadTs: m.thread_ts ?? m.ts,
+    ts: m.ts,
+    channelName: m.channel_name,
+    userName: m.user_name,
+    userImage: m.user_image,
+    text: m.text,
+    via: m.via,
+    read: m.read,
+    permalink: m.permalink,
+    newReplies: 0,
+  }));
+  const threads: SlackItem[] = slack.threads.map((t) => ({
+    key: `t:${t.channel}:${t.thread_ts}`,
+    kind: "thread",
+    channel: t.channel,
+    threadTs: t.thread_ts,
+    ts: t.latest_ts ?? t.thread_ts,
+    channelName: t.channel_name,
+    userName: t.latest_user_name ?? "",
+    userImage: t.latest_image,
+    text: t.latest_text ?? "",
+    via: null,
+    read: false,
+    permalink: t.permalink,
+    newReplies: t.new_replies,
+  }));
+  return [...mentions, ...threads].sort((a, b) => Number(b.ts) - Number(a.ts));
+}
 
 /// 「Todo にする」's memo: who said it where, what, and its link.
-const slackMemo = (m: SlackMessage) => `Slack #${m.channel_name} の ${m.user_name}さんから:\n${m.text}\n\n${m.permalink}`;
+const slackMemo = (i: SlackItem) => `Slack #${i.channelName} の ${i.userName}さんから:\n${i.text}\n\n${i.permalink}`;
 
-/// Slack (#27): the unread mentions of the user and of their user groups,
-/// newest first (a message read leaves the list once another is picked;
-/// 既読 shows them again); the one picked shows its thread on the right.
+/// Slack (#27, #28): the unread mentions of the user and of their user
+/// groups, and the threads they are in with new replies, newest first. One
+/// stays unread until 既読にする (e) takes it off; 既読 shows the read mentions.
 function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   slack: SlackView;
-  /// A message to show (a notification's click), by slackKey.
+  /// A mention to show (a notification's click), by mentionKey.
   pick: string | null;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
@@ -3174,23 +3231,36 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     if (pick) setSelected(pick);
   }, [pick]);
   const [width, setWidth] = useState(() => loadJson<number>(SLACK_LIST_KEY, SLACK_LIST_WIDTH.initial));
-  const messages = slack.messages;
-  const unread = messages.filter((m) => !m.read);
-  const counts: Record<SlackFilter, number> = { unread: unread.length, mention: unread.filter((m) => m.via === null).length, read: messages.length - unread.length };
-  // The one picked stays while it is read, so it does not jump away.
-  const shown = messages.filter((m) => slackKey(m) === selected || (filter === "read" ? m.read : !m.read && (filter === "unread" || m.via === null)));
-  const current = messages.find((m) => slackKey(m) === selected) ?? null;
-  const open = (m: SlackMessage) => {
-    setSelected(slackKey(m));
-    if (!m.read) run(() => api.slackRead(m.channel, m.ts));
+  const openInBrowser = useContext(BrowserContext);
+  const openLink = (url: string) => (openInBrowser ? openInBrowser(url) : void api.openLink(url).catch(report));
+  const items = slackItems(slack);
+  const unread = items.filter((i) => !i.read);
+  const counts: Record<SlackFilter, number> = {
+    unread: unread.length,
+    mention: unread.filter((i) => i.kind === "mention" && i.via === null).length,
+    thread: unread.filter((i) => i.kind === "thread").length,
+    read: items.length - unread.length,
   };
-  // ↑↓ or j k pick a message, Enter shows its thread (and reads it).
-  const { cursorId, setCursor, list } = useRowCursor(shown.map(slackKey), (id) => {
-    const m = shown.find((x) => slackKey(x) === id);
-    if (m) open(m);
-  });
+  const inFilter = (i: SlackItem) => (filter === "read" ? i.read : !i.read && (filter === "unread" || (filter === "thread" ? i.kind === "thread" : i.kind === "mention" && i.via === null)));
+  // The one picked stays while it is read, so it does not jump away.
+  const shown = items.filter((i) => i.key === selected || inFilter(i));
+  const current = items.find((i) => i.key === selected) ?? null;
+  // ↑↓ or j k pick a row, Enter shows its thread.
+  const { cursorId, setCursor, list } = useRowCursor(
+    shown.map((i) => i.key),
+    (id) => setSelected(id),
+  );
+  /// 既読にする: off the unread, and on to the next row.
+  const done = (item: SlackItem) => {
+    const at = shown.findIndex((i) => i.key === item.key);
+    const next = shown.slice(at + 1).find((i) => !i.read) ?? shown.slice(0, at).reverse().find((i) => !i.read);
+    run(() => (item.kind === "mention" ? api.slackRead(item.channel, item.ts) : api.slackThreadSeen(item.channel, item.threadTs)));
+    setSelected(next?.key ?? null);
+    if (next) setCursor(next.key);
+  };
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
+  const muteRef = useRef<() => void>(() => {});
   const keepWidth = (w: number) => {
     const next = Math.min(Math.max(w, SLACK_LIST_WIDTH.min), SLACK_LIST_WIDTH.max);
     setWidth(next);
@@ -3205,9 +3275,11 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
       else if (matches(e, "slackWider")) keepWidth(width + SLACK_LIST_WIDTH.step);
       else if (!current) return;
       else if (e.key === "Escape") setSelected(null);
+      else if (matches(e, "slackDone")) done(current);
       else if (matches(e, "slackReply")) replyRef.current?.focus();
       else if (matches(e, "slackTodo")) onTodo(slackMemo(current));
-      else if (matches(e, "slackOpen")) api.openLink(current.permalink).catch(report);
+      else if (matches(e, "slackOpen")) openLink(current.permalink);
+      else if (matches(e, "slackMute")) muteRef.current();
       else if (matches(e, "slackScrollDown")) threadRef.current?.scrollBy({ top: SLACK_SCROLL_PX });
       else if (matches(e, "slackScrollUp")) threadRef.current?.scrollBy({ top: -SLACK_SCROLL_PX });
       else return;
@@ -3241,7 +3313,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
             ))}
           </div>
         )}
-        <span className="muted">自分とユーザーグループへのメンションだけ。DM・@channel・@here は出しません</span>
+        <span className="muted">自分とユーザーグループへのメンションと、参加しているスレッドの返信だけ</span>
         <span className="grow" />
         {slack.connected && (
           <span className="muted slack-live" title={slack.live ? "Socket Mode でつながっています。投稿されたその場で届きます" : "設定でアプリのトークン（xapp-…）を入れると、その場で届きます"}>
@@ -3262,32 +3334,42 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
         <div className="content flush slack-page" style={{ gridTemplateColumns: current ? `${width}px 6px minmax(0, 1fr)` : "minmax(0, 1fr)" }}>
           <div className="slack-list" ref={list}>
             {slack.error && <p className="error-text pad">Slack から読めませんでした：{slack.error}</p>}
-            {shown.length === 0 && <p className="muted pad">{filter === "read" ? "既読はまだありません。" : "未読のメンションはありません。"}</p>}
+            {shown.length === 0 && <p className="muted pad">{filter === "read" ? "既読はまだありません。" : "未読はありません。"}</p>}
             <ul className="rows">
-              {shown.map((m) => {
-                const id = slackKey(m);
-                return (
-                  <li key={id} data-row={id} className={`row slack-row${m.read ? "" : " slack-unread"}${id === selected ? " selected" : ""}${id === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(id), open(m))}>
-                    <SlackAvatar name={m.user_name} image={m.user_image} size={32} />
-                    <span className="slack-row-main">
-                      <span className="slack-meta">
-                        <b className="ellipsis">{m.user_name}</b>
-                        <span className="ellipsis">#{m.channel_name}</span>
-                        {m.via && <span className="tag">@{m.via}</span>}
-                        <span className="grow" />
-                        <span className="slack-time">{ago(Number(m.ts))}</span>
-                      </span>
-                      <span className="slack-body">{m.text}</span>
+              {shown.map((i) => (
+                <li key={i.key} data-row={i.key} className={`row slack-row${i.read ? "" : " slack-unread"}${i.key === selected ? " selected" : ""}${i.key === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(i.key), setSelected(i.key))}>
+                  <SlackAvatar name={i.userName} image={i.userImage} size={32} />
+                  <span className="slack-row-main">
+                    <span className="slack-meta">
+                      <b className="ellipsis">{i.userName}</b>
+                      <span className="ellipsis">#{i.channelName}</span>
+                      {i.via && <span className="tag">@{i.via}</span>}
+                      {i.kind === "thread" && <span className="tag">スレッド・新しい返信 {i.newReplies}</span>}
+                      <span className="grow" />
+                      <span className="slack-time">{ago(Number(i.ts))}</span>
                     </span>
-                  </li>
-                );
-              })}
+                    <span className="slack-body">{i.text}</span>
+                  </span>
+                </li>
+              ))}
             </ul>
           </div>
           {current && (
             <>
               <div className="slack-split" role="separator" aria-orientation="vertical" aria-label="一覧の幅" onPointerDown={resize} />
-              <SlackThread key={slackKey(current)} message={current} me={slack.user_id} replyRef={replyRef} bodyRef={threadRef} report={report} onTodo={onTodo} onClose={() => setSelected(null)} />
+              <SlackThread
+                key={current.key}
+                item={current}
+                me={slack.user_id}
+                replyRef={replyRef}
+                bodyRef={threadRef}
+                muteRef={muteRef}
+                report={report}
+                onLink={openLink}
+                onDone={() => done(current)}
+                onTodo={() => onTodo(slackMemo(current))}
+                onClose={() => setSelected(null)}
+              />
             </>
           )}
         </div>
@@ -3315,8 +3397,8 @@ function slackTime(ts: string) {
   return d.toDateString() === new Date().toDateString() ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`;
 }
 
-/// Slack's markup, formatted (slackText.ts); links open outside the app.
-function SlackText({ text, me }: { text: string; me?: string }) {
+/// Slack's markup, formatted (slackText.ts); links open with `onLink`.
+function SlackText({ text, me, onLink }: { text: string; me?: string; onLink: (url: string) => void }) {
   const inline = (pieces: Inline[]): React.ReactNode[] =>
     pieces.map((p, i) => {
       switch (p.t) {
@@ -3336,7 +3418,7 @@ function SlackText({ text, me }: { text: string; me?: string }) {
           );
         case "link":
           return (
-            <a key={i} href={p.url} onClick={(e) => (e.preventDefault(), void api.openLink(p.url).catch(() => {}))}>
+            <a key={i} href={p.url} onClick={(e) => (e.preventDefault(), onLink(p.url))}>
               {p.label}
             </a>
           );
@@ -3373,63 +3455,132 @@ function SlackText({ text, me }: { text: string; me?: string }) {
 
 /// Messages from one person within this many seconds read as one.
 const SLACK_GROUP_SECS = 300;
+/// Mention suggestions shown at once.
+const SLACK_SUGGESTIONS = 8;
+/// The people and groups to mention, asked once a run.
+let slackDirectory: Promise<SlackMentionable[]> | null = null;
+/// The `@…` being written just before the caret.
+const MENTION_TYPED = /(?:^|[\s　])@([^\s@　]*)$/;
 
-/// A Slack message's thread (a message not in one, alone), the message
-/// itself marked: read again as the thread moves (Socket Mode), and
-/// answered from here (#30).
-function SlackThread({ message, me, replyRef, bodyRef, report, onTodo, onClose }: {
-  message: SlackMessage;
+/// A Slack row's thread (a message not in one, alone), the message itself
+/// marked: read again as the thread moves (Socket Mode), and answered from
+/// here (#30) with mentions suggested after "@".
+function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onDone, onTodo, onClose }: {
+  item: SlackItem;
   me: string | null;
   /// The reply box and the messages' scroller, for the page's keys.
   replyRef: React.RefObject<HTMLTextAreaElement | null>;
   bodyRef: React.RefObject<HTMLDivElement | null>;
+  /// Set to this thread's mute toggle, for the page's m.
+  muteRef: React.RefObject<() => void>;
   report: (e: unknown) => void;
-  onTodo: (memo: string) => void;
+  onLink: (url: string) => void;
+  onDone: () => void;
+  onTodo: () => void;
   /// Closes the thread (Esc too); the list takes the width.
   onClose: () => void;
 }) {
   const [thread, setThread] = useState<SlackThreadMessage[] | null>(null);
+  const [muted, setMuted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reply, setReply] = useState("");
   const [sending, setSending] = useState(false);
-  const threadTs = message.thread_ts ?? message.ts;
   const end = useRef<HTMLDivElement>(null);
+  const { channel, threadTs } = item;
   const read = useCallback(() => {
-    api.slackThread(message.channel, threadTs).then((t) => (setThread(t), setError(null)), (e) => setError(String(e)));
-  }, [message.channel, threadTs]);
+    api.slackThread(channel, threadTs).then(
+      (t) => {
+        setThread(t.messages);
+        setMuted(t.muted);
+        setError(null);
+      },
+      (e) => setError(String(e)),
+    );
+  }, [channel, threadTs]);
   useEffect(read, [read]);
   useEffect(() => {
     const off = listen<{ channel: string; thread_ts: string }>(SLACK_POSTED_EVENT, ({ payload }) => {
-      if (payload.channel === message.channel && payload.thread_ts === threadTs) read();
+      if (payload.channel === channel && payload.thread_ts === threadTs) read();
     });
     return () => void off.then((f) => f());
-  }, [message.channel, threadTs, read]);
+  }, [channel, threadTs, read]);
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end" });
   }, [thread?.length]);
+  const toggleMute = () => api.slackMuteThread(channel, threadTs, !muted).then(() => setMuted(!muted), report);
+  muteRef.current = toggleMute;
+  // Mentions: what is being written after "@", the candidates, and the ones picked (name → how Slack writes it).
+  const [people, setPeople] = useState<SlackMentionable[]>([]);
+  const [typed, setTyped] = useState<{ query: string; from: number } | null>(null);
+  const [active, setActive] = useState(0);
+  const picked = useRef(new Map<string, string>());
+  const inThread = new Set(thread?.map((t) => t.user_name));
+  const candidates = typed
+    ? people
+        .map((p) => {
+          const q = typed.query.toLowerCase();
+          const names = [p.name, ...p.also].map((n) => n.toLowerCase());
+          const rank = !q ? 1 : names.some((n) => n.startsWith(q)) ? 0 : names.some((n) => n.includes(q)) ? 1 : 2;
+          return { p, rank: rank - (inThread.has(p.name) ? 0.5 : 0) };
+        })
+        .filter((c) => c.rank < 2)
+        .sort((a, b) => a.rank - b.rank)
+        .slice(0, SLACK_SUGGESTIONS)
+        .map((c) => c.p)
+    : [];
+  const watchTyping = (text: string, caret: number) => {
+    const m = MENTION_TYPED.exec(text.slice(0, caret));
+    setTyped(m ? { query: m[1], from: caret - m[1].length - 1 } : null);
+    setActive(0);
+    if (m && !slackDirectory) slackDirectory = api.slackDirectory();
+    if (m) slackDirectory?.then(setPeople, (e) => ((slackDirectory = null), report(e)));
+  };
+  const pick = (p: SlackMentionable) => {
+    const box = replyRef.current;
+    if (!typed || !box) return;
+    const caret = box.selectionStart;
+    const next = `${reply.slice(0, typed.from)}@${p.name} ${reply.slice(caret)}`;
+    picked.current.set(p.name, p.token);
+    setReply(next);
+    setTyped(null);
+    const at = typed.from + p.name.length + 2;
+    requestAnimationFrame(() => box.setSelectionRange(at, at));
+  };
+  /// The reply as Slack takes it: the picked mentions written as Slack writes them.
+  const withMentions = (text: string) =>
+    [...picked.current.entries()].sort((a, b) => b[0].length - a[0].length).reduce((t, [name, token]) => t.split(`@${name}`).join(token), text);
   const send = () => {
     if (!reply.trim() || sending) return;
     setSending(true);
     api
-      .slackReply(message.channel, threadTs, reply)
+      .slackReply(channel, threadTs, withMentions(reply))
       .then(() => {
         setReply("");
+        picked.current.clear();
         read();
       }, report)
       .finally(() => setSending(false));
   };
-  const from = message.via ? `@${message.via} へのメンション` : `${message.user_name}さんからのメンション`;
+  const title = item.kind === "thread" ? `スレッド・新しい返信 ${item.newReplies} 件` : item.via ? `@${item.via} へのメンション` : `${item.userName}さんからのメンション`;
   return (
     <section className="slack-thread" aria-label="スレッド">
       <div className="slack-thread-head">
         <span className="grow ellipsis">
-          <b>#{message.channel_name}</b> <span className="muted">· {from}</span>
+          <b>#{item.channelName}</b> <span className="muted">· {title}</span>
         </span>
-        <button className="small" onClick={() => onTodo(slackMemo(message))}>
+        {!item.read && (
+          <button className="small" title="一覧から消して次へ" onClick={onDone}>
+            既読にする <span className="kbd">{keyLabel(keyOf("slackDone"))}</span>
+          </button>
+        )}
+        <button className="ghost small" onClick={onTodo}>
           Todo にする <span className="kbd">{keyLabel(keyOf("slackTodo"))}</span>
         </button>
-        <button className="ghost small" onClick={() => api.openLink(message.permalink).catch(report)}>
-          Slack で開く <Icon name="open" size={12} /> <span className="kbd">{keyLabel(keyOf("slackOpen"))}</span>
+        <button className="ghost small" title="このスレッドの新しい返信を、未読に数えない（メンションは届きます）" onClick={toggleMute}>
+          {muted ? "返信をまた数える" : "返信を数えない"} <span className="kbd">{keyLabel(keyOf("slackMute"))}</span>
+        </button>
+        <button className="ghost small" onClick={() => onLink(item.permalink)}>
+          Slack で開く <span className="kbd">{keyLabel(keyOf("slackOpen"))}</span>
         </button>
         <button className="ghost icon" aria-label="スレッドを閉じる（Esc）" title="スレッドを閉じる（Esc）" onClick={onClose}>
           <Icon name="close" size={13} />
@@ -3444,7 +3595,7 @@ function SlackThread({ message, me, replyRef, bodyRef, report, onTodo, onClose }
           return (
             <div key={t.ts}>
               {i === 1 && <div className="slack-replies">{thread.length - 1} 件の返信</div>}
-              <div className={`slack-msg${joined ? " joined" : ""}${t.ts === message.ts ? " this" : ""}`}>
+              <div className={`slack-msg${joined ? " joined" : ""}${t.ts === item.ts ? " this" : ""}`}>
                 {joined ? <span className="slack-avatar-space slack-time">{slackTime(t.ts).slice(-5)}</span> : <SlackAvatar name={t.user_name} image={t.user_image} size={36} />}
                 <div className="slack-msg-main">
                   {!joined && (
@@ -3453,7 +3604,7 @@ function SlackThread({ message, me, replyRef, bodyRef, report, onTodo, onClose }
                       <span className="slack-time">{slackTime(t.ts)}</span>
                     </div>
                   )}
-                  <SlackText text={t.text} me={me ?? undefined} />
+                  <SlackText text={t.text} me={me ?? undefined} onLink={onLink} />
                 </div>
               </div>
             </div>
@@ -3462,18 +3613,52 @@ function SlackThread({ message, me, replyRef, bodyRef, report, onTodo, onClose }
         <div ref={end} />
       </div>
       <div className="slack-reply">
+        {candidates.length > 0 && (
+          <ul className="slack-suggest" role="listbox" aria-label="メンションの候補">
+            {candidates.map((p, i) => (
+              <li key={p.token} role="option" aria-selected={i === active} className={i === active ? "on" : ""} onMouseDown={(e) => (e.preventDefault(), pick(p))}>
+                <SlackAvatar name={p.name} image={p.image} size={20} />
+                <b>{p.name}</b>
+                <span className="muted ellipsis">{p.token.startsWith("<!subteam") ? "ユーザーグループ" : p.also.join(" · ")}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         <textarea
           ref={replyRef}
           rows={2}
           value={reply}
-          placeholder={`スレッドに返信（${keyLabel(keyOf("slackReply"))} でここへ、⌘Enter で送る、Esc で一覧へ）`}
+          placeholder={`スレッドに返信（${keyLabel(keyOf("slackReply"))} でここへ、@ でメンション、⌘Enter で送る、Esc で一覧へ）`}
           aria-label="スレッドに返信"
-          onChange={(e) => setReply(e.target.value)}
+          onChange={(e) => {
+            setReply(e.target.value);
+            watchTyping(e.target.value, e.target.selectionStart);
+          }}
           onKeyDown={(e) => {
-            if (e.key === "Enter" && e.metaKey && !e.nativeEvent.isComposing) {
+            const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+            if (candidates.length > 0 && !composing) {
+              const step = e.key === "ArrowDown" || (e.ctrlKey && e.key === "n") ? 1 : e.key === "ArrowUp" || (e.ctrlKey && e.key === "p") ? -1 : 0;
+              if (step) {
+                e.preventDefault();
+                setActive((a) => (a + step + candidates.length) % candidates.length);
+                return;
+              }
+              if ((e.key === "Enter" && !e.metaKey) || e.key === "Tab") {
+                e.preventDefault();
+                pick(candidates[active]);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                setTyped(null);
+                return;
+              }
+            }
+            if (e.key === "Enter" && e.metaKey && !composing) {
               e.preventDefault();
               send();
-            } else if (e.key === "Escape" && !e.nativeEvent.isComposing) {
+            } else if (e.key === "Escape" && !composing) {
               e.preventDefault();
               e.stopPropagation();
               e.currentTarget.blur();
@@ -6046,7 +6231,7 @@ export default function App() {
       }),
       listen<{ id: number }>(OPEN_TODO_EVENT, ({ payload }) => goTodoRef.current(payload.id)),
       listen<{ channel: string; ts: string }>(OPEN_SLACK_EVENT, ({ payload }) => {
-        setSlackPick(slackKey(payload));
+        setSlackPick(mentionKey(payload));
         setViewRef.current("slack");
       }),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
@@ -6549,7 +6734,7 @@ export default function App() {
   const draggedTodo = dragging !== null ? allTodos.find((t) => t.id === dragging) : undefined;
   // Review requests no review session has taken yet.
   const reviewCount = waiting.filter((w) => w.reasons.includes("review")).length;
-  const slackUnread = board?.slack.connected ? board.slack.messages.filter((m) => !m.read).length : 0;
+  const slackUnread = board?.slack.connected ? board.slack.messages.filter((m) => !m.read).length + board.slack.threads.length : 0;
 
   // The sidebar lists the objects only, each with what of it waits on the
   // user (or how many there are); how a list shows is chosen on its page.
@@ -6580,7 +6765,7 @@ export default function App() {
       icon: "chat",
       on: view === "slack",
       go: () => setView("slack"),
-      badge: slackUnread > 0 && <span className="pill accent" title="アプリでまだ読んでいないメンション">{slackUnread}</span>,
+      badge: slackUnread > 0 && <span className="pill accent" title="未読のメンションと、新しい返信があるスレッド">{slackUnread}</span>,
     },
     {
       key: "inputs",
@@ -6660,9 +6845,7 @@ export default function App() {
       >
         <aside className="sidebar" onPointerDown={() => sideZoneRef.current && setSideZone(false)}>
           <div className="brand">
-            <span className="brand-mark" aria-hidden="true">
-              斎
-            </span>
+            <img className="brand-mark" src={logoUrl} alt="" aria-hidden="true" />
             <span>Shosai</span>
           </div>
           <button className="search" onClick={() => setDialog("palette")}>

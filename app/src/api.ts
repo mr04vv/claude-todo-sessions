@@ -185,6 +185,27 @@ export interface SlackMessage {
   read: boolean;
 }
 
+/** A Slack thread the user is in, with replies since they last saw it (#28). */
+export interface SlackThread {
+  channel: string;
+  thread_ts: string;
+  channel_name: string;
+  permalink: string;
+  latest_ts: string | null;
+  latest_user_name: string | null;
+  latest_text: string | null;
+  latest_image: string | null;
+  new_replies: number;
+}
+
+/** Someone or a user group to mention in a reply: how it is written (`<@U1>`), its name, what else finds it. */
+export interface SlackMentionable {
+  token: string;
+  name: string;
+  also: string[];
+  image: string | null;
+}
+
 export interface SlackView {
   connected: boolean;
   /** Socket Mode brings the messages as they are posted (else a search every 2 minutes). */
@@ -197,6 +218,8 @@ export interface SlackView {
   error: string | null;
   /** Newest first. */
   messages: SlackMessage[];
+  /** The threads the user is in with new replies, the latest first. */
+  threads: SlackThread[];
 }
 
 /** Who the kept Slack token is. */
@@ -400,7 +423,10 @@ export const api = {
   slackSetAppToken: (token: string) => invoke<void>("slack_set_app_token", { token }),
   slackForgetAppToken: () => invoke<void>("slack_forget_app_token"),
   slackRead: (channel: string, ts: string) => invoke<void>("slack_read", { channel, ts }),
-  slackThread: (channel: string, threadTs: string) => invoke<SlackThreadMessage[]>("slack_thread", { channel, threadTs }),
+  slackThread: (channel: string, threadTs: string) => invoke<{ messages: SlackThreadMessage[]; muted: boolean }>("slack_thread", { channel, threadTs }),
+  slackThreadSeen: (channel: string, threadTs: string) => invoke<void>("slack_thread_seen", { channel, threadTs }),
+  slackMuteThread: (channel: string, threadTs: string, muted: boolean) => invoke<void>("slack_mute_thread", { channel, threadTs, muted }),
+  slackDirectory: () => invoke<SlackMentionable[]>("slack_directory"),
   slackReply: (channel: string, threadTs: string, text: string) => invoke<void>("slack_reply", { channel, threadTs, text }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
