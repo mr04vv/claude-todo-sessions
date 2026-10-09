@@ -321,17 +321,17 @@ struct OpenSlack {
 }
 
 /// A hit as kept: its sender by name and its text made plain.
-fn to_message(slack: &Slack, token: &str, hit: Hit, via: Option<&str>) -> NewSlackMessage {
+fn to_message(slack: &Slack, token: &str, hit: Hit, via: Option<String>, groups: &[Group]) -> NewSlackMessage {
     slack.remember_channel(&hit.channel, &hit.channel_name);
     NewSlackMessage {
         user_name: slack.name_of(token, &hit.user).unwrap_or(hit.user_name),
-        text: slack.plain(token, &hit.text),
+        text: slack.plain(token, &slack::label_groups(&hit.text, groups)),
         channel: hit.channel,
         ts: hit.ts,
         thread_ts: hit.thread_ts,
         channel_name: hit.channel_name,
         permalink: hit.permalink,
-        via: via.map(String::from),
+        via,
     }
 }
 
@@ -357,10 +357,20 @@ fn check(app: &AppHandle, db: &Db, slack: &Slack, token: &str) -> Result<(), Str
         Ok(g) => (g, None),
         Err(e) => (Vec::new(), Some(e)),
     };
-    let mut found: Vec<NewSlackMessage> = slack::search(token, &slack::mentions_of(&me.user_id))?.into_iter().filter(|h| h.user != me.user_id).map(|h| to_message(slack, token, h, None)).collect();
+    let mut hits = slack::search(token, &slack::mentions_of(&me.user_id))?;
     for g in &groups {
-        found.extend(slack::search(token, &slack::mentions_of_group(&g.id))?.into_iter().filter(|h| h.user != me.user_id).map(|h| to_message(slack, token, h, Some(&g.handle))));
+        hits.extend(slack::search(token, &slack::mentions_of_group(&g.id))?);
     }
+    // The search matches loosely: only what does mention the user or one of
+    // their groups (as the socket's messages are told) is kept.
+    let found: Vec<NewSlackMessage> = hits
+        .into_iter()
+        .filter(|h| h.user != me.user_id)
+        .filter_map(|h| {
+            let via = slack::mention_in(&h.text, &me.user_id, &groups)?;
+            Some(to_message(slack, token, h, via, &groups))
+        })
+        .collect();
     let quiet = !db.has_slack_messages().map_err(err)?;
     let kept = db.add_slack_messages(&found, quiet).map_err(err)?;
     if !quiet {
@@ -434,7 +444,7 @@ fn on_event(app: &AppHandle, db: &Db, slack: &Slack, token: &str, event: &serde_
     let message = NewSlackMessage {
         channel_name: slack.channel_name(token, &posted.channel),
         user_name: slack.name_of(token, &posted.user).or(posted.user_name).unwrap_or_else(|| posted.user.clone()),
-        text: slack.plain(token, &posted.text),
+        text: slack.plain(token, &slack::label_groups(&posted.text, &groups)),
         permalink: slack::permalink(&me.team_url, &posted.channel, &posted.ts, posted.thread_ts.as_deref()),
         channel: posted.channel,
         ts: posted.ts,

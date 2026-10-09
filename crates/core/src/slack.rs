@@ -195,6 +195,12 @@ pub fn plain(text: &str, name_of: impl Fn(&str) -> Option<String>) -> String {
     out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 }
 
+/// The user's groups' mentions (`<!subteam^S1>`) given their handles
+/// (`<!subteam^S1|@web-team>`).
+pub fn label_groups(text: &str, groups: &[Group]) -> String {
+    groups.iter().fold(text.to_string(), |text, g| text.replace(&format!("<!subteam^{}>", g.id), &format!("<!subteam^{}|@{}>", g.id, g.handle)))
+}
+
 /// The search for mentions of the user.
 pub fn mentions_of(user: &str) -> String {
     format!("<@{user}>")
@@ -437,6 +443,12 @@ mod tests {
         assert_eq!(plain("<https://github.com/acme/web/pull/57|PR #57> と <https://example.com>", names), "PR #57 と https://example.com");
         assert_eq!(plain("a &lt; b &amp;&amp; c &gt; d", names), "a < b && c > d");
         assert_eq!(plain("閉じない < のまま", names), "閉じない < のまま");
+    }
+
+    #[test]
+    fn the_users_groups_get_their_handles() {
+        let groups = vec![Group { id: "S1".into(), handle: "web-team".into() }];
+        assert_eq!(label_groups("<!subteam^S1> と <!subteam^S2> と <!subteam^S1|@web>", &groups), "<!subteam^S1|@web-team> と <!subteam^S2> と <!subteam^S1|@web>");
     }
 
     #[test]
