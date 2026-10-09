@@ -179,6 +179,8 @@ export interface SlackMessage {
   permalink: string;
   /** The user group's handle when it mentions a group, not the user. */
   via: string | null;
+  /** The sender's picture. */
+  user_image: string | null;
   /** Read in the app (Slack's own marks are left as they are). */
   read: boolean;
 }
@@ -187,6 +189,8 @@ export interface SlackView {
   connected: boolean;
   /** Socket Mode brings the messages as they are posted (else a search every 2 minutes). */
   live: boolean;
+  /** The user's Slack id, once known (their mentions are marked). */
+  user_id: string | null;
   /** Why the last check failed. */
   error: string | null;
   /** Newest first. */
@@ -204,6 +208,8 @@ export interface SlackAccount {
 /** A message of a Slack thread, its head first. */
 export interface SlackThreadMessage {
   user_name: string;
+  user_image: string | null;
+  /** Slack's markup (slackText.ts formats it), the user mentions named. */
   text: string;
   ts: string;
   mine: boolean;
@@ -393,6 +399,7 @@ export const api = {
   slackForgetAppToken: () => invoke<void>("slack_forget_app_token"),
   slackRead: (channel: string, ts: string) => invoke<void>("slack_read", { channel, ts }),
   slackThread: (channel: string, threadTs: string) => invoke<SlackThreadMessage[]>("slack_thread", { channel, threadTs }),
+  slackReply: (channel: string, threadTs: string, text: string) => invoke<void>("slack_reply", { channel, threadTs, text }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
   /// A page's own title (og:title, else <title>), when it has one.
@@ -503,6 +510,8 @@ export const REVIEW_SUBMITTED_EVENT = "review-submitted";
 export const OPEN_TODO_EVENT = "open-todo";
 /// `{channel, ts}`: a Slack message to show (a mention's notification).
 export const OPEN_SLACK_EVENT = "open-slack";
+/// `{channel, thread_ts}`: a message was posted where the user is (Socket Mode); an open thread reads itself again.
+export const SLACK_POSTED_EVENT = "slack-posted";
 /// `{tab, on}`: a tab's page was translated where it is, or put back.
 export const BROWSER_TRANSLATED_EVENT = "browser-translated";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */

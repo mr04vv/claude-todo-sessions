@@ -41,6 +41,14 @@ export type Action =
   | "reviewAgent"
   | "reviewSubmit"
   | "reviewRunner"
+  | "slackFilter"
+  | "slackReply"
+  | "slackTodo"
+  | "slackOpen"
+  | "slackScrollDown"
+  | "slackScrollUp"
+  | "slackNarrower"
+  | "slackWider"
   | "search"
   | "help"
   | "paletteDown"
@@ -113,6 +121,19 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     ],
   },
   {
+    group: "Slack の画面（Enter でスレッドを開く）",
+    items: [
+      ["slackFilter", "未読・メンション・既読を切り替える"],
+      ["slackReply", "返信欄へ（⌘Enter で送る、Esc で一覧へ戻る）"],
+      ["slackTodo", "Todo にする"],
+      ["slackOpen", "Slack で開く"],
+      ["slackScrollDown", "スレッドを下へ"],
+      ["slackScrollUp", "スレッドを上へ"],
+      ["slackNarrower", "一覧を狭める"],
+      ["slackWider", "一覧を広げる"],
+    ],
+  },
+  {
     group: "⌘K のメニュー",
     items: [
       ["paletteDown", "下へ"],
@@ -160,6 +181,14 @@ const KEYS: Record<Action, string> = {
   reviewAgent: "a",
   reviewSubmit: "s",
   reviewRunner: "r",
+  slackFilter: "f",
+  slackReply: "r",
+  slackTodo: "t",
+  slackOpen: "o",
+  slackScrollDown: "shift+j",
+  slackScrollUp: "shift+k",
+  slackNarrower: "[",
+  slackWider: "]",
   search: "/",
   help: "?",
   paletteDown: "ctrl+j",
