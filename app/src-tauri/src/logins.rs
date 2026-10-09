@@ -1,4 +1,5 @@
-// Logins kept for the in-app browser: one per site (host), in the Keychain
+// Secrets in the Keychain (the Slack token too), and the logins kept for the
+// in-app browser: one per site (host), in the Keychain
 // through /usr/bin/security (as the Claude credentials are; the framework
 // itself would ask for access after every rebuild). The secret goes in on
 // security's stdin, never in its arguments.
@@ -33,17 +34,16 @@ fn read_secret(out: &str) -> Option<Login> {
     })
 }
 
-/// The login kept for `host`, if any.
-pub fn load(host: &str) -> Option<Login> {
-    let out = Command::new(SECURITY).args(["find-generic-password", "-s", SERVICE, "-a", host, "-w"]).output().ok()?;
-    out.status.success().then(|| read_secret(&String::from_utf8_lossy(&out.stdout))).flatten()
+/// The secret kept as `service`'s `account`, as security prints it.
+pub fn load_secret(service: &str, account: &str) -> Option<String> {
+    let out = Command::new(SECURITY).args(["find-generic-password", "-s", service, "-a", account, "-w"]).output().ok()?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// Keeps (or replaces) the login for `host`.
-pub fn save(host: &str, login: &Login) -> Result<(), String> {
-    let secret = serde_json::to_string(login).map_err(|e| e.to_string())?;
+/// Keeps (or replaces) a secret as `service`'s `account`.
+pub fn save_secret(service: &str, account: &str, secret: &str) -> Result<(), String> {
     let mut child = Command::new(SECURITY).arg("-i").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
-    let line = format!("add-generic-password -U -s {} -a {} -w {}\n", quote(SERVICE), quote(host), quote(&secret));
+    let line = format!("add-generic-password -U -s {} -a {} -w {}\n", quote(service), quote(account), quote(secret));
     child.stdin.take().ok_or("security の入力を開けません")?.write_all(line.as_bytes()).map_err(|e| e.to_string())?;
     let out = child.wait_with_output().map_err(|e| e.to_string())?;
     let said = String::from_utf8_lossy(&out.stderr);
@@ -51,6 +51,22 @@ pub fn save(host: &str, login: &Login) -> Result<(), String> {
         return Err(format!("Keychain に保存できませんでした: {}", said.trim()));
     }
     Ok(())
+}
+
+/// Takes `service`'s `account` out of the Keychain; false when none was kept.
+pub fn delete_secret(service: &str, account: &str) -> Result<bool, String> {
+    let out = Command::new(SECURITY).args(["delete-generic-password", "-s", service, "-a", account]).output().map_err(|e| e.to_string())?;
+    Ok(out.status.success())
+}
+
+/// The login kept for `host`, if any.
+pub fn load(host: &str) -> Option<Login> {
+    load_secret(SERVICE, host).and_then(|out| read_secret(&out))
+}
+
+/// Keeps (or replaces) the login for `host`.
+pub fn save(host: &str, login: &Login) -> Result<(), String> {
+    save_secret(SERVICE, host, &serde_json::to_string(login).map_err(|e| e.to_string())?)
 }
 
 /// The sites with a login kept, from `security dump-keychain` (its items'
@@ -70,8 +86,7 @@ fn sites_in(dump: &str) -> Vec<String> {
 
 /// Takes the login for `host` out of the Keychain.
 pub fn delete(host: &str) -> Result<(), String> {
-    let out = Command::new(SECURITY).args(["delete-generic-password", "-s", SERVICE, "-a", host]).output().map_err(|e| e.to_string())?;
-    out.status.success().then_some(()).ok_or_else(|| "このサイトのログインは保存されていません".into())
+    delete_secret(SERVICE, host)?.then_some(()).ok_or_else(|| "このサイトのログインは保存されていません".into())
 }
 
 #[cfg(test)]

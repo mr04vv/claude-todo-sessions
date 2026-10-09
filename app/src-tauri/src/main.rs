@@ -3,6 +3,7 @@
 mod ask;
 mod cef_browser;
 mod logins;
+mod slack;
 mod study;
 mod terminal;
 mod translate;
@@ -146,6 +147,8 @@ struct SessionView {
 #[derive(Serialize)]
 struct Board {
     todos: Vec<TodoView>,
+    /// The Slack messages for the user (#27), and whether Slack is connected.
+    slack: slack::SlackView,
     /// The Input page's reading material, apart from the todos.
     inputs: Vec<Input>,
     inbox: Vec<SessionView>,
@@ -223,8 +226,8 @@ struct TodoUpdate {
 }
 
 #[tauri::command(async)]
-fn board(state: State<AppState>) -> Result<Board, String> {
-    let (todos, inputs, inbox, feynman, artifacts, themes) = {
+fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Board, String> {
+    let (todos, inputs, inbox, feynman, artifacts, themes, slack) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
         let todos = db
@@ -241,7 +244,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
             // A review that ended without being put away stopped before submitting: it waits on the user.
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .collect();
-        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?, db.list_themes().map_err(err)?)
+        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?, db.list_themes().map_err(err)?, slack::view(&slack_state, &db)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -260,7 +263,7 @@ fn board(state: State<AppState>) -> Result<Board, String> {
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, inputs, inbox, feynman, artifacts, themes, sync_status })
+    Ok(Board { todos, slack, inputs, inbox, feynman, artifacts, themes, sync_status })
 }
 
 #[tauri::command(async)]
@@ -2559,6 +2562,7 @@ fn main() {
     let db = open_db().expect("open database");
     let (github_tx, github_rx) = std::sync::mpsc::channel();
     let (cloud_tx, cloud_rx) = std::sync::mpsc::channel();
+    let (slack_tx, slack_rx) = std::sync::mpsc::channel();
     // The in-app browser (Chromium) starts before Tauri makes the NSApplication.
     if !cef_browser::init() {
         eprintln!("cef: not started (the browser pane needs the .app made by scripts/bundle-cef.sh)");
@@ -2566,6 +2570,7 @@ fn main() {
     tauri::Builder::default()
         .manage(terminal::Terminals::default())
         .manage(translate::Kept::load())
+        .manage(slack::Slack::new(slack_tx))
         .manage(AppState {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
@@ -2603,6 +2608,8 @@ fn main() {
             std::thread::spawn(move || watch_loop(handle));
             let handle = app.handle().clone();
             std::thread::spawn(move || issue_sync_loop(handle, github_rx));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || slack::run(handle, slack_rx));
             Ok(())
         })
         .menu(app_menu)
@@ -2626,6 +2633,11 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             board,
+            slack::slack_connect,
+            slack::slack_account,
+            slack::slack_disconnect,
+            slack::slack_read,
+            slack::slack_thread,
             create_todo,
             update_todo,
             delete_todo,
