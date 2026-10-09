@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PROFILE="${1:-release}"
-APP="target/$PROFILE/bundle/macos/Todo Sessions.app"
+APP="target/$PROFILE/bundle/macos/Shosai.app"
 CEF="${CEF_PATH:-$HOME/.local/share/cef}"
 FRAMEWORK="Chromium Embedded Framework.framework"
 MAIN="todo-sessions-app"
