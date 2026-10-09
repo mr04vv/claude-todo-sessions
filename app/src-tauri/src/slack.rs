@@ -5,7 +5,7 @@
 // without the app's token). The user's own are notified. What is read is
 // the app's own; Slack's read marks stay as they are.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -13,8 +13,8 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cts_core::slack::{self, Envelope, Group, Hit, Me, Person};
-use cts_core::{Db, NewSlackMessage, SlackMessage};
+use cts_core::slack::{self, Envelope, Group, Hit, Me, Member, Person};
+use cts_core::{Db, NewSlackMessage, SlackMessage, SlackReply, SlackThread};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -64,6 +64,11 @@ pub struct Slack {
     me: Mutex<Option<Me>>,
     /// The user's groups, once asked (asked again hourly).
     groups: Mutex<Option<Vec<Group>>>,
+    /// The channels whose mentions count: the user's, less the muted (asked
+    /// hourly with the groups; None until asked, or when it could not be).
+    channels_ok: Mutex<Option<Listening>>,
+    /// The people and user groups to mention, asked once a run.
+    directory: Mutex<Option<Vec<Mentionable>>>,
     people: Mutex<HashMap<String, Person>>,
     /// Channels' names by id, from the searches or asked.
     channels: Mutex<HashMap<String, String>>,
@@ -82,6 +87,8 @@ impl Slack {
             socket_error: Mutex::new(None),
             me: Mutex::new(None),
             groups: Mutex::new(None),
+            channels_ok: Mutex::new(None),
+            directory: Mutex::new(None),
             people: Mutex::new(load_kept(PEOPLE_FILE)),
             channels: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
@@ -97,6 +104,32 @@ impl Slack {
         let groups = slack::groups(token, me)?;
         *self.groups.lock().map_err(err)? = Some(groups.clone());
         Ok(groups)
+    }
+
+    /// Whether a mention in `channel` counts: the user is in it and has not
+    /// muted it. Not knowing (Slack would not say), every channel counts.
+    fn listens_to(&self, token: &str, channel: &str) -> bool {
+        let known = self.channels_ok.lock().ok().and_then(|c| c.clone());
+        let listening = match known {
+            Some(l) => l,
+            None => {
+                let member = match slack::member_channels(token) {
+                    Ok(ids) => Some(ids),
+                    Err(e) => {
+                        eprintln!("slack channels: {e}");
+                        None
+                    }
+                };
+                // users.prefs.get is undocumented: refused, nothing counts as muted.
+                let muted = slack::muted_channels(token).map_err(|e| eprintln!("slack muted: {e}")).unwrap_or_default().into_iter().collect();
+                let l = Listening { member, muted };
+                if let Ok(mut c) = self.channels_ok.lock() {
+                    *c = Some(l.clone());
+                }
+                l
+            }
+        };
+        known_or_all(&listening, channel)
     }
 
     fn remember_channel(&self, channel: &str, name: &str) {
@@ -188,11 +221,56 @@ impl Slack {
         if let Ok(mut groups) = self.groups.lock() {
             *groups = None;
         }
+        self.forget_channels();
         self.renew_socket();
         if let Ok(wake) = self.wake.lock() {
             let _ = wake.send(());
         }
     }
+}
+
+impl Slack {
+    fn forget_channels(&self) {
+        if let Ok(mut c) = self.channels_ok.lock() {
+            *c = None;
+        }
+    }
+}
+
+/// The channels the user is in (None: Slack would not say) and those they muted.
+#[derive(Clone)]
+struct Listening {
+    member: Option<HashSet<String>>,
+    muted: HashSet<String>,
+}
+
+fn known_or_all(l: &Listening, channel: &str) -> bool {
+    l.member.as_ref().is_none_or(|m| m.contains(channel)) && !l.muted.contains(channel)
+}
+
+/// Someone (or a user group) to mention in a reply: how it is written
+/// (`<@U1>`, `<!subteam^S1>`), its name, what else finds it, and a picture.
+#[derive(Clone, Serialize)]
+pub struct Mentionable {
+    token: String,
+    name: String,
+    also: Vec<String>,
+    image: Option<String>,
+}
+
+/// The workspace's people and user groups, to mention in a reply (asked once a run).
+#[tauri::command(async)]
+pub fn slack_directory(slack: State<Slack>) -> Result<Vec<Mentionable>, String> {
+    if let Some(known) = slack.directory.lock().map_err(err)?.clone() {
+        return Ok(known);
+    }
+    let token = token_or_err()?;
+    let people = slack::members(&token)?.into_iter().map(|m: Member| Mentionable { token: format!("<@{}>", m.id), name: m.name, also: [Some(m.handle), m.real_name].into_iter().flatten().collect(), image: m.image });
+    // Groups need usergroups:read, which the app has; failing that, people only.
+    let groups = slack::all_groups(&token).map_err(|e| eprintln!("slack groups: {e}")).unwrap_or_default();
+    let all: Vec<Mentionable> = people.chain(groups.into_iter().map(|g| Mentionable { token: format!("<!subteam^{}>", g.id), name: g.handle, also: Vec::new(), image: None })).collect();
+    *slack.directory.lock().map_err(err)? = Some(all.clone());
+    Ok(all)
 }
 
 fn token() -> Option<String> {
@@ -219,6 +297,8 @@ pub struct SlackView {
     user_id: Option<String>,
     error: Option<String>,
     messages: Vec<SlackMessage>,
+    /// The threads the user is in with new replies (#28).
+    threads: Vec<SlackThread>,
 }
 
 pub fn view(slack: &Slack, db: &Db) -> Result<SlackView, String> {
@@ -231,6 +311,7 @@ pub fn view(slack: &Slack, db: &Db) -> Result<SlackView, String> {
         user_id: slack.me.lock().map_err(err)?.as_ref().map(|m| m.user_id.clone()),
         error: error.or(socket_error),
         messages: db.slack_messages(BOARD_MESSAGES).map_err(err)?,
+        threads: db.slack_threads().map_err(err)?,
     })
 }
 
@@ -320,13 +401,22 @@ pub struct ThreadMessage {
     mine: bool,
 }
 
-/// The thread `thread_ts` of `channel` (a message not in a thread is its own), its head first.
+/// A thread as the page shows it: its messages (its head first), and
+/// whether its replies are muted (#29).
+#[derive(Serialize)]
+pub struct ThreadView {
+    messages: Vec<ThreadMessage>,
+    muted: bool,
+}
+
+/// The thread `thread_ts` of `channel` (a message not in a thread is its own).
 #[tauri::command(async)]
-pub fn slack_thread(slack: State<Slack>, channel: String, thread_ts: String) -> Result<Vec<ThreadMessage>, String> {
+pub fn slack_thread(state: State<AppState>, slack: State<Slack>, channel: String, thread_ts: String) -> Result<ThreadView, String> {
     let token = token_or_err()?;
     let me = slack.me(&token)?;
     let groups = slack.groups(&token, &me.user_id).unwrap_or_default();
-    Ok(slack::replies(&token, &channel, &thread_ts)?
+    let muted = state.db.lock().map_err(err)?.is_slack_thread_muted(&channel, &thread_ts).map_err(err)?;
+    let messages = slack::replies(&token, &channel, &thread_ts)?
         .into_iter()
         .map(|m| {
             let person = slack.person(&token, &m.user);
@@ -338,7 +428,26 @@ pub fn slack_thread(slack: State<Slack>, channel: String, thread_ts: String) -> 
                 ts: m.ts,
             }
         })
-        .collect())
+        .collect();
+    Ok(ThreadView { messages, muted })
+}
+
+/// A followed thread's new replies seen (they leave the unread).
+#[tauri::command(async)]
+pub fn slack_thread_seen(state: State<AppState>, channel: String, thread_ts: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.mark_slack_thread_seen(&channel, &thread_ts).map_err(err)
+}
+
+/// Stops counting a thread's replies, or starts again (#29); a thread not
+/// followed yet is followed, so it can be muted.
+#[tauri::command(async)]
+pub fn slack_mute_thread(state: State<AppState>, slack: State<Slack>, channel: String, thread_ts: String, muted: bool) -> Result<(), String> {
+    let token = token_or_err()?;
+    let me = slack.me(&token)?;
+    let name = slack.channel_name(&token, &channel);
+    let db = state.db.lock().map_err(err)?;
+    db.follow_slack_thread(&channel, &thread_ts, &name, &slack::permalink(&me.team_url, &channel, &thread_ts, None)).map_err(err)?;
+    db.mute_slack_thread(&channel, &thread_ts, muted).map_err(err)
 }
 
 /// Replies in a thread as the user (#30).
@@ -408,13 +517,18 @@ fn check(app: &AppHandle, db: &Db, slack: &Slack, token: &str) -> Result<(), Str
     // their groups (as the socket's messages are told) is kept.
     let found: Vec<NewSlackMessage> = hits
         .into_iter()
-        .filter(|h| h.user != me.user_id)
+        .filter(|h| h.user != me.user_id && slack.listens_to(token, &h.channel))
         .filter_map(|h| {
             let via = slack::mention_in(&h.text, &me.user_id, &groups)?;
             Some(to_message(slack, token, h, via, &groups))
         })
         .collect();
     let quiet = !db.has_slack_messages().map_err(err)?;
+    // The threads the user is mentioned in are theirs to follow (#28).
+    for m in &found {
+        let thread = m.thread_ts.as_deref().unwrap_or(&m.ts);
+        db.follow_slack_thread(&m.channel, thread, &m.channel_name, &slack::permalink(&me.team_url, &m.channel, thread, None)).map_err(err)?;
+    }
     let kept = db.add_slack_messages(&found, quiet).map_err(err)?;
     if !quiet {
         notify(app, kept);
@@ -437,6 +551,7 @@ pub fn run(app: AppHandle, wake: Receiver<()>) {
                 if let Ok(mut groups) = slack.groups.lock() {
                     *groups = None;
                 }
+                slack.forget_channels();
             }
             let result = check(&app, &db, &slack, &token);
             if let Err(e) = &result {
@@ -474,18 +589,40 @@ fn connect(url: &str) -> Result<Socket, String> {
     Ok(socket)
 }
 
-/// A message posted where the user is: kept (and notified) when it
-/// mentions them or one of their groups, and is not theirs.
+/// A message posted where the user is. The user's own makes its thread
+/// theirs (seen). Another's that mentions them or one of their groups is
+/// kept (and notified), its thread followed; a reply in a thread they
+/// follow counts as new there (#28).
 fn on_event(app: &AppHandle, db: &Db, slack: &Slack, token: &str, event: &serde_json::Value) -> Result<(), String> {
     let Some(posted) = slack::parse_posted(event) else { return Ok(()) };
-    let thread = Posted { channel: posted.channel.clone(), thread_ts: posted.thread_ts.clone().unwrap_or_else(|| posted.ts.clone()) };
-    let _ = app.emit(SLACK_POSTED_EVENT, thread);
+    let thread_ts = posted.thread_ts.clone().unwrap_or_else(|| posted.ts.clone());
+    let _ = app.emit(SLACK_POSTED_EVENT, Posted { channel: posted.channel.clone(), thread_ts: thread_ts.clone() });
     let me = slack.me(token)?;
+    let follow = |slack: &Slack| -> Result<(), String> {
+        let name = slack.channel_name(token, &posted.channel);
+        db.follow_slack_thread(&posted.channel, &thread_ts, &name, &slack::permalink(&me.team_url, &posted.channel, &thread_ts, None)).map_err(err)
+    };
     if posted.user == me.user_id {
+        follow(slack)?;
+        return db.mark_slack_thread_seen(&posted.channel, &thread_ts).map_err(err);
+    }
+    if !slack.listens_to(token, &posted.channel) {
         return Ok(());
     }
     let groups = slack.groups(token, &me.user_id).unwrap_or_default();
-    let Some(via) = slack::mention_in(&posted.text, &me.user_id, &groups) else { return Ok(()) };
+    let Some(via) = slack::mention_in(&posted.text, &me.user_id, &groups) else {
+        if posted.thread_ts.is_some() {
+            let reply = SlackReply {
+                ts: posted.ts.clone(),
+                user_name: slack.name_of(token, &posted.user).or(posted.user_name.clone()).unwrap_or_else(|| posted.user.clone()),
+                text: slack.plain(token, &slack::label_groups(&posted.text, &groups)),
+                user_image: slack.image_of(token, &posted.user),
+            };
+            db.slack_thread_replied(&posted.channel, &thread_ts, &reply).map_err(err)?;
+        }
+        return Ok(());
+    };
+    follow(slack)?;
     let message = NewSlackMessage {
         channel_name: slack.channel_name(token, &posted.channel),
         user_name: slack.name_of(token, &posted.user).or(posted.user_name).unwrap_or_else(|| posted.user.clone()),
