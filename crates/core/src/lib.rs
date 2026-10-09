@@ -480,6 +480,30 @@ pub struct NewSlackMessage {
     pub user_image: Option<String>,
 }
 
+/// A Slack thread the user is in (#28): one they wrote in, or were
+/// mentioned in, and its replies since they last saw it (none while muted, #29).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SlackThread {
+    pub channel: String,
+    pub thread_ts: String,
+    pub channel_name: String,
+    pub permalink: String,
+    pub latest_ts: Option<String>,
+    pub latest_user_name: Option<String>,
+    pub latest_text: Option<String>,
+    pub latest_image: Option<String>,
+    pub new_replies: i64,
+}
+
+/// A reply in a followed thread, as it came.
+#[derive(Debug, Clone)]
+pub struct SlackReply {
+    pub ts: String,
+    pub user_name: String,
+    pub text: String,
+    pub user_image: Option<String>,
+}
+
 /// Something that happened under a todo: what its orchestrator did, or what
 /// it was told of its subtasks (its 経過).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -642,6 +666,19 @@ CREATE TABLE IF NOT EXISTS slack_messages (
     user_image TEXT,
     read INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (channel, ts)
+);
+CREATE TABLE IF NOT EXISTS slack_threads (
+    channel TEXT NOT NULL,
+    thread_ts TEXT NOT NULL,
+    channel_name TEXT NOT NULL,
+    permalink TEXT NOT NULL,
+    latest_ts TEXT,
+    latest_user_name TEXT,
+    latest_text TEXT,
+    latest_image TEXT,
+    new_replies INTEGER NOT NULL DEFAULT 0,
+    muted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (channel, thread_ts)
 );
 CREATE TABLE IF NOT EXISTS input_links (
     id INTEGER PRIMARY KEY,
@@ -1618,8 +1655,68 @@ impl Db {
 
     /// Forgets what came from Slack, when the user lets it go.
     pub fn clear_slack(&self) -> Result<()> {
-        self.conn.execute("DELETE FROM slack_messages", [])?;
+        self.conn.execute_batch("DELETE FROM slack_messages; DELETE FROM slack_threads;")?;
         Ok(())
+    }
+
+    /// Follows a thread the user wrote in or was mentioned in (once).
+    pub fn follow_slack_thread(&self, channel: &str, thread_ts: &str, channel_name: &str, permalink: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO slack_threads (channel, thread_ts, channel_name, permalink) VALUES (?1, ?2, ?3, ?4)",
+            params![channel, thread_ts, channel_name, permalink],
+        )?;
+        Ok(())
+    }
+
+    /// Counts a reply in a followed thread not muted; false for any other.
+    pub fn slack_thread_replied(&self, channel: &str, thread_ts: &str, reply: &SlackReply) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE slack_threads SET latest_ts = ?3, latest_user_name = ?4, latest_text = ?5, latest_image = ?6, new_replies = new_replies + 1
+             WHERE channel = ?1 AND thread_ts = ?2 AND muted = 0",
+            params![channel, thread_ts, reply.ts, reply.user_name, reply.text, reply.user_image],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn mark_slack_thread_seen(&self, channel: &str, thread_ts: &str) -> Result<()> {
+        self.conn.execute("UPDATE slack_threads SET new_replies = 0 WHERE channel = ?1 AND thread_ts = ?2", params![channel, thread_ts])?;
+        Ok(())
+    }
+
+    /// Stops (or starts again) counting a thread's replies; what was new goes.
+    pub fn mute_slack_thread(&self, channel: &str, thread_ts: &str, muted: bool) -> Result<()> {
+        self.conn.execute("UPDATE slack_threads SET muted = ?3, new_replies = 0 WHERE channel = ?1 AND thread_ts = ?2", params![channel, thread_ts, muted])?;
+        Ok(())
+    }
+
+    pub fn is_slack_thread_muted(&self, channel: &str, thread_ts: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT muted FROM slack_threads WHERE channel = ?1 AND thread_ts = ?2", params![channel, thread_ts], |r| r.get(0))
+            .optional()?
+            .unwrap_or(false))
+    }
+
+    /// The followed threads with new replies, the latest first.
+    pub fn slack_threads(&self) -> Result<Vec<SlackThread>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT channel, thread_ts, channel_name, permalink, latest_ts, latest_user_name, latest_text, latest_image, new_replies
+             FROM slack_threads WHERE new_replies > 0 AND muted = 0 ORDER BY CAST(latest_ts AS REAL) DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SlackThread {
+                channel: r.get(0)?,
+                thread_ts: r.get(1)?,
+                channel_name: r.get(2)?,
+                permalink: r.get(3)?,
+                latest_ts: r.get(4)?,
+                latest_user_name: r.get(5)?,
+                latest_text: r.get(6)?,
+                latest_image: r.get(7)?,
+                new_replies: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Marks the session running and links it when the prompt carries a

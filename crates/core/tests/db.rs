@@ -1175,3 +1175,49 @@ fn slack_messages_kept_before_pictures_open_without_them() {
     let db = Db::open(&path).unwrap();
     assert_eq!(db.slack_messages(10).unwrap()[0].user_image, None);
 }
+
+fn reply(ts: &str) -> cts_core::SlackReply {
+    cts_core::SlackReply { ts: ts.into(), user_name: "佐藤".into(), text: "再現手順をまとめました".into(), user_image: None }
+}
+
+#[test]
+fn a_thread_the_user_is_in_counts_its_new_replies_until_seen() {
+    let (_d, db) = open();
+    assert!(!db.slack_thread_replied("C1", "100.0", &reply("101.0")).unwrap(), "not followed: nothing");
+    db.follow_slack_thread("C1", "100.0", "incident", "https://acme.slack.com/archives/C1/p1000").unwrap();
+    db.follow_slack_thread("C1", "100.0", "incident", "https://x").unwrap();
+    assert!(db.slack_threads().unwrap().is_empty(), "no new reply yet");
+    assert!(db.slack_thread_replied("C1", "100.0", &reply("101.0")).unwrap());
+    assert!(db.slack_thread_replied("C1", "100.0", &reply("102.0")).unwrap());
+    let threads = db.slack_threads().unwrap();
+    assert_eq!(threads.len(), 1);
+    assert_eq!((threads[0].new_replies, threads[0].latest_ts.as_deref(), threads[0].channel_name.as_str()), (2, Some("102.0"), "incident"));
+    assert_eq!(threads[0].permalink, "https://acme.slack.com/archives/C1/p1000", "the first link kept");
+    db.mark_slack_thread_seen("C1", "100.0").unwrap();
+    assert!(db.slack_threads().unwrap().is_empty());
+}
+
+#[test]
+fn a_muted_thread_counts_nothing_until_unmuted() {
+    let (_d, db) = open();
+    db.follow_slack_thread("C1", "100.0", "incident", "https://x").unwrap();
+    db.slack_thread_replied("C1", "100.0", &reply("101.0")).unwrap();
+    db.mute_slack_thread("C1", "100.0", true).unwrap();
+    assert!(db.slack_threads().unwrap().is_empty(), "muting also clears what was new");
+    assert!(!db.slack_thread_replied("C1", "100.0", &reply("102.0")).unwrap());
+    assert!(db.slack_threads().unwrap().is_empty());
+    assert!(db.is_slack_thread_muted("C1", "100.0").unwrap());
+    db.mute_slack_thread("C1", "100.0", false).unwrap();
+    assert!(db.slack_thread_replied("C1", "100.0", &reply("103.0")).unwrap());
+    assert_eq!(db.slack_threads().unwrap()[0].new_replies, 1);
+}
+
+#[test]
+fn letting_slack_go_forgets_its_threads() {
+    let (_d, db) = open();
+    db.follow_slack_thread("C1", "100.0", "incident", "https://x").unwrap();
+    db.slack_thread_replied("C1", "100.0", &reply("101.0")).unwrap();
+    db.clear_slack().unwrap();
+    assert!(db.slack_threads().unwrap().is_empty());
+    assert!(!db.slack_thread_replied("C1", "100.0", &reply("102.0")).unwrap());
+}
