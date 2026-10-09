@@ -167,8 +167,47 @@ export interface Artifact {
   created_at: number;
 }
 
+/** A Slack message for the user (#27): a mention of them, or of a user group they are in, in a channel. */
+export interface SlackMessage {
+  channel: string;
+  ts: string;
+  /** The thread it is in; null for a message in the channel itself. */
+  thread_ts: string | null;
+  channel_name: string;
+  user_name: string;
+  text: string;
+  permalink: string;
+  /** The user group's handle when it mentions a group, not the user. */
+  via: string | null;
+  /** Read in the app (Slack's own marks are left as they are). */
+  read: boolean;
+}
+
+export interface SlackView {
+  connected: boolean;
+  /** Why the last check failed. */
+  error: string | null;
+  /** Newest first. */
+  messages: SlackMessage[];
+}
+
+/** Who the kept Slack token is. */
+export interface SlackAccount {
+  team_url: string;
+  user_id: string;
+}
+
+/** A message of a Slack thread, its head first. */
+export interface SlackThreadMessage {
+  user_name: string;
+  text: string;
+  ts: string;
+  mine: boolean;
+}
+
 export interface Board {
   todos: Todo[];
+  slack: SlackView;
   inputs: Input[];
   inbox: Session[];
   /** Each theme's latest review. */
@@ -343,6 +382,11 @@ export const api = {
   codexModels: () => invoke<{ id: string; label: string; efforts: string[] }[]>("codex_models"),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openLink: (url: string) => invoke<void>("open_link", { url }),
+  slackConnect: (token: string) => invoke<SlackAccount>("slack_connect", { token }),
+  slackAccount: () => invoke<SlackAccount | null>("slack_account"),
+  slackDisconnect: () => invoke<void>("slack_disconnect"),
+  slackRead: (channel: string, ts: string) => invoke<void>("slack_read", { channel, ts }),
+  slackThread: (channel: string, threadTs: string) => invoke<SlackThreadMessage[]>("slack_thread", { channel, threadTs }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
   /// A page's own title (og:title, else <title>), when it has one.
@@ -451,6 +495,8 @@ export const THEME_DOC_EVENT = "theme-doc-written";
 export const REVIEW_SUBMITTED_EVENT = "review-submitted";
 /// `{id}`: a todo to open (a handover's notification).
 export const OPEN_TODO_EVENT = "open-todo";
+/// `{channel, ts}`: a Slack message to show (a mention's notification).
+export const OPEN_SLACK_EVENT = "open-slack";
 /// `{tab, on}`: a tab's page was translated where it is, or put back.
 export const BROWSER_TRANSLATED_EVENT = "browser-translated";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */

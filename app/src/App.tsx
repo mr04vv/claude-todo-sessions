@@ -28,6 +28,7 @@ import {
   THEME_DOC_EVENT,
   REVIEW_SUBMITTED_EVENT,
   OPEN_TODO_EVENT,
+  OPEN_SLACK_EVENT,
   BROWSER_TRANSLATED_EVENT,
   type ReviewRunner,
   LOGIN_CAPTURED_EVENT,
@@ -70,6 +71,10 @@ import {
   type CiState,
   type TodoEvent,
   type Artifact,
+  type SlackAccount,
+  type SlackMessage,
+  type SlackThreadMessage,
+  type SlackView,
   type Session,
   type SessionState,
   type StartOptions,
@@ -134,7 +139,10 @@ const BROWSER_SHOWN_KEY = "browserShown";
 const HERDR_SESSION_KEY = "herdrSession";
 
 
-type View = "todos" | "inputs" | "sessions" | "prs" | "artifacts";
+type View = "todos" | "inputs" | "sessions" | "prs" | "artifacts" | "slack";
+/// The sidebar's groups, in its order.
+type NavGroup = "仕事" | "連絡" | "学び";
+const NAV_GROUPS: NavGroup[] = ["仕事", "連絡", "学び"];
 type Layout = "board" | "list";
 type GroupBy = "repo" | "parent";
 
@@ -3132,6 +3140,227 @@ function ArtifactsPage({ artifacts, todos, report, onOpenTodo }: { artifacts: Ar
   );
 }
 
+type SlackFilter = "all" | "unread" | "mention";
+const slackKey = (m: { channel: string; ts: string }) => `${m.channel}:${m.ts}`;
+
+/// Slack (#27): the mentions of the user and of their user groups, newest
+/// first; a message picked shows its thread on the right and is read.
+function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
+  slack: SlackView;
+  /// A message to show (a notification's click), by slackKey.
+  pick: string | null;
+  run: (f: () => Promise<unknown>) => void;
+  report: (e: unknown) => void;
+  onSettings: () => void;
+  /// 「Todo にする」: the new todo dialog with this memo.
+  onTodo: (memo: string) => void;
+}) {
+  const [filter, setFilter] = useState<SlackFilter>("all");
+  const [selected, setSelected] = useState<string | null>(pick);
+  useEffect(() => {
+    if (pick) setSelected(pick);
+  }, [pick]);
+  const messages = slack.messages;
+  const counts: Record<SlackFilter, number> = {
+    all: messages.length,
+    unread: messages.filter((m) => !m.read).length,
+    mention: messages.filter((m) => m.via === null).length,
+  };
+  const shown = messages.filter((m) => filter === "all" || (filter === "unread" ? !m.read || slackKey(m) === selected : m.via === null));
+  const current = messages.find((m) => slackKey(m) === selected) ?? null;
+  const open = (m: SlackMessage) => {
+    setSelected(slackKey(m));
+    if (!m.read) run(() => api.slackRead(m.channel, m.ts));
+  };
+  // ↑↓ or j k pick a message, Enter shows its thread (and reads it).
+  const { cursorId, setCursor, list } = useRowCursor(shown.map(slackKey), (id) => {
+    const m = shown.find((x) => slackKey(x) === id);
+    if (m) open(m);
+  });
+  return (
+    <>
+      <header className="toolbar">
+        <h1>Slack</h1>
+        {slack.connected && (
+          <div className="segmented" role="group" aria-label="絞り込み">
+            {(["all", "unread", "mention"] as const).map((f) => (
+              <button key={f} className={filter === f ? "on" : ""} aria-pressed={filter === f} onClick={() => setFilter(f)}>
+                {SLACK_FILTER_LABEL[f]} {counts[f]}
+              </button>
+            ))}
+          </div>
+        )}
+        <span className="muted">自分とユーザーグループへのメンションだけ。DM・@channel・@here は出しません</span>
+      </header>
+      {!slack.connected ? (
+        <div className="content">
+          <p className="muted empty">
+            Slack とつながっていません。設定で、自分用の Slack アプリのユーザートークン（xoxp-…）を入れてください。
+          </p>
+          <div>
+            <button className="primary" onClick={onSettings}>
+              設定を開く
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="content flush slack-page">
+          <div className="slack-list" ref={list}>
+            {slack.error && <p className="error-text pad">Slack から読めませんでした：{slack.error}</p>}
+            {shown.length === 0 && <p className="muted pad">{messages.length === 0 ? "まだありません。2分ごとに確かめています。" : "該当するメッセージはありません。"}</p>}
+            <ul className="rows">
+              {shown.map((m) => {
+                const id = slackKey(m);
+                return (
+                  <li key={id} data-row={id} className={`row slack-row${id === selected ? " selected" : ""}${id === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(id), open(m))}>
+                    <span className="slack-meta">
+                      {!m.read && <span className="pill accent">未読</span>}
+                      <span className={m.via ? "" : "slack-mention"}>{m.via ? `@${m.via}` : "メンション"}</span>
+                      <span className="ellipsis">#{m.channel_name}</span>
+                      <span>·</span>
+                      <span className="ellipsis">{m.user_name}</span>
+                      <span>·</span>
+                      <span>{ago(Number(m.ts))}</span>
+                    </span>
+                    <span className="slack-body">{m.text}</span>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+          {current ? (
+            <SlackThread key={slackKey(current)} message={current} report={report} onTodo={onTodo} />
+          ) : (
+            <div className="slack-thread">
+              <p className="muted pad">メッセージを選ぶと、スレッド全体がここに出ます。</p>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+const SLACK_FILTER_LABEL: Record<SlackFilter, string> = { all: "すべて", unread: "未読", mention: "メンション" };
+
+/// "10:42", or "10/8 10:42" on another day: a Slack message's time.
+function slackTime(ts: string) {
+  const d = new Date(Number(ts) * 1000);
+  const time = d.toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.getMonth() + 1}/${d.getDate()} ${time}`;
+}
+
+/// A Slack message's thread (a message not in one, alone), the message
+/// itself marked, with 「Todo にする」 and 「Slack で開く」.
+function SlackThread({ message, report, onTodo }: { message: SlackMessage; report: (e: unknown) => void; onTodo: (memo: string) => void }) {
+  const [thread, setThread] = useState<SlackThreadMessage[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    api.slackThread(message.channel, message.thread_ts ?? message.ts).then(setThread, (e) => setError(String(e)));
+  }, [message.channel, message.ts, message.thread_ts]);
+  const from = message.via ? `@${message.via} へのメンション` : `${message.user_name}さんからのメンション`;
+  const memo = `Slack #${message.channel_name} の ${message.user_name}さんから:\n${message.text}\n\n${message.permalink}`;
+  const openInSlack = () => api.openLink(message.permalink).catch(report);
+  return (
+    <section className="slack-thread" aria-label="スレッド">
+      <div className="slack-thread-head">
+        <span className="grow ellipsis muted">
+          #{message.channel_name} · {from}
+        </span>
+        <button className="small" onClick={() => onTodo(memo)}>
+          Todo にする
+        </button>
+        <button className="ghost small" onClick={openInSlack}>
+          Slack で開く <Icon name="open" size={12} />
+        </button>
+      </div>
+      {error && <p className="error-text pad">スレッドを読めませんでした：{error}</p>}
+      {!thread && !error && <p className="muted pad">読んでいます…</p>}
+      {thread?.map((t) => (
+        <div key={t.ts} className={`slack-msg${t.ts === message.ts ? " this" : ""}`}>
+          <b className={t.mine ? "slack-me" : ""}>{t.user_name}</b>
+          <span className="muted">{slackTime(t.ts)}</span>
+          <div className="slack-msg-text">{t.text}</div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/// The settings' Slack: the user's token, given to the app (kept in the
+/// Keychain) or let go.
+function SlackSettings({ report }: { report: (e: unknown) => void }) {
+  // undefined while asked; null without a token.
+  const [account, setAccount] = useState<SlackAccount | null | undefined>(undefined);
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [letGo, setLetGo] = useState(false);
+  useEffect(() => {
+    api.slackAccount().then(setAccount, (e) => {
+      setAccount(null);
+      report(e);
+    });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const connect = () => {
+    if (!token.trim() || busy) return;
+    setBusy(true);
+    api
+      .slackConnect(token)
+      .then((a) => {
+        setAccount(a);
+        setToken("");
+      }, report)
+      .finally(() => setBusy(false));
+  };
+  return (
+    <section>
+      <h3>Slack</h3>
+      {account === undefined && <p className="muted">確かめています…</p>}
+      {account && (
+        <div className="setting-row">
+          <span className="grow">
+            <span className="mono">{account.team_url}</span> に、自分のアカウント（<span className="mono">{account.user_id}</span>）でつながっています
+          </span>
+          {letGo ? (
+            <span className="inline-confirm">
+              トークンを Keychain から消し、読んだ印も忘れますか？
+              <button className="danger small" onClick={() => api.slackDisconnect().then(() => (setAccount(null), setLetGo(false)), report)}>
+                外す
+              </button>
+              <button className="ghost small" onClick={() => setLetGo(false)}>
+                やめる
+              </button>
+            </span>
+          ) : (
+            <button className="ghost small" onClick={() => setLetGo(true)}>
+              外す
+            </button>
+          )}
+        </div>
+      )}
+      {account === null && (
+        <>
+          <p className="muted">自分用の Slack アプリのユーザートークン（xoxp-…）を入れると、自分とユーザーグループへのメンションが Slack の画面に並びます。トークンは Keychain に置きます。</p>
+          <div className="setting-row">
+            <input
+              type="password"
+              className="grow"
+              value={token}
+              placeholder="xoxp-…"
+              aria-label="Slack のユーザートークン"
+              autoComplete="off"
+              onChange={(e) => setToken(e.target.value)}
+              onKeyDown={(e) => isEnter(e) && connect()}
+            />
+            <button className="primary small" disabled={!token.trim() || busy} onClick={connect}>
+              {busy ? "確かめています…" : "つなぐ"}
+            </button>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 /// A page's filter by place (a repository, a group, or none).
 function PlaceFilter({ places, value, onChange }: { places: string[]; value: string | null; onChange: (place: string | null) => void }) {
   if (places.length < 2 && value === null) return null;
@@ -4064,10 +4293,12 @@ function Modal({ title, onClose, children, footer, wide }: {
 /// ⌘N: a todo in one go. 「作って任せる」 (⌘Enter) makes it and starts its
 /// session as last time (behind: nothing comes forward); 「置いておく」 (Enter)
 /// only makes it, and the dialog stays for the next.
-function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo, onImport }: {
+function AddTodoDialog({ local, groups, initialRepo, initialMemo, run, onClose, onOpenTodo, onImport }: {
   local: LocalRepo[];
   groups: string[];
   initialRepo: string | null;
+  /// What the memo starts with (a Slack message's 「Todo にする」).
+  initialMemo?: string;
   run: (f: () => Promise<unknown>) => void;
   onClose: () => void;
   onOpenTodo: (id: number) => void;
@@ -4077,7 +4308,7 @@ function AddTodoDialog({ local, groups, initialRepo, run, onClose, onOpenTodo, o
   const startTodo = useContext(StartTodoContext);
   const { prefs, setLaunch } = useLaunchPrefs();
   const [title, setTitle] = useState("");
-  const [memo, setMemo] = useState("");
+  const [memo, setMemo] = useState(initialMemo ?? "");
   const [repo, setRepo] = useState(initialRepo && initialRepo !== NO_REPO_LANE ? initialRepo : "");
   const [issueUrl, setIssueUrl] = useState("");
   const [plan, setPlan] = useState(false);
@@ -4689,6 +4920,7 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
             )}
           </div>
         </section>
+        <SlackSettings report={report} />
         <section>
           <h3>保存したログイン</h3>
           {logins === null && <p className="muted">Keychain を見ています…</p>}
@@ -5563,6 +5795,10 @@ export default function App() {
         showToastRef.current(payload.error ? `ノートに書き足せませんでした：${payload.error}` : "テーマのノートに書き足しました");
       }),
       listen<{ id: number }>(OPEN_TODO_EVENT, ({ payload }) => goTodoRef.current(payload.id)),
+      listen<{ channel: string; ts: string }>(OPEN_SLACK_EVENT, ({ payload }) => {
+        setSlackPick(slackKey(payload));
+        setViewRef.current("slack");
+      }),
       listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
       // Back from the pane: nothing on this side keeps the typing, so j k work.
@@ -5575,6 +5811,13 @@ export default function App() {
   const [dragging, setDragging] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogKind>(null);
+  // The new todo dialog's memo from a Slack message, until the dialog closes.
+  const [addMemo, setAddMemo] = useState<string | undefined>();
+  useEffect(() => {
+    if (dialog !== "add") setAddMemo(undefined);
+  }, [dialog]);
+  // The Slack message a notification's click shows.
+  const [slackPick, setSlackPick] = useState<string | null>(null);
   // ⌘K opens on its own list again.
   useEffect(() => {
     if (dialog !== "palette") setPaletteStart(null);
@@ -5614,7 +5857,7 @@ export default function App() {
     }
   }, [dialogUp]); // eslint-disable-line react-hooks/exhaustive-deps
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
-  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "artifacts"] as const, "todos"));
+  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "artifacts", "slack"] as const, "todos"));
   const viewRef = useRef(view);
   viewRef.current = view;
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
@@ -5986,6 +6229,8 @@ export default function App() {
   };
   const goTodoRef = useRef(goTodo);
   goTodoRef.current = goTodo;
+  const setViewRef = useRef(setView);
+  setViewRef.current = setView;
   const [syncing, setSyncing] = useState(false);
   const syncAll = () => {
     setSyncing(true);
@@ -6054,10 +6299,11 @@ export default function App() {
   const draggedTodo = dragging !== null ? allTodos.find((t) => t.id === dragging) : undefined;
   // Review requests no review session has taken yet.
   const reviewCount = waiting.filter((w) => w.reasons.includes("review")).length;
+  const slackUnread = board?.slack.connected ? board.slack.messages.filter((m) => !m.read).length : 0;
 
   // The sidebar lists the objects only, each with what of it waits on the
   // user (or how many there are); how a list shows is chosen on its page.
-  const nav: { key: string; group: "仕事" | "学び"; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
+  const nav: { key: string; group: NavGroup; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
     { key: "todos", group: "仕事", label: "Todo", icon: "board", count: openTodoCount, on: view === "todos", go: () => setView("todos") },
     {
       group: "仕事",
@@ -6077,6 +6323,15 @@ export default function App() {
     },
     { key: "prs", group: "仕事", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent" title="まだレビューを始めていないレビュー依頼">レビュー {reviewCount}</span> },
     { key: "artifacts", group: "仕事", label: "成果物", icon: "open", count: board?.artifacts.length, on: view === "artifacts", go: () => setView("artifacts") },
+    {
+      key: "slack",
+      group: "連絡",
+      label: "Slack",
+      icon: "chat",
+      on: view === "slack",
+      go: () => setView("slack"),
+      badge: slackUnread > 0 && <span className="pill accent" title="アプリでまだ読んでいないメンション">{slackUnread}</span>,
+    },
     {
       key: "inputs",
       group: "学び",
@@ -6165,7 +6420,7 @@ export default function App() {
             <span className="grow ellipsis">検索・操作</span>
             <span className="kbd">⌘K</span>
           </button>
-          {(["仕事", "学び"] as const).map((group) => (
+          {NAV_GROUPS.map((group) => (
             <nav key={group} className="nav" aria-label={group}>
               <div className="section-title">{group}</div>
               {nav
@@ -6395,6 +6650,19 @@ export default function App() {
             />
           )}
           {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} onOpenTodo={goTodo} />}
+          {view === "slack" && board && (
+            <SlackPage
+              slack={board.slack}
+              pick={slackPick}
+              run={run}
+              report={report}
+              onSettings={() => setDialog("settings")}
+              onTodo={(memo) => {
+                setDialog("add");
+                setAddMemo(memo);
+              }}
+            />
+          )}
           {panel === "todo" && selectedTodo && (
             // A sheet over the Todo page, not a dialog: the pane stays, and j k go on to the next todo.
             <div className="sheet-backdrop" onClick={() => setSelection(null)}>
@@ -6495,8 +6763,12 @@ export default function App() {
             local={local}
             groups={groups}
             initialRepo={todoFilter.places.length === 1 ? todoFilter.places[0] : null}
+            initialMemo={addMemo}
             run={run}
-            onClose={() => setDialog(null)}
+            onClose={() => {
+              setDialog(null);
+              setAddMemo(undefined);
+            }}
             onOpenTodo={(id) => {
               setDialog(null);
               goTodo(id);
