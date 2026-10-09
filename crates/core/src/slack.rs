@@ -23,7 +23,7 @@ pub struct Me {
 }
 
 /// A user group the user is in.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Group {
     pub id: String,
     pub handle: String,
@@ -91,16 +91,65 @@ pub fn parse_me(v: &Value) -> Result<Me, String> {
     Ok(Me { user_id: user_id.into(), team_url: v["url"].as_str().unwrap_or_default().into() })
 }
 
-/// The user groups (not deleted) whose members include `me`.
-pub fn my_groups(v: &Value, me: &str) -> Vec<Group> {
+/// The user groups not deleted, whose members pass `keep`.
+fn live_groups(v: &Value, keep: impl Fn(&Value) -> bool) -> Vec<Group> {
     v["usergroups"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|g| g["date_delete"].as_i64().unwrap_or(0) == 0)
-        .filter(|g| g["users"].as_array().is_some_and(|users| users.iter().any(|u| u.as_str() == Some(me))))
+        .filter(|g| g["date_delete"].as_i64().unwrap_or(0) == 0 && keep(&g["users"]))
         .filter_map(|g| Some(Group { id: g["id"].as_str()?.into(), handle: g["handle"].as_str().unwrap_or_default().into() }))
         .collect()
+}
+
+/// The user groups (not deleted) whose members include `me`.
+pub fn my_groups(v: &Value, me: &str) -> Vec<Group> {
+    live_groups(v, |users| users.as_array().is_some_and(|users| users.iter().any(|u| u.as_str() == Some(me))))
+}
+
+/// Every user group not deleted, to mention.
+pub fn parse_groups(v: &Value) -> Vec<Group> {
+    live_groups(v, |_| true)
+}
+
+/// Someone to mention: their name as Slack shows it, their handle and full name to find them by.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Member {
+    pub id: String,
+    pub name: String,
+    pub handle: String,
+    pub real_name: Option<String>,
+    pub image: Option<String>,
+}
+
+/// users.list's people, bots, Slackbot and the deactivated left out.
+pub fn parse_members(v: &Value) -> Vec<Member> {
+    v["members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["deleted"].as_bool() != Some(true) && m["is_bot"].as_bool() != Some(true) && m["id"].as_str() != Some("USLACKBOT"))
+        .filter_map(|m| {
+            let person = parse_person(&serde_json::json!({ "user": m }))?;
+            Some(Member { id: m["id"].as_str()?.into(), name: person.name, handle: m["name"].as_str().unwrap_or_default().into(), real_name: m["real_name"].as_str().filter(|n| !n.is_empty()).map(String::from), image: person.image })
+        })
+        .collect()
+}
+
+/// The ids of a page of users.conversations.
+pub fn parse_conversation_ids(v: &Value) -> Vec<String> {
+    v["channels"].as_array().into_iter().flatten().filter_map(|c| c["id"].as_str().map(String::from)).collect()
+}
+
+/// The cursor to the next page, if there is one.
+pub fn next_cursor(v: &Value) -> Option<String> {
+    v["response_metadata"]["next_cursor"].as_str().filter(|c| !c.is_empty()).map(String::from)
+}
+
+/// The channels the user muted, from users.prefs.get (a method Slack does
+/// not document; its prefs carry `muted_channels` as "C1,C2").
+pub fn parse_muted(v: &Value) -> Vec<String> {
+    v["prefs"]["muted_channels"].as_str().unwrap_or_default().split(',').filter(|c| !c.is_empty()).map(String::from).collect()
 }
 
 /// A DM or a group DM, which #27 leaves out.
@@ -346,6 +395,47 @@ pub fn channel_name(token: &str, channel: &str) -> Result<Option<String>, String
     Ok(parse_channel_name(&call(token, "conversations.info", &[("channel", channel)])?))
 }
 
+/// Pages of `method` (each `limit` long), followed by their cursors.
+fn pages(token: &str, method: &str, args: &[(&str, &str)], mut each: impl FnMut(&Value)) -> Result<(), String> {
+    let mut cursor = String::new();
+    loop {
+        let mut all = args.to_vec();
+        if !cursor.is_empty() {
+            all.push(("cursor", &cursor));
+        }
+        let v = call(token, method, &all)?;
+        each(&v);
+        match next_cursor(&v) {
+            Some(next) => cursor = next,
+            None => return Ok(()),
+        }
+    }
+}
+
+/// The public and private channels the user is in.
+pub fn member_channels(token: &str) -> Result<std::collections::HashSet<String>, String> {
+    let mut ids = std::collections::HashSet::new();
+    pages(token, "users.conversations", &[("types", "public_channel,private_channel"), ("exclude_archived", "true"), ("limit", "1000")], |v| ids.extend(parse_conversation_ids(v)))?;
+    Ok(ids)
+}
+
+/// The channels the user muted (users.prefs.get, undocumented: it may refuse).
+pub fn muted_channels(token: &str) -> Result<Vec<String>, String> {
+    Ok(parse_muted(&call(token, "users.prefs.get", &[])?))
+}
+
+/// The workspace's people, to mention.
+pub fn members(token: &str) -> Result<Vec<Member>, String> {
+    let mut all = Vec::new();
+    pages(token, "users.list", &[("limit", "200")], |v| all.extend(parse_members(v)))?;
+    Ok(all)
+}
+
+/// Every user group, to mention.
+pub fn all_groups(token: &str) -> Result<Vec<Group>, String> {
+    Ok(parse_groups(&call(token, "usergroups.list", &[])?))
+}
+
 pub fn auth_test(token: &str) -> Result<Me, String> {
     parse_me(&call(token, "auth.test", &[])?)
 }
@@ -473,6 +563,41 @@ mod tests {
         let v = json!({"ok": true, "user": {"id": "U2", "name": "suzuki.t", "profile": {"display_name": "鈴木", "image_48": "https://avatars.slack-edge.com/a_48.png", "image_72": "https://avatars.slack-edge.com/a_72.png"}}});
         assert_eq!(parse_person(&v), Some(Person { name: "鈴木".into(), image: Some("https://avatars.slack-edge.com/a_72.png".into()) }));
         assert_eq!(parse_person(&json!({"ok": true, "user": {"name": "x"}})).unwrap().image, None);
+    }
+
+    #[test]
+    fn the_channels_the_user_is_in_come_page_by_page() {
+        let page = json!({"ok": true, "channels": [{"id": "C1"}, {"id": "G1"}], "response_metadata": {"next_cursor": "dXNlcjpVMEc5V0ZYTlo="}});
+        assert_eq!(parse_conversation_ids(&page), vec!["C1".to_string(), "G1".to_string()]);
+        assert_eq!(next_cursor(&page).as_deref(), Some("dXNlcjpVMEc5V0ZYTlo="));
+        assert_eq!(next_cursor(&json!({"ok": true, "channels": [], "response_metadata": {"next_cursor": ""}})), None, "the last page");
+    }
+
+    #[test]
+    fn the_muted_channels_come_from_the_users_prefs() {
+        assert_eq!(parse_muted(&json!({"ok": true, "prefs": {"muted_channels": "C1,C2"}})), vec!["C1".to_string(), "C2".to_string()]);
+        assert!(parse_muted(&json!({"ok": true, "prefs": {"muted_channels": ""}})).is_empty());
+        assert!(parse_muted(&json!({"ok": true, "prefs": {}})).is_empty());
+    }
+
+    #[test]
+    fn the_people_to_mention_leave_out_bots_and_the_gone() {
+        let v = json!({"ok": true, "members": [
+            {"id": "U1", "name": "mori", "real_name": "Mori Takuto", "profile": {"display_name": "森", "image_72": "https://a/1.png"}},
+            {"id": "U2", "name": "bot", "is_bot": true, "profile": {}},
+            {"id": "U3", "name": "gone", "deleted": true, "profile": {}},
+            {"id": "USLACKBOT", "name": "slackbot", "profile": {}}
+        ]});
+        assert_eq!(parse_members(&v), vec![Member { id: "U1".into(), name: "森".into(), handle: "mori".into(), real_name: Some("Mori Takuto".into()), image: Some("https://a/1.png".into()) }]);
+    }
+
+    #[test]
+    fn every_live_user_group_can_be_mentioned() {
+        let v = json!({"ok": true, "usergroups": [
+            {"id": "S1", "handle": "soc", "users": []},
+            {"id": "S2", "handle": "old", "date_delete": 1446748865}
+        ]});
+        assert_eq!(parse_groups(&v), vec![Group { id: "S1".into(), handle: "soc".into() }]);
     }
 
     #[test]
