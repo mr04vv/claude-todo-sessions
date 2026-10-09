@@ -3204,6 +3204,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
       else if (matches(e, "slackNarrower")) keepWidth(width - SLACK_LIST_WIDTH.step);
       else if (matches(e, "slackWider")) keepWidth(width + SLACK_LIST_WIDTH.step);
       else if (!current) return;
+      else if (e.key === "Escape") setSelected(null);
       else if (matches(e, "slackReply")) replyRef.current?.focus();
       else if (matches(e, "slackTodo")) onTodo(slackMemo(current));
       else if (matches(e, "slackOpen")) api.openLink(current.permalink).catch(report);
@@ -3258,7 +3259,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
           </div>
         </div>
       ) : (
-        <div className="content flush slack-page" style={{ gridTemplateColumns: `${width}px 6px minmax(0, 1fr)` }}>
+        <div className="content flush slack-page" style={{ gridTemplateColumns: current ? `${width}px 6px minmax(0, 1fr)` : "minmax(0, 1fr)" }}>
           <div className="slack-list" ref={list}>
             {slack.error && <p className="error-text pad">Slack から読めませんでした：{slack.error}</p>}
             {shown.length === 0 && <p className="muted pad">{filter === "read" ? "既読はまだありません。" : "未読のメンションはありません。"}</p>}
@@ -3283,13 +3284,11 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
               })}
             </ul>
           </div>
-          <div className="slack-split" role="separator" aria-orientation="vertical" aria-label="一覧の幅" onPointerDown={resize} />
-          {current ? (
-            <SlackThread key={slackKey(current)} message={current} me={slack.user_id} replyRef={replyRef} bodyRef={threadRef} report={report} onTodo={onTodo} />
-          ) : (
-            <div className="slack-thread">
-              <p className="muted pad">メッセージを選ぶと、スレッド全体がここに出ます。</p>
-            </div>
+          {current && (
+            <>
+              <div className="slack-split" role="separator" aria-orientation="vertical" aria-label="一覧の幅" onPointerDown={resize} />
+              <SlackThread key={slackKey(current)} message={current} me={slack.user_id} replyRef={replyRef} bodyRef={threadRef} report={report} onTodo={onTodo} onClose={() => setSelected(null)} />
+            </>
           )}
         </div>
       )}
@@ -3378,7 +3377,7 @@ const SLACK_GROUP_SECS = 300;
 /// A Slack message's thread (a message not in one, alone), the message
 /// itself marked: read again as the thread moves (Socket Mode), and
 /// answered from here (#30).
-function SlackThread({ message, me, replyRef, bodyRef, report, onTodo }: {
+function SlackThread({ message, me, replyRef, bodyRef, report, onTodo, onClose }: {
   message: SlackMessage;
   me: string | null;
   /// The reply box and the messages' scroller, for the page's keys.
@@ -3386,6 +3385,8 @@ function SlackThread({ message, me, replyRef, bodyRef, report, onTodo }: {
   bodyRef: React.RefObject<HTMLDivElement | null>;
   report: (e: unknown) => void;
   onTodo: (memo: string) => void;
+  /// Closes the thread (Esc too); the list takes the width.
+  onClose: () => void;
 }) {
   const [thread, setThread] = useState<SlackThreadMessage[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -3429,6 +3430,9 @@ function SlackThread({ message, me, replyRef, bodyRef, report, onTodo }: {
         </button>
         <button className="ghost small" onClick={() => api.openLink(message.permalink).catch(report)}>
           Slack で開く <Icon name="open" size={12} /> <span className="kbd">{keyLabel(keyOf("slackOpen"))}</span>
+        </button>
+        <button className="ghost icon" aria-label="スレッドを閉じる（Esc）" title="スレッドを閉じる（Esc）" onClick={onClose}>
+          <Icon name="close" size={13} />
         </button>
       </div>
       <div className="slack-thread-body" ref={bodyRef}>
