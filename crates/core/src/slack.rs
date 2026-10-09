@@ -1,6 +1,8 @@
 //! Slack through the user's own Slack app and user token (#17's decision E):
 //! the mentions of the user and of their user groups, outside DMs and group
-//! DMs (#27), and the threads they are in (#28).
+//! DMs (#27), and the threads they are in (#28). They come as they are
+//! posted through Socket Mode (the app's own token), and a search catches
+//! what came while the app was closed.
 
 use std::time::Duration;
 
@@ -194,6 +196,120 @@ pub fn mentions_of_group(group: &str) -> String {
     format!("<!subteam^{group}>")
 }
 
+/// A Socket Mode message.
+#[derive(Debug, PartialEq)]
+pub enum Envelope {
+    Hello,
+    /// Slack is about to close the connection (to refresh it, mostly): connect again.
+    Disconnect,
+    /// An Events API event, to acknowledge.
+    Event { envelope_id: String, event: Value },
+    /// Anything else, acknowledged when it has an id.
+    Other(Option<String>),
+}
+
+pub fn parse_envelope(text: &str) -> Envelope {
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return Envelope::Other(None) };
+    let id = v["envelope_id"].as_str().map(String::from);
+    match (v["type"].as_str(), id) {
+        (Some("hello"), _) => Envelope::Hello,
+        (Some("disconnect"), _) => Envelope::Disconnect,
+        (Some("events_api"), Some(envelope_id)) => Envelope::Event { envelope_id, event: v["payload"]["event"].clone() },
+        (_, id) => Envelope::Other(id),
+    }
+}
+
+/// What tells Slack an envelope came.
+pub fn ack(envelope_id: &str) -> String {
+    serde_json::json!({ "envelope_id": envelope_id }).to_string()
+}
+
+/// A message posted in a channel, as an event brings it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Posted {
+    pub channel: String,
+    /// Empty for a bot's.
+    pub user: String,
+    /// The name it came with (a bot's).
+    pub user_name: Option<String>,
+    pub text: String,
+    pub ts: String,
+    /// The thread it replies in; None for a message in the channel itself.
+    pub thread_ts: Option<String>,
+}
+
+/// Message subtypes that are someone saying something (the rest are edits,
+/// deletions, joins and the like).
+const SAID: [&str; 4] = ["bot_message", "thread_broadcast", "file_share", "me_message"];
+
+/// A message posted in a channel (not a DM or group DM), if the event is one.
+pub fn parse_posted(event: &Value) -> Option<Posted> {
+    if event["type"].as_str() != Some("message") || !matches!(event["channel_type"].as_str(), Some("channel" | "group")) {
+        return None;
+    }
+    if event["subtype"].as_str().is_some_and(|s| !SAID.contains(&s)) {
+        return None;
+    }
+    let ts: String = event["ts"].as_str()?.into();
+    Some(Posted {
+        channel: event["channel"].as_str()?.into(),
+        user: event["user"].as_str().unwrap_or_default().into(),
+        user_name: event["username"].as_str().map(String::from),
+        text: event["text"].as_str().unwrap_or_default().into(),
+        thread_ts: event["thread_ts"].as_str().filter(|t| *t != ts).map(String::from),
+        ts,
+    })
+}
+
+/// Whom a message mentions of those the user follows: Some(None) for the
+/// user, Some(Some(handle)) for one of their user groups.
+pub fn mention_in(text: &str, me: &str, groups: &[Group]) -> Option<Option<String>> {
+    let mentions = |prefix: String| text.match_indices(&prefix).any(|(i, _)| matches!(text[i + prefix.len()..].chars().next(), Some('>' | '|')));
+    if mentions(format!("<@{me}")) {
+        return Some(None);
+    }
+    groups.iter().find(|g| mentions(format!("<!subteam^{}", g.id))).map(|g| Some(g.handle.clone()))
+}
+
+/// A message's link, as Slack makes them: `ts` without its dot, and the
+/// thread for a reply.
+pub fn permalink(team_url: &str, channel: &str, ts: &str, thread_ts: Option<&str>) -> String {
+    let base = format!("{}/archives/{channel}/p{}", team_url.trim_end_matches('/'), ts.replace('.', ""));
+    match thread_ts {
+        Some(thread) => format!("{base}?thread_ts={thread}&cid={channel}"),
+        None => base,
+    }
+}
+
+pub fn parse_channel_name(v: &Value) -> Option<String> {
+    v["channel"]["name"].as_str().map(String::from)
+}
+
+pub fn parse_socket_url(v: &Value) -> Result<String, String> {
+    v["url"].as_str().map(String::from).ok_or_else(|| "Slack: apps.connections.open に接続先がありません".into())
+}
+
+/// The address of a new Socket Mode connection, for the app's own token
+/// (`xapp-…`, with `connections:write`).
+pub fn socket_url(app_token: &str) -> Result<String, String> {
+    let v: Value = ureq::post(format!("{API}/apps.connections.open"))
+        .header("Authorization", format!("Bearer {app_token}"))
+        .config()
+        .timeout_global(Some(TIMEOUT))
+        .build()
+        .send_empty()
+        .map_err(|e| format!("Slack apps.connections.open: {e}"))?
+        .body_mut()
+        .read_json()
+        .map_err(|e| format!("Slack apps.connections.open: {e}"))?;
+    parse_socket_url(&answer(v)?)
+}
+
+/// A channel's name (needs `channels:read` / `groups:read`).
+pub fn channel_name(token: &str, channel: &str) -> Result<Option<String>, String> {
+    Ok(parse_channel_name(&call(token, "conversations.info", &[("channel", channel)])?))
+}
+
 pub fn auth_test(token: &str) -> Result<Me, String> {
     parse_me(&call(token, "auth.test", &[])?)
 }
@@ -320,6 +436,84 @@ mod tests {
     fn the_queries_name_the_user_and_the_group() {
         assert_eq!(mentions_of("U1"), "<@U1>");
         assert_eq!(mentions_of_group("S1"), "<!subteam^S1>");
+    }
+
+    // Socket Mode's messages, as docs.slack.dev's Socket Mode page shows them.
+
+    #[test]
+    fn socket_messages_are_told_apart() {
+        assert_eq!(parse_envelope(r#"{"type": "hello", "num_connections": 1}"#), Envelope::Hello);
+        assert_eq!(parse_envelope(r#"{"type": "disconnect", "reason": "refresh_requested"}"#), Envelope::Disconnect);
+        let event = r#"{"envelope_id": "e1", "type": "events_api", "accepts_response_payload": false,
+            "payload": {"type": "event_callback", "event": {"type": "message", "channel": "C1", "user": "U2", "text": "hi", "ts": "1.0", "channel_type": "channel"}}}"#;
+        match parse_envelope(event) {
+            Envelope::Event { envelope_id, event } => {
+                assert_eq!(envelope_id, "e1");
+                assert_eq!(event["channel"], "C1");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(parse_envelope(r#"{"envelope_id": "e2", "type": "slash_commands", "payload": {}}"#), Envelope::Other(Some("e2".into())), "acknowledged, not used");
+        assert_eq!(parse_envelope("not json"), Envelope::Other(None));
+    }
+
+    #[test]
+    fn an_envelope_is_acknowledged_by_its_id() {
+        assert_eq!(serde_json::from_str::<Value>(&ack("e1")).unwrap(), json!({"envelope_id": "e1"}));
+    }
+
+    fn posted(fields: Value) -> Value {
+        let mut event = json!({"type": "message", "channel": "C1", "user": "U2", "text": "<@U1> 見て", "ts": "1700000000.000200", "channel_type": "channel"});
+        event.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+        event
+    }
+
+    #[test]
+    fn a_message_posted_in_a_channel_is_taken() {
+        let p = parse_posted(&posted(json!({"thread_ts": "1700000000.000100"}))).unwrap();
+        assert_eq!(p, Posted { channel: "C1".into(), user: "U2".into(), user_name: None, text: "<@U1> 見て".into(), ts: "1700000000.000200".into(), thread_ts: Some("1700000000.000100".into()) });
+        assert!(parse_posted(&posted(json!({"channel_type": "group"}))).is_some(), "a private channel");
+        assert_eq!(parse_posted(&posted(json!({"thread_ts": "1700000000.000200"}))).unwrap().thread_ts, None, "a thread's head is in the channel");
+        let bot = parse_posted(&posted(json!({"subtype": "bot_message", "user": null, "username": "github"}))).unwrap();
+        assert_eq!((bot.user.as_str(), bot.user_name.as_deref()), ("", Some("github")), "a bot's message counts");
+    }
+
+    #[test]
+    fn dms_edits_and_the_rest_are_not_taken() {
+        assert!(parse_posted(&posted(json!({"channel_type": "im"}))).is_none());
+        assert!(parse_posted(&posted(json!({"channel_type": "mpim"}))).is_none());
+        assert!(parse_posted(&posted(json!({"subtype": "message_changed"}))).is_none(), "an edit");
+        assert!(parse_posted(&posted(json!({"subtype": "message_deleted"}))).is_none());
+        assert!(parse_posted(&posted(json!({"subtype": "channel_join"}))).is_none());
+        assert!(parse_posted(&json!({"type": "reaction_added"})).is_none());
+    }
+
+    #[test]
+    fn a_mention_is_of_the_user_or_of_one_of_their_groups() {
+        let groups = vec![Group { id: "S1".into(), handle: "web-team".into() }];
+        assert_eq!(mention_in("<@U1> 見て", "U1", &groups), Some(None));
+        assert_eq!(mention_in("<@U1|mori> 見て", "U1", &groups), Some(None));
+        assert_eq!(mention_in("<!subteam^S1|@web-team> 日程", "U1", &groups), Some(Some("web-team".into())));
+        assert_eq!(mention_in("<@U1> と <!subteam^S1>", "U1", &groups), Some(None), "the user's own first");
+        assert_eq!(mention_in("<@U12> へ", "U1", &groups), None, "another user whose id starts the same");
+        assert_eq!(mention_in("<!subteam^S2> へ", "U1", &groups), None, "a group the user is not in");
+        assert_eq!(mention_in("<!here> 全員", "U1", &groups), None);
+    }
+
+    #[test]
+    fn a_messages_permalink_is_made_from_the_workspace() {
+        assert_eq!(permalink("https://acme.slack.com/", "C1", "1700000000.000200", None), "https://acme.slack.com/archives/C1/p1700000000000200");
+        assert_eq!(
+            permalink("https://acme.slack.com/", "C1", "1700000000.000200", Some("1700000000.000100")),
+            "https://acme.slack.com/archives/C1/p1700000000000200?thread_ts=1700000000.000100&cid=C1"
+        );
+    }
+
+    #[test]
+    fn a_channels_name_and_a_sockets_address_are_read() {
+        assert_eq!(parse_channel_name(&json!({"ok": true, "channel": {"id": "C1", "name": "dev-web"}})).as_deref(), Some("dev-web"));
+        assert_eq!(parse_socket_url(&json!({"ok": true, "url": "wss://wss-primary.slack.com/link/?ticket=x"})).unwrap(), "wss://wss-primary.slack.com/link/?ticket=x");
+        assert!(parse_socket_url(&json!({"ok": true})).is_err());
     }
 
     #[test]
