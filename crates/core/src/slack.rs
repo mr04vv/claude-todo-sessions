@@ -4,6 +4,7 @@
 //! posted through Socket Mode (the app's own token), and a search catches
 //! what came while the app was closed.
 
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -67,9 +68,17 @@ fn answer(v: Value) -> Result<Value, String> {
     })
 }
 
+/// The client for Slack, checking certificates with the system's verifier
+/// (as ogp.rs does): a proxy that inspects TLS (Netskope) signs slack.com
+/// with its own root, which only the system trusts.
+static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
+    ureq::Agent::new_with_config(ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).tls_config(tls).build())
+});
+
 /// Calls Web API `method` with the user's token.
 fn call(token: &str, method: &str, args: &[(&str, &str)]) -> Result<Value, String> {
-    let mut req = ureq::get(format!("{API}/{method}")).header("Authorization", format!("Bearer {token}")).config().timeout_global(Some(TIMEOUT)).build();
+    let mut req = AGENT.get(format!("{API}/{method}")).header("Authorization", format!("Bearer {token}"));
     for (k, v) in args {
         req = req.query(*k, *v);
     }
@@ -292,11 +301,9 @@ pub fn parse_socket_url(v: &Value) -> Result<String, String> {
 /// The address of a new Socket Mode connection, for the app's own token
 /// (`xapp-…`, with `connections:write`).
 pub fn socket_url(app_token: &str) -> Result<String, String> {
-    let v: Value = ureq::post(format!("{API}/apps.connections.open"))
+    let v: Value = AGENT
+        .post(format!("{API}/apps.connections.open"))
         .header("Authorization", format!("Bearer {app_token}"))
-        .config()
-        .timeout_global(Some(TIMEOUT))
-        .build()
         .send_empty()
         .map_err(|e| format!("Slack apps.connections.open: {e}"))?
         .body_mut()
