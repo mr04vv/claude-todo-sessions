@@ -55,6 +55,26 @@ pub struct StartOptions {
     /// What runs it (a terminal session; Cloud and Desktop are Claude's).
     #[serde(default)]
     pub agent: crate::Agent,
+    /// Claude's permission mode, when it must not be left to the settings
+    /// (a review runs in auto mode).
+    #[serde(default)]
+    pub permission_mode: Option<PermissionMode>,
+}
+
+/// A Claude Code permission mode the app starts sessions in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionMode {
+    /// Claude decides what to allow, asking only when it is unsure.
+    Auto,
+}
+
+impl PermissionMode {
+    fn flag(self) -> &'static str {
+        match self {
+            PermissionMode::Auto => "auto",
+        }
+    }
 }
 
 /// A todo's first prompt for Codex: without a leading Claude skill
@@ -89,6 +109,9 @@ impl StartOptions {
         }
         if let Some(e) = self.effort() {
             args.extend(["--effort".to_string(), e.into()]);
+        }
+        if let Some(mode) = self.permission_mode {
+            args.extend(["--permission-mode".to_string(), mode.flag().into()]);
         }
         args
     }
@@ -394,6 +417,8 @@ mod tests {
         assert_eq!(o.claude_args(), ["--model", "claude-fable-5-1", "--effort", "xhigh"]);
         let blank = StartOptions { model: Some(" ".into()), effort: None, ..Default::default() };
         assert!(blank.claude_args().is_empty());
+        let auto = StartOptions { permission_mode: Some(PermissionMode::Auto), ..Default::default() };
+        assert_eq!(auto.claude_args(), ["--permission-mode", "auto"]);
     }
 
     #[test]

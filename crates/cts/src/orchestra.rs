@@ -45,7 +45,7 @@ pub fn start_subtask(id: i64, cloud: Option<bool>, agent: Option<&str>, model: O
     let db = crate::open_db()?;
     let t = todo(&db, id)?;
     let agent = if agent == Some("codex") { Agent::Codex } else { Agent::Claude };
-    let opts = StartOptions { model, effort, plan: false, agent };
+    let opts = StartOptions { model, effort, plan: false, agent, permission_mode: None };
     let (place, session) = if launch::subtask_on_cloud(&t.repos, agent, cloud) {
         let mut repos = launch::github_repos(&t.repos);
         repos.extend(t.issue_url.as_deref().and_then(launch::repo_key).filter(|r| !repos.contains(r)));

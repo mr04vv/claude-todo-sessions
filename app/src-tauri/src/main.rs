@@ -720,7 +720,12 @@ enum ReviewRunner {
 #[tauri::command(async)]
 fn start_review(state: State<AppState>, url: String, repo: String, title: String, agent: cts_core::Agent, auto: bool, runner: ReviewRunner, cwd: Option<String>, options: Option<StartOptions>) -> Result<Option<String>, String> {
     let prompt = launch::review_prompt(&url, agent, auto);
-    let opts = options.unwrap_or_default();
+    let mut opts = options.unwrap_or_default();
+    // A review runs in auto mode, whatever the repository's settings say
+    // (on Cloud the mode cannot be set at creation: it starts as Cloud's default).
+    if agent == cts_core::Agent::Claude {
+        opts.permission_mode = Some(launch::PermissionMode::Auto);
+    }
     if runner == ReviewRunner::Cloud {
         if agent == cts_core::Agent::Codex {
             return Err("Codex のレビューは herdr でだけ動きます".into());
