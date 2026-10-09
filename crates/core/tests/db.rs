@@ -1077,3 +1077,62 @@ fn themes_work_on_databases_made_before_them() {
     assert_eq!(db.get_input(1).unwrap().unwrap().theme_id, None, "the inputs from before wait unsorted");
     db.set_input_theme(1, Some(t.id)).unwrap();
 }
+
+fn slack_message(ts: &str, via: Option<&str>) -> cts_core::NewSlackMessage {
+    cts_core::NewSlackMessage {
+        channel: "C1".into(),
+        ts: ts.into(),
+        thread_ts: Some("100.0".into()),
+        channel_name: "dev-web".into(),
+        user_name: "鈴木".into(),
+        text: "@森 見てもらえますか".into(),
+        permalink: format!("https://acme.slack.com/archives/C1/p{ts}"),
+        via: via.map(String::from),
+    }
+}
+
+#[test]
+fn slack_mentions_are_kept_once_newest_first_and_read_in_the_app() {
+    let (_d, db) = open();
+    assert!(!db.has_slack_messages().unwrap());
+    let kept = db.add_slack_messages(&[slack_message("1700000000.000100", None), slack_message("1700000500.000200", Some("web-team"))], false).unwrap();
+    assert_eq!(kept.len(), 2, "both are new");
+    assert!(db.has_slack_messages().unwrap());
+    let again = db.add_slack_messages(&[slack_message("1700000500.000200", None), slack_message("1700000900.000300", None)], false).unwrap();
+    assert_eq!(again.iter().map(|m| m.ts.as_str()).collect::<Vec<_>>(), ["1700000900.000300"], "only the new one comes back");
+    let list = db.slack_messages(10).unwrap();
+    assert_eq!(list.iter().map(|m| m.ts.as_str()).collect::<Vec<_>>(), ["1700000900.000300", "1700000500.000200", "1700000000.000100"]);
+    assert_eq!(list[1].via.as_deref(), Some("web-team"), "the first one found stays");
+    assert!(list.iter().all(|m| !m.read));
+    db.mark_slack_read("C1", "1700000500.000200").unwrap();
+    assert_eq!(db.slack_messages(10).unwrap().iter().filter(|m| !m.read).count(), 2);
+    assert_eq!(db.slack_messages(2).unwrap().len(), 2, "as many as asked");
+}
+
+#[test]
+fn the_first_slack_check_keeps_what_it_finds_as_read() {
+    let (_d, db) = open();
+    db.add_slack_messages(&[slack_message("1700000000.000100", None)], true).unwrap();
+    assert!(db.slack_messages(10).unwrap()[0].read);
+}
+
+#[test]
+fn letting_slack_go_forgets_its_messages() {
+    let (_d, db) = open();
+    db.add_slack_messages(&[slack_message("1700000000.000100", None)], false).unwrap();
+    db.clear_slack().unwrap();
+    assert!(db.slack_messages(10).unwrap().is_empty());
+    assert!(!db.has_slack_messages().unwrap());
+}
+
+#[test]
+fn slack_works_on_databases_made_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch("CREATE TABLE inputs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, memo TEXT, done INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL);").unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    db.add_slack_messages(&[slack_message("1700000000.000100", None)], false).unwrap();
+    assert_eq!(db.slack_messages(10).unwrap().len(), 1);
+}

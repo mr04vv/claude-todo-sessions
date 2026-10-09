@@ -8,6 +8,7 @@ pub mod github;
 pub mod herdr;
 pub mod launch;
 pub mod ogp;
+pub mod slack;
 pub mod study;
 pub mod transcript;
 pub mod translate;
@@ -446,6 +447,36 @@ pub struct NewArtifact {
     pub theme_id: Option<i64>,
 }
 
+/// A Slack message for the user (#27): a mention of them, or of a user
+/// group they are in, in a channel. Read or not is the app's own.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SlackMessage {
+    pub channel: String,
+    pub ts: String,
+    /// The thread it is in; None for a message in the channel itself.
+    pub thread_ts: Option<String>,
+    pub channel_name: String,
+    pub user_name: String,
+    /// As plain text (slack::plain).
+    pub text: String,
+    pub permalink: String,
+    /// The user group's handle when it mentions a group, not the user.
+    pub via: Option<String>,
+    pub read: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewSlackMessage {
+    pub channel: String,
+    pub ts: String,
+    pub thread_ts: Option<String>,
+    pub channel_name: String,
+    pub user_name: String,
+    pub text: String,
+    pub permalink: String,
+    pub via: Option<String>,
+}
+
 /// Something that happened under a todo: what its orchestrator did, or what
 /// it was told of its subtasks (its 経過).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -595,6 +626,18 @@ CREATE TABLE IF NOT EXISTS todo_events (
     todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
     at INTEGER NOT NULL,
     text TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS slack_messages (
+    channel TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    thread_ts TEXT,
+    channel_name TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    text TEXT NOT NULL,
+    permalink TEXT NOT NULL,
+    via TEXT,
+    read INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (channel, ts)
 );
 CREATE TABLE IF NOT EXISTS input_links (
     id INTEGER PRIMARY KEY,
@@ -1499,6 +1542,69 @@ impl Db {
         }
         self.link_session(id, todo_id)?;
         Ok(Some(todo_id))
+    }
+
+    /// Keeps the Slack messages not kept yet (`read` for the first check's,
+    /// which only records what is there); returns those it kept.
+    pub fn add_slack_messages(&self, messages: &[NewSlackMessage], read: bool) -> Result<Vec<SlackMessage>> {
+        let mut kept = Vec::new();
+        for m in messages {
+            let n = self.conn.execute(
+                "INSERT OR IGNORE INTO slack_messages (channel, ts, thread_ts, channel_name, user_name, text, permalink, via, read) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![m.channel, m.ts, m.thread_ts, m.channel_name, m.user_name, m.text, m.permalink, m.via, read],
+            )?;
+            if n > 0 {
+                kept.push(SlackMessage {
+                    channel: m.channel.clone(),
+                    ts: m.ts.clone(),
+                    thread_ts: m.thread_ts.clone(),
+                    channel_name: m.channel_name.clone(),
+                    user_name: m.user_name.clone(),
+                    text: m.text.clone(),
+                    permalink: m.permalink.clone(),
+                    via: m.via.clone(),
+                    read,
+                });
+            }
+        }
+        Ok(kept)
+    }
+
+    /// Whether any Slack message was ever kept (the first check is quiet).
+    pub fn has_slack_messages(&self) -> Result<bool> {
+        Ok(self.conn.query_row("SELECT EXISTS (SELECT 1 FROM slack_messages)", [], |r| r.get(0))?)
+    }
+
+    /// The newest `limit` Slack messages.
+    pub fn slack_messages(&self, limit: i64) -> Result<Vec<SlackMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT channel, ts, thread_ts, channel_name, user_name, text, permalink, via, read FROM slack_messages ORDER BY CAST(ts AS REAL) DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit], |r| {
+            Ok(SlackMessage {
+                channel: r.get(0)?,
+                ts: r.get(1)?,
+                thread_ts: r.get(2)?,
+                channel_name: r.get(3)?,
+                user_name: r.get(4)?,
+                text: r.get(5)?,
+                permalink: r.get(6)?,
+                via: r.get(7)?,
+                read: r.get(8)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn mark_slack_read(&self, channel: &str, ts: &str) -> Result<()> {
+        self.conn.execute("UPDATE slack_messages SET read = 1 WHERE channel = ?1 AND ts = ?2", params![channel, ts])?;
+        Ok(())
+    }
+
+    /// Forgets what came from Slack, when the user lets it go.
+    pub fn clear_slack(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM slack_messages", [])?;
+        Ok(())
     }
 
     /// Marks the session running and links it when the prompt carries a
