@@ -32,6 +32,15 @@ pub fn map_state(session: &Value) -> SessionState {
     }
 }
 
+/// A review session archived (here or on claude.ai) was put away by the
+/// user: it no longer waits on them as a review that stopped.
+fn put_away_if_review(db: &Db, id: &str) -> Result<(), String> {
+    match db.get_session(id).map_err(|e| e.to_string())? {
+        Some(s) if s.review_url.is_some() => db.hide_session(id).map_err(|e| e.to_string()),
+        _ => Ok(()),
+    }
+}
+
 /// `bridge` sessions are Remote Control mirrors of local sessions, which the
 /// hooks already track (and whose events need a trusted device).
 pub fn is_cloud(session: &Value) -> bool {
@@ -493,6 +502,9 @@ fn sync_one(db: &Db, client: &mut Client, s: &Value) -> Result<Outcome, String> 
         return Ok(Outcome::Skipped);
     }
     db.record_session(id, &repo_url(s).unwrap_or_default(), state).map_err(|e| e.to_string())?;
+    if s["status"] == "archived" {
+        put_away_if_review(db, id)?;
+    }
     db.set_session_repos(id, &repo_keys(s)).map_err(|e| e.to_string())?;
     if let Some((_, branch)) = current_branches(s).into_iter().next() {
         db.set_session_branch(id, &branch).map_err(|e| e.to_string())?;
@@ -539,8 +551,10 @@ fn sync_all(db: &Db) -> Result<(usize, usize, usize, Vec<String>), String> {
         }
         match client.get_opt(&format!("/v1/code/sessions/{}", known.session_id)) {
             Ok(Some(s)) => {
-                if let Err(e) = db.record_session(&known.session_id, &known.cwd, map_state(&s)) {
-                    errors.push(e.to_string());
+                let recorded = db.record_session(&known.session_id, &known.cwd, map_state(&s)).map_err(|e| e.to_string());
+                let put_away = if s["status"] == "archived" { put_away_if_review(db, &known.session_id) } else { Ok(()) };
+                if let Err(e) = recorded.and(put_away) {
+                    errors.push(e);
                 }
             }
             Ok(None) => {
@@ -565,7 +579,7 @@ pub fn archive_sessions(db: &Db, ids: &[String]) -> Result<Vec<String>, String> 
     let mut errors = Vec::new();
     for id in ids {
         let archived = client.archive(id, &org).and_then(|()| match db.get_session(id).map_err(|e| e.to_string())? {
-            Some(s) => db.record_session(id, &s.cwd, SessionState::Ended).map_err(|e| e.to_string()),
+            Some(s) => db.record_session(id, &s.cwd, SessionState::Ended).map_err(|e| e.to_string()).and_then(|()| put_away_if_review(db, id)),
             None => Ok(()),
         });
         if let Err(e) = archived {
