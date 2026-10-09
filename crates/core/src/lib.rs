@@ -462,6 +462,8 @@ pub struct SlackMessage {
     pub permalink: String,
     /// The user group's handle when it mentions a group, not the user.
     pub via: Option<String>,
+    /// The sender's picture.
+    pub user_image: Option<String>,
     pub read: bool,
 }
 
@@ -475,6 +477,7 @@ pub struct NewSlackMessage {
     pub text: String,
     pub permalink: String,
     pub via: Option<String>,
+    pub user_image: Option<String>,
 }
 
 /// Something that happened under a todo: what its orchestrator did, or what
@@ -636,6 +639,7 @@ CREATE TABLE IF NOT EXISTS slack_messages (
     text TEXT NOT NULL,
     permalink TEXT NOT NULL,
     via TEXT,
+    user_image TEXT,
     read INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (channel, ts)
 );
@@ -789,7 +793,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [now()],
         )?;
     }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -1550,8 +1554,8 @@ impl Db {
         let mut kept = Vec::new();
         for m in messages {
             let n = self.conn.execute(
-                "INSERT OR IGNORE INTO slack_messages (channel, ts, thread_ts, channel_name, user_name, text, permalink, via, read) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-                params![m.channel, m.ts, m.thread_ts, m.channel_name, m.user_name, m.text, m.permalink, m.via, read],
+                "INSERT OR IGNORE INTO slack_messages (channel, ts, thread_ts, channel_name, user_name, text, permalink, via, user_image, read) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![m.channel, m.ts, m.thread_ts, m.channel_name, m.user_name, m.text, m.permalink, m.via, m.user_image, read],
             )?;
             if n > 0 {
                 kept.push(SlackMessage {
@@ -1563,6 +1567,7 @@ impl Db {
                     text: m.text.clone(),
                     permalink: m.permalink.clone(),
                     via: m.via.clone(),
+                    user_image: m.user_image.clone(),
                     read,
                 });
             }
@@ -1575,11 +1580,14 @@ impl Db {
         Ok(self.conn.query_row("SELECT EXISTS (SELECT 1 FROM slack_messages)", [], |r| r.get(0))?)
     }
 
-    /// The newest `limit` Slack messages.
+    /// Every unread Slack message and the newest `limit` read ones, newest first.
     pub fn slack_messages(&self, limit: i64) -> Result<Vec<SlackMessage>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT channel, ts, thread_ts, channel_name, user_name, text, permalink, via, read FROM slack_messages ORDER BY CAST(ts AS REAL) DESC LIMIT ?1",
-        )?;
+        const COLS: &str = "channel, ts, thread_ts, channel_name, user_name, text, permalink, via, read, user_image";
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT * FROM (SELECT {COLS} FROM slack_messages WHERE read = 0
+               UNION ALL SELECT * FROM (SELECT {COLS} FROM slack_messages WHERE read = 1 ORDER BY CAST(ts AS REAL) DESC LIMIT ?1))
+             ORDER BY CAST(ts AS REAL) DESC"
+        ))?;
         let rows = stmt.query_map([limit], |r| {
             Ok(SlackMessage {
                 channel: r.get(0)?,
@@ -1591,6 +1599,7 @@ impl Db {
                 permalink: r.get(6)?,
                 via: r.get(7)?,
                 read: r.get(8)?,
+                user_image: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

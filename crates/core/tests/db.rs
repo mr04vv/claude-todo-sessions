@@ -1088,6 +1088,7 @@ fn slack_message(ts: &str, via: Option<&str>) -> cts_core::NewSlackMessage {
         text: "@森 見てもらえますか".into(),
         permalink: format!("https://acme.slack.com/archives/C1/p{ts}"),
         via: via.map(String::from),
+        user_image: Some("https://avatars.slack-edge.com/a_72.png".into()),
     }
 }
 
@@ -1106,7 +1107,17 @@ fn slack_mentions_are_kept_once_newest_first_and_read_in_the_app() {
     assert!(list.iter().all(|m| !m.read));
     db.mark_slack_read("C1", "1700000500.000200").unwrap();
     assert_eq!(db.slack_messages(10).unwrap().iter().filter(|m| !m.read).count(), 2);
-    assert_eq!(db.slack_messages(2).unwrap().len(), 2, "as many as asked");
+    assert_eq!(list[0].user_image.as_deref(), Some("https://avatars.slack-edge.com/a_72.png"));
+}
+
+#[test]
+fn every_unread_slack_message_comes_with_the_newest_read_ones() {
+    let (_d, db) = open();
+    db.add_slack_messages(&[slack_message("1700000000.000100", None)], false).unwrap();
+    db.add_slack_messages(&[slack_message("1700000500.000200", None), slack_message("1700000900.000300", None)], true).unwrap();
+    let ts = |limit| db.slack_messages(limit).unwrap().into_iter().map(|m| m.ts).collect::<Vec<_>>();
+    assert_eq!(ts(1), ["1700000900.000300", "1700000000.000100"], "the old unread one too, past the read ones asked");
+    assert_eq!(ts(0), ["1700000000.000100"]);
 }
 
 #[test]
@@ -1135,4 +1146,20 @@ fn slack_works_on_databases_made_before_it() {
     let db = Db::open(&path).unwrap();
     db.add_slack_messages(&[slack_message("1700000000.000100", None)], false).unwrap();
     assert_eq!(db.slack_messages(10).unwrap().len(), 1);
+}
+
+#[test]
+fn slack_messages_kept_before_pictures_open_without_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE slack_messages (channel TEXT NOT NULL, ts TEXT NOT NULL, thread_ts TEXT, channel_name TEXT NOT NULL, user_name TEXT NOT NULL,
+            text TEXT NOT NULL, permalink TEXT NOT NULL, via TEXT, read INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (channel, ts));
+         INSERT INTO slack_messages (channel, ts, channel_name, user_name, text, permalink) VALUES ('C1', '1.0', 'dev', '鈴木', 'hi', 'https://x');",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    assert_eq!(db.slack_messages(10).unwrap()[0].user_image, None);
 }

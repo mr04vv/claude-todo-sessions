@@ -13,7 +13,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cts_core::slack::{self, Envelope, Group, Hit, Me};
+use cts_core::slack::{self, Envelope, Group, Hit, Me, Person};
 use cts_core::{Db, NewSlackMessage, SlackMessage};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -38,8 +38,11 @@ const SOCKET_RETRY_MAX: Duration = Duration::from_secs(300);
 const WSS_PORT: u16 = 443;
 /// The user groups are looked up again every this many checks (an hour).
 const GROUPS_EVERY: u32 = 30;
-/// Users' names by id, kept across launches.
-const NAMES_FILE: &str = "slack-users.json";
+/// Users' names and pictures by id, kept across launches.
+const PEOPLE_FILE: &str = "slack-people.json";
+/// `{channel, thread_ts}` for each message posted where the user is (a
+/// message in a channel is its own thread): an open thread reads itself again.
+const SLACK_POSTED_EVENT: &str = "slack-posted";
 /// The messages the board carries, newest first.
 const BOARD_MESSAGES: i64 = 100;
 /// A notification's text is cut to this many characters.
@@ -59,7 +62,7 @@ pub struct Slack {
     me: Mutex<Option<Me>>,
     /// The user's groups, once asked (asked again hourly).
     groups: Mutex<Option<Vec<Group>>>,
-    names: Mutex<HashMap<String, String>>,
+    people: Mutex<HashMap<String, Person>>,
     /// Channels' names by id, from the searches or asked.
     channels: Mutex<HashMap<String, String>>,
     /// Changed with the tokens: the socket connects again.
@@ -76,7 +79,7 @@ impl Slack {
             socket_error: Mutex::new(None),
             me: Mutex::new(None),
             groups: Mutex::new(None),
-            names: Mutex::new(load_kept(NAMES_FILE)),
+            people: Mutex::new(load_kept(PEOPLE_FILE)),
             channels: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
             wake: Mutex::new(wake),
@@ -130,19 +133,27 @@ impl Slack {
         self.set_socket_error(None);
     }
 
-    /// A user's name as Slack shows it, asked once and kept.
-    fn name_of(&self, token: &str, user: &str) -> Option<String> {
+    /// A user as Slack shows them (name and picture), asked once and kept.
+    fn person(&self, token: &str, user: &str) -> Option<Person> {
         if user.is_empty() {
             return None;
         }
-        if let Some(name) = self.names.lock().ok()?.get(user) {
-            return Some(name.clone());
+        if let Some(person) = self.people.lock().ok()?.get(user) {
+            return Some(person.clone());
         }
-        let name = slack::user_name(token, user).map_err(|e| eprintln!("{e}")).ok().flatten()?;
-        let mut names = self.names.lock().ok()?;
-        names.insert(user.into(), name.clone());
-        save_kept(NAMES_FILE, &names);
-        Some(name)
+        let person = slack::person(token, user).map_err(|e| eprintln!("{e}")).ok().flatten()?;
+        let mut people = self.people.lock().ok()?;
+        people.insert(user.into(), person.clone());
+        save_kept(PEOPLE_FILE, &people);
+        Some(person)
+    }
+
+    fn name_of(&self, token: &str, user: &str) -> Option<String> {
+        self.person(token, user).map(|p| p.name)
+    }
+
+    fn image_of(&self, token: &str, user: &str) -> Option<String> {
+        self.person(token, user).and_then(|p| p.image)
     }
 
     fn plain(&self, token: &str, text: &str) -> String {
@@ -199,6 +210,8 @@ pub struct SlackView {
     connected: bool,
     /// Socket Mode brings the messages as they are posted.
     live: bool,
+    /// The user's id, once known.
+    user_id: Option<String>,
     error: Option<String>,
     messages: Vec<SlackMessage>,
 }
@@ -209,6 +222,7 @@ pub fn view(slack: &Slack, db: &Db) -> Result<SlackView, String> {
     Ok(SlackView {
         connected: slack.connected.load(Ordering::Relaxed),
         live: slack.live.load(Ordering::Relaxed),
+        user_id: slack.me.lock().map_err(err)?.as_ref().map(|m| m.user_id.clone()),
         error: error.or(socket_error),
         messages: db.slack_messages(BOARD_MESSAGES).map_err(err)?,
     })
@@ -293,6 +307,8 @@ pub fn slack_read(state: State<AppState>, channel: String, ts: String) -> Result
 #[derive(Serialize)]
 pub struct ThreadMessage {
     user_name: String,
+    user_image: Option<String>,
+    /// Slack's markup, the user mentions named (the page formats it).
     text: String,
     ts: String,
     mine: bool,
@@ -303,15 +319,35 @@ pub struct ThreadMessage {
 pub fn slack_thread(slack: State<Slack>, channel: String, thread_ts: String) -> Result<Vec<ThreadMessage>, String> {
     let token = token_or_err()?;
     let me = slack.me(&token)?;
+    let groups = slack.groups(&token, &me.user_id).unwrap_or_default();
     Ok(slack::replies(&token, &channel, &thread_ts)?
         .into_iter()
-        .map(|m| ThreadMessage {
-            user_name: slack.name_of(&token, &m.user).or(m.user_name).unwrap_or_else(|| m.user.clone()),
-            text: slack.plain(&token, &m.text),
-            mine: m.user == me.user_id,
-            ts: m.ts,
+        .map(|m| {
+            let person = slack.person(&token, &m.user);
+            ThreadMessage {
+                user_name: person.as_ref().map(|p| p.name.clone()).or(m.user_name).unwrap_or_else(|| m.user.clone()),
+                user_image: person.and_then(|p| p.image),
+                text: slack::label_mentions(&slack::label_groups(&m.text, &groups), |user| slack.name_of(&token, user)),
+                mine: m.user == me.user_id,
+                ts: m.ts,
+            }
         })
         .collect())
+}
+
+/// Replies in a thread as the user (#30).
+#[tauri::command(async)]
+pub fn slack_reply(channel: String, thread_ts: String, text: String) -> Result<(), String> {
+    if text.trim().is_empty() {
+        return Err("返信が空です".into());
+    }
+    slack::post_reply(&token_or_err()?, &channel, &thread_ts, &text)
+}
+
+#[derive(Clone, Serialize)]
+struct Posted {
+    channel: String,
+    thread_ts: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -325,6 +361,7 @@ fn to_message(slack: &Slack, token: &str, hit: Hit, via: Option<String>, groups:
     slack.remember_channel(&hit.channel, &hit.channel_name);
     NewSlackMessage {
         user_name: slack.name_of(token, &hit.user).unwrap_or(hit.user_name),
+        user_image: slack.image_of(token, &hit.user),
         text: slack.plain(token, &slack::label_groups(&hit.text, groups)),
         channel: hit.channel,
         ts: hit.ts,
@@ -435,6 +472,8 @@ fn connect(url: &str) -> Result<Socket, String> {
 /// mentions them or one of their groups, and is not theirs.
 fn on_event(app: &AppHandle, db: &Db, slack: &Slack, token: &str, event: &serde_json::Value) -> Result<(), String> {
     let Some(posted) = slack::parse_posted(event) else { return Ok(()) };
+    let thread = Posted { channel: posted.channel.clone(), thread_ts: posted.thread_ts.clone().unwrap_or_else(|| posted.ts.clone()) };
+    let _ = app.emit(SLACK_POSTED_EVENT, thread);
     let me = slack.me(token)?;
     if posted.user == me.user_id {
         return Ok(());
@@ -444,6 +483,7 @@ fn on_event(app: &AppHandle, db: &Db, slack: &Slack, token: &str, event: &serde_
     let message = NewSlackMessage {
         channel_name: slack.channel_name(token, &posted.channel),
         user_name: slack.name_of(token, &posted.user).or(posted.user_name).unwrap_or_else(|| posted.user.clone()),
+        user_image: slack.image_of(token, &posted.user),
         text: slack.plain(token, &slack::label_groups(&posted.text, &groups)),
         permalink: slack::permalink(&me.team_url, &posted.channel, &posted.ts, posted.thread_ts.as_deref()),
         channel: posted.channel,

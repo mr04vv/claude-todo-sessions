@@ -2642,6 +2642,7 @@ fn main() {
             slack::slack_forget_app_token,
             slack::slack_read,
             slack::slack_thread,
+            slack::slack_reply,
             create_todo,
             update_todo,
             delete_todo,

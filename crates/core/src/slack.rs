@@ -154,14 +154,43 @@ pub fn parse_replies(v: &Value) -> Vec<Message> {
         .collect()
 }
 
-/// users.info's name for a user: as they show in Slack.
-pub fn parse_user_name(v: &Value) -> Option<String> {
+/// A user as the app shows them: their name, and their picture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Person {
+    pub name: String,
+    pub image: Option<String>,
+}
+
+/// users.info's user: named as they show in Slack.
+pub fn parse_person(v: &Value) -> Option<Person> {
     let user = &v["user"];
-    [&user["profile"]["display_name"], &user["profile"]["real_name"], &user["real_name"], &user["name"]]
-        .into_iter()
-        .filter_map(|n| n.as_str())
-        .find(|n| !n.is_empty())
-        .map(String::from)
+    let name = [&user["profile"]["display_name"], &user["profile"]["real_name"], &user["real_name"], &user["name"]].into_iter().filter_map(|n| n.as_str()).find(|n| !n.is_empty())?;
+    Some(Person { name: name.into(), image: user["profile"]["image_72"].as_str().map(String::from) })
+}
+
+/// The user's groups' mentions (`<!subteam^S1>`) given their handles
+/// (`<!subteam^S1|@web-team>`).
+pub fn label_groups(text: &str, groups: &[Group]) -> String {
+    groups.iter().fold(text.to_string(), |text, g| text.replace(&format!("<!subteam^{}>", g.id), &format!("<!subteam^{}|@{}>", g.id, g.handle)))
+}
+
+/// The user mentions (`<@U1>`) given the names `name_of` knows
+/// (`<@U1|森>`), so the page can show them without asking.
+pub fn label_mentions(text: &str, name_of: impl Fn(&str) -> Option<String>) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("<@") {
+        let Some(close) = rest[at..].find('>') else { break };
+        let inner = &rest[at + 2..at + close];
+        out.push_str(&rest[..at]);
+        match (inner.contains('|'), name_of(inner)) {
+            (false, Some(name)) => out.push_str(&format!("<@{inner}|{name}>")),
+            _ => out.push_str(&rest[at..at + close + 1]),
+        }
+        rest = &rest[at + close + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Slack's markup (`<@U1>`, `<#C1|name>`, `<url|label>`, `&lt;`…) as plain
@@ -193,12 +222,6 @@ pub fn plain(text: &str, name_of: impl Fn(&str) -> Option<String>) -> String {
     }
     out.push_str(rest);
     out.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
-}
-
-/// The user's groups' mentions (`<!subteam^S1>`) given their handles
-/// (`<!subteam^S1|@web-team>`).
-pub fn label_groups(text: &str, groups: &[Group]) -> String {
-    groups.iter().fold(text.to_string(), |text, g| text.replace(&format!("<!subteam^{}>", g.id), &format!("<!subteam^{}|@{}>", g.id, g.handle)))
 }
 
 /// The search for mentions of the user.
@@ -341,8 +364,21 @@ pub fn replies(token: &str, channel: &str, thread_ts: &str) -> Result<Vec<Messag
     Ok(parse_replies(&call(token, "conversations.replies", &[("channel", channel), ("ts", thread_ts)])?))
 }
 
-pub fn user_name(token: &str, user: &str) -> Result<Option<String>, String> {
-    Ok(parse_user_name(&call(token, "users.info", &[("user", user)])?))
+/// Posts `text` in a thread as the user (#30; `chat:write`).
+pub fn post_reply(token: &str, channel: &str, thread_ts: &str, text: &str) -> Result<(), String> {
+    let v: Value = AGENT
+        .post(format!("{API}/chat.postMessage"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send_json(serde_json::json!({ "channel": channel, "thread_ts": thread_ts, "text": text }))
+        .map_err(|e| format!("Slack chat.postMessage: {e}"))?
+        .body_mut()
+        .read_json()
+        .map_err(|e| format!("Slack chat.postMessage: {e}"))?;
+    answer(v).map(|_| ())
+}
+
+pub fn person(token: &str, user: &str) -> Result<Option<Person>, String> {
+    Ok(parse_person(&call(token, "users.info", &[("user", user)])?))
 }
 
 #[cfg(test)]
@@ -426,9 +462,30 @@ mod tests {
     #[test]
     fn a_users_name_is_their_display_name_else_their_real_name() {
         let user = |profile: Value| json!({"ok": true, "user": {"id": "U2", "name": "suzuki.t", "real_name": "Suzuki Taro", "profile": profile}});
-        assert_eq!(parse_user_name(&user(json!({"display_name": "鈴木", "real_name": "Suzuki Taro"}))).as_deref(), Some("鈴木"));
-        assert_eq!(parse_user_name(&user(json!({"display_name": "", "real_name": "Suzuki Taro"}))).as_deref(), Some("Suzuki Taro"));
-        assert_eq!(parse_user_name(&json!({"ok": true, "user": {"id": "U2", "name": "suzuki.t"}})).as_deref(), Some("suzuki.t"));
+        let name = |v: Value| parse_person(&v).map(|p| p.name);
+        assert_eq!(name(user(json!({"display_name": "鈴木", "real_name": "Suzuki Taro"}))).as_deref(), Some("鈴木"));
+        assert_eq!(name(user(json!({"display_name": "", "real_name": "Suzuki Taro"}))).as_deref(), Some("Suzuki Taro"));
+        assert_eq!(name(json!({"ok": true, "user": {"id": "U2", "name": "suzuki.t"}})).as_deref(), Some("suzuki.t"));
+    }
+
+    #[test]
+    fn a_users_picture_comes_with_their_name() {
+        let v = json!({"ok": true, "user": {"id": "U2", "name": "suzuki.t", "profile": {"display_name": "鈴木", "image_48": "https://avatars.slack-edge.com/a_48.png", "image_72": "https://avatars.slack-edge.com/a_72.png"}}});
+        assert_eq!(parse_person(&v), Some(Person { name: "鈴木".into(), image: Some("https://avatars.slack-edge.com/a_72.png".into()) }));
+        assert_eq!(parse_person(&json!({"ok": true, "user": {"name": "x"}})).unwrap().image, None);
+    }
+
+    #[test]
+    fn the_users_groups_get_their_handles() {
+        let groups = vec![Group { id: "S1".into(), handle: "web-team".into() }];
+        assert_eq!(label_groups("<!subteam^S1> と <!subteam^S2> と <!subteam^S1|@web>", &groups), "<!subteam^S1|@web-team> と <!subteam^S2> と <!subteam^S1|@web>");
+    }
+
+    #[test]
+    fn mentions_get_the_names_they_lack() {
+        let names = |id: &str| (id == "U1").then(|| "森".to_string());
+        assert_eq!(label_mentions("<@U1> と <@U9> と <@U1|もり>", names), "<@U1|森> と <@U9> と <@U1|もり>", "an unknown user and a labelled one stay");
+        assert_eq!(label_mentions("<https://x.example|x> <!here>", names), "<https://x.example|x> <!here>");
     }
 
     #[test]
@@ -443,12 +500,6 @@ mod tests {
         assert_eq!(plain("<https://github.com/acme/web/pull/57|PR #57> と <https://example.com>", names), "PR #57 と https://example.com");
         assert_eq!(plain("a &lt; b &amp;&amp; c &gt; d", names), "a < b && c > d");
         assert_eq!(plain("閉じない < のまま", names), "閉じない < のまま");
-    }
-
-    #[test]
-    fn the_users_groups_get_their_handles() {
-        let groups = vec![Group { id: "S1".into(), handle: "web-team".into() }];
-        assert_eq!(label_groups("<!subteam^S1> と <!subteam^S2> と <!subteam^S1|@web>", &groups), "<!subteam^S1|@web-team> と <!subteam^S2> と <!subteam^S1|@web>");
     }
 
     #[test]
