@@ -1,0 +1,36 @@
+<!-- The app icon (Shosai: a lamp over an open book on a desk). The icons beside it are made from this with `pnpm tauri icon`. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="lamp-ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a281d"/>
+      <stop offset="1" stop-color="#1e140e"/>
+    </linearGradient>
+    <linearGradient id="lamp-light" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffc47e" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#ffc47e" stop-opacity="0.08"/>
+    </linearGradient>
+    <linearGradient id="lamp-shade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e8a64f"/>
+      <stop offset="1" stop-color="#c4802f"/>
+    </linearGradient>
+    <linearGradient id="lamp-desk" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b47a4c"/>
+      <stop offset="1" stop-color="#7d5034"/>
+    </linearGradient>
+    <filter id="lamp-shadow" x="-10%" y="-10%" width="120%" height="125%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#lamp-ground)" filter="url(#lamp-shadow)"/>
+  <rect x="100.5" y="100.5" width="823" height="823" rx="185.5" fill="none" stroke="#ffe2bf" stroke-opacity="0.10" stroke-width="3"/>
+  <rect x="505" y="100" width="14" height="116" fill="#6b4630"/>
+  <polygon points="378,366 646,366 812,712 212,712" fill="url(#lamp-light)"/>
+  <path d="M 362 368 A 150 150 0 0 1 662 368 Z" fill="url(#lamp-shade)"/>
+  <circle cx="512" cy="378" r="26" fill="#fff4e0"/>
+  <path d="M 512 648 C 452 616 382 608 318 618 L 318 700 C 382 690 452 696 512 712 Z" fill="#efe5d2"/>
+  <path d="M 512 648 C 572 616 642 608 706 618 L 706 700 C 642 690 572 696 512 712 Z" fill="#f8f1e3"/>
+  <path d="M 360 646 C 410 640 452 646 486 660" fill="none" stroke="#cdb98f" stroke-width="7" stroke-linecap="round"/>
+  <path d="M 538 660 C 572 646 614 640 664 646" fill="none" stroke="#cdb98f" stroke-width="7" stroke-linecap="round"/>
+  <rect x="180" y="712" width="664" height="30" rx="8" fill="url(#lamp-desk)"/>
+  <rect x="180" y="712" width="664" height="6" rx="3" fill="#d39a68"/>
+</svg>
