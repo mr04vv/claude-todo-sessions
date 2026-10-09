@@ -3126,3 +3126,13 @@ body.resizing {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.slack-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dot.live {
+  background: var(--running);
+}

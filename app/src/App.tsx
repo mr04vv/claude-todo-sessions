@@ -3191,6 +3191,12 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
           </div>
         )}
         <span className="muted">自分とユーザーグループへのメンションだけ。DM・@channel・@here は出しません</span>
+        <span className="grow" />
+        {slack.connected && (
+          <span className="muted slack-live" title={slack.live ? "Socket Mode でつながっています。投稿されたその場で届きます" : "設定でアプリのトークン（xapp-…）を入れると、その場で届きます"}>
+            <span className={`dot ${slack.live ? "live" : ""}`} /> {slack.live ? "リアルタイム" : "2分おきに確認"}
+          </span>
+        )}
       </header>
       {!slack.connected ? (
         <div className="content">
@@ -3337,6 +3343,7 @@ function SlackSettings({ report }: { report: (e: unknown) => void }) {
           )}
         </div>
       )}
+      {account && <SlackRealtime realtime={account.realtime} report={report} onChange={(realtime) => setAccount({ ...account, realtime })} />}
       {account === null && (
         <>
           <p className="muted">自分用の Slack アプリのユーザートークン（xoxp-…）を入れると、自分とユーザーグループへのメンションが Slack の画面に並びます。トークンは Keychain に置きます。</p>
@@ -3358,6 +3365,53 @@ function SlackSettings({ report }: { report: (e: unknown) => void }) {
         </>
       )}
     </section>
+  );
+}
+
+/// The settings' Slack in real time: the app's token (`xapp-…`) for Socket Mode.
+function SlackRealtime({ realtime, report, onChange }: { realtime: boolean; report: (e: unknown) => void; onChange: (realtime: boolean) => void }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = () => {
+    if (!token.trim() || busy) return;
+    setBusy(true);
+    api
+      .slackSetAppToken(token)
+      .then(() => {
+        onChange(true);
+        setToken("");
+      }, report)
+      .finally(() => setBusy(false));
+  };
+  if (realtime) {
+    return (
+      <div className="setting-row">
+        <span className="grow">リアルタイム（Socket Mode）：アプリのトークンを Keychain に置いています</span>
+        <button className="ghost small" onClick={() => api.slackForgetAppToken().then(() => onChange(false), report)}>
+          やめる
+        </button>
+      </div>
+    );
+  }
+  return (
+    <>
+      <p className="muted">アプリのトークン（xapp-…、connections:write）を入れると、Socket Mode で投稿されたその場でメンションが届きます。入れないあいだは2分おきに確かめます。</p>
+      <div className="setting-row">
+        <input
+          type="password"
+          className="grow"
+          value={token}
+          placeholder="xapp-…"
+          aria-label="Slack アプリのトークン"
+          autoComplete="off"
+          onChange={(e) => setToken(e.target.value)}
+          onKeyDown={(e) => isEnter(e) && save()}
+        />
+        <button className="primary small" disabled={!token.trim() || busy} onClick={save}>
+          {busy ? "確かめています…" : "リアルタイムにする"}
+        </button>
+      </div>
+    </>
   );
 }
 

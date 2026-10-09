@@ -34,3 +34,8 @@ cef = { version = "154.4", default-features = false }
 # The in-app terminal pane (terminal.rs).
 portable-pty = "0.9"
 base64 = "0.22"
+# Slack's Socket Mode: a WebSocket over rustls, checked by the system's
+# verifier as ureq does.
+tungstenite = { version = "0.30", features = ["rustls-tls-native-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-platform-verifier = "0.7"

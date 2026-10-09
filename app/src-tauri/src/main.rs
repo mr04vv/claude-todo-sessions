@@ -2610,6 +2610,8 @@ fn main() {
             std::thread::spawn(move || issue_sync_loop(handle, github_rx));
             let handle = app.handle().clone();
             std::thread::spawn(move || slack::run(handle, slack_rx));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || slack::socket_run(handle));
             Ok(())
         })
         .menu(app_menu)
@@ -2636,6 +2638,8 @@ fn main() {
             slack::slack_connect,
             slack::slack_account,
             slack::slack_disconnect,
+            slack::slack_set_app_token,
+            slack::slack_forget_app_token,
             slack::slack_read,
             slack::slack_thread,
             create_todo,

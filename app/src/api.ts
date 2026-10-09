@@ -185,6 +185,8 @@ export interface SlackMessage {
 
 export interface SlackView {
   connected: boolean;
+  /** Socket Mode brings the messages as they are posted (else a search every 2 minutes). */
+  live: boolean;
   /** Why the last check failed. */
   error: string | null;
   /** Newest first. */
@@ -195,6 +197,8 @@ export interface SlackView {
 export interface SlackAccount {
   team_url: string;
   user_id: string;
+  /** The app's token is kept (Socket Mode). */
+  realtime: boolean;
 }
 
 /** A message of a Slack thread, its head first. */
@@ -385,6 +389,8 @@ export const api = {
   slackConnect: (token: string) => invoke<SlackAccount>("slack_connect", { token }),
   slackAccount: () => invoke<SlackAccount | null>("slack_account"),
   slackDisconnect: () => invoke<void>("slack_disconnect"),
+  slackSetAppToken: (token: string) => invoke<void>("slack_set_app_token", { token }),
+  slackForgetAppToken: () => invoke<void>("slack_forget_app_token"),
   slackRead: (channel: string, ts: string) => invoke<void>("slack_read", { channel, ts }),
   slackThread: (channel: string, threadTs: string) => invoke<SlackThreadMessage[]>("slack_thread", { channel, threadTs }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
