@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -54,6 +54,8 @@ pub struct Slack {
     connected: AtomicBool,
     /// Socket Mode is connected: the messages come as they are posted.
     live: AtomicBool,
+    /// When Socket Mode last brought an event (unix seconds; 0: none since launch).
+    last_event: AtomicI64,
     /// Why the last check failed, for the Slack page.
     error: Mutex<Option<String>>,
     /// Why Socket Mode could not connect.
@@ -75,6 +77,7 @@ impl Slack {
         Slack {
             connected: AtomicBool::new(token().is_some()),
             live: AtomicBool::new(false),
+            last_event: AtomicI64::new(0),
             error: Mutex::new(None),
             socket_error: Mutex::new(None),
             me: Mutex::new(None),
@@ -210,6 +213,8 @@ pub struct SlackView {
     connected: bool,
     /// Socket Mode brings the messages as they are posted.
     live: bool,
+    /// When Socket Mode last brought an event (unix seconds), since launch.
+    last_event_at: Option<i64>,
     /// The user's id, once known.
     user_id: Option<String>,
     error: Option<String>,
@@ -222,6 +227,7 @@ pub fn view(slack: &Slack, db: &Db) -> Result<SlackView, String> {
     Ok(SlackView {
         connected: slack.connected.load(Ordering::Relaxed),
         live: slack.live.load(Ordering::Relaxed),
+        last_event_at: Some(slack.last_event.load(Ordering::Relaxed)).filter(|at| *at > 0),
         user_id: slack.me.lock().map_err(err)?.as_ref().map(|m| m.user_id.clone()),
         error: error.or(socket_error),
         messages: db.slack_messages(BOARD_MESSAGES).map_err(err)?,
@@ -518,6 +524,7 @@ fn socket_session(app: &AppHandle, slack: &Slack, token: &str, app_token: &str, 
             Envelope::Hello => {}
             Envelope::Disconnect => break Ok(()),
             Envelope::Event { envelope_id, event } => {
+                slack.last_event.store(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64), Ordering::Relaxed);
                 if let Err(e) = socket.send(tungstenite::Message::text(slack::ack(&envelope_id))) {
                     break Err(format!("WebSocket: {e}"));
                 }

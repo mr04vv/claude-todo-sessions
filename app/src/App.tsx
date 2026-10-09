@@ -3245,7 +3245,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
         <span className="grow" />
         {slack.connected && (
           <span className="muted slack-live" title={slack.live ? "Socket Mode でつながっています。投稿されたその場で届きます" : "設定でアプリのトークン（xapp-…）を入れると、その場で届きます"}>
-            <span className={`dot ${slack.live ? "live" : ""}`} /> {slack.live ? "リアルタイム" : "2分おきに確認"}
+            <span className={`dot ${slack.live ? "live" : ""}`} /> {slack.live ? `リアルタイム（${slack.last_event_at ? `最後の受信 ${ago(slack.last_event_at)}` : "まだ受信なし"}）` : "2分おきに確認"}
           </span>
         )}
       </header>

@@ -189,6 +189,8 @@ export interface SlackView {
   connected: boolean;
   /** Socket Mode brings the messages as they are posted (else a search every 2 minutes). */
   live: boolean;
+  /** When Socket Mode last brought an event (unix seconds), since launch. */
+  last_event_at: number | null;
   /** The user's Slack id, once known (their mentions are marked). */
   user_id: string | null;
   /** Why the last check failed. */
