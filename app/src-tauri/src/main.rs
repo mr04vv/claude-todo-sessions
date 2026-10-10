@@ -2613,6 +2613,12 @@ fn main() {
             std::thread::spawn(move || watch_loop(handle));
             let handle = app.handle().clone();
             std::thread::spawn(move || issue_sync_loop(handle, github_rx));
+            // The secrets kept through /usr/bin/security move to items for Shosai alone (logins.rs).
+            std::thread::spawn(|| {
+                for failed in logins::migrate_logins().into_iter().chain(slack::migrate()) {
+                    eprintln!("keychain: {failed}");
+                }
+            });
             let handle = app.handle().clone();
             std::thread::spawn(move || slack::run(handle, slack_rx));
             let handle = app.handle().clone();

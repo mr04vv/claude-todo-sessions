@@ -20,8 +20,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{err, load_kept, logins, open_db, post_banner, save_kept, show_window, AppState};
 
-/// The tokens' Keychain items: the user's (`xoxp-…`) and the app's (`xapp-…`).
-const SERVICE: &str = "todo-sessions-slack";
+/// The tokens' Keychain items (logins.rs, for Shosai alone): the user's
+/// (`xoxp-…`) and the app's (`xapp-…`); and where they were kept before.
+const SERVICE: &str = "shosai-slack";
+const OLD_SERVICE: &str = "todo-sessions-slack";
 const ACCOUNT: &str = "token";
 const APP_ACCOUNT: &str = "app-token";
 /// Between two checks without Socket Mode: each makes a search per user
@@ -277,12 +279,29 @@ pub fn slack_directory(slack: State<Slack>) -> Result<Vec<Mentionable>, String> 
     Ok(all)
 }
 
+/// A token kept, read from where it was kept before until it has moved (logins::migrate).
+fn kept(account: &str) -> Option<String> {
+    logins::load_secret(SERVICE, account).or_else(|| logins::old_secret(OLD_SERVICE, account)).filter(|t| !t.is_empty())
+}
+
 fn token() -> Option<String> {
-    logins::load_secret(SERVICE, ACCOUNT).filter(|t| !t.is_empty())
+    kept(ACCOUNT)
 }
 
 fn app_token() -> Option<String> {
-    logins::load_secret(SERVICE, APP_ACCOUNT).filter(|t| !t.is_empty())
+    kept(APP_ACCOUNT)
+}
+
+/// Moves the tokens kept before to items for Shosai alone (see logins::migrate).
+pub fn migrate() -> Vec<String> {
+    logins::migrate(OLD_SERVICE, SERVICE)
+}
+
+/// Takes a token out, from where it was kept before too.
+fn forget_token(account: &str) -> Result<(), String> {
+    logins::delete_secret(SERVICE, account)?;
+    logins::old_delete(OLD_SERVICE, account);
+    Ok(())
 }
 
 fn token_or_err() -> Result<String, String> {
@@ -371,7 +390,7 @@ pub fn slack_set_app_token(slack: State<Slack>, token: String) -> Result<(), Str
 /// Takes the app's token out: back to checking every EVERY.
 #[tauri::command(async)]
 pub fn slack_forget_app_token(slack: State<Slack>) -> Result<(), String> {
-    logins::delete_secret(SERVICE, APP_ACCOUNT)?;
+    forget_token(APP_ACCOUNT)?;
     slack.renew_socket();
     slack.restart();
     Ok(())
@@ -380,8 +399,8 @@ pub fn slack_forget_app_token(slack: State<Slack>) -> Result<(), String> {
 /// Lets Slack go: both tokens out of the Keychain, its messages forgotten.
 #[tauri::command(async)]
 pub fn slack_disconnect(state: State<AppState>, slack: State<Slack>) -> Result<(), String> {
-    logins::delete_secret(SERVICE, ACCOUNT)?;
-    logins::delete_secret(SERVICE, APP_ACCOUNT)?;
+    forget_token(ACCOUNT)?;
+    forget_token(APP_ACCOUNT)?;
     state.db.lock().map_err(err)?.clear_slack().map_err(err)?;
     slack.connected.store(false, Ordering::Relaxed);
     slack.set_error(None);

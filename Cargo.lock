@@ -4327,6 +4327,7 @@ dependencies = [
  "portable-pty",
  "rustls",
  "rustls-platform-verifier",
+ "security-framework",
  "serde",
  "serde_json",
  "tauri",
