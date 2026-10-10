@@ -63,5 +63,20 @@ done
 IDENTITY="${SHOSAI_SIGNING_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development: .*\)"$/\1/p' | head -1)}"
 if [ -n "$IDENTITY" ] && security find-identity -p codesigning | grep -qF "\"$IDENTITY\""; then SIGN="$IDENTITY"; else SIGN=-; fi
 echo "signing with: $SIGN"
-codesign --force --deep --sign "$SIGN" "$APP"
+if [ "$SIGN" = - ]; then
+  codesign --force --deep --sign - "$APP"
+else
+  # Under the Hardened Runtime (no code slipped in at launch, only libraries
+  # signed by the same team), inner parts first; SHOSAI_HARDENED=0 leaves it out.
+  RUNTIME=(--options runtime)
+  [ "${SHOSAI_HARDENED:-1}" = 0 ] && RUNTIME=()
+  ENT=app/src-tauri/entitlements
+  codesign --force --deep "${RUNTIME[@]}" --sign "$SIGN" "$FW/$FRAMEWORK"
+  for kind in "" " (GPU)" " (Renderer)" " (Plugin)" " (Alerts)"; do
+    codesign --force "${RUNTIME[@]}" --entitlements "$ENT/helper.plist" --sign "$SIGN" "$FW/$MAIN Helper$kind.app"
+  done
+  codesign --force "${RUNTIME[@]}" --entitlements "$ENT/helper.plist" --sign "$SIGN" "$APP/Contents/MacOS/todo-sessions-helper"
+  codesign --force "${RUNTIME[@]}" --entitlements "$ENT/app.plist" --sign "$SIGN" "$APP"
+fi
+codesign --verify --deep --strict "$APP"
 echo "$APP"
