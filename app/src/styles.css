@@ -3393,3 +3393,43 @@ body.resizing {
 .slack-msg {
   cursor: default;
 }
+
+/* Emoji: the workspace's own as pictures, reactions under a message. */
+.slack-emoji-img {
+  width: 1.3em;
+  height: 1.3em;
+  vertical-align: -0.3em;
+  object-fit: contain;
+}
+
+.slack-reactions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.slack-reaction {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--border-2);
+  border-radius: 12px;
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.slack-reaction.mine {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.slack-suggest-emoji {
+  display: inline-flex;
+  justify-content: center;
+  width: 20px;
+}

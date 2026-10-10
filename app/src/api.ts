@@ -247,6 +247,8 @@ export interface SlackThreadMessage {
   mine: boolean;
   /// Its link, for a todo made from it.
   permalink: string;
+  /** Each emoji with how many gave it, whether the user did, and the first who did. */
+  reactions: { name: string; count: number; mine: boolean; who: string[] }[];
 }
 
 export interface Board {
@@ -436,6 +438,7 @@ export const api = {
   slackThreadSeen: (channel: string, threadTs: string) => invoke<void>("slack_thread_seen", { channel, threadTs }),
   slackMuteThread: (channel: string, threadTs: string, muted: boolean) => invoke<void>("slack_mute_thread", { channel, threadTs, muted }),
   slackDirectory: () => invoke<SlackMentionable[]>("slack_directory"),
+  slackEmoji: () => invoke<Record<string, string>>("slack_emoji"),
   slackChannels: () => invoke<SlackChannel[]>("slack_channels"),
   slackPost: (channel: string, text: string) => invoke<string>("slack_post", { channel, text }),
   slackForget: (channel: string, ts: string) => invoke<void>("slack_forget", { channel, ts }),

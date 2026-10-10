@@ -1,7 +1,10 @@
 // Slack's message markup (mrkdwn) as blocks and inline pieces for the page
 // to render: mentions, channels and links from Slack's angle brackets,
-// bold / italic / strike / code, code blocks and quotes, and the common
-// emoji names as emoji.
+// bold / italic / strike / code, code blocks and quotes, and emoji names as
+// emoji (the standard ones from gemoji, whose names are Slack's; the
+// workspace's own are pictures the page looks up by name).
+
+import { nameToEmoji } from "gemoji";
 
 export type Inline =
   | { t: "text"; v: string }
@@ -10,19 +13,23 @@ export type Inline =
   | { t: "link"; url: string; label: string }
   | { t: "code"; v: string }
   | { t: "b" | "i" | "s"; c: Inline[] }
-  | { t: "emoji"; v: string };
+  /// `v` is the emoji, or `:name:` for one of the workspace's own.
+  | { t: "emoji"; v: string; name: string };
 
 export type Block = { t: "p"; c: Inline[] } | { t: "pre"; v: string } | { t: "quote"; c: Inline[] };
 
-/// The emoji names used most at work; the rest stay as `:name:`.
-// ponytail: a short list, the full emoji table if names show often.
-const EMOJI: Record<string, string> = {
-  "+1": "👍", thumbsup: "👍", "-1": "👎", pray: "🙏", bow: "🙇", eyes: "👀", white_check_mark: "✅", heavy_check_mark: "✔️",
-  tada: "🎉", smile: "😄", smiley: "😃", grin: "😁", joy: "😂", sweat_smile: "😅", sob: "😭", cry: "😢", thinking_face: "🤔",
-  ok_hand: "👌", raised_hands: "🙌", clap: "👏", muscle: "💪", fire: "🔥", rocket: "🚀", warning: "⚠️", x: "❌", heart: "❤️",
-  "100": "💯", sparkles: "✨", bulb: "💡", memo: "📝", point_up: "☝️", wave: "👋", ok: "🆗", sunglasses: "😎",
-  slightly_smiling_face: "🙂", innocent: "😇", rotating_light: "🚨", star: "⭐", zap: "⚡", hugging_face: "🤗",
-};
+/// Slack's skin tones, 2 to 6, as the modifiers that follow an emoji.
+const SKIN_TONES: Record<string, string> = { "2": "🏻", "3": "🏼", "4": "🏽", "5": "🏾", "6": "🏿" };
+
+/// The emoji names matching `query`: those starting with it first, then
+/// those holding it; at most `limit`.
+export function emojiNames(query: string, limit = 8): { name: string; emoji: string }[] {
+  const q = query.toLowerCase();
+  const all = Object.keys(nameToEmoji);
+  const starting = all.filter((n) => n.startsWith(q));
+  const holding = all.filter((n) => !n.startsWith(q) && n.includes(q));
+  return [...starting, ...holding].slice(0, limit).map((name) => ({ name, emoji: nameToEmoji[name] }));
+}
 
 const decode = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 
@@ -53,13 +60,16 @@ function entity(inner: string, me: string | undefined): Inline {
 
 /// Emoji names in plain text: a name with a letter (not a time like 10:30:45).
 function emoji(text: string, out: Inline[]) {
-  const re = /(^|[^0-9]):([a-z0-9_+'-]*[a-z+][a-z0-9_+'-]*):/g;
+  const re = /(?<![0-9]):([a-z0-9_+'-]*[a-z+][a-z0-9_+'-]*):/g;
   let at = 0;
   for (let m = re.exec(text); m; m = re.exec(text)) {
-    const start = m.index + m[1].length;
+    const start = m.index;
     push(out, { t: "text", v: text.slice(at, start) });
-    push(out, { t: "emoji", v: EMOJI[m[2]] ?? `:${m[2]}:` });
-    at = start + m[2].length + 2;
+    const tone = /^skin-tone-([2-6])$/.exec(m[1]);
+    const last = out[out.length - 1];
+    if (tone && last?.t === "emoji" && start === at) last.v += SKIN_TONES[tone[1]];
+    else if (!tone) push(out, { t: "emoji", v: nameToEmoji[m[1]] ?? `:${m[1]}:`, name: m[1] });
+    at = start + m[1].length + 2;
     re.lastIndex = at;
   }
   push(out, { t: "text", v: text.slice(at) });

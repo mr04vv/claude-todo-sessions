@@ -88,7 +88,8 @@ import {
   type PageText,
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
-import { parseSlack, slackPlain, type Inline } from "./slackText";
+import { emojiNames, parseSlack, slackPlain, type Inline } from "./slackText";
+import { nameToEmoji } from "gemoji";
 import { slackItems, type SlackItem } from "./slackItems";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
@@ -3400,7 +3401,28 @@ function slackTime(ts: string) {
 }
 
 /// Slack's markup, formatted (slackText.ts); links open with `onLink`.
+/// The workspace's own emoji (name → picture), asked once a run.
+let slackCustomEmoji: Promise<Record<string, string>> | null = null;
+
+/// The workspace's own emoji, once Slack has said them (none until then).
+function useSlackEmoji(): Record<string, string> {
+  const [emoji, setEmoji] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!slackCustomEmoji) slackCustomEmoji = api.slackEmoji().catch(() => ({}));
+    slackCustomEmoji.then(setEmoji);
+  }, []);
+  return emoji;
+}
+
+/// An emoji by its Slack name: the standard one, the workspace's own picture, or its name.
+function SlackEmoji({ name, glyph, custom }: { name: string; glyph?: string; custom: Record<string, string> }) {
+  if (custom[name]) return <img className="slack-emoji-img" src={custom[name]} alt={`:${name}:`} title={`:${name}:`} />;
+  const shown = glyph ?? nameToEmoji[name];
+  return shown && !shown.startsWith(":") ? <span title={`:${name}:`}>{shown}</span> : <span className="slack-emoji-name">:{name}:</span>;
+}
+
 function SlackText({ text, me, onLink }: { text: string; me?: string; onLink: (url: string) => void }) {
+  const custom = useSlackEmoji();
   const inline = (pieces: Inline[]): React.ReactNode[] =>
     pieces.map((p, i) => {
       switch (p.t) {
@@ -3433,11 +3455,7 @@ function SlackText({ text, me, onLink }: { text: string; me?: string; onLink: (u
         case "s":
           return <s key={i}>{inline(p.c)}</s>;
         case "emoji":
-          return (
-            <span key={i} className={p.v.startsWith(":") ? "slack-emoji-name" : undefined}>
-              {p.v}
-            </span>
-          );
+          return <SlackEmoji key={i} name={p.name} glyph={p.v} custom={custom} />;
       }
     });
   return (
@@ -3451,6 +3469,22 @@ function SlackText({ text, me, onLink }: { text: string; me?: string; onLink: (u
           <p key={i}>{inline(b.c)}</p>
         ),
       )}
+    </div>
+  );
+}
+
+/// A message's reactions: each emoji with how many, the user's own marked,
+/// who gave it on hover.
+function SlackReactions({ reactions }: { reactions: SlackThreadMessage["reactions"] }) {
+  const custom = useSlackEmoji();
+  return (
+    <div className="slack-reactions">
+      {reactions.map((r) => (
+        <span key={r.name} className={`slack-reaction${r.mine ? " mine" : ""}`} title={`:${r.name}: ${r.who.join("、")}${r.count > r.who.length ? ` ほか ${r.count - r.who.length} 人` : ""}`}>
+          <SlackEmoji name={r.name} custom={custom} />
+          <span>{r.count}</span>
+        </span>
+      ))}
     </div>
   );
 }
@@ -3592,6 +3626,7 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
                     </div>
                   )}
                   <SlackText text={t.text} me={me ?? undefined} onLink={onLink} />
+                  {t.reactions.length > 0 && <SlackReactions reactions={t.reactions} />}
                 </div>
               </div>
             </div>
@@ -3611,9 +3646,25 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
   );
 }
 
-/// A Slack message box: "@" (or "＠") suggests people and user groups
-/// (↑↓ or ⌃N ⌃P, Enter or Tab to pick), written as Slack writes mentions
-/// when sent with ⌘Enter; Esc leaves it.
+/// A suggestion of a Slack message box: someone to mention, or an emoji.
+interface Suggestion {
+  key: string;
+  name: string;
+  /// What goes in the box.
+  insert: string;
+  /// How Slack writes a mention, sent in its place.
+  token?: string;
+  image?: string | null;
+  /// The emoji's name, for an emoji.
+  emoji?: string;
+  note: string;
+}
+/// The `:emoji` being written just before the caret (two letters or more, so a time is not one).
+const EMOJI_TYPED = /(?:^|[\s　(（])[:：]([a-z0-9_+'-]{2,})$/;
+
+/// A Slack message box: "@" (or "＠") suggests people and user groups, ":"
+/// emoji (↑↓ or ⌃N ⌃P, Enter or Tab to pick); mentions are written as
+/// Slack writes them when sent with ⌘Enter; Esc leaves it.
 function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, report, onSend }: {
   boxRef: React.RefObject<HTMLTextAreaElement | null>;
   label: string;
@@ -3629,39 +3680,52 @@ function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, 
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [people, setPeople] = useState<SlackMentionable[]>([]);
-  const [typed, setTyped] = useState<{ query: string; from: number } | null>(null);
+  const custom = useSlackEmoji();
+  // What is being written after "@" (a mention) or ":" (an emoji), and where it starts.
+  const [typed, setTyped] = useState<{ kind: "mention" | "emoji"; query: string; from: number } | null>(null);
   const [active, setActive] = useState(0);
   // The mentions picked: their name → how Slack writes them.
   const picked = useRef(new Map<string, string>());
   const nearby = new Set(near);
-  const candidates = typed
-    ? people
-        .map((p) => {
-          const q = typed.query.toLowerCase();
-          const names = [p.name, ...p.also].map((n) => n.toLowerCase());
-          const rank = !q ? 1 : names.some((n) => n.startsWith(q)) ? 0 : names.some((n) => n.includes(q)) ? 1 : 2;
-          return { p, rank: rank - (nearby.has(p.name) ? 0.5 : 0) };
-        })
-        .filter((c) => c.rank < 2)
-        .sort((a, b) => a.rank - b.rank)
-        .slice(0, SLACK_SUGGESTIONS)
-        .map((c) => c.p)
-    : [];
+  const q = typed?.query.toLowerCase() ?? "";
+  const candidates: Suggestion[] = !typed
+    ? []
+    : typed.kind === "emoji"
+      ? [
+          ...Object.keys(custom)
+            .filter((n) => n.includes(q))
+            .sort((a, b) => Number(!a.startsWith(q)) - Number(!b.startsWith(q)))
+            .map((name) => ({ key: `e:${name}`, name, insert: `:${name}:`, emoji: name, note: "このワークスペースの絵文字" })),
+          ...emojiNames(q, SLACK_SUGGESTIONS).map((e) => ({ key: `e:${e.name}`, name: e.name, insert: `:${e.name}:`, emoji: e.name, note: "" })),
+        ].slice(0, SLACK_SUGGESTIONS)
+      : people
+          .map((p) => {
+            const names = [p.name, ...p.also].map((n) => n.toLowerCase());
+            const rank = !q ? 1 : names.some((n) => n.startsWith(q)) ? 0 : names.some((n) => n.includes(q)) ? 1 : 2;
+            return { p, rank: rank - (nearby.has(p.name) ? 0.5 : 0) };
+          })
+          .filter((c) => c.rank < 2)
+          .sort((a, b) => a.rank - b.rank)
+          .slice(0, SLACK_SUGGESTIONS)
+          .map(({ p }) => ({ key: p.token, name: p.name, insert: `@${p.name}`, token: p.token, image: p.image, note: p.token.startsWith("<!subteam") ? "ユーザーグループ" : p.also.join(" · ") }));
   const watchTyping = (value: string, caret: number) => {
-    const m = MENTION_TYPED.exec(value.slice(0, caret));
-    setTyped(m ? { query: m[1], from: caret - m[1].length - 1 } : null);
+    const before = value.slice(0, caret);
+    const mention = MENTION_TYPED.exec(before);
+    const emoji = EMOJI_TYPED.exec(before);
+    const m = mention ?? emoji;
+    setTyped(m ? { kind: mention ? "mention" : "emoji", query: m[1], from: caret - m[1].length - 1 } : null);
     setActive(0);
-    if (m && !slackDirectory) slackDirectory = api.slackDirectory();
-    if (m) slackDirectory?.then(setPeople, (e) => ((slackDirectory = null), report(e)));
+    if (mention && !slackDirectory) slackDirectory = api.slackDirectory();
+    if (mention) slackDirectory?.then(setPeople, (e) => ((slackDirectory = null), report(e)));
   };
-  const pick = (p: SlackMentionable) => {
+  const pick = (c: Suggestion) => {
     const box = boxRef.current;
     if (!typed || !box) return;
     const caret = box.selectionStart;
-    picked.current.set(p.name, p.token);
-    setText(`${text.slice(0, typed.from)}@${p.name} ${text.slice(caret)}`);
+    if (c.token) picked.current.set(c.name, c.token);
+    setText(`${text.slice(0, typed.from)}${c.insert} ${text.slice(caret)}`);
     setTyped(null);
-    const at = typed.from + p.name.length + 2;
+    const at = typed.from + c.insert.length + 1;
     requestAnimationFrame(() => box.setSelectionRange(at, at));
   };
   const withMentions = (value: string) =>
@@ -3679,12 +3743,18 @@ function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, 
   return (
     <div className="slack-reply">
       {candidates.length > 0 && (
-        <ul className="slack-suggest" role="listbox" aria-label="メンションの候補">
-          {candidates.map((p, i) => (
-            <li key={p.token} role="option" aria-selected={i === active} className={i === active ? "on" : ""} onMouseDown={(e) => (e.preventDefault(), pick(p))}>
-              <SlackAvatar name={p.name} image={p.image} size={20} />
-              <b>{p.name}</b>
-              <span className="muted ellipsis">{p.token.startsWith("<!subteam") ? "ユーザーグループ" : p.also.join(" · ")}</span>
+        <ul className="slack-suggest" role="listbox" aria-label={typed?.kind === "emoji" ? "絵文字の候補" : "メンションの候補"}>
+          {candidates.map((c, i) => (
+            <li key={c.key} role="option" aria-selected={i === active} className={i === active ? "on" : ""} onMouseDown={(e) => (e.preventDefault(), pick(c))}>
+              {c.emoji ? (
+                <span className="slack-suggest-emoji">
+                  <SlackEmoji name={c.emoji} custom={custom} />
+                </span>
+              ) : (
+                <SlackAvatar name={c.name} image={c.image ?? null} size={20} />
+              )}
+              <b>{c.emoji ? `:${c.name}:` : c.name}</b>
+              <span className="muted ellipsis">{c.note}</span>
             </li>
           ))}
         </ul>

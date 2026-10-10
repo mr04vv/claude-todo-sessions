@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSlack, slackPlain } from "./slackText.ts";
+import { emojiNames, parseSlack, slackPlain } from "./slackText.ts";
 
 const inlines = (text: string, me?: string) => {
   const blocks = parseSlack(text, me);
@@ -49,16 +49,27 @@ test("bold, italic, strike and code are told", () => {
   assert.deepEqual(inlines("2*3*4 と snake_case_name"), [{ t: "text", v: "2*3*4 と snake_case_name" }], "inside words, not formatting");
 });
 
-test("common emoji become the emoji; others stay as their names", () => {
-  assert.deepEqual(inlines("了解 :+1: :pray: :custom-party:"), [
+test("emoji names become the emoji; the workspace's own keep their names", () => {
+  assert.deepEqual(inlines("了解 :+1: :white_check_mark: :custom-party:"), [
     { t: "text", v: "了解 " },
-    { t: "emoji", v: "👍" },
+    { t: "emoji", v: "👍", name: "+1" },
     { t: "text", v: " " },
-    { t: "emoji", v: "🙏" },
+    { t: "emoji", v: "✅", name: "white_check_mark" },
     { t: "text", v: " " },
-    { t: "emoji", v: ":custom-party:" },
+    { t: "emoji", v: ":custom-party:", name: "custom-party" },
   ]);
   assert.deepEqual(inlines("10:30 から"), [{ t: "text", v: "10:30 から" }], "a time is not an emoji");
+});
+
+test("a skin tone goes on the emoji before it", () => {
+  assert.deepEqual(inlines(":+1::skin-tone-3:"), [{ t: "emoji", v: "👍🏼", name: "+1" }]);
+});
+
+test("emoji names are found by what they start with, then what they hold", () => {
+  const names = emojiNames("thumbs");
+  assert.ok(names.length > 0 && names.every((n) => n.name.includes("thumbs")));
+  assert.equal(names[0].name.startsWith("thumbs"), true);
+  assert.equal(emojiNames("pray")[0].emoji, "🙏");
 });
 
 test("code blocks and quotes are blocks of their own", () => {
