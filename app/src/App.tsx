@@ -88,7 +88,7 @@ import {
   type PageText,
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
-import { parseSlack, type Inline } from "./slackText";
+import { parseSlack, slackPlain, type Inline } from "./slackText";
 import { slackItems, type SlackItem } from "./slackItems";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
@@ -3152,8 +3152,6 @@ const SLACK_FILTER_LABEL: Record<SlackFilter, string> = { unread: "未読", ment
 /// The Slack page's list width (px), dragged by its edge and kept.
 const SLACK_LIST_KEY = "slackListWidth";
 const SLACK_LIST_WIDTH = { min: 260, max: 720, initial: 380, step: 40 };
-/// How far ⇧J / ⇧K scroll the thread.
-const SLACK_SCROLL_PX = 160;
 
 const mentionKey = (m: { channel: string; ts: string }) => `m:${m.channel}:${m.ts}`;
 
@@ -3233,8 +3231,8 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   };
   const [confirmForgetRead, setConfirmForgetRead] = useState(false);
   const replyRef = useRef<HTMLTextAreaElement>(null);
-  const threadRef = useRef<HTMLDivElement>(null);
-  const muteRef = useRef<() => void>(() => {});
+  // The open thread's own keys: its message cursor, its todo memo, its mute.
+  const threadKeys = useRef<SlackThreadKeys | null>(null);
   const keepWidth = (w: number) => {
     const next = Math.min(Math.max(w, SLACK_LIST_WIDTH.min), SLACK_LIST_WIDTH.max);
     setWidth(next);
@@ -3254,11 +3252,11 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
       else if (matches(e, "slackDone")) done(current);
       else if (matches(e, "slackForget") && current.kind !== "posted") forget(current);
       else if (matches(e, "slackReply")) replyRef.current?.focus();
-      else if (matches(e, "slackTodo")) onTodo(slackMemo(current));
+      else if (matches(e, "slackTodo")) onTodo(threadKeys.current?.memo() ?? slackMemo(current));
       else if (matches(e, "slackOpen")) openLink(current.permalink);
-      else if (matches(e, "slackMute")) muteRef.current();
-      else if (matches(e, "slackScrollDown")) threadRef.current?.scrollBy({ top: SLACK_SCROLL_PX });
-      else if (matches(e, "slackScrollUp")) threadRef.current?.scrollBy({ top: -SLACK_SCROLL_PX });
+      else if (matches(e, "slackMute")) threadKeys.current?.mute();
+      else if (matches(e, "slackScrollDown")) threadKeys.current?.move(1);
+      else if (matches(e, "slackScrollUp")) threadKeys.current?.move(-1);
       else return;
       e.preventDefault();
     };
@@ -3366,13 +3364,12 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
                 item={current}
                 me={slack.user_id}
                 replyRef={replyRef}
-                bodyRef={threadRef}
-                muteRef={muteRef}
+                keysRef={threadKeys}
                 report={report}
                 onLink={openLink}
                 onDone={() => done(current)}
                 onForget={() => forget(current)}
-                onTodo={() => onTodo(slackMemo(current))}
+                onTodo={onTodo}
                 onClose={() => setSelected(null)}
               />
             </>
@@ -3470,27 +3467,38 @@ const MENTION_TYPED = /(?:^|[\s　])[@＠]([^\s@＠　]*)$/;
 /// A Slack row's thread (a message not in one, alone), the message itself
 /// marked: read again as the thread moves (Socket Mode), and answered from
 /// here (#30) with mentions suggested after "@".
-function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onDone, onForget, onTodo, onClose }: {
+/// What the Slack page's keys do in the open thread.
+interface SlackThreadKeys {
+  /// Moves the message cursor (⇧J ⇧K).
+  move: (step: number) => void;
+  /// 「Todo にする」's memo for the message the cursor is on.
+  memo: () => string | null;
+  mute: () => void;
+}
+
+function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onForget, onTodo, onClose }: {
   item: SlackItem;
   me: string | null;
-  /// The reply box and the messages' scroller, for the page's keys.
+  /// The reply box, for the page's r.
   replyRef: React.RefObject<HTMLTextAreaElement | null>;
-  bodyRef: React.RefObject<HTMLDivElement | null>;
-  /// Set to this thread's mute toggle, for the page's m.
-  muteRef: React.RefObject<() => void>;
+  /// Set to this thread's keys, for the page.
+  keysRef: React.RefObject<SlackThreadKeys | null>;
   report: (e: unknown) => void;
   onLink: (url: string) => void;
   onDone: () => void;
   /// 消す (a mention from this Mac, a thread from those followed).
   onForget: () => void;
-  onTodo: () => void;
+  /// 「Todo にする」 with the memo of the message picked in the thread.
+  onTodo: (memo: string) => void;
   /// Closes the thread (Esc too); the list takes the width.
   onClose: () => void;
 }) {
   const [thread, setThread] = useState<SlackThreadMessage[] | null>(null);
   const [muted, setMuted] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const end = useRef<HTMLDivElement>(null);
+  // The message picked (⇧J ⇧K or a click): what 「Todo にする」 takes. The row's message at first.
+  const [picked, setPicked] = useState<string>(item.ts);
+  const body = useRef<HTMLDivElement>(null);
   const { channel, threadTs } = item;
   const read = useCallback(() => {
     api.slackThread(channel, threadTs).then(
@@ -3509,11 +3517,28 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
     });
     return () => void off.then((f) => f());
   }, [channel, threadTs, read]);
+  const showPicked = (ts: string) => body.current?.querySelector(`[data-ts="${CSS.escape(ts)}"]`)?.scrollIntoView({ block: "nearest" });
+  // Read (or read again), the thread shows the message picked (the last when it is not there).
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end" });
-  }, [thread?.length]);
+    if (!thread?.length) return;
+    const ts = thread.some((t) => t.ts === picked) ? picked : thread[thread.length - 1].ts;
+    setPicked(ts);
+    requestAnimationFrame(() => showPicked(ts));
+  }, [thread]); // eslint-disable-line react-hooks/exhaustive-deps
   const toggleMute = () => api.slackMuteThread(channel, threadTs, !muted).then(() => setMuted(!muted), report);
-  muteRef.current = toggleMute;
+  const pickedMessage = thread?.find((t) => t.ts === picked) ?? null;
+  const memo = () => (pickedMessage ? `Slack #${item.channelName} の ${pickedMessage.user_name}さんから:\n${slackPlain(pickedMessage.text)}\n\n${pickedMessage.permalink}` : null);
+  keysRef.current = {
+    move: (step) => {
+      if (!thread?.length) return;
+      const at = Math.max(thread.findIndex((t) => t.ts === picked), 0);
+      const ts = thread[Math.min(Math.max(at + step, 0), thread.length - 1)].ts;
+      setPicked(ts);
+      showPicked(ts);
+    },
+    memo,
+    mute: toggleMute,
+  };
   const replies = item.newReplies > 0 ? `新しい返信 ${item.newReplies} 件` : "";
   const title =
     item.kind === "posted" ? "送ったメッセージ" : [item.mention ? (item.via ? `@${item.via} へのメンション` : "あなたへのメンション") : "", replies].filter(Boolean).join("・") || "スレッド";
@@ -3528,7 +3553,7 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
             Done <span className="kbd">{keyLabel(keyOf("slackDone"))}</span>
           </button>
         )}
-        <button className="ghost small" onClick={onTodo}>
+        <button className="ghost small" title="選んでいるメッセージ（⇧J ⇧K で選ぶ）から Todo を作ります" onClick={() => onTodo(memo() ?? slackMemo(item))}>
           Todo にする <span className="kbd">{keyLabel(keyOf("slackTodo"))}</span>
         </button>
         {item.kind !== "posted" && (
@@ -3548,7 +3573,7 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
           <Icon name="close" size={13} />
         </button>
       </div>
-      <div className="slack-thread-body" ref={bodyRef}>
+      <div className="slack-thread-body" ref={body}>
         {error && <p className="error-text pad">スレッドを読めませんでした：{error}</p>}
         {!thread && !error && <p className="muted pad">読んでいます…</p>}
         {thread?.map((t, i) => {
@@ -3557,7 +3582,7 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
           return (
             <div key={t.ts}>
               {i === 1 && <div className="slack-replies">{thread.length - 1} 件の返信</div>}
-              <div className={`slack-msg${joined ? " joined" : ""}${t.ts === item.ts ? " this" : ""}`}>
+              <div data-ts={t.ts} className={`slack-msg${joined ? " joined" : ""}${t.ts === item.ts ? " this" : ""}${t.ts === picked ? " picked" : ""}`} onClick={() => setPicked(t.ts)}>
                 {joined ? <span className="slack-avatar-space slack-time">{slackTime(t.ts).slice(-5)}</span> : <SlackAvatar name={t.user_name} image={t.user_image} size={36} />}
                 <div className="slack-msg-main">
                   {!joined && (
@@ -3572,7 +3597,6 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
             </div>
           );
         })}
-        <div ref={end} />
       </div>
       <SlackComposer
         boxRef={replyRef}

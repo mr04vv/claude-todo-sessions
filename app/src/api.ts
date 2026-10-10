@@ -245,6 +245,8 @@ export interface SlackThreadMessage {
   text: string;
   ts: string;
   mine: boolean;
+  /// Its link, for a todo made from it.
+  permalink: string;
 }
 
 export interface Board {

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseSlack } from "./slackText.ts";
+import { parseSlack, slackPlain } from "./slackText.ts";
 
 const inlines = (text: string, me?: string) => {
   const blocks = parseSlack(text, me);
@@ -68,4 +68,13 @@ test("code blocks and quotes are blocks of their own", () => {
     { t: "quote", c: [{ t: "text", v: "引用です\n二行目" }] },
     { t: "p", c: [{ t: "text", v: "おわり" }] },
   ]);
+});
+
+test("a message reads as plain text for a memo", () => {
+  assert.equal(
+    slackPlain("<@U1|森> *確認* お願いします :pray:\n<https://github.com/acme/web/pull/57|PR #57> と `npm test`\n&gt; 引用"),
+    "@森 確認 お願いします 🙏\nPR #57 (https://github.com/acme/web/pull/57) と npm test\n> 引用",
+  );
+  assert.equal(slackPlain("```\nfn main() {}\n```"), "fn main() {}");
+  assert.equal(slackPlain("<https://example.com>"), "https://example.com", "a bare link once");
 });

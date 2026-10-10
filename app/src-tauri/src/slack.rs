@@ -422,6 +422,8 @@ pub struct ThreadMessage {
     text: String,
     ts: String,
     mine: bool,
+    /// Its link, for a todo made from it.
+    permalink: String,
 }
 
 /// A thread as the page shows it: its messages (its head first), and
@@ -448,6 +450,7 @@ pub fn slack_thread(state: State<AppState>, slack: State<Slack>, channel: String
                 user_image: person.and_then(|p| p.image),
                 text: slack::label_mentions(&slack::label_groups(&m.text, &groups), |user| slack.name_of(&token, user)),
                 mine: m.user == me.user_id,
+                permalink: slack::permalink(&me.team_url, &channel, &m.ts, Some(thread_ts.as_str()).filter(|t| *t != m.ts)),
                 ts: m.ts,
             }
         })

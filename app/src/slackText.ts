@@ -124,3 +124,30 @@ export function parseSlack(text: string, me?: string): Block[] {
   });
   return blocks;
 }
+
+/// A message's markup as plain text (for a memo): mentions as @name, links
+/// as their label and address, quotes marked with "> ".
+export function slackPlain(text: string): string {
+  const flat = (pieces: Inline[]): string =>
+    pieces
+      .map((p) => {
+        switch (p.t) {
+          case "text":
+          case "code":
+          case "emoji":
+            return p.v;
+          case "mention":
+            return `@${p.v}`;
+          case "channel":
+            return `#${p.v}`;
+          case "link":
+            return p.label === p.url ? p.url : `${p.label} (${p.url})`;
+          default:
+            return flat(p.c);
+        }
+      })
+      .join("");
+  return parseSlack(text)
+    .map((b) => (b.t === "pre" ? b.v : b.t === "quote" ? flat(b.c).split("\n").map((l) => `> ${l}`).join("\n") : flat(b.c)))
+    .join("\n");
+}

@@ -3380,3 +3380,16 @@ body.resizing {
 .slack-channel-list li.on {
   background: var(--accent-soft);
 }
+
+/* The thread's message picked (⇧J ⇧K or a click): what 「Todo にする」 takes. */
+.slack-msg.picked {
+  box-shadow: inset 0 0 0 1px var(--accent-line);
+}
+
+.slack-msg.this.picked {
+  box-shadow: inset 2px 0 0 var(--accent), inset 0 0 0 1px var(--accent-line);
+}
+
+.slack-msg {
+  cursor: default;
+}
