@@ -52,13 +52,13 @@ claude --plugin-dir ./plugin
 cd app
 pnpm install
 pnpm tauri dev      # 開発用に起動
-pnpm tauri build    # target/release/bundle/macos/Todo Sessions.app を作成
+pnpm tauri build    # target/release/bundle/macos/Shosai.app を作成
 ```
 
 ビルドした `.app` は `/Applications` に置いて使います（ビルドし直したら入れ替えます）。
 
 ```sh
-pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" && cp -R "target/release/bundle/macos/Todo Sessions.app" /Applications/ && open -a "Todo Sessions"
+pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" "/Applications/Shosai.app" && cp -R target/release/bundle/macos/Shosai.app /Applications/ && open /Applications/Shosai.app
 ```
 
 ### 画面

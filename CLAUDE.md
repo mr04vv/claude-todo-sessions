@@ -13,13 +13,13 @@ cargo test -p cts-core <name>                # core の unit テストを1つ
 cargo build --release -p cts                 # plugin/bin/cts はこれへのシンボリックリンク
 cd app && pnpm build                         # tsc -b で型チェック + vite build（フロントにテストはない）
 cd app && pnpm tauri dev                     # アプリを開発起動（ブラウザペインは動かない。下を参照）
-cd app && pnpm tauri build                   # target/release/bundle/macos/Todo Sessions.app（まだ Chromium が入っていない）
+cd app && pnpm tauri build                   # target/release/bundle/macos/Shosai.app（まだ Chromium が入っていない）
 scripts/bundle-cef.sh                        # その .app に Chromium とヘルパーアプリを入れる（引数 debug で debug 版）
 ```
 
 - アプリのビルドには `cmake` と `ninja`（cef クレートの `libcef_dll_wrapper` 用。無ければ `nix shell nixpkgs#cmake nixpkgs#ninja -c …`）と、CEF のバイナリ置き場 `CEF_PATH`（既定 `~/.local/share/cef`。cef-rs の `cargo run -p export-cef-dir -- --force $HOME/.local/share/cef` で作る。`cef` クレートと同じバージョンのもの）が要る。
 - `.cargo/config.toml` でリンカと CC・CXX を `/usr/bin/cc` に固定している（nix の gcc だと `-liconv` が見つからない）。
-- ビルドした `.app` は利用者が自分で `/Applications` に入れ替える。コマンドは `pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" && cp -R target/release/bundle/macos/"Todo Sessions.app" /Applications/ && open -a "Todo Sessions"`（`sleep 1` がないと起動時に -600 になる）。
+- ビルドした `.app` は利用者が自分で `/Applications` に入れ替える。コマンドは `pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" "/Applications/Shosai.app" && cp -R target/release/bundle/macos/Shosai.app /Applications/ && open /Applications/Shosai.app`（`sleep 1` がないと起動時に -600 になる。`open -a Shosai` だとビルドしたフォルダの同じ名前の .app を開くことがあるので、場所で開く。古い名前の `Todo Sessions.app` も消す）。.app の名前は Shosai だが、中のバイナリ（とプロセス名）は `todo-sessions-app` のまま。
 - アプリ（`app/`）の実装が終わったら、`cd app && pnpm tauri build` と `scripts/bundle-cef.sh` でビルドし、上の入れ替えコマンドを `cp -R` のパスを絶対パスにして `pbcopy` でクリップボードにコピーしておく。入れ替え（アプリの終了と再起動）は利用者が貼り付けて実行する。
 - `crates/cts` を変えたら `plugin/.claude-plugin/plugin.json` の version を上げる。上げないと `claude plugin update todo-sessions@claude-todo-sessions` で新しいバイナリがキャッシュに入らない。
 
