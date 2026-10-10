@@ -43,6 +43,10 @@ const PEOPLE_FILE: &str = "slack-people.json";
 /// `{channel, thread_ts}` for each message posted where the user is (a
 /// message in a channel is its own thread): an open thread reads itself again.
 const SLACK_POSTED_EVENT: &str = "slack-posted";
+/// What came from Slack is kept this long (by when it was posted): older
+/// read messages and quiet threads go, and searches' older messages are
+/// not taken in.
+const KEEP: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// The messages the board carries, newest first.
 const BOARD_MESSAGES: i64 = 100;
 /// A notification's text is cut to this many characters.
@@ -506,6 +510,29 @@ fn to_message(slack: &Slack, token: &str, hit: Hit, via: Option<String>, groups:
     }
 }
 
+/// When what is kept from Slack starts (unix seconds): KEEP ago.
+fn kept_since() -> f64 {
+    std::time::SystemTime::now().checked_sub(KEEP).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0.0, |d| d.as_secs_f64())
+}
+
+/// Lets a message go: gone from the list and the file, and kept away.
+#[tauri::command(async)]
+pub fn slack_forget(state: State<AppState>, channel: String, ts: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.forget_slack_message(&channel, &ts).map_err(err)
+}
+
+/// Lets every read message go.
+#[tauri::command(async)]
+pub fn slack_forget_read(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.forget_read_slack_messages().map_err(err)
+}
+
+/// Stops following a thread, forgetting its new replies.
+#[tauri::command(async)]
+pub fn slack_forget_thread(state: State<AppState>, channel: String, thread_ts: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.forget_slack_thread(&channel, &thread_ts).map_err(err)
+}
+
 /// Notifies the user's own mentions just kept (not their groups').
 fn notify(app: &AppHandle, kept: Vec<SlackMessage>) {
     for m in kept.into_iter().filter(|m| m.via.is_none()) {
@@ -543,6 +570,9 @@ fn check(app: &AppHandle, db: &Db, slack: &Slack, token: &str) -> Result<(), Str
         })
         .collect();
     let quiet = !db.has_slack_messages().map_err(err)?;
+    let since = kept_since();
+    let found: Vec<NewSlackMessage> = found.into_iter().filter(|m| m.ts.parse::<f64>().is_ok_and(|ts| ts >= since)).collect();
+    db.prune_slack(since).map_err(err)?;
     // The threads the user is mentioned in are theirs to follow (#28).
     for m in &found {
         let thread = m.thread_ts.as_deref().unwrap_or(&m.ts);
