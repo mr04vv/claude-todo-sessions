@@ -75,6 +75,8 @@ pub struct Slack {
     channels_ok: Mutex<Option<Listening>>,
     /// The people and user groups to mention, asked once a run.
     directory: Mutex<Option<Vec<Mentionable>>>,
+    /// The workspace's own emoji (name → picture), asked once a run.
+    emoji: Mutex<Option<HashMap<String, String>>>,
     people: Mutex<HashMap<String, Person>>,
     /// Channels' names by id, from the searches or asked.
     channels: Mutex<HashMap<String, String>>,
@@ -95,6 +97,7 @@ impl Slack {
             groups: Mutex::new(None),
             channels_ok: Mutex::new(None),
             directory: Mutex::new(None),
+            emoji: Mutex::new(None),
             people: Mutex::new(load_kept(PEOPLE_FILE)),
             channels: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
@@ -264,6 +267,21 @@ pub struct Mentionable {
     image: Option<String>,
 }
 
+/// The workspace's own emoji, name → picture (asked once a run; none
+/// without `emoji:read`, said once in the log).
+#[tauri::command(async)]
+pub fn slack_emoji(slack: State<Slack>) -> Result<HashMap<String, String>, String> {
+    if let Some(known) = slack.emoji.lock().map_err(err)?.clone() {
+        return Ok(known);
+    }
+    let emoji = slack::emoji(&token_or_err()?).unwrap_or_else(|e| {
+        eprintln!("slack emoji: {e}");
+        HashMap::new()
+    });
+    *slack.emoji.lock().map_err(err)? = Some(emoji.clone());
+    Ok(emoji)
+}
+
 /// The workspace's people and user groups, to mention in a reply (asked once a run).
 #[tauri::command(async)]
 pub fn slack_directory(slack: State<Slack>) -> Result<Vec<Mentionable>, String> {
@@ -424,7 +442,21 @@ pub struct ThreadMessage {
     mine: bool,
     /// Its link, for a todo made from it.
     permalink: String,
+    reactions: Vec<ThreadReaction>,
 }
+
+/// A reaction as the page shows it: the emoji, how many, whether the user
+/// gave it, and the names of the first who did.
+#[derive(Serialize)]
+pub struct ThreadReaction {
+    name: String,
+    count: u32,
+    mine: bool,
+    who: Vec<String>,
+}
+
+/// The names a reaction shows, at most.
+const REACTION_NAMES: usize = 10;
 
 /// A thread as the page shows it: its messages (its head first), and
 /// whether its replies are muted (#29).
@@ -451,6 +483,16 @@ pub fn slack_thread(state: State<AppState>, slack: State<Slack>, channel: String
                 text: slack::label_mentions(&slack::label_groups(&m.text, &groups), |user| slack.name_of(&token, user)),
                 mine: m.user == me.user_id,
                 permalink: slack::permalink(&me.team_url, &channel, &m.ts, Some(thread_ts.as_str()).filter(|t| *t != m.ts)),
+                reactions: m
+                    .reactions
+                    .into_iter()
+                    .map(|r| ThreadReaction {
+                        mine: r.users.contains(&me.user_id),
+                        who: r.users.iter().take(REACTION_NAMES).map(|u| slack.name_of(&token, u).unwrap_or_else(|| u.clone())).collect(),
+                        name: r.name,
+                        count: r.count,
+                    })
+                    .collect(),
                 ts: m.ts,
             }
         })

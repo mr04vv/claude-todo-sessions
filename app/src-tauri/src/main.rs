@@ -2655,6 +2655,7 @@ fn main() {
             slack::slack_thread,
             slack::slack_reply,
             slack::slack_directory,
+            slack::slack_emoji,
             slack::slack_channels,
             slack::slack_post,
             slack::slack_forget,

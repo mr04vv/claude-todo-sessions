@@ -55,6 +55,15 @@ pub struct Message {
     pub user_name: Option<String>,
     pub text: String,
     pub ts: String,
+    pub reactions: Vec<Reaction>,
+}
+
+/// A reaction on a message: its emoji's name, and who gave it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Reaction {
+    pub name: String,
+    pub users: Vec<String>,
+    pub count: u32,
 }
 
 /// Slack's answer to a call, or why it failed (Slack answers 200 with
@@ -235,9 +244,38 @@ pub fn parse_replies(v: &Value) -> Vec<Message> {
                 user_name: m["username"].as_str().map(String::from),
                 text: m["text"].as_str().unwrap_or_default().into(),
                 ts: m["ts"].as_str()?.into(),
+                reactions: m["reactions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| {
+                        Some(Reaction {
+                            name: r["name"].as_str()?.into(),
+                            users: r["users"].as_array().into_iter().flatten().filter_map(|u| u.as_str().map(String::from)).collect(),
+                            count: r["count"].as_u64().unwrap_or(0) as u32,
+                        })
+                    })
+                    .collect(),
             })
         })
         .collect()
+}
+
+/// The workspace's own emoji (emoji.list): their pictures by name, aliases
+/// followed to the picture (an alias of a standard emoji is left out).
+pub fn parse_emoji(v: &Value) -> std::collections::HashMap<String, String> {
+    let all: std::collections::HashMap<String, String> = v["emoji"].as_object().into_iter().flatten().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string()))).collect();
+    all.iter()
+        .filter_map(|(name, value)| {
+            let target = value.strip_prefix("alias:").map_or(Some(value.as_str()), |to| all.get(to).map(String::as_str))?;
+            (!target.starts_with("alias:") && target.starts_with("https://")).then(|| (name.clone(), target.to_string()))
+        })
+        .collect()
+}
+
+/// The workspace's own emoji (needs `emoji:read`).
+pub fn emoji(token: &str) -> Result<std::collections::HashMap<String, String>, String> {
+    Ok(parse_emoji(&call(token, "emoji.list", &[])?))
 }
 
 /// A user as the app shows them: their name, and their picture.
@@ -591,9 +629,36 @@ mod tests {
         ]});
         let messages = parse_replies(&v);
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0], Message { user: "U2".into(), user_name: None, text: "決済のタイムアウト".into(), ts: "100.0".into() });
+        assert_eq!(messages[0], Message { user: "U2".into(), user_name: None, text: "決済のタイムアウト".into(), ts: "100.0".into(), reactions: Vec::new() });
         assert_eq!(messages[2].user, "", "a bot has no user");
         assert_eq!(messages[2].user_name.as_deref(), Some("ci"), "but its name");
+    }
+
+    #[test]
+    fn a_messages_reactions_come_with_who_gave_them() {
+        let v = json!({"ok": true, "messages": [
+            {"user": "U2", "text": "直しました", "ts": "100.0", "reactions": [
+                {"name": "+1", "users": ["U1", "U3"], "count": 2},
+                {"name": "party-parrot", "users": ["U3"], "count": 1}
+            ]}
+        ]});
+        let r = &parse_replies(&v)[0].reactions;
+        assert_eq!(r, &vec![Reaction { name: "+1".into(), users: vec!["U1".into(), "U3".into()], count: 2 }, Reaction { name: "party-parrot".into(), users: vec!["U3".into()], count: 1 }]);
+    }
+
+    #[test]
+    fn custom_emoji_come_as_pictures_their_aliases_followed() {
+        let v = json!({"ok": true, "emoji": {
+            "party-parrot": "https://emoji.slack-edge.com/T1/party-parrot/abc.gif",
+            "pp": "alias:party-parrot",
+            "thumbsup-alias": "alias:+1",
+            "loop": "alias:loop"
+        }});
+        let emoji = parse_emoji(&v);
+        assert_eq!(emoji.get("party-parrot").map(String::as_str), Some("https://emoji.slack-edge.com/T1/party-parrot/abc.gif"));
+        assert_eq!(emoji.get("pp").map(String::as_str), Some("https://emoji.slack-edge.com/T1/party-parrot/abc.gif"), "an alias of a picture");
+        assert_eq!(emoji.get("thumbsup-alias"), None, "an alias of a standard emoji is the page's to show");
+        assert_eq!(emoji.get("loop"), None, "an alias of itself goes nowhere");
     }
 
     #[test]
