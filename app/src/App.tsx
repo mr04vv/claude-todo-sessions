@@ -3261,14 +3261,29 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     setComposing(false);
     setSelected(item.key);
   };
-  /// 既読にする: off the unread, and on to the next row.
-  const done = (item: SlackItem) => {
+  /// The row after `item` (else before it) still in the view, to go on to.
+  const nextAfter = (item: SlackItem) => {
     const at = shown.findIndex((i) => i.key === item.key);
-    const next = shown.slice(at + 1).find((i) => !i.read) ?? shown.slice(0, at).reverse().find((i) => !i.read);
-    run(() => (item.kind === "mention" ? api.slackRead(item.channel, item.ts) : api.slackThreadSeen(item.channel, item.threadTs)));
+    const rest = shown.filter((i) => i.key !== item.key && inFilter(i));
+    return rest.find((i) => shown.indexOf(i) > at) ?? rest.reverse().find((i) => shown.indexOf(i) < at);
+  };
+  const goOn = (next: SlackItem | undefined) => {
     setSelected(next?.key ?? null);
     if (next) setCursor(next.key);
   };
+  /// 既読にする: off the unread, and on to the next row.
+  const done = (item: SlackItem) => {
+    const next = nextAfter(item);
+    run(() => (item.kind === "mention" ? api.slackRead(item.channel, item.ts) : api.slackThreadSeen(item.channel, item.threadTs)));
+    goOn(next);
+  };
+  /// 消す: a mention wiped from this Mac (and kept away), a thread no longer followed.
+  const forget = (item: SlackItem) => {
+    const next = nextAfter(item);
+    run(() => (item.kind === "thread" ? api.slackForgetThread(item.channel, item.threadTs) : api.slackForget(item.channel, item.ts)));
+    goOn(next);
+  };
+  const [confirmForgetRead, setConfirmForgetRead] = useState(false);
   const replyRef = useRef<HTMLTextAreaElement>(null);
   const threadRef = useRef<HTMLDivElement>(null);
   const muteRef = useRef<() => void>(() => {});
@@ -3289,6 +3304,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
       else if (!current) return;
       else if (e.key === "Escape") setSelected(null);
       else if (matches(e, "slackDone")) done(current);
+      else if (matches(e, "slackForget") && current.kind !== "posted") forget(current);
       else if (matches(e, "slackReply")) replyRef.current?.focus();
       else if (matches(e, "slackTodo")) onTodo(slackMemo(current));
       else if (matches(e, "slackOpen")) openLink(current.permalink);
@@ -3328,6 +3344,22 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
         )}
         <span className="muted">自分とユーザーグループへのメンションと、参加しているスレッドの返信だけ</span>
         <span className="grow" />
+        {slack.connected && filter === "read" && counts.read > 0 &&
+          (confirmForgetRead ? (
+            <span className="inline-confirm">
+              既読 {counts.read} 件を、この Mac から消しますか？
+              <button className="danger small" onClick={() => (setConfirmForgetRead(false), run(() => api.slackForgetRead()))}>
+                消す
+              </button>
+              <button className="ghost small" onClick={() => setConfirmForgetRead(false)}>
+                やめる
+              </button>
+            </span>
+          ) : (
+            <button className="ghost small" title="既読のメンションをこの Mac から消します（30日たつと自動でも消えます）" onClick={() => setConfirmForgetRead(true)}>
+              既読をすべて消す
+            </button>
+          ))}
         {slack.connected && (
           <button className="small" onClick={() => setComposing(true)}>
             新しいメッセージ <span className="kbd">{keyLabel(keyOf("slackCompose"))}</span>
@@ -3391,6 +3423,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
                 report={report}
                 onLink={openLink}
                 onDone={() => done(current)}
+                onForget={() => forget(current)}
                 onTodo={() => onTodo(slackMemo(current))}
                 onClose={() => setSelected(null)}
               />
@@ -3489,7 +3522,7 @@ const MENTION_TYPED = /(?:^|[\s　])[@＠]([^\s@＠　]*)$/;
 /// A Slack row's thread (a message not in one, alone), the message itself
 /// marked: read again as the thread moves (Socket Mode), and answered from
 /// here (#30) with mentions suggested after "@".
-function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onDone, onTodo, onClose }: {
+function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onDone, onForget, onTodo, onClose }: {
   item: SlackItem;
   me: string | null;
   /// The reply box and the messages' scroller, for the page's keys.
@@ -3500,6 +3533,8 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
   report: (e: unknown) => void;
   onLink: (url: string) => void;
   onDone: () => void;
+  /// 消す (a mention from this Mac, a thread from those followed).
+  onForget: () => void;
   onTodo: () => void;
   /// Closes the thread (Esc too); the list takes the width.
   onClose: () => void;
@@ -3546,6 +3581,11 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
         <button className="ghost small" onClick={onTodo}>
           Todo にする <span className="kbd">{keyLabel(keyOf("slackTodo"))}</span>
         </button>
+        {item.kind !== "posted" && (
+          <button className="ghost small" title={item.kind === "thread" ? "このスレッドを追うのをやめます" : "この Mac から消し、また見つかっても出しません"} onClick={onForget}>
+            消す <span className="kbd">{keyLabel(keyOf("slackForget"))}</span>
+          </button>
+        )}
         <button className="ghost small" title="このスレッドの新しい返信を、未読に数えない（メンションは届きます）" onClick={toggleMute}>
           {muted ? "返信をまた数える" : "返信を数えない"} <span className="kbd">{keyLabel(keyOf("slackMute"))}</span>
         </button>
@@ -3870,6 +3910,7 @@ function SlackSettings({ report }: { report: (e: unknown) => void }) {
           )}
         </div>
       )}
+      {account && <p className="muted">既読のメンションは、投稿から30日たつとこの Mac から消えます（Slack の画面の「消す」や「既読をすべて消す」で先に消すこともできます）。</p>}
       {account && <SlackRealtime realtime={account.realtime} report={report} onChange={(realtime) => setAccount({ ...account, realtime })} />}
       {account === null && (
         <>
