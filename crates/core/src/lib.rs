@@ -665,6 +665,7 @@ CREATE TABLE IF NOT EXISTS slack_messages (
     via TEXT,
     user_image TEXT,
     read INTEGER NOT NULL DEFAULT 0,
+    gone INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (channel, ts)
 );
 CREATE TABLE IF NOT EXISTS slack_threads (
@@ -830,7 +831,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [now()],
         )?;
     }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image"), ("slack_messages", "gone")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -839,7 +840,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         if !exists {
             // Integer columns keep integer affinity; older builds added them as TEXT,
             // which TODO_COLS casts back when reading.
-            let ty = if matches!(column, "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto" | "fix_count" | "theme_id") { "INTEGER" } else { "TEXT" };
+            let ty = match column {
+                "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto" | "fix_count" | "theme_id" => "INTEGER",
+                // A flag every row needs: not let go.
+                "gone" => "INTEGER NOT NULL DEFAULT 0",
+                _ => "TEXT",
+            };
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
         }
     }
@@ -1627,8 +1633,8 @@ impl Db {
     pub fn slack_messages(&self, limit: i64) -> Result<Vec<SlackMessage>> {
         const COLS: &str = "channel, ts, thread_ts, channel_name, user_name, text, permalink, via, read, user_image";
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT * FROM (SELECT {COLS} FROM slack_messages WHERE read = 0
-               UNION ALL SELECT * FROM (SELECT {COLS} FROM slack_messages WHERE read = 1 ORDER BY CAST(ts AS REAL) DESC LIMIT ?1))
+            "SELECT * FROM (SELECT {COLS} FROM slack_messages WHERE read = 0 AND gone = 0
+               UNION ALL SELECT * FROM (SELECT {COLS} FROM slack_messages WHERE read = 1 AND gone = 0 ORDER BY CAST(ts AS REAL) DESC LIMIT ?1))
              ORDER BY CAST(ts AS REAL) DESC"
         ))?;
         let rows = stmt.query_map([limit], |r| {
@@ -1656,6 +1662,41 @@ impl Db {
     /// Forgets what came from Slack, when the user lets it go.
     pub fn clear_slack(&self) -> Result<()> {
         self.conn.execute_batch("DELETE FROM slack_messages; DELETE FROM slack_threads;")?;
+        Ok(())
+    }
+
+    /// Lets a Slack message go: its words are wiped, and its key kept so a
+    /// search finding it again does not bring it back (prune_slack drops it).
+    pub fn forget_slack_message(&self, channel: &str, ts: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE slack_messages SET gone = 1, read = 1, text = '', user_name = '', channel_name = '', permalink = '', user_image = NULL, thread_ts = NULL
+             WHERE channel = ?1 AND ts = ?2",
+            params![channel, ts],
+        )?;
+        Ok(())
+    }
+
+    /// Lets every read Slack message go (forget_slack_message).
+    pub fn forget_read_slack_messages(&self) -> Result<()> {
+        self.conn.execute(
+            "UPDATE slack_messages SET gone = 1, text = '', user_name = '', channel_name = '', permalink = '', user_image = NULL, thread_ts = NULL WHERE read = 1",
+            [],
+        )?;
+        Ok(())
+    }
+
+    /// Drops what came from Slack before `before` (unix seconds): the read
+    /// (and let go) messages, and the followed threads quiet since then
+    /// with nothing new. The app ignores searches' messages that old.
+    pub fn prune_slack(&self, before: f64) -> Result<()> {
+        self.conn.execute("DELETE FROM slack_messages WHERE (read = 1 OR gone = 1) AND CAST(ts AS REAL) < ?1", [before])?;
+        self.conn.execute("DELETE FROM slack_threads WHERE new_replies = 0 AND CAST(COALESCE(latest_ts, thread_ts) AS REAL) < ?1", [before])?;
+        Ok(())
+    }
+
+    /// Stops following a thread (and forgets its new replies).
+    pub fn forget_slack_thread(&self, channel: &str, thread_ts: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM slack_threads WHERE channel = ?1 AND thread_ts = ?2", params![channel, thread_ts])?;
         Ok(())
     }
 

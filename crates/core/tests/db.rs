@@ -6,6 +6,11 @@ fn open() -> (tempfile::TempDir, Db) {
     (dir, db)
 }
 
+/// The database file `open` made, to look at it raw.
+fn db_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    dir.path().join("db.sqlite")
+}
+
 fn new_todo(title: &str) -> NewTodo {
     NewTodo {
         title: title.into(),
@@ -1218,6 +1223,52 @@ fn letting_slack_go_forgets_its_threads() {
     db.follow_slack_thread("C1", "100.0", "incident", "https://x").unwrap();
     db.slack_thread_replied("C1", "100.0", &reply("101.0")).unwrap();
     db.clear_slack().unwrap();
+    assert!(db.slack_threads().unwrap().is_empty());
+    assert!(!db.slack_thread_replied("C1", "100.0", &reply("102.0")).unwrap());
+}
+
+#[test]
+fn a_slack_message_let_go_leaves_nothing_but_stays_away() {
+    let (_d, db) = open();
+    db.add_slack_messages(&[slack_message("1700000000.000100", None)], false).unwrap();
+    db.forget_slack_message("C1", "1700000000.000100").unwrap();
+    assert!(db.slack_messages(10).unwrap().is_empty());
+    let again = db.add_slack_messages(&[slack_message("1700000000.000100", None)], false).unwrap();
+    assert!(again.is_empty(), "found again, it does not come back");
+    assert!(db.slack_messages(10).unwrap().is_empty());
+    let text: String = rusqlite::Connection::open(db_path(&_d)).unwrap().query_row("SELECT text || user_name || permalink FROM slack_messages", [], |r| r.get(0)).unwrap();
+    assert_eq!(text, "", "its words are gone from the file");
+}
+
+#[test]
+fn every_read_slack_message_can_be_let_go_at_once() {
+    let (_d, db) = open();
+    db.add_slack_messages(&[slack_message("1700000000.000100", None)], true).unwrap();
+    db.add_slack_messages(&[slack_message("1700000500.000200", None)], false).unwrap();
+    db.forget_read_slack_messages().unwrap();
+    assert_eq!(db.slack_messages(10).unwrap().iter().map(|m| m.ts.as_str()).collect::<Vec<_>>(), ["1700000500.000200"], "the unread one stays");
+}
+
+#[test]
+fn old_read_slack_messages_and_quiet_threads_are_pruned() {
+    let (_d, db) = open();
+    db.add_slack_messages(&[slack_message("1000.0", None), slack_message("3000.0", None)], true).unwrap();
+    db.add_slack_messages(&[slack_message("1500.0", None)], false).unwrap();
+    db.follow_slack_thread("C1", "1000.0", "dev", "https://x").unwrap();
+    db.follow_slack_thread("C1", "1200.0", "dev", "https://x").unwrap();
+    db.slack_thread_replied("C1", "1200.0", &reply("1300.0")).unwrap();
+    db.prune_slack(2000.0).unwrap();
+    assert_eq!(db.slack_messages(10).unwrap().iter().map(|m| m.ts.as_str()).collect::<Vec<_>>(), ["3000.0", "1500.0"], "the old unread one stays");
+    assert!(!db.slack_thread_replied("C1", "1000.0", &reply("1100.0")).unwrap(), "the quiet old thread is no longer followed");
+    assert_eq!(db.slack_threads().unwrap().len(), 1, "one with new replies stays");
+}
+
+#[test]
+fn a_followed_slack_thread_can_be_let_go() {
+    let (_d, db) = open();
+    db.follow_slack_thread("C1", "100.0", "dev", "https://x").unwrap();
+    db.slack_thread_replied("C1", "100.0", &reply("101.0")).unwrap();
+    db.forget_slack_thread("C1", "100.0").unwrap();
     assert!(db.slack_threads().unwrap().is_empty());
     assert!(!db.slack_thread_replied("C1", "100.0", &reply("102.0")).unwrap());
 }
