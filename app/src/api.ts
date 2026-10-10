@@ -198,6 +198,13 @@ export interface SlackThread {
   new_replies: number;
 }
 
+/** A channel the user is in, to post in. */
+export interface SlackChannel {
+  id: string;
+  name: string;
+  private: boolean;
+}
+
 /** Someone or a user group to mention in a reply: how it is written (`<@U1>`), its name, what else finds it. */
 export interface SlackMentionable {
   token: string;
@@ -427,6 +434,8 @@ export const api = {
   slackThreadSeen: (channel: string, threadTs: string) => invoke<void>("slack_thread_seen", { channel, threadTs }),
   slackMuteThread: (channel: string, threadTs: string, muted: boolean) => invoke<void>("slack_mute_thread", { channel, threadTs, muted }),
   slackDirectory: () => invoke<SlackMentionable[]>("slack_directory"),
+  slackChannels: () => invoke<SlackChannel[]>("slack_channels"),
+  slackPost: (channel: string, text: string) => invoke<string>("slack_post", { channel, text }),
   slackReply: (channel: string, threadTs: string, text: string) => invoke<void>("slack_reply", { channel, threadTs, text }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),

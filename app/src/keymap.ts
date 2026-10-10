@@ -42,6 +42,7 @@ export type Action =
   | "reviewSubmit"
   | "reviewRunner"
   | "slackFilter"
+  | "slackCompose"
   | "slackDone"
   | "slackMute"
   | "slackReply"
@@ -127,6 +128,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     items: [
       ["slackFilter", "未読・メンション・スレッド・既読を切り替える"],
       ["slackDone", "既読にする（一覧から消え、次へ進む）"],
+      ["slackCompose", "新しいメッセージ（入っているチャンネルへ）"],
       ["slackMute", "このスレッドの返信を数えない／また数える"],
       ["slackReply", "返信欄へ（⌘Enter で送る、Esc で一覧へ戻る）"],
       ["slackTodo", "Todo にする"],
@@ -187,6 +189,7 @@ const KEYS: Record<Action, string> = {
   reviewRunner: "r",
   slackFilter: "f",
   slackDone: "e",
+  slackCompose: "c",
   slackMute: "m",
   slackReply: "r",
   slackTodo: "t",

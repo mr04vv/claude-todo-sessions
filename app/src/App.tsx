@@ -73,6 +73,7 @@ import {
   type Artifact,
   type SlackAccount,
   type SlackMentionable,
+  type SlackChannel,
   type SlackThreadMessage,
   type SlackView,
   SLACK_POSTED_EVENT,
@@ -3156,7 +3157,8 @@ const SLACK_SCROLL_PX = 160;
 /// A row of the Slack page: a mention (#27) or a thread with new replies (#28).
 interface SlackItem {
   key: string;
-  kind: "mention" | "thread";
+  /// A message the user just posted shows its thread too.
+  kind: "mention" | "thread" | "posted";
   channel: string;
   /// The thread it opens (a message not in one is its own).
   threadTs: string;
@@ -3231,6 +3233,9 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     if (pick) setSelected(pick);
   }, [pick]);
   const [width, setWidth] = useState(() => loadJson<number>(SLACK_LIST_KEY, SLACK_LIST_WIDTH.initial));
+  // The right side: a new message being written, or the one just posted.
+  const [composing, setComposing] = useState(false);
+  const [posted, setPosted] = useState<SlackItem | null>(null);
   const openInBrowser = useContext(BrowserContext);
   const openLink = (url: string) => (openInBrowser ? openInBrowser(url) : void api.openLink(url).catch(report));
   const items = slackItems(slack);
@@ -3244,12 +3249,18 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   const inFilter = (i: SlackItem) => (filter === "read" ? i.read : !i.read && (filter === "unread" || (filter === "thread" ? i.kind === "thread" : i.kind === "mention" && i.via === null)));
   // The one picked stays while it is read, so it does not jump away.
   const shown = items.filter((i) => i.key === selected || inFilter(i));
-  const current = items.find((i) => i.key === selected) ?? null;
+  const current = items.find((i) => i.key === selected) ?? (posted?.key === selected ? posted : null);
   // ↑↓ or j k pick a row, Enter shows its thread.
   const { cursorId, setCursor, list } = useRowCursor(
     shown.map((i) => i.key),
-    (id) => setSelected(id),
+    (id) => (setComposing(false), setSelected(id)),
   );
+  const onPosted = (channel: { id: string; name: string }, ts: string) => {
+    const item: SlackItem = { key: `p:${channel.id}:${ts}`, kind: "posted", channel: channel.id, threadTs: ts, ts, channelName: channel.name, userName: "", userImage: null, text: "", via: null, read: true, permalink: "", newReplies: 0 };
+    setPosted(item);
+    setComposing(false);
+    setSelected(item.key);
+  };
   /// 既読にする: off the unread, and on to the next row.
   const done = (item: SlackItem) => {
     const at = shown.findIndex((i) => i.key === item.key);
@@ -3271,6 +3282,8 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app.focus, .app[data-zone=sidebar], .sheet-backdrop, [role=dialog]")) return;
       if (matches(e, "slackFilter")) setFilter((f) => SLACK_FILTERS[(SLACK_FILTERS.indexOf(f) + 1) % SLACK_FILTERS.length]);
+      else if (matches(e, "slackCompose")) setComposing(true);
+      else if (composing && e.key === "Escape") setComposing(false);
       else if (matches(e, "slackNarrower")) keepWidth(width - SLACK_LIST_WIDTH.step);
       else if (matches(e, "slackWider")) keepWidth(width + SLACK_LIST_WIDTH.step);
       else if (!current) return;
@@ -3316,6 +3329,11 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
         <span className="muted">自分とユーザーグループへのメンションと、参加しているスレッドの返信だけ</span>
         <span className="grow" />
         {slack.connected && (
+          <button className="small" onClick={() => setComposing(true)}>
+            新しいメッセージ <span className="kbd">{keyLabel(keyOf("slackCompose"))}</span>
+          </button>
+        )}
+        {slack.connected && (
           <span className="muted slack-live" title={slack.live ? "Socket Mode でつながっています。投稿されたその場で届きます" : "設定でアプリのトークン（xapp-…）を入れると、その場で届きます"}>
             <span className={`dot ${slack.live ? "live" : ""}`} /> {slack.live ? `リアルタイム（${slack.last_event_at ? `最後の受信 ${ago(slack.last_event_at)}` : "まだ受信なし"}）` : "2分おきに確認"}
           </span>
@@ -3331,13 +3349,13 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
           </div>
         </div>
       ) : (
-        <div className="content flush slack-page" style={{ gridTemplateColumns: current ? `${width}px 6px minmax(0, 1fr)` : "minmax(0, 1fr)" }}>
+        <div className="content flush slack-page" style={{ gridTemplateColumns: current || composing ? `${width}px 6px minmax(0, 1fr)` : "minmax(0, 1fr)" }}>
           <div className="slack-list" ref={list}>
             {slack.error && <p className="error-text pad">Slack から読めませんでした：{slack.error}</p>}
             {shown.length === 0 && <p className="muted pad">{filter === "read" ? "既読はまだありません。" : "未読はありません。"}</p>}
             <ul className="rows">
               {shown.map((i) => (
-                <li key={i.key} data-row={i.key} className={`row slack-row${i.read ? "" : " slack-unread"}${i.key === selected ? " selected" : ""}${i.key === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(i.key), setSelected(i.key))}>
+                <li key={i.key} data-row={i.key} className={`row slack-row${i.read ? "" : " slack-unread"}${i.key === selected ? " selected" : ""}${i.key === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(i.key), setComposing(false), setSelected(i.key))}>
                   <SlackAvatar name={i.userName} image={i.userImage} size={32} />
                   <span className="slack-row-main">
                     <span className="slack-meta">
@@ -3354,7 +3372,13 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
               ))}
             </ul>
           </div>
-          {current && (
+          {composing && (
+            <>
+              <div className="slack-split" role="separator" aria-orientation="vertical" aria-label="一覧の幅" onPointerDown={resize} />
+              <SlackCompose report={report} onPosted={onPosted} onClose={() => setComposing(false)} />
+            </>
+          )}
+          {current && !composing && (
             <>
               <div className="slack-split" role="separator" aria-orientation="vertical" aria-label="一覧の幅" onPointerDown={resize} />
               <SlackThread
@@ -3460,7 +3484,7 @@ const SLACK_SUGGESTIONS = 8;
 /// The people and groups to mention, asked once a run.
 let slackDirectory: Promise<SlackMentionable[]> | null = null;
 /// The `@…` being written just before the caret.
-const MENTION_TYPED = /(?:^|[\s　])@([^\s@　]*)$/;
+const MENTION_TYPED = /(?:^|[\s　])[@＠]([^\s@＠　]*)$/;
 
 /// A Slack row's thread (a message not in one, alone), the message itself
 /// marked: read again as the thread moves (Socket Mode), and answered from
@@ -3483,8 +3507,6 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
   const [thread, setThread] = useState<SlackThreadMessage[] | null>(null);
   const [muted, setMuted] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [reply, setReply] = useState("");
-  const [sending, setSending] = useState(false);
   const end = useRef<HTMLDivElement>(null);
   const { channel, threadTs } = item;
   const read = useCallback(() => {
@@ -3509,59 +3531,7 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
   }, [thread?.length]);
   const toggleMute = () => api.slackMuteThread(channel, threadTs, !muted).then(() => setMuted(!muted), report);
   muteRef.current = toggleMute;
-  // Mentions: what is being written after "@", the candidates, and the ones picked (name → how Slack writes it).
-  const [people, setPeople] = useState<SlackMentionable[]>([]);
-  const [typed, setTyped] = useState<{ query: string; from: number } | null>(null);
-  const [active, setActive] = useState(0);
-  const picked = useRef(new Map<string, string>());
-  const inThread = new Set(thread?.map((t) => t.user_name));
-  const candidates = typed
-    ? people
-        .map((p) => {
-          const q = typed.query.toLowerCase();
-          const names = [p.name, ...p.also].map((n) => n.toLowerCase());
-          const rank = !q ? 1 : names.some((n) => n.startsWith(q)) ? 0 : names.some((n) => n.includes(q)) ? 1 : 2;
-          return { p, rank: rank - (inThread.has(p.name) ? 0.5 : 0) };
-        })
-        .filter((c) => c.rank < 2)
-        .sort((a, b) => a.rank - b.rank)
-        .slice(0, SLACK_SUGGESTIONS)
-        .map((c) => c.p)
-    : [];
-  const watchTyping = (text: string, caret: number) => {
-    const m = MENTION_TYPED.exec(text.slice(0, caret));
-    setTyped(m ? { query: m[1], from: caret - m[1].length - 1 } : null);
-    setActive(0);
-    if (m && !slackDirectory) slackDirectory = api.slackDirectory();
-    if (m) slackDirectory?.then(setPeople, (e) => ((slackDirectory = null), report(e)));
-  };
-  const pick = (p: SlackMentionable) => {
-    const box = replyRef.current;
-    if (!typed || !box) return;
-    const caret = box.selectionStart;
-    const next = `${reply.slice(0, typed.from)}@${p.name} ${reply.slice(caret)}`;
-    picked.current.set(p.name, p.token);
-    setReply(next);
-    setTyped(null);
-    const at = typed.from + p.name.length + 2;
-    requestAnimationFrame(() => box.setSelectionRange(at, at));
-  };
-  /// The reply as Slack takes it: the picked mentions written as Slack writes them.
-  const withMentions = (text: string) =>
-    [...picked.current.entries()].sort((a, b) => b[0].length - a[0].length).reduce((t, [name, token]) => t.split(`@${name}`).join(token), text);
-  const send = () => {
-    if (!reply.trim() || sending) return;
-    setSending(true);
-    api
-      .slackReply(channel, threadTs, withMentions(reply))
-      .then(() => {
-        setReply("");
-        picked.current.clear();
-        read();
-      }, report)
-      .finally(() => setSending(false));
-  };
-  const title = item.kind === "thread" ? `スレッド・新しい返信 ${item.newReplies} 件` : item.via ? `@${item.via} へのメンション` : `${item.userName}さんからのメンション`;
+  const title = item.kind === "posted" ? "送ったメッセージ" : item.kind === "thread" ? `スレッド・新しい返信 ${item.newReplies} 件` : item.via ? `@${item.via} へのメンション` : `${item.userName}さんからのメンション`;
   return (
     <section className="slack-thread" aria-label="スレッド">
       <div className="slack-thread-head">
@@ -3579,9 +3549,11 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
         <button className="ghost small" title="このスレッドの新しい返信を、未読に数えない（メンションは届きます）" onClick={toggleMute}>
           {muted ? "返信をまた数える" : "返信を数えない"} <span className="kbd">{keyLabel(keyOf("slackMute"))}</span>
         </button>
-        <button className="ghost small" onClick={() => onLink(item.permalink)}>
-          Slack で開く <span className="kbd">{keyLabel(keyOf("slackOpen"))}</span>
-        </button>
+        {item.permalink && (
+          <button className="ghost small" onClick={() => onLink(item.permalink)}>
+            Slack で開く <span className="kbd">{keyLabel(keyOf("slackOpen"))}</span>
+          </button>
+        )}
         <button className="ghost icon" aria-label="スレッドを閉じる（Esc）" title="スレッドを閉じる（Esc）" onClick={onClose}>
           <Icon name="close" size={13} />
         </button>
@@ -3612,66 +3584,240 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
         })}
         <div ref={end} />
       </div>
-      <div className="slack-reply">
-        {candidates.length > 0 && (
-          <ul className="slack-suggest" role="listbox" aria-label="メンションの候補">
-            {candidates.map((p, i) => (
-              <li key={p.token} role="option" aria-selected={i === active} className={i === active ? "on" : ""} onMouseDown={(e) => (e.preventDefault(), pick(p))}>
-                <SlackAvatar name={p.name} image={p.image} size={20} />
-                <b>{p.name}</b>
-                <span className="muted ellipsis">{p.token.startsWith("<!subteam") ? "ユーザーグループ" : p.also.join(" · ")}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-        <textarea
-          ref={replyRef}
-          rows={2}
-          value={reply}
-          placeholder={`スレッドに返信（${keyLabel(keyOf("slackReply"))} でここへ、@ でメンション、⌘Enter で送る、Esc で一覧へ）`}
-          aria-label="スレッドに返信"
-          onChange={(e) => {
-            setReply(e.target.value);
-            watchTyping(e.target.value, e.target.selectionStart);
-          }}
-          onKeyDown={(e) => {
-            const composing = e.nativeEvent.isComposing || e.keyCode === 229;
-            if (candidates.length > 0 && !composing) {
-              const step = e.key === "ArrowDown" || (e.ctrlKey && e.key === "n") ? 1 : e.key === "ArrowUp" || (e.ctrlKey && e.key === "p") ? -1 : 0;
-              if (step) {
-                e.preventDefault();
-                setActive((a) => (a + step + candidates.length) % candidates.length);
-                return;
-              }
-              if ((e.key === "Enter" && !e.metaKey) || e.key === "Tab") {
-                e.preventDefault();
-                pick(candidates[active]);
-                return;
-              }
-              if (e.key === "Escape") {
-                e.preventDefault();
-                e.stopPropagation();
-                setTyped(null);
-                return;
-              }
-            }
-            if (e.key === "Enter" && e.metaKey && !composing) {
-              e.preventDefault();
-              send();
-            } else if (e.key === "Escape" && !composing) {
-              e.preventDefault();
-              e.stopPropagation();
-              e.currentTarget.blur();
-            }
-          }}
-        />
-        <button className="primary small" disabled={!reply.trim() || sending} onClick={send}>
-          {sending ? "送っています…" : "返信する"} <span className="kbd">⌘↵</span>
-        </button>
-      </div>
+      <SlackComposer
+        boxRef={replyRef}
+        label="スレッドに返信"
+        placeholder={`スレッドに返信（${keyLabel(keyOf("slackReply"))} でここへ、@ でメンション、⌘Enter で送る、Esc で一覧へ）`}
+        sendLabel="返信する"
+        near={thread?.map((t) => t.user_name) ?? []}
+        report={report}
+        onSend={(text) => api.slackReply(channel, threadTs, text).then(read)}
+      />
     </section>
   );
 }
+
+/// A Slack message box: "@" (or "＠") suggests people and user groups
+/// (↑↓ or ⌃N ⌃P, Enter or Tab to pick), written as Slack writes mentions
+/// when sent with ⌘Enter; Esc leaves it.
+function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, report, onSend }: {
+  boxRef: React.RefObject<HTMLTextAreaElement | null>;
+  label: string;
+  placeholder: string;
+  sendLabel: string;
+  /// Names suggested first (the thread's people).
+  near: string[];
+  disabled?: boolean;
+  report: (e: unknown) => void;
+  /// Sends the text, its mentions written as Slack writes them.
+  onSend: (text: string) => Promise<unknown>;
+}) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [people, setPeople] = useState<SlackMentionable[]>([]);
+  const [typed, setTyped] = useState<{ query: string; from: number } | null>(null);
+  const [active, setActive] = useState(0);
+  // The mentions picked: their name → how Slack writes them.
+  const picked = useRef(new Map<string, string>());
+  const nearby = new Set(near);
+  const candidates = typed
+    ? people
+        .map((p) => {
+          const q = typed.query.toLowerCase();
+          const names = [p.name, ...p.also].map((n) => n.toLowerCase());
+          const rank = !q ? 1 : names.some((n) => n.startsWith(q)) ? 0 : names.some((n) => n.includes(q)) ? 1 : 2;
+          return { p, rank: rank - (nearby.has(p.name) ? 0.5 : 0) };
+        })
+        .filter((c) => c.rank < 2)
+        .sort((a, b) => a.rank - b.rank)
+        .slice(0, SLACK_SUGGESTIONS)
+        .map((c) => c.p)
+    : [];
+  const watchTyping = (value: string, caret: number) => {
+    const m = MENTION_TYPED.exec(value.slice(0, caret));
+    setTyped(m ? { query: m[1], from: caret - m[1].length - 1 } : null);
+    setActive(0);
+    if (m && !slackDirectory) slackDirectory = api.slackDirectory();
+    if (m) slackDirectory?.then(setPeople, (e) => ((slackDirectory = null), report(e)));
+  };
+  const pick = (p: SlackMentionable) => {
+    const box = boxRef.current;
+    if (!typed || !box) return;
+    const caret = box.selectionStart;
+    picked.current.set(p.name, p.token);
+    setText(`${text.slice(0, typed.from)}@${p.name} ${text.slice(caret)}`);
+    setTyped(null);
+    const at = typed.from + p.name.length + 2;
+    requestAnimationFrame(() => box.setSelectionRange(at, at));
+  };
+  const withMentions = (value: string) =>
+    [...picked.current.entries()].sort((a, b) => b[0].length - a[0].length).reduce((t, [name, token]) => t.split(`@${name}`).join(token), value);
+  const send = () => {
+    if (!text.trim() || sending || disabled) return;
+    setSending(true);
+    onSend(withMentions(text))
+      .then(() => {
+        setText("");
+        picked.current.clear();
+      }, report)
+      .finally(() => setSending(false));
+  };
+  return (
+    <div className="slack-reply">
+      {candidates.length > 0 && (
+        <ul className="slack-suggest" role="listbox" aria-label="メンションの候補">
+          {candidates.map((p, i) => (
+            <li key={p.token} role="option" aria-selected={i === active} className={i === active ? "on" : ""} onMouseDown={(e) => (e.preventDefault(), pick(p))}>
+              <SlackAvatar name={p.name} image={p.image} size={20} />
+              <b>{p.name}</b>
+              <span className="muted ellipsis">{p.token.startsWith("<!subteam") ? "ユーザーグループ" : p.also.join(" · ")}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <textarea
+        ref={boxRef}
+        rows={2}
+        value={text}
+        placeholder={placeholder}
+        aria-label={label}
+        onChange={(e) => {
+          setText(e.target.value);
+          watchTyping(e.target.value, e.target.selectionStart);
+        }}
+        onKeyDown={(e) => {
+          const composing = e.nativeEvent.isComposing || e.keyCode === 229;
+          if (candidates.length > 0 && !composing) {
+            const step = e.key === "ArrowDown" || (e.ctrlKey && e.key === "n") ? 1 : e.key === "ArrowUp" || (e.ctrlKey && e.key === "p") ? -1 : 0;
+            if (step) {
+              e.preventDefault();
+              setActive((a) => (a + step + candidates.length) % candidates.length);
+              return;
+            }
+            if ((e.key === "Enter" && !e.metaKey) || e.key === "Tab") {
+              e.preventDefault();
+              pick(candidates[active]);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              setTyped(null);
+              return;
+            }
+          }
+          if (e.key === "Enter" && e.metaKey && !composing) {
+            e.preventDefault();
+            send();
+          } else if (e.key === "Escape" && !composing) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.blur();
+          }
+        }}
+      />
+      <button className="primary small" disabled={!text.trim() || sending || disabled} onClick={send}>
+        {sending ? "送っています…" : sendLabel} <span className="kbd">⌘↵</span>
+      </button>
+    </div>
+  );
+}
+
+/// A new message in a channel the user is in: pick the channel (type to
+/// narrow, ↑↓ and Enter), write, ⌘Enter. The message's thread opens once sent.
+function SlackCompose({ report, onPosted, onClose }: {
+  report: (e: unknown) => void;
+  onPosted: (channel: { id: string; name: string }, ts: string) => void;
+  onClose: () => void;
+}) {
+  const [channels, setChannels] = useState<SlackChannel[] | null>(null);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const [to, setTo] = useState<SlackChannel | null>(null);
+  const queryRef = useRef<HTMLInputElement>(null);
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    api.slackChannels().then((c) => setChannels(c.sort((a, b) => a.name.localeCompare(b.name))), report);
+    queryRef.current?.focus();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const q = query.trim().replace(/^#/, "").toLowerCase();
+  const matching = (channels ?? []).filter((c) => !q || c.name.toLowerCase().includes(q)).sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q))).slice(0, SLACK_CHANNELS_SHOWN);
+  const choose = (c: SlackChannel) => {
+    setTo(c);
+    setQuery("");
+    requestAnimationFrame(() => boxRef.current?.focus());
+  };
+  return (
+    <section className="slack-thread" aria-label="新しいメッセージ">
+      <div className="slack-thread-head">
+        <b className="grow">新しいメッセージ</b>
+        <button className="ghost icon" aria-label="閉じる（Esc）" title="閉じる（Esc）" onClick={onClose}>
+          <Icon name="close" size={13} />
+        </button>
+      </div>
+      <div className="slack-thread-body slack-compose">
+        {to ? (
+          <div className="slack-compose-to">
+            <span className="muted">送り先</span>
+            <span className="tag">
+              {to.private ? "🔒" : "#"}
+              {to.name}
+            </span>
+            <button className="ghost small" onClick={() => (setTo(null), requestAnimationFrame(() => queryRef.current?.focus()))}>
+              変える
+            </button>
+          </div>
+        ) : (
+          <>
+            <input
+              ref={queryRef}
+              value={query}
+              placeholder="チャンネルを探す（入っているチャンネルだけ）"
+              aria-label="送り先のチャンネル"
+              onChange={(e) => (setQuery(e.target.value), setActive(0))}
+              onKeyDown={(e) => {
+                if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+                const step = e.key === "ArrowDown" || (e.ctrlKey && e.key === "n") ? 1 : e.key === "ArrowUp" || (e.ctrlKey && e.key === "p") ? -1 : 0;
+                if (step && matching.length > 0) {
+                  e.preventDefault();
+                  setActive((a) => (a + step + matching.length) % matching.length);
+                } else if (e.key === "Enter" && matching[active]) {
+                  e.preventDefault();
+                  choose(matching[active]);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onClose();
+                }
+              }}
+            />
+            {!channels && <p className="muted pad">チャンネルを読んでいます…</p>}
+            <ul className="slack-channel-list" role="listbox" aria-label="チャンネル">
+              {matching.map((c, i) => (
+                <li key={c.id} role="option" aria-selected={i === active} className={i === active ? "on" : ""} onMouseDown={(e) => (e.preventDefault(), choose(c))}>
+                  <span className="muted">{c.private ? "🔒" : "#"}</span>
+                  {c.name}
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
+      <SlackComposer
+        boxRef={boxRef}
+        label="メッセージ"
+        placeholder={to ? `#${to.name} に送る（@ でメンション、⌘Enter で送る）` : "先に送り先のチャンネルを選んでください"}
+        sendLabel="送る"
+        near={[]}
+        disabled={!to}
+        report={report}
+        onSend={(text) => (to ? api.slackPost(to.id, text).then((ts) => onPosted(to, ts)) : Promise.resolve())}
+      />
+    </section>
+  );
+}
+/// Channels the new message's picker shows at once.
+const SLACK_CHANNELS_SHOWN = 12;
 
 /// The settings' Slack: the user's token, given to the app (kept in the
 /// Keychain) or let go.
