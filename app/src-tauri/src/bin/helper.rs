@@ -36,13 +36,6 @@ wrap_app! {
     struct HelperApp;
 
     impl App {
-        // As in the browser process (cef_browser.rs): no Keychain.
-        fn on_before_command_line_processing(&self, _process_type: Option<&CefString>, command_line: Option<&mut CommandLine>) {
-            if let Some(command_line) = command_line {
-                command_line.append_switch(Some(&CefString::from("use-mock-keychain")));
-            }
-        }
-
         fn render_process_handler(&self) -> Option<RenderProcessHandler> {
             Some(PageScript::new())
         }

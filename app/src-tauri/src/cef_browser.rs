@@ -154,22 +154,10 @@ impl CefApplication {
     }
 }
 
-/// Chromium's own switch that keeps its cookie key out of the Keychain.
-pub const MOCK_KEYCHAIN_SWITCH: &str = "use-mock-keychain";
-
 wrap_app! {
     struct BrowserApp;
 
     impl App {
-        // Without it Chromium asks the Keychain for "Chromium Safe Storage" (a prompt that
-        // waits for the login password, and again after every rebuild: the app is signed
-        // ad hoc) and every page waits for the answer.
-        fn on_before_command_line_processing(&self, _process_type: Option<&CefString>, command_line: Option<&mut CommandLine>) {
-            if let Some(command_line) = command_line {
-                command_line.append_switch(Some(&CefString::from(MOCK_KEYCHAIN_SWITCH)));
-            }
-        }
-
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
             Some(PumpScheduler::new())
         }
@@ -220,11 +208,11 @@ pub fn init() -> bool {
     let _ = api_hash(sys::CEF_API_VERSION_LAST, 0);
     // Kept, not released (see `content_view`): the application lives as long as the process.
     std::mem::forget(CefApplication::shared_application());
-    // The switch is on the command line itself: set from `on_before_command_line_processing`
-    // alone it came too late, and Chromium still asked the Keychain for its cookie key.
+    // Chromium keeps its cookie key in the Keychain ("Chromium Safe Storage"). The app
+    // is signed the same way at every build (scripts/bundle-cef.sh), so allowed once,
+    // it is not asked again; without that signature every rebuild would ask.
     let argv: &'static [*mut std::os::raw::c_char] = Box::leak(
         std::env::args()
-            .chain([format!("--{MOCK_KEYCHAIN_SWITCH}")])
             .map(|a| std::ffi::CString::new(a).unwrap().into_raw())
             .collect::<Vec<_>>()
             .into_boxed_slice(),
