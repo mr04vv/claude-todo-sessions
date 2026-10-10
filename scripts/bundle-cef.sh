@@ -56,6 +56,12 @@ for kind in "" " (GPU)" " (Renderer)" " (Plugin)" " (Alerts)"; do
 PLIST
 done
 
-# Ad hoc, as Tauri signs it; the new parts need it.
-codesign --force --deep --sign - "$APP"
+# Signed with the user's own code signing certificate when there is one, so
+# a rebuild stays the same app to the Keychain (its items kept for Shosai
+# alone); ad hoc without one, as Tauri signs it. The new parts need it too.
+# The identity is SHOSAI_SIGNING_IDENTITY, else the first Apple Development one.
+IDENTITY="${SHOSAI_SIGNING_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development: .*\)"$/\1/p' | head -1)}"
+if [ -n "$IDENTITY" ] && security find-identity -p codesigning | grep -qF "\"$IDENTITY\""; then SIGN="$IDENTITY"; else SIGN=-; fi
+echo "signing with: $SIGN"
+codesign --force --deep --sign "$SIGN" "$APP"
 echo "$APP"
