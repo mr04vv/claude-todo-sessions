@@ -136,6 +136,29 @@ pub fn parse_members(v: &Value) -> Vec<Member> {
         .collect()
 }
 
+/// A channel the user is in, to post in.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Channel {
+    pub id: String,
+    pub name: String,
+    pub private: bool,
+}
+
+/// A page of users.conversations' channels, named.
+pub fn parse_channels(v: &Value) -> Vec<Channel> {
+    v["channels"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| Some(Channel { id: c["id"].as_str()?.into(), name: c["name"].as_str()?.into(), private: c["is_private"].as_bool().unwrap_or(false) }))
+        .collect()
+}
+
+/// chat.postMessage's ts for the message it posted.
+pub fn parse_posted_ts(v: &Value) -> Option<String> {
+    v["ts"].as_str().map(String::from)
+}
+
 /// The ids of a page of users.conversations.
 pub fn parse_conversation_ids(v: &Value) -> Vec<String> {
     v["channels"].as_array().into_iter().flatten().filter_map(|c| c["id"].as_str().map(String::from)).collect()
@@ -414,9 +437,14 @@ fn pages(token: &str, method: &str, args: &[(&str, &str)], mut each: impl FnMut(
 
 /// The public and private channels the user is in.
 pub fn member_channels(token: &str) -> Result<std::collections::HashSet<String>, String> {
-    let mut ids = std::collections::HashSet::new();
-    pages(token, "users.conversations", &[("types", "public_channel,private_channel"), ("exclude_archived", "true"), ("limit", "1000")], |v| ids.extend(parse_conversation_ids(v)))?;
-    Ok(ids)
+    Ok(channels(token)?.into_iter().map(|c| c.id).collect())
+}
+
+/// The public and private channels the user is in, named, to post in.
+pub fn channels(token: &str) -> Result<Vec<Channel>, String> {
+    let mut all = Vec::new();
+    pages(token, "users.conversations", &[("types", "public_channel,private_channel"), ("exclude_archived", "true"), ("limit", "1000")], |v| all.extend(parse_channels(v)))?;
+    Ok(all)
 }
 
 /// The channels the user muted (users.prefs.get, undocumented: it may refuse).
@@ -454,17 +482,22 @@ pub fn replies(token: &str, channel: &str, thread_ts: &str) -> Result<Vec<Messag
     Ok(parse_replies(&call(token, "conversations.replies", &[("channel", channel), ("ts", thread_ts)])?))
 }
 
-/// Posts `text` in a thread as the user (#30; `chat:write`).
-pub fn post_reply(token: &str, channel: &str, thread_ts: &str, text: &str) -> Result<(), String> {
+/// Posts `text` as the user (`chat:write`): in a thread (#30), or in the
+/// channel itself. Returns the posted message's ts.
+pub fn post_message(token: &str, channel: &str, thread_ts: Option<&str>, text: &str) -> Result<String, String> {
+    let mut body = serde_json::json!({ "channel": channel, "text": text });
+    if let Some(thread) = thread_ts {
+        body["thread_ts"] = serde_json::json!(thread);
+    }
     let v: Value = AGENT
         .post(format!("{API}/chat.postMessage"))
         .header("Authorization", format!("Bearer {token}"))
-        .send_json(serde_json::json!({ "channel": channel, "thread_ts": thread_ts, "text": text }))
+        .send_json(body)
         .map_err(|e| format!("Slack chat.postMessage: {e}"))?
         .body_mut()
         .read_json()
         .map_err(|e| format!("Slack chat.postMessage: {e}"))?;
-    answer(v).map(|_| ())
+    parse_posted_ts(&answer(v)?).ok_or_else(|| "Slack chat.postMessage: ts がありません".into())
 }
 
 pub fn person(token: &str, user: &str) -> Result<Option<Person>, String> {
@@ -571,6 +604,22 @@ mod tests {
         assert_eq!(parse_conversation_ids(&page), vec!["C1".to_string(), "G1".to_string()]);
         assert_eq!(next_cursor(&page).as_deref(), Some("dXNlcjpVMEc5V0ZYTlo="));
         assert_eq!(next_cursor(&json!({"ok": true, "channels": [], "response_metadata": {"next_cursor": ""}})), None, "the last page");
+    }
+
+    #[test]
+    fn the_channels_to_post_in_come_with_their_names() {
+        let page = json!({"ok": true, "channels": [{"id": "C1", "name": "dev-web", "is_private": false}, {"id": "G1", "name": "secret", "is_private": true}, {"id": "C2"}]});
+        assert_eq!(
+            parse_channels(&page),
+            vec![Channel { id: "C1".into(), name: "dev-web".into(), private: false }, Channel { id: "G1".into(), name: "secret".into(), private: true }],
+            "one without a name is left out"
+        );
+    }
+
+    #[test]
+    fn a_posted_message_tells_its_ts() {
+        assert_eq!(parse_posted_ts(&json!({"ok": true, "channel": "C1", "ts": "1700000000.000100", "message": {}})).as_deref(), Some("1700000000.000100"));
+        assert_eq!(parse_posted_ts(&json!({"ok": true})), None);
     }
 
     #[test]

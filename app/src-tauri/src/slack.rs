@@ -456,7 +456,26 @@ pub fn slack_reply(channel: String, thread_ts: String, text: String) -> Result<(
     if text.trim().is_empty() {
         return Err("返信が空です".into());
     }
-    slack::post_reply(&token_or_err()?, &channel, &thread_ts, &text)
+    slack::post_message(&token_or_err()?, &channel, Some(&thread_ts), &text).map(|_| ())
+}
+
+/// The channels the user is in, to post in (asked each time the composer opens).
+#[tauri::command(async)]
+pub fn slack_channels(slack: State<Slack>) -> Result<Vec<slack::Channel>, String> {
+    let channels = slack::channels(&token_or_err()?)?;
+    for c in &channels {
+        slack.remember_channel(&c.id, &c.name);
+    }
+    Ok(channels)
+}
+
+/// Posts a new message in a channel as the user; its ts, to open its thread.
+#[tauri::command(async)]
+pub fn slack_post(channel: String, text: String) -> Result<String, String> {
+    if text.trim().is_empty() {
+        return Err("メッセージが空です".into());
+    }
+    slack::post_message(&token_or_err()?, &channel, None, &text)
 }
 
 #[derive(Clone, Serialize)]

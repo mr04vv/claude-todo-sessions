@@ -2649,6 +2649,8 @@ fn main() {
             slack::slack_thread,
             slack::slack_reply,
             slack::slack_directory,
+            slack::slack_channels,
+            slack::slack_post,
             slack::slack_thread_seen,
             slack::slack_mute_thread,
             create_todo,
