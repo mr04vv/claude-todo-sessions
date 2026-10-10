@@ -6322,6 +6322,12 @@ export default function App() {
   };
   const archiveShownRef = useRef(archiveShown);
   archiveShownRef.current = archiveShown;
+  /// ⌘R while the pane has the typing (its address bar, its tab strip): the page shown is reloaded.
+  const reloadShown = () => {
+    if (browserShown && activeTab && !activeTab.term) api.browserGo(activeTab.id, "reload").catch(report);
+  };
+  const reloadShownRef = useRef(reloadShown);
+  reloadShownRef.current = reloadShown;
   // Pages report where they went and what they are called; links they open in
   // a new window arrive as new tabs.
   /// A tab moved on its own; the address bar follows without navigating it again.
@@ -6794,8 +6800,9 @@ export default function App() {
         ["palette", () => setDialog((d) => (d === "palette" ? null : "palette"))],
         ["newTab", () => openNewTab()],
         ["closeTab", () => closeShownRef.current()],
-        // This side's reload takes the page's data again (a page's own reloads the page).
-        ["reload", () => reloadRef.current()],
+        // The side with the typing: this one takes its data again, the pane
+        // reloads its page (a page with the keyboard reloads itself).
+        ["reload", () => (typingSideRef.current === "pane" || (e.target as HTMLElement).closest(".browser-dock") ? reloadShownRef.current() : reloadRef.current())],
       ];
       const hit = run.find(([action]) => matches(e, action));
       if (hit) {
