@@ -12,6 +12,8 @@ use serde_json::Value;
 
 const API: &str = "https://slack.com/api";
 const TIMEOUT: Duration = Duration::from_secs(20);
+/// Slack's search takes longer in a large workspace.
+const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Matches asked of a search: the newest, enough between two checks.
 pub const SEARCH_COUNT: &str = "20";
 
@@ -76,13 +78,25 @@ static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
     ureq::Agent::new_with_config(ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).tls_config(tls).build())
 });
 
+/// How a failed call reads; a timeout is said plainly, as the next check tries again.
+fn failed(method: &str, e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Timeout(_) => format!("Slack {method}: 時間内に返事がありませんでした（次の確認でやり直します）"),
+        e => format!("Slack {method}: {e}"),
+    }
+}
+
 /// Calls Web API `method` with the user's token.
 fn call(token: &str, method: &str, args: &[(&str, &str)]) -> Result<Value, String> {
-    let mut req = AGENT.get(format!("{API}/{method}")).header("Authorization", format!("Bearer {token}"));
+    call_within(token, method, args, TIMEOUT)
+}
+
+fn call_within(token: &str, method: &str, args: &[(&str, &str)], timeout: Duration) -> Result<Value, String> {
+    let mut req = AGENT.get(format!("{API}/{method}")).header("Authorization", format!("Bearer {token}")).config().timeout_global(Some(timeout)).build();
     for (k, v) in args {
         req = req.query(*k, *v);
     }
-    let v: Value = req.call().map_err(|e| format!("Slack {method}: {e}"))?.body_mut().read_json().map_err(|e| format!("Slack {method}: {e}"))?;
+    let v: Value = req.call().map_err(|e| failed(method, e))?.body_mut().read_json().map_err(|e| failed(method, e))?;
     answer(v)
 }
 
@@ -474,7 +488,7 @@ pub fn groups(token: &str, me: &str) -> Result<Vec<Group>, String> {
 
 /// The newest messages matching `query`, outside DMs.
 pub fn search(token: &str, query: &str) -> Result<Vec<Hit>, String> {
-    Ok(parse_search(&call(token, "search.messages", &[("query", query), ("count", SEARCH_COUNT), ("sort", "timestamp"), ("sort_dir", "desc")])?))
+    Ok(parse_search(&call_within(token, "search.messages", &[("query", query), ("count", SEARCH_COUNT), ("sort", "timestamp"), ("sort_dir", "desc")], SEARCH_TIMEOUT)?))
 }
 
 /// A thread's messages, its head first.
@@ -758,6 +772,11 @@ mod tests {
         assert_eq!(parse_channel_name(&json!({"ok": true, "channel": {"id": "C1", "name": "dev-web"}})).as_deref(), Some("dev-web"));
         assert_eq!(parse_socket_url(&json!({"ok": true, "url": "wss://wss-primary.slack.com/link/?ticket=x"})).unwrap(), "wss://wss-primary.slack.com/link/?ticket=x");
         assert!(parse_socket_url(&json!({"ok": true})).is_err());
+    }
+
+    #[test]
+    fn a_timeout_is_said_plainly() {
+        assert_eq!(failed("search.messages", ureq::Error::Timeout(ureq::Timeout::Global)), "Slack search.messages: 時間内に返事がありませんでした（次の確認でやり直します）");
     }
 
     #[test]
