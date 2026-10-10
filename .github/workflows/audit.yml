@@ -1,0 +1,23 @@
+# Known vulnerabilities in the Rust dependencies (RustSec), weekly and
+# whenever Cargo.lock changes. The actions are pinned to their commits.
+name: audit
+
+on:
+  schedule:
+    - cron: "0 0 * * 1" # Mondays, 9:00 in Japan
+  push:
+    paths: ["Cargo.lock", ".github/workflows/audit.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172 # v2.87.20
+        with:
+          tool: cargo-audit
+      - run: cargo audit
