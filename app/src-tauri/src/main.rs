@@ -722,7 +722,7 @@ fn start_review(state: State<AppState>, url: String, repo: String, title: String
     let prompt = launch::review_prompt(&url, agent, auto);
     let mut opts = options.unwrap_or_default();
     // A review runs in auto mode, whatever the repository's settings say
-    // (on Cloud the mode cannot be set at creation: it starts as Cloud's default).
+    // (on Cloud as a control request ahead of its prompt, cloud::apply_options).
     if agent == cts_core::Agent::Claude {
         opts.permission_mode = Some(launch::PermissionMode::Auto);
     }

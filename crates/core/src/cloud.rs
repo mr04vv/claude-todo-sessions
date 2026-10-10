@@ -142,13 +142,23 @@ pub fn create_body(env_id: &str, repos: &[String], branch: &str, prompt: &str, t
 }
 
 /// Sets the model and effort a cloud session runs with, as the sessions
-/// list reports them in `config.model` and `config.effort_level`.
+/// list reports them in `config.model` and `config.effort_level`, and its
+/// permission mode: a control request ahead of the prompt, as the CLI's
+/// remote sessions start with one.
 pub fn apply_options(body: &mut Value, opts: &StartOptions) {
     if let Some(m) = opts.model() {
         body["session_context"]["model"] = json!(m);
     }
     if let Some(e) = opts.effort() {
         body["session_context"]["effort_level"] = json!(e);
+    }
+    if let (Some(mode), Some(events)) = (opts.permission_mode, body["events"].as_array_mut()) {
+        let request = json!({"type": "event", "data": {
+            "type": "control_request",
+            "request_id": format!("set-mode-{}", uuid::Uuid::new_v4()),
+            "request": {"subtype": "set_permission_mode", "mode": mode},
+        }});
+        events.insert(0, request);
     }
 }
 
@@ -689,6 +699,19 @@ mod tests {
         apply_options(&mut b, &StartOptions { model: Some("claude-opus-5-5".into()), effort: Some("high".into()), ..Default::default() });
         assert_eq!(b["session_context"]["model"], "claude-opus-5-5");
         assert_eq!(b["session_context"]["effort_level"], "high");
+        assert_eq!(b["events"].as_array().unwrap().len(), 1, "no mode asked: the prompt alone");
+    }
+
+    #[test]
+    fn a_permission_mode_goes_ahead_of_the_prompt() {
+        let mut b = create_body("env_1", &[], "claude/x", "p", "t", "u");
+        apply_options(&mut b, &StartOptions { permission_mode: Some(crate::launch::PermissionMode::Auto), ..Default::default() });
+        let events = b["events"].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["data"]["type"], "control_request");
+        assert_eq!(events[0]["data"]["request"], json!({"subtype": "set_permission_mode", "mode": "auto"}));
+        assert!(events[0]["data"]["request_id"].as_str().unwrap().starts_with("set-mode-"));
+        assert_eq!(events[1]["data"]["message"]["content"], "p", "then the prompt");
     }
 
     #[test]
