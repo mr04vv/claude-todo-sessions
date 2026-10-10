@@ -89,6 +89,7 @@ import {
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { parseSlack, type Inline } from "./slackText";
+import { slackItems, type SlackItem } from "./slackItems";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
@@ -3154,62 +3155,7 @@ const SLACK_LIST_WIDTH = { min: 260, max: 720, initial: 380, step: 40 };
 /// How far ⇧J / ⇧K scroll the thread.
 const SLACK_SCROLL_PX = 160;
 
-/// A row of the Slack page: a mention (#27) or a thread with new replies (#28).
-interface SlackItem {
-  key: string;
-  /// A message the user just posted shows its thread too.
-  kind: "mention" | "thread" | "posted";
-  channel: string;
-  /// The thread it opens (a message not in one is its own).
-  threadTs: string;
-  /// The message it stands for: the mention, or the thread's latest reply.
-  ts: string;
-  channelName: string;
-  userName: string;
-  userImage: string | null;
-  text: string;
-  /// The user group mentioned, for a group's mention.
-  via: string | null;
-  read: boolean;
-  permalink: string;
-  newReplies: number;
-}
-
 const mentionKey = (m: { channel: string; ts: string }) => `m:${m.channel}:${m.ts}`;
-
-function slackItems(slack: SlackView): SlackItem[] {
-  const mentions: SlackItem[] = slack.messages.map((m) => ({
-    key: mentionKey(m),
-    kind: "mention",
-    channel: m.channel,
-    threadTs: m.thread_ts ?? m.ts,
-    ts: m.ts,
-    channelName: m.channel_name,
-    userName: m.user_name,
-    userImage: m.user_image,
-    text: m.text,
-    via: m.via,
-    read: m.read,
-    permalink: m.permalink,
-    newReplies: 0,
-  }));
-  const threads: SlackItem[] = slack.threads.map((t) => ({
-    key: `t:${t.channel}:${t.thread_ts}`,
-    kind: "thread",
-    channel: t.channel,
-    threadTs: t.thread_ts,
-    ts: t.latest_ts ?? t.thread_ts,
-    channelName: t.channel_name,
-    userName: t.latest_user_name ?? "",
-    userImage: t.latest_image,
-    text: t.latest_text ?? "",
-    via: null,
-    read: false,
-    permalink: t.permalink,
-    newReplies: t.new_replies,
-  }));
-  return [...mentions, ...threads].sort((a, b) => Number(b.ts) - Number(a.ts));
-}
 
 /// 「Todo にする」's memo: who said it where, what, and its link.
 const slackMemo = (i: SlackItem) => `Slack #${i.channelName} の ${i.userName}さんから:\n${i.text}\n\n${i.permalink}`;
@@ -3228,25 +3174,27 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   onTodo: (memo: string) => void;
 }) {
   const [filter, setFilter] = useState<SlackFilter>("unread");
-  const [selected, setSelected] = useState<string | null>(pick);
+  const items = slackItems(slack.messages, slack.threads);
+  // A notification names a mention: its thread's row is picked.
+  const rowOf = (mention: string | null) => items.find((i) => i.mentions.some((m) => mentionKey(m) === mention))?.key ?? null;
+  const [selected, setSelected] = useState<string | null>(() => rowOf(pick));
   useEffect(() => {
-    if (pick) setSelected(pick);
-  }, [pick]);
+    if (pick) setSelected(rowOf(pick));
+  }, [pick]); // eslint-disable-line react-hooks/exhaustive-deps
   const [width, setWidth] = useState(() => loadJson<number>(SLACK_LIST_KEY, SLACK_LIST_WIDTH.initial));
   // The right side: a new message being written, or the one just posted.
   const [composing, setComposing] = useState(false);
   const [posted, setPosted] = useState<SlackItem | null>(null);
   const openInBrowser = useContext(BrowserContext);
   const openLink = (url: string) => (openInBrowser ? openInBrowser(url) : void api.openLink(url).catch(report));
-  const items = slackItems(slack);
   const unread = items.filter((i) => !i.read);
   const counts: Record<SlackFilter, number> = {
     unread: unread.length,
-    mention: unread.filter((i) => i.kind === "mention" && i.via === null).length,
-    thread: unread.filter((i) => i.kind === "thread").length,
+    mention: unread.filter((i) => i.mention && i.via === null).length,
+    thread: unread.filter((i) => i.newReplies > 0).length,
     read: items.length - unread.length,
   };
-  const inFilter = (i: SlackItem) => (filter === "read" ? i.read : !i.read && (filter === "unread" || (filter === "thread" ? i.kind === "thread" : i.kind === "mention" && i.via === null)));
+  const inFilter = (i: SlackItem) => (filter === "read" ? i.read : !i.read && (filter === "unread" || (filter === "thread" ? i.newReplies > 0 : i.mention && i.via === null)));
   // The one picked stays while it is read, so it does not jump away.
   const shown = items.filter((i) => i.key === selected || inFilter(i));
   const current = items.find((i) => i.key === selected) ?? (posted?.key === selected ? posted : null);
@@ -3256,7 +3204,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     (id) => (setComposing(false), setSelected(id)),
   );
   const onPosted = (channel: { id: string; name: string }, ts: string) => {
-    const item: SlackItem = { key: `p:${channel.id}:${ts}`, kind: "posted", channel: channel.id, threadTs: ts, ts, channelName: channel.name, userName: "", userImage: null, text: "", via: null, read: true, permalink: "", newReplies: 0 };
+    const item: SlackItem = { key: `p:${channel.id}:${ts}`, kind: "posted", channel: channel.id, threadTs: ts, ts, channelName: channel.name, userName: "", userImage: null, text: "", permalink: "", mention: false, via: null, newReplies: 0, read: true, mentions: [] };
     setPosted(item);
     setComposing(false);
     setSelected(item.key);
@@ -3271,16 +3219,16 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     setSelected(next?.key ?? null);
     if (next) setCursor(next.key);
   };
-  /// 既読にする: off the unread, and on to the next row.
+  /// Done: the row's mentions read and its replies seen, off the unread; on to the next row.
   const done = (item: SlackItem) => {
     const next = nextAfter(item);
-    run(() => (item.kind === "mention" ? api.slackRead(item.channel, item.ts) : api.slackThreadSeen(item.channel, item.threadTs)));
+    run(() => Promise.all([...item.mentions.map((m) => api.slackRead(m.channel, m.ts)), api.slackThreadSeen(item.channel, item.threadTs)]));
     goOn(next);
   };
-  /// 消す: a mention wiped from this Mac (and kept away), a thread no longer followed.
+  /// 消す: the row's mentions wiped from this Mac (and kept away), its thread no longer followed.
   const forget = (item: SlackItem) => {
     const next = nextAfter(item);
-    run(() => (item.kind === "thread" ? api.slackForgetThread(item.channel, item.threadTs) : api.slackForget(item.channel, item.ts)));
+    run(() => Promise.all([...item.mentions.map((m) => api.slackForget(m.channel, m.ts)), api.slackForgetThread(item.channel, item.threadTs)]));
     goOn(next);
   };
   const [confirmForgetRead, setConfirmForgetRead] = useState(false);
@@ -3394,7 +3342,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
                       <b className="ellipsis">{i.userName}</b>
                       <span className="ellipsis">#{i.channelName}</span>
                       {i.via && <span className="tag">@{i.via}</span>}
-                      {i.kind === "thread" && <span className="tag">スレッド・新しい返信 {i.newReplies}</span>}
+                      {i.newReplies > 0 && <span className="tag">新しい返信 {i.newReplies}</span>}
                       <span className="grow" />
                       <span className="slack-time">{ago(Number(i.ts))}</span>
                     </span>
@@ -3566,7 +3514,9 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
   }, [thread?.length]);
   const toggleMute = () => api.slackMuteThread(channel, threadTs, !muted).then(() => setMuted(!muted), report);
   muteRef.current = toggleMute;
-  const title = item.kind === "posted" ? "送ったメッセージ" : item.kind === "thread" ? `スレッド・新しい返信 ${item.newReplies} 件` : item.via ? `@${item.via} へのメンション` : `${item.userName}さんからのメンション`;
+  const replies = item.newReplies > 0 ? `新しい返信 ${item.newReplies} 件` : "";
+  const title =
+    item.kind === "posted" ? "送ったメッセージ" : [item.mention ? (item.via ? `@${item.via} へのメンション` : "あなたへのメンション") : "", replies].filter(Boolean).join("・") || "スレッド";
   return (
     <section className="slack-thread" aria-label="スレッド">
       <div className="slack-thread-head">
@@ -3574,15 +3524,15 @@ function SlackThread({ item, me, replyRef, bodyRef, muteRef, report, onLink, onD
           <b>#{item.channelName}</b> <span className="muted">· {title}</span>
         </span>
         {!item.read && (
-          <button className="small" title="一覧から消して次へ" onClick={onDone}>
-            既読にする <span className="kbd">{keyLabel(keyOf("slackDone"))}</span>
+          <button className="small" title="このスレッドのメンションと返信を既読にして、一覧から消して次へ" onClick={onDone}>
+            Done <span className="kbd">{keyLabel(keyOf("slackDone"))}</span>
           </button>
         )}
         <button className="ghost small" onClick={onTodo}>
           Todo にする <span className="kbd">{keyLabel(keyOf("slackTodo"))}</span>
         </button>
         {item.kind !== "posted" && (
-          <button className="ghost small" title={item.kind === "thread" ? "このスレッドを追うのをやめます" : "この Mac から消し、また見つかっても出しません"} onClick={onForget}>
+          <button className="ghost small" title="このスレッドのメンションをこの Mac から消し（また見つかっても出しません）、スレッドを追うのもやめます" onClick={onForget}>
             消す <span className="kbd">{keyLabel(keyOf("slackForget"))}</span>
           </button>
         )}
@@ -6921,7 +6871,8 @@ export default function App() {
   const draggedTodo = dragging !== null ? allTodos.find((t) => t.id === dragging) : undefined;
   // Review requests no review session has taken yet.
   const reviewCount = waiting.filter((w) => w.reasons.includes("review")).length;
-  const slackUnread = board?.slack.connected ? board.slack.messages.filter((m) => !m.read).length + board.slack.threads.length : 0;
+  // One per thread, as the Slack page's rows.
+  const slackUnread = board?.slack.connected ? slackItems(board.slack.messages, board.slack.threads).filter((i) => !i.read).length : 0;
 
   // The sidebar lists the objects only, each with what of it waits on the
   // user (or how many there are); how a list shows is chosen on its page.
@@ -6952,7 +6903,7 @@ export default function App() {
       icon: "chat",
       on: view === "slack",
       go: () => setView("slack"),
-      badge: slackUnread > 0 && <span className="pill accent" title="未読のメンションと、新しい返信があるスレッド">{slackUnread}</span>,
+      badge: slackUnread > 0 && <span className="pill accent" title="未読のスレッド（メンションか新しい返信があるもの）">{slackUnread}</span>,
     },
     {
       key: "inputs",

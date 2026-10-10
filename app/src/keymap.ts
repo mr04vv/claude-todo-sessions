@@ -128,8 +128,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     group: "Slack の画面（Enter でスレッドを開く）",
     items: [
       ["slackFilter", "未読・メンション・スレッド・既読を切り替える"],
-      ["slackDone", "既読にする（一覧から消え、次へ進む）"],
-      ["slackForget", "消す（この Mac からも消え、また見つかっても出ない）"],
+      ["slackDone", "Done（そのスレッドのメンションと返信を既読にして一覧から消し、次へ進む）"],
+      ["slackForget", "消す（そのスレッドのメンションをこの Mac からも消し、スレッドを追うのもやめる）"],
       ["slackCompose", "新しいメッセージ（入っているチャンネルへ）"],
       ["slackMute", "このスレッドの返信を数えない／また数える"],
       ["slackReply", "返信欄へ（⌘Enter で送る、Esc で一覧へ戻る）"],
