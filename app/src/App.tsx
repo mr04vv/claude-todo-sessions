@@ -130,6 +130,8 @@ function useOnVisible(f: () => void) {
     return () => document.removeEventListener("visibilitychange", onChange);
   }, []);
 }
+/// The local checkouts are looked for again at most this often on the window's focus.
+const LOCAL_REPOS_REFRESH_MS = 10_000;
 /// Pointer must move this far before a click turns into a drag.
 const DRAG_DISTANCE_PX = 6;
 /// Done cards kept per lane while "Done は直近のみ" is on.
@@ -6556,6 +6558,21 @@ export default function App() {
     showTodos(f.layout);
   };
   const [local, setLocal] = useState<LocalRepo[]>([]);
+  // The checkouts are looked for at launch, and again (a clone made since)
+  // when the window comes back or the new todo dialog opens.
+  const localAt = useRef(0);
+  const loadLocal = useCallback((now = false) => {
+    if (!now && Date.now() - localAt.current < LOCAL_REPOS_REFRESH_MS) return;
+    localAt.current = Date.now();
+    api.localRepos().then(setLocal, () => setLocal([]));
+  }, []);
+  useEffect(() => {
+    const off = listen(WINDOW_FOCUS_EVENT, () => loadLocal());
+    return () => void off.then((f) => f());
+  }, [loadLocal]);
+  useEffect(() => {
+    if (dialog === "add") loadLocal(true);
+  }, [dialog, loadLocal]);
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const [limits, setLimits] = useState<Limit[] | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
@@ -6654,7 +6671,7 @@ export default function App() {
 
   useEffect(() => {
     refresh();
-    api.localRepos().then(setLocal, () => setLocal([]));
+    loadLocal(true);
     const t = setInterval(() => pageVisible() && refresh(), REFRESH_MS);
     return () => clearInterval(t);
   }, [refresh]);
