@@ -6669,6 +6669,11 @@ export default function App() {
       .finally(() => setPrsLoading(false));
   }, []);
 
+  // At launch the app's page takes the keyboard, so its keys work before any click
+  // (the window alone being in front leaves the keys with no one).
+  useEffect(() => {
+    api.focusAppPage().catch(report);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     refresh();
     loadLocal(true);
