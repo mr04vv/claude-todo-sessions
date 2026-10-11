@@ -92,6 +92,7 @@ import { TYPING, useTodoKeys } from "./todoKeys";
 import { emojiNames, parseSlack, slackPlain, type Inline } from "./slackText";
 import { nameToEmoji } from "gemoji";
 import { slackItems, type SlackItem } from "./slackItems";
+import { categoryAt, themeGroups, themeLabel, themeRows } from "./themes";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
@@ -4696,20 +4697,40 @@ function ReviewTags({ summary }: { summary: FeynmanSummary | undefined }) {
 /// The categories folded in the learning page's list (their ids).
 const FOLDED_CATEGORIES_KEY = "foldedCategories";
 
-/// The themes by category, in the categories' order, those in none last.
-function themeGroups(themes: Theme[], categories: Category[]): { category: Category | null; themes: Theme[] }[] {
-  return [...categories.map((c) => ({ category: c, themes: themes.filter((t) => t.category_id === c.id) })), { category: null, themes: themes.filter((t) => t.category_id === null) }];
-}
-
-/// 「セキュリティ › OIDC」, or the theme's name alone when it is in no category.
-function themeLabel(t: Theme, categories: Category[]): string {
-  const c = categories.find((c) => c.id === t.category_id);
-  return c ? `${c.name} › ${t.name}` : t.name;
+/// A menu of choices under the element `at` (a selector), the current one marked:
+/// ↑↓ or j k move, Enter picks, Esc closes.
+function PickMenu({ label, at, choices, current, onPick, onClose }: {
+  label: string;
+  at: string;
+  choices: { value: number | null; label: string }[];
+  current: number | null;
+  onPick: (value: number | null) => void;
+  onClose: () => void;
+}) {
+  const menuKeys = useMenuKeys(true, onClose, Math.max(0, choices.findIndex((c) => c.value === current)));
+  const root = useRef<HTMLSpanElement>(null);
+  useOutsideClose(root, true, onClose);
+  const box = document.querySelector(at)?.getBoundingClientRect();
+  // Under the element, opening toward the middle of the window.
+  const side = box && box.left > window.innerWidth / 2 ? { right: window.innerWidth - box.right } : { left: box?.left ?? 240 };
+  return (
+    <span ref={root} className="status-menu" style={{ top: (box?.bottom ?? 120) + 4, ...side }}>
+      <span className="menu pick-menu" role="menu" aria-label={label} {...menuKeys}>
+        {choices.map((c) => (
+          <button key={c.value ?? "none"} role="menuitem" onClick={() => (onPick(c.value), onClose())}>
+            {c.label}
+            {c.value === current && <span className="muted">（今）</span>}
+          </button>
+        ))}
+      </span>
+    </span>
+  );
 }
 
 /// The learning page: the themes by category, and what waits unsorted (an
 /// article put in with ⌥-click, a URL pasted here). Claude proposes where the
-/// unsorted go, and what of a theme to read next; a study time starts from a theme.
+/// unsorted go, and what of a theme to read next; a study time starts from a
+/// theme. Every action has its key (keymap.ts, "学びの画面").
 function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy }: {
   themes: Theme[];
   categories: Category[];
@@ -4732,6 +4753,9 @@ function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy 
   const [nexts, setNexts] = useState<{ input_id: number; why: string }[] | null>(null);
   const [thinking, setThinking] = useState(false);
   const [naming, setNaming] = useState<"theme" | "category" | null>(null);
+  /// The menu open: an input's theme, or the theme's category.
+  const [menu, setMenu] = useState<{ input: number } | "category" | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [folded, setFolded] = useState(() => new Set(loadJson<number[]>(FOLDED_CATEGORIES_KEY, [])));
   const fold = (id: number) =>
     setFolded((prev) => {
@@ -4744,11 +4768,76 @@ function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy 
     const summary = feynman.get(subjectKey({ kind: "theme", id: t.id }));
     return !!summary && summary.due_at * 1000 <= Date.now();
   };
-  useEffect(() => setNexts(null), [picked]);
+  const rowOf = (p: number | "unsorted") => (p === "unsorted" ? p : `t:${p}`);
+  // j k go over the list (the theme under the cursor is shown), Enter starts
+  // its study time or folds the category; h l fold and open a category.
+  const { cursorId, setCursor, list } = useRowCursor(
+    themeRows(themes, categories, folded),
+    (row) => {
+      const t = themes.find((t) => `t:${t.id}` === row);
+      if (confirmDelete) return;
+      if (row.startsWith("c:")) fold(Number(row.slice(2)));
+      else if (t) study(t);
+    },
+    (e, row) => {
+      if (!row.startsWith("c:") || !(matches(e, "left") || matches(e, "right"))) return false;
+      const id = Number(row.slice(2));
+      if (folded.has(id) === matches(e, "right")) fold(id);
+      return true;
+    },
+  );
+  const settled = useRef(false);
+  useEffect(() => {
+    // The first render's cursor is the list's top, not the theme shown.
+    if (!settled.current) {
+      settled.current = true;
+      setCursor(rowOf(picked));
+      return;
+    }
+    if (cursorId === "unsorted") setPicked("unsorted");
+    else if (cursorId?.startsWith("t:")) setPicked(Number(cursorId.slice(2)));
+  }, [cursorId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const show = (p: number | "unsorted") => {
+    setPicked(p);
+    setCursor(rowOf(p));
+  };
+  // The inputs' own cursor (⇧J ⇧K), which their keys act on.
+  const [inputCursor, setInputCursor] = useState<number | null>(null);
+  const atInput = mine.find((i) => i.id === inputCursor) ?? mine[0];
+  const moveInput = (step: number) => {
+    const next = mine[Math.min(Math.max(mine.indexOf(atInput) + step, 0), mine.length - 1)];
+    if (!next) return;
+    setInputCursor(next.id);
+    document.querySelector(`[data-input="${next.id}"]`)?.scrollIntoView({ block: "nearest" });
+  };
+  useEffect(() => {
+    setNexts(null);
+    setConfirmDelete(false);
+    setInputCursor(null);
+  }, [picked]);
   const ask = <T,>(f: () => Promise<T>, then: (v: T) => void) => {
     setThinking(true);
     f().then(then, report).finally(() => setThinking(false));
   };
+  const askClaude = () => {
+    if (thinking) return;
+    if (theme) {
+      if (mine.some((i) => !i.done)) ask(() => api.nextReads(theme.id), setNexts);
+    } else if (unsorted.length > 0) ask(api.sortUnsorted, setProposals);
+  };
+  const study = (t: Theme) => onStudy(t, inputs.filter((i) => i.theme_id === t.id && !i.done && (t.id !== theme?.id || !nexts || nexts.some((n) => n.input_id === i.id))));
+  const openInput = (i: Input) => {
+    setInputCursor(i.id);
+    if (i.links[0]) openInBrowser?.(i.links[0].url);
+  };
+  const deleteTheme = (t: Theme) => {
+    setConfirmDelete(false);
+    show("unsorted");
+    run(() => api.deleteTheme(t.id));
+  };
+  /// The category a new theme goes in: the one under the cursor, or the theme's.
+  const newIn = categoryAt(cursorId, themes);
+  const newInName = categories.find((c) => c.id === newIn)?.name;
   /// One input for all the URLs typed, in the theme shown (or unsorted).
   const add = (text: string) => {
     const input = parseInput(text);
@@ -4791,11 +4880,42 @@ function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy 
     const within = new_category ? `新しいカテゴリ「${new_category}」 › ` : category !== null ? `${categories.find((c) => c.id === category)?.name ?? ""} › ` : "";
     return `${within}新しいテーマ「${name}」`;
   };
-  const themeOption = (t: Theme) => (
-    <option key={t.id} value={t.id}>
-      {t.name}
-    </option>
-  );
+  const kbd = (action: Action) => <span className="kbd">{keyLabel(keyOf(action))}</span>;
+  const focusField = (selector: string) => document.querySelector<HTMLInputElement>(selector)?.focus();
+  // The page's keys (keymap.ts, "学びの画面"); j k, h l and Enter are the list's.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app.focus, .app[data-zone=sidebar], .sheet-backdrop, [role=dialog]")) return;
+      if (confirmDelete && theme) {
+        if (e.key === "Enter" && !e.metaKey) deleteTheme(theme);
+        else if (e.key === "Escape") setConfirmDelete(false);
+        else return;
+      } else if (proposals && matches(e, "learnApply")) apply(proposals);
+      else if ((proposals || nexts) && e.key === "Escape") (setProposals(null), setNexts(null));
+      else if (matches(e, "learnAdd")) focusField(".input-add");
+      else if (matches(e, "learnNewTheme")) setNaming("theme");
+      else if (matches(e, "learnNewCategory")) setNaming("category");
+      else if (matches(e, "learnAsk")) askClaude();
+      else if (matches(e, "learnNextInput")) moveInput(1);
+      else if (matches(e, "learnPrevInput")) moveInput(-1);
+      else if (atInput && matches(e, "learnOpen")) openInput(atInput);
+      else if (atInput && matches(e, "learnRead")) run(() => api.updateInput(atInput.id, { done: !atInput.done }));
+      else if (atInput && matches(e, "learnForget")) run(() => api.deleteInput(atInput.id));
+      else if (atInput && matches(e, "learnMove")) setMenu({ input: atInput.id });
+      else if (!theme) return;
+      else if (matches(e, "learnRename")) focusField(".theme-title");
+      else if (matches(e, "learnGoal")) focusField(".theme-goal");
+      else if (matches(e, "learnCategory")) setMenu("category");
+      else if (matches(e, "learnShowRead") && read > 0) setShowRead((v) => !v);
+      else if (matches(e, "learnNote") && theme.doc_url) openInBrowser?.(theme.doc_url);
+      else if (matches(e, "learnDeleteTheme")) setConfirmDelete(true);
+      else return;
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+  const menuInput = menu !== null && menu !== "category" ? inputs.find((i) => i.id === menu.input) : undefined;
   return (
     <>
       <header className="toolbar">
@@ -4804,27 +4924,40 @@ function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy 
           className="filter-search input-add"
           placeholder={`URL を貼って Enter（${theme ? `「${theme.name}」` : "まだテーマにないもの"}に入れる）`}
           aria-label="学びたいページの URL"
-          onKeyDown={(e) => isEnter(e) && add(e.currentTarget.value) && (e.currentTarget.value = "")}
+          onKeyDown={(e) => {
+            if (isEnter(e) && add(e.currentTarget.value)) e.currentTarget.value = "";
+            if (e.key === "Escape") e.currentTarget.blur();
+          }}
         />
         <span className="grow" />
         {naming === "theme" ? (
-          <SubmitInput autoFocus placeholder="テーマの名前を入れて Enter（OIDC のように狭く）" onSubmit={(name) => (setNaming(null), run(async () => setPicked((await api.createTheme(name)).id)))} onClose={() => setNaming(null)} />
+          <SubmitInput
+            autoFocus
+            placeholder={`テーマの名前を入れて Enter（OIDC のように狭く。${newInName ? `「${newInName}」に作る` : "カテゴリなし"}）`}
+            onSubmit={(name) => {
+              setNaming(null);
+              // A folded category opens, for its new theme to be shown.
+              if (newIn !== null && folded.has(newIn)) fold(newIn);
+              run(async () => show((await api.createTheme(name, undefined, newIn)).id));
+            }}
+            onClose={() => setNaming(null)}
+          />
         ) : naming === "category" ? (
           <SubmitInput autoFocus placeholder="カテゴリの名前を入れて Enter（セキュリティのように広く）" onSubmit={(name) => (setNaming(null), run(() => api.createCategory(name)))} onClose={() => setNaming(null)} />
         ) : (
           <>
             <button onClick={() => setNaming("category")}>
-              <Icon name="plus" size={13} /> 新しいカテゴリ
+              <Icon name="plus" size={13} /> 新しいカテゴリ {kbd("learnNewCategory")}
             </button>
             <button className="primary" onClick={() => setNaming("theme")}>
-              <Icon name="plus" size={13} /> 新しいテーマ
+              <Icon name="plus" size={13} /> 新しいテーマ {kbd("learnNewTheme")}
             </button>
           </>
         )}
       </header>
       <div className="content learn">
-        <nav className="theme-list" aria-label="テーマ">
-          <button className={`theme-item${picked === "unsorted" ? " on" : ""}`} onClick={() => setPicked("unsorted")}>
+        <nav className="theme-list" aria-label="テーマ" ref={list}>
+          <button data-row="unsorted" className={`theme-item${picked === "unsorted" ? " on" : ""}${cursorId === "unsorted" ? " cursor" : ""}`} onClick={() => show("unsorted")}>
             <span className="grow">まだテーマにないもの</span>
             <span className="muted">{unsorted.length}</span>
           </button>
@@ -4834,7 +4967,12 @@ function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy 
             return (
               <Fragment key={category?.id ?? "none"}>
                 {category ? (
-                  <button className="theme-category" aria-expanded={!isFolded} onClick={() => fold(category.id)}>
+                  <button
+                    data-row={`c:${category.id}`}
+                    className={`theme-category${cursorId === `c:${category.id}` ? " cursor" : ""}`}
+                    aria-expanded={!isFolded}
+                    onClick={() => (fold(category.id), setCursor(`c:${category.id}`))}
+                  >
                     <Icon name={isFolded ? "chevronRight" : "chevron"} size={12} />
                     <span className="grow ellipsis">{category.name}</span>
                     {dues > 0 && <span className="tag due">復習 {dues}</span>}
@@ -4847,7 +4985,7 @@ function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy 
                 )}
                 {!isFolded &&
                   list.map((t) => (
-                    <button key={t.id} className={`theme-item${picked === t.id ? " on" : ""}`} onClick={() => setPicked(t.id)}>
+                    <button key={t.id} data-row={`t:${t.id}`} className={`theme-item${picked === t.id ? " on" : ""}${cursorId === `t:${t.id}` ? " cursor" : ""}`} onClick={() => show(t.id)}>
                       <span className="grow ellipsis">{t.name}</span>
                       {isDue(t) && <span className="tag due">復習</span>}
                       <span className="muted">{inputs.filter((i) => i.theme_id === t.id && !i.done).length}</span>
@@ -4856,44 +4994,39 @@ function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy 
               </Fragment>
             );
           })}
+          <p className="learn-hints">
+            {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で学ぶ時間 · {keyLabel(keyOf("left"))} {keyLabel(keyOf("right"))} でカテゴリを畳む
+          </p>
         </nav>
-        <section className="theme-detail">
+        <section className="theme-detail" onKeyDown={(e) => e.key === "Escape" && (e.target as HTMLElement).matches("input") && (e.target as HTMLElement).blur()}>
           {theme ? (
             <>
-              <div className="theme-head">
-                <InlineInput key={`n${theme.id}`} className="panel-title" value={theme.name} label="テーマの名前" placeholder="テーマの名前" required onSave={(name) => run(() => api.updateTheme(theme.id, { name }))} />
-                <span className="grow" />
-                <select
-                  className="select compact"
-                  value={theme.category_id ?? ""}
-                  aria-label={`${theme.name} のカテゴリ`}
-                  onChange={(e) => run(() => api.setThemeCategory(theme.id, e.target.value ? Number(e.target.value) : null))}
-                >
-                  <option value="">カテゴリなし</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>
-                  ))}
-                </select>
-                <ReviewTags summary={feynman.get(subjectKey({ kind: "theme", id: theme.id }))} />
-                <button className="primary" onClick={() => onStudy(theme, mine.filter((i) => !i.done && (!nexts || nexts.some((n) => n.input_id === i.id))))}>
-                  学ぶ時間を始める
+              <div className="theme-top">
+                <button className="theme-crumb" aria-label={`${theme.name} のカテゴリ`} onClick={() => setMenu("category")}>
+                  {categories.find((c) => c.id === theme.category_id)?.name ?? "カテゴリなし"}
+                  <Icon name="chevron" size={10} />
+                  {kbd("learnCategory")}
                 </button>
+                <span className="grow" />
+                <ReviewTags summary={feynman.get(subjectKey({ kind: "theme", id: theme.id }))} />
               </div>
-              <InlineInput key={`g${theme.id}`} value={theme.goal ?? ""} label="目標" placeholder="目標（何ができるようになりたいか）" onSave={(goal) => run(() => api.updateTheme(theme.id, { goal }))} />
-              <div className="actions">
+              <InlineInput key={`n${theme.id}`} className="theme-title" value={theme.name} label="テーマの名前" placeholder="テーマの名前" required onSave={(name) => run(() => api.updateTheme(theme.id, { name }))} />
+              <InlineInput key={`g${theme.id}`} className="theme-goal" value={theme.goal ?? ""} label="目標" placeholder="目標（何ができるようになりたいか）" onSave={(goal) => run(() => api.updateTheme(theme.id, { goal }))} />
+              <div className="theme-actions">
+                <button className="primary" onClick={() => study(theme)}>
+                  学ぶ時間を始める <span className="kbd">Enter</span>
+                </button>
+                <button disabled={thinking || mine.every((i) => i.done)} onClick={askClaude}>
+                  {thinking ? "考えています…" : "次に読むものを Claude に聞く"} {kbd("learnAsk")}
+                </button>
+                <span className="grow" />
                 {theme.doc_url ? (
                   <button className="link-button" onClick={() => openInBrowser?.(theme.doc_url!)}>
-                    テーマのノートを開く
+                    テーマのノートを開く {kbd("learnNote")}
                   </button>
                 ) : (
-                  <span className="muted">ノートは、学ぶ時間の「読み終わった」で claude.ai に作られます。</span>
+                  <span className="muted small-text">ノートは学ぶ時間の「読み終わった」で作られます</span>
                 )}
-                <span className="grow" />
-                <button disabled={thinking || mine.every((i) => i.done)} onClick={() => ask(() => api.nextReads(theme.id), setNexts)}>
-                  {thinking ? "考えています…" : "次に読むものを Claude に聞く"}
-                </button>
               </div>
               {nexts && (
                 <div className="proposals">
@@ -4907,87 +5040,118 @@ function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy 
               )}
             </>
           ) : (
-            <div className="actions">
-              <span className="muted">⌥ + クリックしたリンクや、上に貼った URL がここに入ります。</span>
-              <span className="grow" />
-              <button disabled={thinking || unsorted.length === 0} onClick={() => ask(api.sortUnsorted, setProposals)}>
-                {thinking ? "考えています…" : "Claude に振り分けてもらう"}
-              </button>
-            </div>
-          )}
-          {proposals && !theme && (
-            <div className="proposals">
-              {proposals.length === 0 && <p className="muted">提案はありませんでした。</p>}
-              {proposals.map((p) => (
-                <p key={p.input}>
-                  <b>{titleOf(p.input)}</b> → {themeName(p)} <span className="muted">— {p.why}</span>
-                </p>
-              ))}
-              {proposals.length > 0 && (
-                <div className="actions">
-                  <button className="primary small" onClick={() => apply(proposals)}>
-                    この通りにする
-                  </button>
-                  <button className="ghost small" onClick={() => setProposals(null)}>
-                    やめる
-                  </button>
+            <>
+              <h2 className="theme-title static">まだテーマにないもの</h2>
+              <p className="muted small-text">⌥ + クリックしたリンクや、上に貼った URL がここに入ります。Claude がテーマに振り分けます。</p>
+              <div className="theme-actions">
+                <button className="primary" disabled={thinking || unsorted.length === 0} onClick={askClaude}>
+                  {thinking ? "考えています…" : "Claude に振り分けてもらう"} {kbd("learnAsk")}
+                </button>
+              </div>
+              {proposals && (
+                <div className="proposals">
+                  {proposals.length === 0 && <p className="muted">提案はありませんでした。</p>}
+                  {proposals.map((p) => (
+                    <p key={p.input}>
+                      <b>{titleOf(p.input)}</b> → {themeName(p)} <span className="muted">— {p.why}</span>
+                    </p>
+                  ))}
+                  {proposals.length > 0 && (
+                    <div className="actions">
+                      <button className="primary small" onClick={() => apply(proposals)}>
+                        この通りにする {kbd("learnApply")}
+                      </button>
+                      <button className="ghost small" onClick={() => setProposals(null)}>
+                        やめる <span className="kbd">Esc</span>
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
-            </div>
+            </>
           )}
-          <ul className="rows">
-            {mine.map((i) => (
-              <li key={i.id} className={`row${i.done ? " done" : ""}`} onClick={() => i.links[0] && openInBrowser?.(i.links[0].url)}>
-                <button
-                  className="ghost icon"
-                  aria-label={i.done ? `${i.title} を読み終わっていないことにする` : `${i.title} を読み終わったことにする`}
-                  title={i.done ? "読み終わっていないことにする" : "読み終わった"}
-                  onClick={(e) => (e.stopPropagation(), run(() => api.updateInput(i.id, { done: !i.done })))}
-                >
-                  <StatusIcon status={i.done ? "done" : "todo"} />
+          <div className="learn-section">
+            <span>読むもの</span>
+            <span className="muted">{mine.filter((i) => !i.done).length}</span>
+            <span className="grow" />
+            {theme && read > 0 && (
+              <button className="ghost small" onClick={() => setShowRead((v) => !v)}>
+                {showRead ? "読み終わったものを隠す" : `読み終わったもの ${read} 件`} {kbd("learnShowRead")}
+              </button>
+            )}
+          </div>
+          {mine.length > 0 ? (
+            <>
+              <ul className="rows">
+                {mine.map((i) => (
+                  <li key={i.id} data-input={i.id} className={`row${i.done ? " done" : ""}${atInput?.id === i.id ? " cursor" : ""}`} onClick={() => openInput(i)}>
+                    <button
+                      className="ghost icon"
+                      aria-label={i.done ? `${i.title} を読み終わっていないことにする` : `${i.title} を読み終わったことにする`}
+                      title={i.done ? "読み終わっていないことにする" : "読み終わった"}
+                      onClick={(e) => (e.stopPropagation(), run(() => api.updateInput(i.id, { done: !i.done })))}
+                    >
+                      <StatusIcon status={i.done ? "done" : "todo"} />
+                    </button>
+                    <span className="row-title ellipsis">{i.title}</span>
+                    {nexts?.some((n) => n.input_id === i.id) && <span className="tag due">次に読む</span>}
+                    {i.links[0] && <span className="muted mono ellipsis host">{hostOf(i.links[0].url)}</span>}
+                    <button className="ghost small move" aria-label={`${i.title} のテーマを変える`} onClick={(e) => (e.stopPropagation(), setInputCursor(i.id), setMenu({ input: i.id }))}>
+                      {theme ? "移す" : "テーマへ"}
+                      <Icon name="chevron" size={10} />
+                    </button>
+                    <button className="ghost icon" aria-label={`${i.title} を消す`} title="消す" onClick={(e) => (e.stopPropagation(), run(() => api.deleteInput(i.id)))}>
+                      <Icon name="close" size={12} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <p className="learn-hints">
+                {keyLabel(keyOf("learnNextInput"))} {keyLabel(keyOf("learnPrevInput"))} で選ぶ · {keyLabel(keyOf("learnOpen"))} 開く · {keyLabel(keyOf("learnRead"))} 読み終わった · {keyLabel(keyOf("learnMove"))} {theme ? "移す" : "テーマへ"} ·{" "}
+                {keyLabel(keyOf("learnForget"))} 消す · {keyLabel(keyOf("learnAdd"))} URL を足す
+              </p>
+            </>
+          ) : (
+            <p className="muted empty">{theme ? `このテーマで読むものは、まだありません。${keyLabel(keyOf("learnAdd"))} で URL の欄へ。` : "まだテーマにないものはありません。"}</p>
+          )}
+          {theme &&
+            (confirmDelete ? (
+              <span className="inline-confirm">
+                「{theme.name}」を消しますか？読むものは「まだテーマにないもの」に戻ります。
+                <button className="danger small" onClick={() => deleteTheme(theme)}>
+                  消す <span className="kbd">Enter</span>
                 </button>
-                <span className="row-title ellipsis">{i.title}</span>
-                {i.links[0] && <span className="muted mono ellipsis">{hostOf(i.links[0].url)}</span>}
-                {nexts?.some((n) => n.input_id === i.id) && <span className="tag due">次に読む</span>}
-                <select
-                  className="select compact"
-                  value={i.theme_id ?? ""}
-                  aria-label={`${i.title} のテーマ`}
-                  onClick={stop}
-                  onChange={(e) => run(() => api.setInputTheme(i.id, e.target.value ? Number(e.target.value) : null))}
-                >
-                  <option value="">まだテーマにない</option>
-                  {themeGroups(themes, categories).map(({ category, themes: list }) =>
-                    category ? (
-                      list.length > 0 && (
-                        <optgroup key={category.id} label={category.name}>
-                          {list.map(themeOption)}
-                        </optgroup>
-                      )
-                    ) : (
-                      list.map(themeOption)
-                    ),
-                  )}
-                </select>
-                <button className="ghost icon" aria-label={`${i.title} を消す`} title="消す" onClick={(e) => (e.stopPropagation(), run(() => api.deleteInput(i.id)))}>
-                  <Icon name="close" size={12} />
+                <button className="ghost small" onClick={() => setConfirmDelete(false)}>
+                  やめる <span className="kbd">Esc</span>
                 </button>
-              </li>
+              </span>
+            ) : (
+              <button className="ghost small danger-text" onClick={() => setConfirmDelete(true)}>
+                このテーマを消す {kbd("learnDeleteTheme")}
+              </button>
             ))}
-          </ul>
-          {mine.length === 0 && <p className="muted empty">{theme ? "このテーマで読むものは、まだありません。上に URL を貼ると入ります。" : "まだテーマにないものはありません。"}</p>}
-          {theme && read > 0 && (
-            <button className="ghost small show-ended" onClick={() => setShowRead((v) => !v)}>
-              {showRead ? "読み終わったものを隠す" : `読み終わったもの ${read} 件`}
-            </button>
-          )}
-          {theme && (
-            <button className="ghost small danger-text" onClick={() => run(() => api.deleteTheme(theme.id).then(() => setPicked("unsorted")))}>
-              このテーマを消す（読むものは「まだテーマにないもの」に戻ります）
-            </button>
-          )}
         </section>
       </div>
+      {menu === "category" && theme && (
+        <PickMenu
+          label={`${theme.name} のカテゴリ`}
+          at=".theme-crumb"
+          choices={[{ value: null, label: "カテゴリなし" }, ...categories.map((c) => ({ value: c.id, label: c.name }))]}
+          current={theme.category_id}
+          onPick={(id) => run(() => api.setThemeCategory(theme.id, id))}
+          onClose={() => setMenu(null)}
+        />
+      )}
+      {menuInput && (
+        <PickMenu
+          label={`${menuInput.title} のテーマ`}
+          at={`[data-input="${menuInput.id}"] .move`}
+          choices={[{ value: null, label: "まだテーマにない" }, ...themeGroups(themes, categories).flatMap(({ themes: list }) => list.map((t) => ({ value: t.id, label: themeLabel(t, categories) })))]}
+          current={menuInput.theme_id}
+          onPick={(id) => run(() => api.setInputTheme(menuInput.id, id))}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </>
   );
 }

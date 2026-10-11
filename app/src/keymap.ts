@@ -53,6 +53,23 @@ export type Action =
   | "slackScrollUp"
   | "slackNarrower"
   | "slackWider"
+  | "learnAdd"
+  | "learnNewTheme"
+  | "learnNewCategory"
+  | "learnAsk"
+  | "learnApply"
+  | "learnNextInput"
+  | "learnPrevInput"
+  | "learnOpen"
+  | "learnRead"
+  | "learnForget"
+  | "learnMove"
+  | "learnRename"
+  | "learnGoal"
+  | "learnCategory"
+  | "learnShowRead"
+  | "learnNote"
+  | "learnDeleteTheme"
   | "search"
   | "help"
   | "paletteDown"
@@ -142,6 +159,28 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     ],
   },
   {
+    group: "学びの画面（J K でテーマを選ぶ、Enter で学ぶ時間を始める。カテゴリでは Enter か H L で畳む・開く）",
+    items: [
+      ["learnAdd", "URL の欄へ（選んでいるテーマに入れる）"],
+      ["learnNewTheme", "新しいテーマ（選んでいるカテゴリに）"],
+      ["learnNewCategory", "新しいカテゴリ"],
+      ["learnAsk", "Claude に聞く（まだテーマにないものは振り分け、テーマは次に読むもの）"],
+      ["learnApply", "Claude の振り分けの通りにする（Esc でやめる）"],
+      ["learnNextInput", "次の読むものへ"],
+      ["learnPrevInput", "前の読むものへ"],
+      ["learnOpen", "読むものを開く"],
+      ["learnRead", "読み終わった／まだ読み終わっていない"],
+      ["learnForget", "読むものを消す"],
+      ["learnMove", "読むものを別のテーマへ"],
+      ["learnRename", "テーマの名前を編集"],
+      ["learnGoal", "テーマの目標を編集"],
+      ["learnCategory", "テーマのカテゴリを変える"],
+      ["learnShowRead", "読み終わったものを出す・隠す"],
+      ["learnNote", "テーマのノートを開く"],
+      ["learnDeleteTheme", "テーマを消す（Enter で消す、Esc でやめる）"],
+    ],
+  },
+  {
     group: "⌘K のメニュー",
     items: [
       ["paletteDown", "下へ"],
@@ -201,6 +240,23 @@ const KEYS: Record<Action, string> = {
   slackScrollUp: "shift+k",
   slackNarrower: "[",
   slackWider: "]",
+  learnAdd: "c",
+  learnNewTheme: "n",
+  learnNewCategory: "shift+n",
+  learnAsk: "a",
+  learnApply: "cmd+Enter",
+  learnNextInput: "shift+j",
+  learnPrevInput: "shift+k",
+  learnOpen: "o",
+  learnRead: "e",
+  learnForget: "d",
+  learnMove: "t",
+  learnRename: "r",
+  learnGoal: "g",
+  learnCategory: "m",
+  learnShowRead: "f",
+  learnNote: "shift+o",
+  learnDeleteTheme: "shift+d",
   search: "/",
   help: "?",
   paletteDown: "ctrl+j",

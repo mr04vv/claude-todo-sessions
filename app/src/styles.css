@@ -2823,21 +2823,30 @@ body.resizing {
   color: var(--danger);
 }
 
-/* The learning page: the themes on the left, the one picked on the right. */
+/* The learning page: the themes on the left, the one picked on the right,
+   each scrolling on its own; the right reads at a comfortable width. */
 .content.learn {
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
-  gap: 20px;
+  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
 }
 
 .theme-list {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
+  padding: 12px 10px 20px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
 }
 
 .theme-item {
+  flex-shrink: 0;
   justify-content: flex-start;
+  height: 30px;
   border: 0;
   background: none;
   text-align: left;
@@ -2845,19 +2854,26 @@ body.resizing {
 
 .theme-item.on {
   background: var(--card-hover);
+  font-weight: 600;
+}
+
+.theme-list .cursor {
+  box-shadow: inset 2px 0 0 var(--accent-line);
 }
 
 /* A category's heading (it folds its themes), and its themes set in under it. */
 .theme-category {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 6px;
   justify-content: flex-start;
   height: 28px;
-  margin-top: 8px;
+  margin-top: 10px;
   padding: 0 8px;
   border: 0;
   background: none;
+  color: var(--text-2);
   text-align: left;
   font-size: 11px;
   font-weight: 600;
@@ -2872,17 +2888,125 @@ div.theme-category {
   padding-left: 26px;
 }
 
+.learn-hints {
+  margin: 12px 0 0;
+  padding: 0 8px;
+  color: var(--text-3);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .theme-detail {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   min-width: 0;
+  padding: 20px 28px 32px;
+  overflow-y: auto;
 }
 
-.theme-head {
+.theme-detail > * {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 820px;
+}
+
+.theme-detail > p {
+  margin: 0;
+}
+
+.theme-detail > button,
+.theme-detail > .inline-confirm {
+  width: auto;
+  align-self: flex-start;
+}
+
+.theme-detail > .inline-confirm {
+  flex-wrap: wrap;
+}
+
+.theme-top,
+.theme-actions,
+.learn-section {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+}
+
+.theme-crumb {
+  height: 24px;
+  padding: 0 6px;
+  margin-left: -6px;
+  gap: 4px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.theme-title,
+.theme-goal {
+  padding: 2px 0;
+  background: none;
+  border: 0;
+  border-radius: 0;
+}
+
+.theme-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.theme-goal {
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+input.theme-title:hover,
+input.theme-goal:hover {
+  box-shadow: 0 1px 0 var(--border-2);
+}
+
+input.theme-title:focus-visible,
+input.theme-goal:focus-visible {
+  outline: none;
+  box-shadow: 0 1px 0 var(--accent);
+}
+
+.theme-actions {
+  margin-top: 4px;
+}
+
+.learn-section {
+  margin-top: 12px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.learn-section + .rows .row:last-child {
+  border-bottom: 0;
+}
+
+.theme-detail .row .host {
+  flex-shrink: 1;
+  max-width: 180px;
+}
+
+.theme-detail .row .move {
+  flex-shrink: 0;
+  gap: 4px;
+  color: var(--text-2);
+}
+
+.pick-menu {
+  max-height: 320px;
+  overflow-y: auto;
 }
 
 .proposals {
