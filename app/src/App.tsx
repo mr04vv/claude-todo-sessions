@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -57,6 +57,7 @@ import {
   type Board,
   type Input,
   type Theme,
+  type Category,
   type Placement,
   type ReviewQuestion,
   type FeynmanAttempt,
@@ -4692,11 +4693,26 @@ function ReviewTags({ summary }: { summary: FeynmanSummary | undefined }) {
   );
 }
 
-/// The learning page: the themes, and what waits unsorted (an article put in
-/// with ⌥-click, a URL pasted here). Claude proposes where the unsorted go,
-/// and what of a theme to read next; a study time starts from a theme.
-function ThemesPage({ themes, inputs, feynman, run, report, onStudy }: {
+/// The categories folded in the learning page's list (their ids).
+const FOLDED_CATEGORIES_KEY = "foldedCategories";
+
+/// The themes by category, in the categories' order, those in none last.
+function themeGroups(themes: Theme[], categories: Category[]): { category: Category | null; themes: Theme[] }[] {
+  return [...categories.map((c) => ({ category: c, themes: themes.filter((t) => t.category_id === c.id) })), { category: null, themes: themes.filter((t) => t.category_id === null) }];
+}
+
+/// 「セキュリティ › OIDC」, or the theme's name alone when it is in no category.
+function themeLabel(t: Theme, categories: Category[]): string {
+  const c = categories.find((c) => c.id === t.category_id);
+  return c ? `${c.name} › ${t.name}` : t.name;
+}
+
+/// The learning page: the themes by category, and what waits unsorted (an
+/// article put in with ⌥-click, a URL pasted here). Claude proposes where the
+/// unsorted go, and what of a theme to read next; a study time starts from a theme.
+function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy }: {
   themes: Theme[];
+  categories: Category[];
   inputs: Input[];
   /// Each theme's last review, by subjectKey.
   feynman: Map<string, FeynmanSummary>;
@@ -4715,7 +4731,19 @@ function ThemesPage({ themes, inputs, feynman, run, report, onStudy }: {
   const [proposals, setProposals] = useState<Placement[] | null>(null);
   const [nexts, setNexts] = useState<{ input_id: number; why: string }[] | null>(null);
   const [thinking, setThinking] = useState(false);
-  const [naming, setNaming] = useState(false);
+  const [naming, setNaming] = useState<"theme" | "category" | null>(null);
+  const [folded, setFolded] = useState(() => new Set(loadJson<number[]>(FOLDED_CATEGORIES_KEY, [])));
+  const fold = (id: number) =>
+    setFolded((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      remember(FOLDED_CATEGORIES_KEY, JSON.stringify([...next]));
+      return next;
+    });
+  const isDue = (t: Theme) => {
+    const summary = feynman.get(subjectKey({ kind: "theme", id: t.id }));
+    return !!summary && summary.due_at * 1000 <= Date.now();
+  };
   useEffect(() => setNexts(null), [picked]);
   const ask = <T,>(f: () => Promise<T>, then: (v: T) => void) => {
     setThinking(true);
@@ -4730,22 +4758,44 @@ function ThemesPage({ themes, inputs, feynman, run, report, onStudy }: {
     });
     return input !== null;
   };
-  /// Claude's placements, as proposed: new themes made once each.
+  /// Claude's placements, as proposed: new themes and categories made once each.
   const apply = (list: Placement[]) =>
     run(async () => {
-      const made = new Map<string, number>();
+      const madeThemes = new Map<string, number>();
+      const madeCategories = new Map<string, number>();
       for (const p of list) {
-        let id = "theme" in p.place ? p.place.theme : made.get(p.place.new_theme);
-        if (id === undefined && "new_theme" in p.place) {
-          id = (await api.createTheme(p.place.new_theme)).id;
-          made.set(p.place.new_theme, id);
+        let id: number;
+        if ("theme" in p.place) id = p.place.theme;
+        else {
+          const { name, category, new_category } = p.place.new_theme;
+          let categoryId = category;
+          if (new_category) {
+            categoryId = madeCategories.get(new_category) ?? (await api.createCategory(new_category)).id;
+            madeCategories.set(new_category, categoryId);
+          }
+          id = madeThemes.get(name) ?? (await api.createTheme(name, undefined, categoryId)).id;
+          madeThemes.set(name, id);
         }
-        await api.setInputTheme(p.input, id ?? null);
+        await api.setInputTheme(p.input, id);
       }
       setProposals(null);
     });
   const titleOf = (id: number) => inputs.find((i) => i.id === id)?.title ?? `#${id}`;
-  const themeName = (p: Placement) => ("theme" in p.place ? (themes.find((t) => t.id === (p.place as { theme: number }).theme)?.name ?? "") : `新しいテーマ「${p.place.new_theme}」`);
+  const themeName = (p: Placement) => {
+    if ("theme" in p.place) {
+      const id = p.place.theme;
+      const t = themes.find((t) => t.id === id);
+      return t ? themeLabel(t, categories) : "";
+    }
+    const { name, category, new_category } = p.place.new_theme;
+    const within = new_category ? `新しいカテゴリ「${new_category}」 › ` : category !== null ? `${categories.find((c) => c.id === category)?.name ?? ""} › ` : "";
+    return `${within}新しいテーマ「${name}」`;
+  };
+  const themeOption = (t: Theme) => (
+    <option key={t.id} value={t.id}>
+      {t.name}
+    </option>
+  );
   return (
     <>
       <header className="toolbar">
@@ -4757,12 +4807,19 @@ function ThemesPage({ themes, inputs, feynman, run, report, onStudy }: {
           onKeyDown={(e) => isEnter(e) && add(e.currentTarget.value) && (e.currentTarget.value = "")}
         />
         <span className="grow" />
-        {naming ? (
-          <SubmitInput autoFocus placeholder="テーマの名前を入れて Enter" onSubmit={(name) => (setNaming(false), run(async () => setPicked((await api.createTheme(name)).id)))} onClose={() => setNaming(false)} />
+        {naming === "theme" ? (
+          <SubmitInput autoFocus placeholder="テーマの名前を入れて Enter（OIDC のように狭く）" onSubmit={(name) => (setNaming(null), run(async () => setPicked((await api.createTheme(name)).id)))} onClose={() => setNaming(null)} />
+        ) : naming === "category" ? (
+          <SubmitInput autoFocus placeholder="カテゴリの名前を入れて Enter（セキュリティのように広く）" onSubmit={(name) => (setNaming(null), run(() => api.createCategory(name)))} onClose={() => setNaming(null)} />
         ) : (
-          <button className="primary" onClick={() => setNaming(true)}>
-            <Icon name="plus" size={13} /> 新しいテーマ
-          </button>
+          <>
+            <button onClick={() => setNaming("category")}>
+              <Icon name="plus" size={13} /> 新しいカテゴリ
+            </button>
+            <button className="primary" onClick={() => setNaming("theme")}>
+              <Icon name="plus" size={13} /> 新しいテーマ
+            </button>
+          </>
         )}
       </header>
       <div className="content learn">
@@ -4771,15 +4828,32 @@ function ThemesPage({ themes, inputs, feynman, run, report, onStudy }: {
             <span className="grow">まだテーマにないもの</span>
             <span className="muted">{unsorted.length}</span>
           </button>
-          {themes.map((t) => {
-            const summary = feynman.get(subjectKey({ kind: "theme", id: t.id }));
-            const due = summary && summary.due_at * 1000 <= Date.now();
+          {themeGroups(themes, categories).map(({ category, themes: list }) => {
+            const isFolded = category !== null && folded.has(category.id);
+            const dues = list.filter(isDue).length;
             return (
-              <button key={t.id} className={`theme-item${picked === t.id ? " on" : ""}`} onClick={() => setPicked(t.id)}>
-                <span className="grow ellipsis">{t.name}</span>
-                {due && <span className="tag due">復習</span>}
-                <span className="muted">{inputs.filter((i) => i.theme_id === t.id && !i.done).length}</span>
-              </button>
+              <Fragment key={category?.id ?? "none"}>
+                {category ? (
+                  <button className="theme-category" aria-expanded={!isFolded} onClick={() => fold(category.id)}>
+                    <Icon name={isFolded ? "chevronRight" : "chevron"} size={12} />
+                    <span className="grow ellipsis">{category.name}</span>
+                    {dues > 0 && <span className="tag due">復習 {dues}</span>}
+                    <span className="muted" title="テーマの数">
+                      {list.length}
+                    </span>
+                  </button>
+                ) : (
+                  categories.length > 0 && list.length > 0 && <div className="theme-category muted">カテゴリなし</div>
+                )}
+                {!isFolded &&
+                  list.map((t) => (
+                    <button key={t.id} className={`theme-item${picked === t.id ? " on" : ""}`} onClick={() => setPicked(t.id)}>
+                      <span className="grow ellipsis">{t.name}</span>
+                      {isDue(t) && <span className="tag due">復習</span>}
+                      <span className="muted">{inputs.filter((i) => i.theme_id === t.id && !i.done).length}</span>
+                    </button>
+                  ))}
+              </Fragment>
             );
           })}
         </nav>
@@ -4789,6 +4863,19 @@ function ThemesPage({ themes, inputs, feynman, run, report, onStudy }: {
               <div className="theme-head">
                 <InlineInput key={`n${theme.id}`} className="panel-title" value={theme.name} label="テーマの名前" placeholder="テーマの名前" required onSave={(name) => run(() => api.updateTheme(theme.id, { name }))} />
                 <span className="grow" />
+                <select
+                  className="select compact"
+                  value={theme.category_id ?? ""}
+                  aria-label={`${theme.name} のカテゴリ`}
+                  onChange={(e) => run(() => api.setThemeCategory(theme.id, e.target.value ? Number(e.target.value) : null))}
+                >
+                  <option value="">カテゴリなし</option>
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
                 <ReviewTags summary={feynman.get(subjectKey({ kind: "theme", id: theme.id }))} />
                 <button className="primary" onClick={() => onStudy(theme, mine.filter((i) => !i.done && (!nexts || nexts.some((n) => n.input_id === i.id))))}>
                   学ぶ時間を始める
@@ -4870,11 +4957,17 @@ function ThemesPage({ themes, inputs, feynman, run, report, onStudy }: {
                   onChange={(e) => run(() => api.setInputTheme(i.id, e.target.value ? Number(e.target.value) : null))}
                 >
                   <option value="">まだテーマにない</option>
-                  {themes.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
+                  {themeGroups(themes, categories).map(({ category, themes: list }) =>
+                    category ? (
+                      list.length > 0 && (
+                        <optgroup key={category.id} label={category.name}>
+                          {list.map(themeOption)}
+                        </optgroup>
+                      )
+                    ) : (
+                      list.map(themeOption)
+                    ),
+                  )}
                 </select>
                 <button className="ghost icon" aria-label={`${i.title} を消す`} title="消す" onClick={(e) => (e.stopPropagation(), run(() => api.deleteInput(i.id)))}>
                   <Icon name="close" size={12} />
@@ -5073,9 +5166,10 @@ function AddTodoDialog({ local, groups, initialRepo, initialMemo, run, onClose, 
 }
 
 /// ⌘⇧D: the page shown goes into a theme (or among the unsorted) to read.
-function AddToThemeDialog({ page, themes, run, onDone, onClose }: {
+function AddToThemeDialog({ page, themes, categories, run, onDone, onClose }: {
   page: { url: string; title: string | null };
   themes: Theme[];
+  categories: Category[];
   run: (f: () => Promise<unknown>) => void;
   /// Told where the page went.
   onDone: (where: string) => void;
@@ -5084,7 +5178,7 @@ function AddToThemeDialog({ page, themes, run, onDone, onClose }: {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = themes.filter((t) => words.every((w) => t.name.toLowerCase().includes(w)));
+  const shown = themes.filter((t) => words.every((w) => themeLabel(t, categories).toLowerCase().includes(w)));
   // The unsorted come last, as one more choice.
   const count = shown.length + 1;
   const put = (t: Theme | undefined) =>
@@ -5119,7 +5213,7 @@ function AddToThemeDialog({ page, themes, run, onDone, onClose }: {
       <ul className="rows compact to-input" role="listbox">
         {shown.map((t, i) => (
           <li key={t.id} role="option" aria-selected={i === active} className={`row${i === active ? " cursor" : ""}`} onMouseEnter={() => setActive(i)} onClick={() => put(t)}>
-            <span className="row-title">{t.name}</span>
+            <span className="row-title">{themeLabel(t, categories)}</span>
           </li>
         ))}
         <li role="option" aria-selected={active === shown.length} className={`row${active === shown.length ? " cursor" : ""}`} onMouseEnter={() => setActive(shown.length)} onClick={() => put(undefined)}>
@@ -5286,12 +5380,13 @@ function commandMatches(label: string, query: string) {
 }
 
 /// ⌘K: the actions that used to crowd the sidebar, the screens, and a jump to any todo.
-function CommandPalette({ commands, todos, themes, start, onOpenTodo, onStudy, onClose }: {
+function CommandPalette({ commands, todos, themes, categories, start, onOpenTodo, onStudy, onClose }: {
   commands: Command[];
   /// A list to open on (a terminal's links), which Esc closes from.
   start?: Command;
   todos: Todo[];
   themes: Theme[];
+  categories: Category[];
   onOpenTodo: (id: number) => void;
   /// A study time for the theme.
   onStudy: (theme: Theme) => void;
@@ -5316,9 +5411,9 @@ function CommandPalette({ commands, todos, themes, start, onOpenTodo, onStudy, o
     // A theme starts its study time.
     ...(q
       ? themes
-          .filter((t) => t.name.toLowerCase().includes(q))
+          .filter((t) => themeLabel(t, categories).toLowerCase().includes(q))
           .slice(0, 20)
-          .map((t) => ({ key: `theme:${t.id}`, label: `学ぶ時間：${t.name}`, run: () => onStudy(t) }))
+          .map((t) => ({ key: `theme:${t.id}`, label: `学ぶ時間：${themeLabel(t, categories)}`, run: () => onStudy(t) }))
       : []),
   ];
   useEffect(() => setActive(0), [query, stack.length]);
@@ -7327,7 +7422,7 @@ export default function App() {
               onShowPrs={() => setView("prs")}
             />
           )}
-          {view === "inputs" && board && <ThemesPage themes={board.themes} inputs={allInputs} feynman={feynmanOf} run={run} report={report} onStudy={studyTheme} />}
+          {view === "inputs" && board && <ThemesPage themes={board.themes} categories={board.categories} inputs={allInputs} feynman={feynmanOf} run={run} report={report} onStudy={studyTheme} />}
           {view === "prs" && (
             <PrsPage
               prs={prs}
@@ -7450,7 +7545,7 @@ export default function App() {
         )}
 
         {dialog === "toInput" && toInputPage && (
-          <AddToThemeDialog page={toInputPage} themes={board?.themes ?? []} run={run} onDone={setAddedInput} onClose={() => setDialog(null)} />
+          <AddToThemeDialog page={toInputPage} themes={board?.themes ?? []} categories={board?.categories ?? []} run={run} onDone={setAddedInput} onClose={() => setDialog(null)} />
         )}
         {dialog === "add" && (
           <AddTodoDialog
@@ -7560,6 +7655,7 @@ export default function App() {
             commands={commands}
             todos={allTodos}
             themes={board?.themes ?? []}
+            categories={board?.categories ?? []}
             start={paletteStart?.command}
             onOpenTodo={goTodo}
             onStudy={(t) => studyTheme(t, unreadOf(t))}

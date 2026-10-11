@@ -156,6 +156,8 @@ struct Board {
     feynman: Vec<cts_core::FeynmanSummary>,
     /// The learning themes, the latest changed first.
     themes: Vec<cts_core::Theme>,
+    /// The categories the themes are gathered in, in the order made.
+    categories: Vec<cts_core::Category>,
     /// What sessions made besides PRs, newest first.
     artifacts: Vec<cts_core::Artifact>,
     sync_status: String,
@@ -227,7 +229,7 @@ struct TodoUpdate {
 
 #[tauri::command(async)]
 fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Board, String> {
-    let (todos, inputs, inbox, feynman, artifacts, themes, slack) = {
+    let (todos, inputs, inbox, feynman, artifacts, themes, categories, slack) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
         let todos = db
@@ -244,7 +246,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Boa
             // A review that ended without being put away stopped before submitting: it waits on the user.
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .collect();
-        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?, db.list_themes().map_err(err)?, slack::view(&slack_state, &db)?)
+        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?, db.list_themes().map_err(err)?, db.list_categories().map_err(err)?, slack::view(&slack_state, &db)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -263,7 +265,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Boa
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, slack, inputs, inbox, feynman, artifacts, themes, sync_status })
+    Ok(Board { todos, slack, inputs, inbox, feynman, artifacts, themes, categories, sync_status })
 }
 
 #[tauri::command(async)]
@@ -2727,6 +2729,8 @@ fn main() {
             study::browser_text,
             study::page_text,
             study::create_theme,
+            study::create_category,
+            study::set_theme_category,
             study::update_theme,
             study::delete_theme,
             study::set_input_theme,

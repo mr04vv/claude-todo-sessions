@@ -756,7 +756,7 @@ fn cloud_sessions_of_done_todos_are_the_ones_to_archive() {
 fn feynman_attempts_are_kept_per_subject() {
     use cts_core::feynman::{Grade, PointVerdict, Verdict};
     let (_d, db) = open();
-    let theme = db.create_theme("article", None).unwrap();
+    let theme = db.create_theme("article", None, None).unwrap();
     let subject = Subject::Theme(theme.id);
     let grade = Grade {
         verdicts: vec![PointVerdict { point: 0, verdict: Verdict::Vague, note: "ほぼ".into() }],
@@ -1040,7 +1040,7 @@ fn artifacts_are_kept_once_newest_first_with_their_todo() {
 #[test]
 fn themes_gather_inputs_and_the_rest_wait_unsorted() {
     let (_d, db) = open();
-    let sec = db.create_theme("セキュリティ", Some("Web の攻撃と守りを説明できる")).unwrap();
+    let sec = db.create_theme("セキュリティ", Some("Web の攻撃と守りを説明できる"), None).unwrap();
     assert_eq!((sec.name.as_str(), sec.goal.as_deref(), sec.doc_url.clone()), ("セキュリティ", Some("Web の攻撃と守りを説明できる"), None));
     let a = db.create_input("CSRF とは", None).unwrap();
     let b = db.create_input("Rust の所有権", None).unwrap();
@@ -1059,7 +1059,7 @@ fn themes_gather_inputs_and_the_rest_wait_unsorted() {
 #[test]
 fn a_themes_review_is_due_by_its_last_score() {
     let (_d, db) = open();
-    let t = db.create_theme("Rust", None).unwrap();
+    let t = db.create_theme("Rust", None, None).unwrap();
     let grade = cts_core::feynman::Grade::default();
     db.add_feynman_attempt(Subject::Theme(t.id), "Q/A", &grade, 50).unwrap();
     let summary = db.feynman_summaries().unwrap().into_iter().find(|s| s.subject == Subject::Theme(t.id)).unwrap();
@@ -1078,9 +1078,50 @@ fn themes_work_on_databases_made_before_them() {
     .unwrap();
     drop(old);
     let db = Db::open(&path).unwrap();
-    let t = db.create_theme("x", None).unwrap();
+    let t = db.create_theme("x", None, None).unwrap();
     assert_eq!(db.get_input(1).unwrap().unwrap().theme_id, None, "the inputs from before wait unsorted");
     db.set_input_theme(1, Some(t.id)).unwrap();
+}
+
+#[test]
+fn categories_gather_themes() {
+    let (_d, db) = open();
+    let sec = db.create_category(" セキュリティ ").unwrap();
+    let perf = db.create_category("パフォーマンス").unwrap();
+    let names: Vec<String> = db.list_categories().unwrap().into_iter().map(|c| c.name).collect();
+    assert_eq!(names, ["セキュリティ", "パフォーマンス"], "in the order made");
+    let oidc = db.create_theme("OIDC", None, Some(sec.id)).unwrap();
+    assert_eq!(oidc.category_id, Some(sec.id));
+    db.set_theme_category(oidc.id, Some(perf.id)).unwrap();
+    assert_eq!(db.get_theme(oidc.id).unwrap().unwrap().category_id, Some(perf.id));
+    db.set_theme_category(oidc.id, None).unwrap();
+    assert_eq!(db.get_theme(oidc.id).unwrap().unwrap().category_id, None);
+    assert!(matches!(db.set_theme_category(999, None), Err(Error::ThemeNotFound(999))));
+}
+
+#[test]
+fn themes_from_before_categories_become_categories() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE themes (id INTEGER PRIMARY KEY, name TEXT NOT NULL, goal TEXT, doc_url TEXT, updated_at INTEGER NOT NULL);
+         CREATE TABLE inputs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, memo TEXT, done INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, theme_id INTEGER);
+         INSERT INTO themes (id, name, goal, updated_at) VALUES (1, 'セキュリティ', '守りを説明できる', 6), (9, 'DevOps', NULL, 5);
+         INSERT INTO inputs (title, updated_at, theme_id) VALUES ('CSRF とは', 5, 1);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let categories = db.list_categories().unwrap();
+    assert_eq!(categories.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["セキュリティ", "DevOps"], "the broad themes from before are categories now");
+    assert!(db.list_themes().unwrap().is_empty());
+    assert_eq!(db.get_input(1).unwrap().unwrap().theme_id, None, "what was in them waits unsorted");
+    let oidc = db.create_theme("OIDC", None, Some(categories[0].id)).unwrap();
+    assert!(oidc.id > 9, "a theme's id is not used again (the study spaces kept go by it)");
+    drop(db);
+    let db = Db::open(&path).unwrap();
+    assert_eq!((db.list_categories().unwrap().len(), db.list_themes().unwrap().len()), (2, 1), "only once");
 }
 
 fn slack_message(ts: &str, via: Option<&str>) -> cts_core::NewSlackMessage {

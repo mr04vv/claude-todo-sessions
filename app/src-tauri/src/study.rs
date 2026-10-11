@@ -6,8 +6,8 @@
 use std::time::Duration;
 
 use cts_core::feynman::{self, Page};
-use cts_core::study::{self, InputRef, Placement, Question, ThemeRef};
-use cts_core::{ArtifactKind, FeynmanAttempt, NewArtifact, Subject, Theme, ThemePatch};
+use cts_core::study::{self, CategoryRef, InputRef, Placement, Question, ThemeRef};
+use cts_core::{ArtifactKind, Category, FeynmanAttempt, NewArtifact, Subject, Theme, ThemePatch};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -41,11 +41,25 @@ pub fn page_text(url: String) -> Result<String, String> {
 }
 
 #[tauri::command(async)]
-pub fn create_theme(state: State<AppState>, name: String, goal: Option<String>) -> Result<Theme, String> {
+pub fn create_theme(state: State<AppState>, name: String, goal: Option<String>, category_id: Option<i64>) -> Result<Theme, String> {
     if name.trim().is_empty() {
         return Err("テーマの名前を入れてください".into());
     }
-    state.db.lock().map_err(err)?.create_theme(&name, goal.as_deref()).map_err(err)
+    state.db.lock().map_err(err)?.create_theme(&name, goal.as_deref(), category_id).map_err(err)
+}
+
+#[tauri::command(async)]
+pub fn create_category(state: State<AppState>, name: String) -> Result<Category, String> {
+    if name.trim().is_empty() {
+        return Err("カテゴリの名前を入れてください".into());
+    }
+    state.db.lock().map_err(err)?.create_category(&name).map_err(err)
+}
+
+/// Puts a theme in a category, or in none.
+#[tauri::command(async)]
+pub fn set_theme_category(state: State<AppState>, theme_id: i64, category_id: Option<i64>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_theme_category(theme_id, category_id).map_err(err)
 }
 
 #[tauri::command(async)]
@@ -67,17 +81,24 @@ pub fn set_input_theme(state: State<AppState>, input_id: i64, theme_id: Option<i
 /// Claude's proposal of where each unsorted input goes.
 #[tauri::command(async)]
 pub fn sort_unsorted(state: State<AppState>) -> Result<Vec<Placement>, String> {
-    let (themes, inputs) = {
+    let (themes, categories, inputs) = {
         let db = state.db.lock().map_err(err)?;
-        (db.list_themes().map_err(err)?, db.list_inputs().map_err(err)?.into_iter().filter(|i| i.theme_id.is_none() && !i.done).collect::<Vec<_>>())
+        (db.list_themes().map_err(err)?, db.list_categories().map_err(err)?, db.list_inputs().map_err(err)?.into_iter().filter(|i| i.theme_id.is_none() && !i.done).collect::<Vec<_>>())
     };
     if inputs.is_empty() {
         return Ok(Vec::new());
     }
-    let theme_refs: Vec<ThemeRef> = themes.iter().map(|t| ThemeRef { id: t.id, name: &t.name, goal: t.goal.as_deref() }).collect();
+    let category_name = |id: Option<i64>| categories.iter().find(|c| Some(c.id) == id).map(|c| c.name.as_str());
+    let theme_refs: Vec<ThemeRef> = themes.iter().map(|t| ThemeRef { id: t.id, name: &t.name, goal: t.goal.as_deref(), category: category_name(t.category_id) }).collect();
+    let category_refs: Vec<CategoryRef> = categories.iter().map(|c| CategoryRef { id: c.id, name: &c.name }).collect();
     let input_refs: Vec<InputRef> = inputs.iter().map(|i| InputRef { id: i.id, title: &i.title, url: i.links.first().map(|l| l.url.as_str()), done: i.done }).collect();
-    let output = crate::ask::claude(&study::sort_prompt(&theme_refs, &input_refs), Some(&study::sort_schema()), Some(FAST_MODEL), None, false)?;
-    Ok(study::parse_sort(&output, &inputs.iter().map(|i| i.id).collect::<Vec<_>>(), &themes.iter().map(|t| t.id).collect::<Vec<_>>()))
+    let output = crate::ask::claude(&study::sort_prompt(&theme_refs, &category_refs, &input_refs), Some(&study::sort_schema()), Some(FAST_MODEL), None, false)?;
+    Ok(study::parse_sort(
+        &output,
+        &inputs.iter().map(|i| i.id).collect::<Vec<_>>(),
+        &themes.iter().map(|t| t.id).collect::<Vec<_>>(),
+        &categories.iter().map(|c| c.id).collect::<Vec<_>>(),
+    ))
 }
 
 fn theme_or_err(db: &cts_core::Db, id: i64) -> Result<Theme, String> {
@@ -110,7 +131,7 @@ pub fn next_reads(state: State<AppState>, theme_id: i64) -> Result<Vec<NextRead>
         return Ok(Vec::new());
     }
     let refs: Vec<InputRef> = inputs.iter().map(|i| InputRef { id: i.id, title: &i.title, url: i.links.first().map(|l| l.url.as_str()), done: i.done }).collect();
-    let theme_ref = ThemeRef { id: theme.id, name: &theme.name, goal: theme.goal.as_deref() };
+    let theme_ref = ThemeRef { id: theme.id, name: &theme.name, goal: theme.goal.as_deref(), category: None };
     let output = crate::ask::claude(&study::next_prompt(&theme_ref, &refs, &vague), Some(&study::next_schema()), Some(FAST_MODEL), None, false)?;
     Ok(study::parse_next(&output, &unread).into_iter().map(|(input_id, why)| NextRead { input_id, why }).collect())
 }
@@ -120,7 +141,7 @@ pub fn next_reads(state: State<AppState>, theme_id: i64) -> Result<Vec<NextRead>
 pub fn review_questions(state: State<AppState>, theme_id: i64) -> Result<Vec<Question>, String> {
     let theme = theme_or_err(&*state.db.lock().map_err(err)?, theme_id)?;
     let Some(doc) = theme.doc_url.as_deref() else { return Ok(Vec::new()) };
-    let theme_ref = ThemeRef { id: theme.id, name: &theme.name, goal: theme.goal.as_deref() };
+    let theme_ref = ThemeRef { id: theme.id, name: &theme.name, goal: theme.goal.as_deref(), category: None };
     let output = crate::ask::claude(&study::review_prompt(&theme_ref, doc), Some(&study::review_schema()), Some(FAST_MODEL), None, true)?;
     study::parse_review(&output)
 }
@@ -169,7 +190,7 @@ fn write_doc_behind(app: &AppHandle, theme_id: i64, pages: Vec<Page>, conversati
 
 fn write_doc(theme_id: i64, pages: &[Page], conversation: Option<&str>, review: Option<&str>, read: &[i64]) -> Result<(), String> {
     let theme = theme_or_err(&open_db()?, theme_id)?;
-    let theme_ref = ThemeRef { id: theme.id, name: &theme.name, goal: theme.goal.as_deref() };
+    let theme_ref = ThemeRef { id: theme.id, name: &theme.name, goal: theme.goal.as_deref(), category: None };
     let prompt = study::doc_prompt(&theme_ref, theme.doc_url.as_deref(), pages, conversation, review);
     let said = crate::ask::claude(&prompt, None, None, None, true)?;
     let db = open_db()?;

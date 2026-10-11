@@ -21,6 +21,14 @@ pub struct ThemeRef<'a> {
     pub id: i64,
     pub name: &'a str,
     pub goal: Option<&'a str>,
+    /// The name of its category, if it is in one.
+    pub category: Option<&'a str>,
+}
+
+/// A category (the field a theme is in) as a prompt lists it.
+pub struct CategoryRef<'a> {
+    pub id: i64,
+    pub name: &'a str,
 }
 
 /// An input as a prompt lists it.
@@ -32,21 +40,26 @@ pub struct InputRef<'a> {
 }
 
 fn theme_line(t: &ThemeRef) -> String {
-    format!("- [{}] {}{}", t.id, t.name, t.goal.map(|g| format!("（目標：{g}）")).unwrap_or_default())
+    format!("- [{}] {}{}{}", t.id, t.category.map(|c| format!("{c} › ")).unwrap_or_default(), t.name, t.goal.map(|g| format!("（目標：{g}）")).unwrap_or_default())
 }
 
 fn input_line(i: &InputRef) -> String {
     format!("- [{}] {}{}{}", i.id, i.title, i.url.map(|u| format!(" {u}")).unwrap_or_default(), if i.done { "（読み終わった）" } else { "" })
 }
 
-/// Asks where each unsorted input belongs: one of the themes, or a new one.
-pub fn sort_prompt(themes: &[ThemeRef], inputs: &[InputRef]) -> String {
-    let themes = if themes.is_empty() { "（まだありません）".to_string() } else { themes.iter().map(theme_line).collect::<Vec<_>>().join("\n") };
+/// Asks where each unsorted input belongs: one of the themes, or a new one
+/// (in one of the categories, a new one, or none).
+pub fn sort_prompt(themes: &[ThemeRef], categories: &[CategoryRef], inputs: &[InputRef]) -> String {
+    let listed = |lines: Vec<String>| if lines.is_empty() { "（まだありません）".to_string() } else { lines.join("\n") };
+    let themes = listed(themes.iter().map(theme_line).collect());
+    let categories = listed(categories.iter().map(|c| format!("- [{}] {}", c.id, c.name)).collect());
     format!(
-        "学びたいものを「テーマ」でまとめています。まだテーマに入っていない記事や本の章を、どのテーマに入れるかを決めてください。\n\
+        "学びたいものを「テーマ」でまとめ、テーマを「カテゴリ」で束ねています。まだテーマに入っていない記事や本の章を、どのテーマに入れるかを決めてください。\n\
+         - テーマは狭く、一つの概念にする（「セキュリティ」ではなく「OIDC」「CSP」）。一冊のノートにまとまり、復習の質問に答えられる大きさ。広い分野はカテゴリ。\n\
          - 合うテーマがあればその番号を theme に、なければ new_theme に新しいテーマの名前（短く）を入れる（theme は null）。\n\
+         - new_theme のときは、合うカテゴリの番号を category に。合うものがなければ new_category に新しいカテゴリの名前（広い分野）を、どれにも入らなければ両方 null。\n\
          - 似たものは同じ新しいテーマにまとめる。\n\
-         - why に一言の理由。\n\n## テーマ\n{themes}\n\n## まだテーマにないもの\n{}",
+         - why に一言の理由。\n\n## カテゴリ\n{categories}\n\n## テーマ\n{themes}\n\n## まだテーマにないもの\n{}",
         inputs.iter().map(input_line).collect::<Vec<_>>().join("\n")
     )
 }
@@ -63,6 +76,8 @@ pub fn sort_schema() -> Value {
                         "input": { "type": "integer" },
                         "theme": { "type": ["integer", "null"] },
                         "new_theme": { "type": ["string", "null"] },
+                        "category": { "type": ["integer", "null"] },
+                        "new_category": { "type": ["string", "null"] },
                         "why": { "type": "string" }
                     },
                     "required": ["input", "why"]
@@ -73,12 +88,13 @@ pub fn sort_schema() -> Value {
     })
 }
 
-/// Where an input goes.
+/// Where an input goes: a new theme in one of the categories (`category`), a
+/// new one (`new_category`), or neither.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Place {
     Theme(i64),
-    NewTheme(String),
+    NewTheme { name: String, category: Option<i64>, new_category: Option<String> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -88,8 +104,9 @@ pub struct Placement {
     pub why: String,
 }
 
-/// The placements answered, for the inputs and themes asked about only.
-pub fn parse_sort(output: &Value, inputs: &[i64], themes: &[i64]) -> Vec<Placement> {
+/// The placements answered, for the inputs, themes and categories asked about only.
+pub fn parse_sort(output: &Value, inputs: &[i64], themes: &[i64], categories: &[i64]) -> Vec<Placement> {
+    let named = |v: &Value| v.as_str().map(str::trim).filter(|n| !n.is_empty()).map(String::from);
     output["placements"]
         .as_array()
         .into_iter()
@@ -98,7 +115,10 @@ pub fn parse_sort(output: &Value, inputs: &[i64], themes: &[i64]) -> Vec<Placeme
             let input = p["input"].as_i64().filter(|i| inputs.contains(i))?;
             let place = match p["theme"].as_i64() {
                 Some(t) if themes.contains(&t) => Place::Theme(t),
-                _ => Place::NewTheme(p["new_theme"].as_str().map(str::trim).filter(|n| !n.is_empty())?.to_string()),
+                _ => {
+                    let category = p["category"].as_i64().filter(|c| categories.contains(c));
+                    Place::NewTheme { name: named(&p["new_theme"])?, category, new_category: category.is_none().then(|| named(&p["new_category"])).flatten() }
+                }
             };
             Some(Placement { input, place, why: p["why"].as_str().unwrap_or_default().to_string() })
         })
@@ -223,26 +243,32 @@ pub fn doc_prompt(theme: &ThemeRef, doc_url: Option<&str>, pages: &[Page], conve
 mod tests {
     use super::*;
 
-    const SEC: ThemeRef = ThemeRef { id: 1, name: "セキュリティ", goal: Some("攻撃と守りを説明できる") };
+    const SEC: ThemeRef = ThemeRef { id: 2, name: "セキュリティ", goal: Some("攻撃と守りを説明できる"), category: None };
 
     #[test]
     fn unsorted_inputs_go_to_a_theme_or_a_new_one() {
         let inputs = [InputRef { id: 7, title: "CSRF とは", url: Some("https://e.com/csrf"), done: false }];
-        let p = sort_prompt(&[SEC], &inputs);
-        assert!(p.contains("[1] セキュリティ（目標：攻撃と守りを説明できる）") && p.contains("[7] CSRF とは https://e.com/csrf"), "{p}");
+        let oidc = ThemeRef { id: 1, name: "OIDC", goal: Some("ログインの流れを説明できる"), category: Some("セキュリティ") };
+        let p = sort_prompt(&[oidc, SEC], &[CategoryRef { id: 3, name: "セキュリティ" }], &inputs);
+        assert!(p.contains("[1] セキュリティ › OIDC（目標：ログインの流れを説明できる）") && p.contains("[3] セキュリティ") && p.contains("[7] CSRF とは https://e.com/csrf"), "{p}");
         let out = json!({"placements": [
             {"input": 7, "theme": 1, "why": "攻撃の話"},
             {"input": 8, "theme": null, "new_theme": " Rust ", "why": "言語"},
+            {"input": 10, "new_theme": "CSP", "category": 3, "new_category": "守り", "why": "守り"},
+            {"input": 11, "new_theme": "所有権", "category": 99, "new_category": " 言語 ", "why": "x"},
             {"input": 9, "theme": 99, "why": "ない番号"},
             {"input": 8, "theme": 2, "new_theme": null, "why": "x"}
         ]});
+        let new = |name: &str, category: Option<i64>, new_category: Option<&str>| Place::NewTheme { name: name.into(), category, new_category: new_category.map(String::from) };
         assert_eq!(
-            parse_sort(&out, &[7, 8], &[1]),
+            parse_sort(&out, &[7, 8, 10, 11], &[1], &[3]),
             vec![
                 Placement { input: 7, place: Place::Theme(1), why: "攻撃の話".into() },
-                Placement { input: 8, place: Place::NewTheme("Rust".into()), why: "言語".into() },
+                Placement { input: 8, place: new("Rust", None, None), why: "言語".into() },
+                Placement { input: 10, place: new("CSP", Some(3), None), why: "守り".into() },
+                Placement { input: 11, place: new("所有権", None, Some("言語")), why: "x".into() },
             ],
-            "inputs and themes not asked about are dropped"
+            "inputs, themes and categories not asked about are dropped"
         );
     }
 

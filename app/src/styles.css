@@ -2847,6 +2847,31 @@ body.resizing {
   background: var(--card-hover);
 }
 
+/* A category's heading (it folds its themes), and its themes set in under it. */
+.theme-category {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  justify-content: flex-start;
+  height: 28px;
+  margin-top: 8px;
+  padding: 0 8px;
+  border: 0;
+  background: none;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* カテゴリなし has no chevron: its name lines up with the categories'. */
+div.theme-category {
+  padding-left: 26px;
+}
+
+.theme-category ~ .theme-item {
+  padding-left: 26px;
+}
+
 .theme-detail {
   display: flex;
   flex-direction: column;

@@ -204,6 +204,16 @@ pub struct Theme {
     /// Its claude.ai document, once made.
     pub doc_url: Option<String>,
     pub updated_at: i64,
+    /// The category it is in, if any.
+    pub category_id: Option<i64>,
+}
+
+/// A field the themes are gathered in (セキュリティ, with OIDC and CSP in it):
+/// a name only, the themes keeping their notes and reviews.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Category {
+    pub id: i64,
+    pub name: String,
 }
 
 /// None leaves a field unchanged; a blank goal clears it.
@@ -631,12 +641,17 @@ CREATE TABLE IF NOT EXISTS inputs (
     updated_at INTEGER NOT NULL,
     theme_id INTEGER REFERENCES themes(id) ON DELETE SET NULL
 );
-CREATE TABLE IF NOT EXISTS themes (
+CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS themes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     goal TEXT,
     doc_url TEXT,
-    updated_at INTEGER NOT NULL
+    updated_at INTEGER NOT NULL,
+    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
 );
 CREATE TABLE IF NOT EXISTS artifacts (
     id INTEGER PRIMARY KEY,
@@ -692,7 +707,7 @@ CREATE TABLE IF NOT EXISTS input_links (
 ";
 
 const INPUT_COLS: &str = "id, title, memo, done, updated_at, CAST(theme_id AS INTEGER)";
-const THEME_COLS: &str = "id, name, goal, doc_url, updated_at";
+const THEME_COLS: &str = "id, name, goal, doc_url, updated_at, category_id";
 const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, CAST(parent_id AS INTEGER), ci_state, ci_failed, plan, COALESCE(CAST(fix_count AS INTEGER), 0), escalation";
@@ -777,7 +792,7 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
 }
 
 fn theme_from_row(r: &Row) -> rusqlite::Result<Theme> {
-    Ok(Theme { id: r.get(0)?, name: r.get(1)?, goal: r.get(2)?, doc_url: r.get(3)?, updated_at: r.get(4)? })
+    Ok(Theme { id: r.get(0)?, name: r.get(1)?, goal: r.get(2)?, doc_url: r.get(3)?, updated_at: r.get(4)?, category_id: r.get(5)? })
 }
 
 fn input_link_from_row(r: &Row) -> rusqlite::Result<InputLink> {
@@ -830,6 +845,23 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              SELECT session_id, ?1 FROM sessions WHERE state = 'ended' AND session_id IN (SELECT session_id FROM review_sessions)",
             [now()],
         )?;
+    }
+    // Themes from before categories were broad fields (セキュリティ): they
+    // become the categories, what was in them waits unsorted again, and the
+    // table is made anew so that a theme's id is never used again (the
+    // app keeps a study time's pages by it).
+    let themes_categorized: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('themes') WHERE name = 'category_id'", [], |r| r.get::<_, i64>(0).map(|n| n > 0))?;
+    if !themes_categorized {
+        let last_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM themes", [], |r| r.get(0))?;
+        conn.execute_batch(&format!(
+            "BEGIN;
+             INSERT INTO categories (name) SELECT name FROM themes ORDER BY id;
+             UPDATE inputs SET theme_id = NULL WHERE theme_id IS NOT NULL;
+             DROP TABLE themes;
+             {SCHEMA}
+             INSERT INTO sqlite_sequence (name, seq) VALUES ('themes', {last_id});
+             COMMIT;"
+        ))?;
     }
     for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image"), ("slack_messages", "gone")] {
         let exists: bool = conn.query_row(
@@ -1078,9 +1110,9 @@ impl Db {
         }
     }
 
-    pub fn create_theme(&self, name: &str, goal: Option<&str>) -> Result<Theme> {
+    pub fn create_theme(&self, name: &str, goal: Option<&str>, category_id: Option<i64>) -> Result<Theme> {
         let goal = goal.map(str::trim).filter(|g| !g.is_empty());
-        self.conn.execute("INSERT INTO themes (name, goal, updated_at) VALUES (?1, ?2, ?3)", params![name.trim(), goal, now()])?;
+        self.conn.execute("INSERT INTO themes (name, goal, updated_at, category_id) VALUES (?1, ?2, ?3, ?4)", params![name.trim(), goal, now(), category_id])?;
         let id = self.conn.last_insert_rowid();
         self.get_theme(id)?.ok_or(Error::ThemeNotFound(id))
     }
@@ -1107,6 +1139,26 @@ impl Db {
             return Err(Error::ThemeNotFound(id));
         }
         self.get_theme(id)?.ok_or(Error::ThemeNotFound(id))
+    }
+
+    /// Puts a theme in a category, or (None) in none.
+    pub fn set_theme_category(&self, id: i64, category_id: Option<i64>) -> Result<()> {
+        match self.conn.execute("UPDATE themes SET category_id = ?2 WHERE id = ?1", params![id, category_id])? {
+            0 => Err(Error::ThemeNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn create_category(&self, name: &str) -> Result<Category> {
+        self.conn.execute("INSERT INTO categories (name) VALUES (?1)", [name.trim()])?;
+        Ok(Category { id: self.conn.last_insert_rowid(), name: name.trim().to_string() })
+    }
+
+    /// Every category, in the order made.
+    pub fn list_categories(&self) -> Result<Vec<Category>> {
+        let mut stmt = self.conn.prepare("SELECT id, name FROM categories ORDER BY id")?;
+        let rows = stmt.query_map([], |r| Ok(Category { id: r.get(0)?, name: r.get(1)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Takes a theme out; its inputs go back to the unsorted.

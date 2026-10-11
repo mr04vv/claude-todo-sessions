@@ -96,12 +96,21 @@ export interface Theme {
   goal: string | null;
   doc_url: string | null;
   updated_at: number;
+  /** The category it is in, if any. */
+  category_id: number | null;
 }
 
-/** Where Claude proposes an unsorted input goes. */
+/** A field the themes are gathered in (セキュリティ, with OIDC and CSP in it). */
+export interface Category {
+  id: number;
+  name: string;
+}
+
+/** Where Claude proposes an unsorted input goes: a theme, or a new one in a
+ *  category (`category`), a new category (`new_category`) or none. */
 export interface Placement {
   input: number;
-  place: { theme: number } | { new_theme: string };
+  place: { theme: number } | { new_theme: { name: string; category: number | null; new_category: string | null } };
   why: string;
 }
 
@@ -260,6 +269,8 @@ export interface Board {
   feynman: FeynmanSummary[];
   /** The latest changed first. */
   themes: Theme[];
+  /** The categories, in the order made. */
+  categories: Category[];
   /** Newest first. */
   artifacts: Artifact[];
   sync_status: string;
@@ -465,7 +476,10 @@ export const api = {
   browserText: (tab: string) => invoke<string | null>("browser_text", { tab }),
   /// A page's text fetched afresh (one behind a login comes back as its sign-in page).
   pageText: (url: string) => invoke<string>("page_text", { url }),
-  createTheme: (name: string, goal?: string) => invoke<Theme>("create_theme", { name, goal: goal ?? null }),
+  createTheme: (name: string, goal?: string, categoryId?: number | null) => invoke<Theme>("create_theme", { name, goal: goal ?? null, categoryId: categoryId ?? null }),
+  createCategory: (name: string) => invoke<Category>("create_category", { name }),
+  /// Puts a theme in a category, or (null) in none.
+  setThemeCategory: (themeId: number, categoryId: number | null) => invoke<void>("set_theme_category", { themeId, categoryId }),
   updateTheme: (id: number, patch: { name?: string; goal?: string }) => invoke<Theme>("update_theme", { id, patch }),
   deleteTheme: (id: number) => invoke<void>("delete_theme", { id }),
   /// Puts an input in a theme, or (null) back among the unsorted.
