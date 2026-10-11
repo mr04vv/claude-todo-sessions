@@ -27,7 +27,7 @@ scripts/bundle-cef.sh                        # その .app に Chromium とヘ�
 
 3つのバイナリが1つの SQLite（WAL）を共有する。DB は `~/Library/Application Support/claude-todo-sessions/db.sqlite`（`CTS_DB` で変更可）。
 
-- `crates/core`（`cts-core`）: DB と外部連携のロジック。`lib.rs` が todo / input / session / link / notification のスキーマ・マイグレーション・クエリ、`cloud.rs` がクラウドセッション API（使用量と events も）、`launch.rs` が Desktop のディープリンク・起動プロンプト・モデルと effort（`StartOptions`）、`usage.rs` が使用量の解釈、`transcript.rs` がセッションの最後のメッセージ・コンテキスト・直近の操作の抽出（ローカルの jsonl とクラウドの events で共通。Input モードのノートの URL もここで探す）、`skills.rs` がスキルの発見と並び替え、`herdr.rs` / `agents.rs` / `desktop.rs` がローカルセッションの発見、`github.rs` が GraphQL の一括状態取得、`ogp.rs` がリンクの OGP 取得（`fetch_text` はページ本文のフォールバック）、`feynman.rs` が Input モードの「説明する」（要点と採点のプロンプト・JSON スキーマ・答えの解釈・理解度と復習間隔）。
+- `crates/core`（`cts-core`）: DB と外部連携のロジック。`lib.rs` が todo / input / theme / category / session / link / notification のスキーマ・マイグレーション・クエリ、`cloud.rs` がクラウドセッション API（使用量と events も）、`launch.rs` が Desktop のディープリンク・起動プロンプト・モデルと effort（`StartOptions`）、`usage.rs` が使用量の解釈、`transcript.rs` がセッションの最後のメッセージ・コンテキスト・直近の操作の抽出（ローカルの jsonl とクラウドの events で共通。テーマのノートの URL もここで探す）、`skills.rs` がスキルの発見と並び替え、`herdr.rs` / `agents.rs` / `desktop.rs` がローカルセッションの発見、`github.rs` が GraphQL の一括状態取得、`ogp.rs` がリンクの OGP 取得（`fetch_text` はページ本文のフォールバック）、`study.rs` が学びのプロンプトと答えの解釈（振り分け・次に読むもの・復習の質問・ノートへの書き込み）、`feynman.rs` が復習の採点（プロンプト・JSON スキーマ・理解度と復習間隔）。
 - `crates/cts`: Claude Code プラグインから呼ばれる CLI。`cts mcp`（rmcp の stdio MCP サーバー。todo の CRUD と紐づけ）、`cts hook <event>`（セッション状態の記録と `[todo:N]` マーカーでの紐づけ）、`cts cloud sync`。
 - `app/src-tauri`（`todo-sessions-app`）: Tauri 2 のアプリ本体。`main.rs` 1ファイルに Tauri コマンドとバックグラウンドスレッドがある。
   - `sync_loop`: クラウドセッションの同期
@@ -39,13 +39,14 @@ scripts/bundle-cef.sh                        # その .app に Chromium とヘ�
     - `.app` の中に `Chromium Embedded Framework.framework` と、`todo-sessions-app Helper (GPU)` などのヘルパーアプリ（`src/bin/helper.rs` のバイナリのコピー）が要る。Tauri のバンドラーは作らないので `scripts/bundle-cef.sh` が入れる。無いとき（`cargo run` や `pnpm tauri dev`）は `init()` が false を返し、アプリは動くがブラウザペインは「Chromium が入っていません」になる。
     - プロファイル（Cookie など。ログインが再起動後も残る）は DB と同じフォルダの `cef/`。終了時（`RunEvent::Exit`）に `cef_browser::shutdown` が閉じて書き出す。同じフォルダを2つ目のインスタンスが開くと `initialize` が失敗する（`CTS_DB` を変えれば別のフォルダになる）。
     - ページのスクリプト（`browser_page.js`）は、ヘルパーの `on_context_created` が全ページ・全フレームで、ページのスクリプトより前に動かす。ページからアプリへの連絡は `console.debug("todo-sessions://…")` で、ブラウザプロセスの `on_console_message` が拾って `page_message` で処理する（昔はこのスキームへのナビゲーションを止めていた）。アプリからページへは `cef_browser::eval`（main frame の `execute_java_script`）。
-    - Chromium は Cookie の鍵を Keychain（"Chromium Safe Storage"）に置こうとし、ad hoc 署名のアプリは再ビルドのたびに「許可しますか」のダイアログが出て、答えるまですべてのページの読み込みが止まる。`use-mock-keychain`（`on_before_command_line_processing`、ヘルパーにも）で Keychain を使わない。代わりに Cookie の鍵は固定になる（`cef/` フォルダのファイルを読める人には読める）。
+    - Chromium は Cookie の鍵を Keychain の "Chromium Safe Storage"（account "Chromium"）から読む。名前は CEF の中で決まっていて変えられず、ほかの Chromium 系のアプリ（Chrome for Testing・Lightroom など）と同じ項目を使う（消すとそれらの保存したログインが読めなくなる）。Shosai はその ACL に入っていないので、初めは起動時に「許可しますか」が2回（ACL と、チームの partition）出て、答えるまでページの読み込みが止まる。「常に許可」をクリックすれば以後は出ない（署名がビルドをまたいで同じなので、ACL には証明書の要件で入る）。パスワードを入れて Return を押すと既定の「許可」（今回だけ）になる。記録されたかは `log show --predicate 'process == "securityd"'` に `user approved 'always allow'` が出るかで分かる（「許可」だけなら `user approved 'allow'`）。
     - ズームは ⌘= ⌘- ⌘0 だけ（`set_zoom_level`）。ページの本文は `frame.text`（`browser_text`）。
   - 端末ペイン（お試し）は `terminal.rs`（portable-pty で PTY を開き、出力を base64 の `term-output` イベントで送る）と `app/src/Terminal.tsx`（xterm.js。端末はビューより長生きするようにモジュールで持つ）。ブラウザペインのタブの1種類（`BrowserTab.term`）として出す。起動するコマンドは herdr と共通の `prepare_terminal` / `quick_run` / `resume_run` が組み立てる。シェルは `$SHELL -l -i -c` で、`.zshrc` の PATH や `claude` 関数がそのまま効く。外すときは、この2ファイルと `app/src/kitty.ts`、`main.rs` の `mod terminal` と `terminal_*` コマンド、`App.tsx` の `TerminalContext` まわりとサイドバーの「ターミナル」を消す。
     - 見た目とキーは Ghostty に合わせる。`ghostty_config` が Ghostty の設定とテーマを、`ghostty_keybinds` が `ghostty +list-keybinds` の `text:` / `esc:` / `csi:` を返す。WebKit はページにシステムのフォントしか使わせない（`~/Library/Fonts` のフォントを名前で指定しても別のフォントになる）ので、`user_font` がファイルを渡し、`FontFace` で読み込んでから端末を開く。
     - xterm.js はトラックパッドの小さな移動を 0.3 倍にし、ホイールを受け取るアプリ（Claude Code・herdr）にはイベント1回で1段しか送らないので遅い。`attachCustomWheelEventHandler` で行数を出し、1行ごとに大きな `deltaY` の合成イベントを投げ直している。
     - xterm.js は ⌘ の組み合わせを送らず、kitty keyboard protocol も持たない。`kitty.ts` が `CSI > u` などでプログラム（herdr）が立てたフラグを追い、立っている間は ⌥ と ⌘ / ⌃ の組み合わせ（herdr の `cmd+alt+[` など）を CSI u で送る。⌘ だけの組み合わせはアプリとシステムに残す。
-- `app/src`: React 19。UI はほぼ `App.tsx` に集約（画面は Todo・セッション・PR・通知）、`api.ts` が Tauri コマンドと型の写し。
+- `app/src`: React 19。UI はほぼ `App.tsx` に集約（画面は Todo・セッション・PR・成果物・Slack・学び）、`api.ts` が Tauri コマンドと型の写し。
+- 署名: `scripts/bundle-cef.sh` が `SHOSAI_SIGNING_IDENTITY`（無ければ最初の "Apple Development:" の証明書、それも無ければ ad hoc）で、framework・ヘルパー・本体の順に署名する。Hardened Runtime（`--options runtime`。`SHOSAI_HARDENED=0` で外す）で、entitlements は `app/src-tauri/entitlements/`（CEF の JIT、マイクとカメラ）。証明書で署名すると designated requirement がビルドをまたいで同じになり、Keychain の「常に許可」が残る。
 - `plugin/`: hooks・`.mcp.json`・skill。`.claude-plugin/marketplace.json` で手元から入れる。
 
 ### セッションと todo の紐づけ
@@ -56,24 +57,16 @@ scripts/bundle-cef.sh                        # その .app に Chromium とヘ�
 - Desktop への遷移: アーカイブされていなければ `claude://code/continue?session=local_…`、アーカイブ済みなら `claude://resume?session=<uuid>`（アーカイブも解除される）。クラウドは `claude://code/cse_…`。
 - クラウドの Web は `https://claude.ai/code/session_…`（`cse_` を `session_` に置き換える。フロントは `api.ts` の `cloudWebUrl`、Rust は `launch::web_url`）。「開く」はサイドバーの「Cloud を開く」（Web / Desktop）に従う。メニューバーと macOS 通知からは `open-cloud` イベントでフロントに開かせる。
 
-### Input モード
+### 学び（テーマ）
 
-- 画面に出る名前は「Input モード」だが、コードでは focus mode（`focusMode`・`FocusMode`・`FOCUS_*`）のまま。
-- input は todo ではない。`inputs` / `input_links` テーブル（`Db::create_input` など）にあり、ステータス・親子・セッションの紐づけを持たない（`done` だけ）。昔は kind が `input` の todo だったので、`migrate` の最後で id のまま移す。
-- Input モードは subject（`Subject`：input か、f で開いた todo）ごとに「スペース」（`InputSpace`。左のタブと ⌘T の新しいタブ、右のページ）を持つ。キーは `subjectKey`（`i<id>` / `t<id>`、どちらでもないときは `FREE_SPACE`）。タブは `BrowserTab.focus` と `space` で（ノートを作るターミナルもスペースのもので、ペインのタブには出さない）、右のページは `kind` と `rightTabId(space, kind)` の id。終えても subject のスペースは隠すだけで残し、subject なしのものだけ閉じる。
-- スペースは localStorage の `inputSpaces`（`SavedSpace`。左右のページの URL）に保存し、再起動後に開いたときは保存した URL から開き直す。開くときに subject のページで足りないものは左に足す。
-
-### Input モードの「説明する」（ファインマン・テクニック）
-
-- 右の `EXPLAIN_TAB`（`ExplainPanel`）。アプリの `feynman.rs` が `claude -p --output-format json --json-schema … --tools "" --no-session-persistence --strict-mcp-config` をホームで1回呼ぶ（プロンプトは stdin。要点は既定のモデル、採点は sonnet。`structured_output` を読む）。
-- 要点は `feynman_make_points`（左のページの本文は `browser_text` が CEF の `frame.text` で読む。タブにページがなければ `page_text` が取りに行く）、採点は `feynman_grade`。DB は `feynman_points` / `feynman_attempts`（subject_kind / subject_id。`Subject` は core にある）。`Board.feynman` が subject ごとの最新を返す。
-- 復習どき（`feynman::review_after_days`）は `watch_loop` が `STUDY_EVERY_TICKS` ごとに `feynman_due` で見て、`notifications` に kind `study`（`input_id` 列。todo なら `todo_id`）を1回記録して macOS に出す。クリックは `open-study` イベントで、フロントが Input モードを「説明する」で開く。
+- 画面の「学び」はカテゴリ → テーマ → 読むもの（input）の3段。カテゴリ（`categories`）はテーマを束ねるだけで名前しか持たない。テーマ（`themes`。名前・目標・claude.ai のノートの URL・`category_id`）は一つの概念（OIDC・CSP）で、ノートと復習と理解度はテーマごと。昔のテーマは広い分野だったので、`category_id` の無い `themes` から開いたときに `migrate` がカテゴリへ移す（読むものは未分類へ戻し、テーブルを作り直す）。テーマの id は使い回さない（`AUTOINCREMENT`。学ぶ時間のページを id で保存しているため）。
+- input は todo ではない。`inputs` / `input_links` テーブル（`Db::create_input` など）にあり、ステータス・親子・セッションの紐づけを持たない（`done` と `theme_id` だけ）。`theme_id` が無いものが「まだテーマにないもの」。ページのリンクを ⌥ クリックするか、⌘⇧D（`AddToThemeDialog`）か、学びの画面に URL を貼ると入る。昔は kind が `input` の todo だったので、`migrate` の最後で id のまま移す。
+- Claude には `claude -p --output-format json --json-schema …` で聞く（`ask.rs`）。振り分け（`sort_unsorted`。新しいテーマのカテゴリか、新しいカテゴリも提案する）・次に読むもの（`next_reads`。前回の復習であいまいだったところから）は sonnet。プロンプトは core の `study.rs`、コマンドはアプリの `study.rs`。
+- 学ぶ時間（画面の名前。コードでは focus mode：`focusMode`・`FocusMode`・`FOCUS_*` のまま）はテーマごとの「スペース」（`InputSpace`。左にテーマのページのタブ、右に LLM。右は `RIGHT_KINDS` の ChatGPT か Claude で、会話はテーマのもの）。キーは `subjectKey`（`h<id>`、テーマなしは `FREE_SPACE`）。タブは `BrowserTab.focus` と `space` で、右のページは `kind` と `rightTabId(space, kind)` の id。終えてもスペースは隠すだけで残す。localStorage の `inputSpaces`（`SavedSpace`。左右のページの URL）に保存し、再起動後は保存した URL から開き直す。開くときにテーマのページで足りないものは左に足す。
+- テーマにノートがあれば、学ぶ時間は復習から始まる（`ReviewPanel`）。`review_questions` がノートを Claude Docs のツールで読んで 2〜3 問作り、`review_grade` が `feynman::grade_prompt` で採点して `feynman_attempts`（subject_kind `theme`）に残す。次の復習どき（`feynman::review_after_days`）は通知せず、`Board.feynman` からサイドバーとテーマの一覧に「復習」と出す。
+- 「読み終わった」（`finish_reading`）は、左のページの本文（`browser_text` が CEF の `frame.text` で読む。タブに無ければ `page_text`）と右の会話を、Mac の Claude（`claude -p`、Claude Docs のコネクタ）にテーマのノートへ書き足させる。初回はノートを作らせ、最後の `NOTE_URL:` の行（`transcript::note_url`）から URL を取って、テーマと成果物に残す。終わったら `theme-doc-written` イベント。
+- 学びの画面のキーは `keymap.ts` の「学びの画面」。一覧の J K / H L / Enter は `useRowCursor`（行は `themes.ts` の `themeRows`）、読むものの ⇧J ⇧K と残りのキーはページの keydown。
 - `src-tauri/Info.plist` にマイクの許可説明がある（右の ChatGPT の音声モード用。ブラウザペインはページのマイク許可を通す作り（`PagePermission`）。ヘルパーアプリの Info.plist にも同じ説明が要る（`scripts/bundle-cef.sh`））。
-
-### Input モードのノート
-
-- 右の「ノート」は、セッション（`start_note`）が左のページから作るアーティファクト（todo なら紐づけて `prepare_terminal` / `create_session`、input なら紐づけずに `quick_run` / `cloud::create_loose_session`。どちらも `launch::note_prompt` を渡す）（Docs・HTML・スライド・デザイン）。アプリはコメントに関わらない。Docs のコメントには claude.ai の Claude が答える（セッションはできたら終わる）。ほかの形は Local のセッションが待って返信する（Cloud のセッションはアーティファクトを見張れず、返信しない）。Cloud のセッションには Claude Docs のコネクタが付かない（`session_context.mcp_connector_ids` を送っても無視された）ので、Docs は Local だけ。
-- ノートの URL は、フロントが5秒ごとに `note_url` でセッションの記録（ローカルは jsonl の末尾、クラウドは events）から探す（`transcript::note_url`。Artifact の「Published … at」、Docs の誕生時の `artifactUrl`、プロンプトで頼んだ `NOTE_URL:` の行の順）。見つかったら subject のリンク（タイトル「ノート」）にし、以後はリンクから出す。作っているセッションは localStorage の `noteSessions` に `subjectKey` ごとに持つ。
 
 ### クラウド（非公開 API）
 
@@ -83,8 +76,8 @@ scripts/bundle-cef.sh                        # その .app に Chromium とヘ�
 - 使用量は `GET /api/oauth/usage`（`anthropic-beta: oauth-2025-04-20`）の `limits`。頻繁に呼ぶと 429 になるので、フロントは取れたら5分おきに取り直す。
 - アーカイブは `POST /v1/code/sessions/{cse_…}/archive`（CLI と同じ。アーカイブ済みでも 200 か 409）。sync のあと、Done の todo の Cloud セッションをターンが終わっていればアーカイブする（`Db::cloud_sessions_to_archive`）。Desktop の Local セッションは外からアーカイブする手段がない（Desktop が自分のファイルをメモリに持っている）ので扱わない。
 - PR のレビューは todo を作らない。Cloud なら `create_review_session`（紐づけなし、ブランチは `claude/review-…`）、Local は `quick_run` にリポジトリのフォルダを渡す。
-- アプリ内ブラウザのログイン保存（`logins.rs`）も Keychain（service `todo-sessions-login`、account はホスト）に `/usr/bin/security` で置く。秘密は `security -i` の標準入力で渡し、引数に出さない。ページのスクリプトは送信時に `todo-sessions://login-captured` で知らせ、`on_page_load` が保存済みのホストにだけ `__todoSessionsFill` を呼ぶ。
-- 認証情報は Keychain の "Claude Code-credentials" を `/usr/bin/security` 経由で読み書きする。Security.framework を直接使うと、再ビルドのたびに Keychain の許可ダイアログが出る。
+- アプリ内ブラウザのログイン保存と Slack のトークンは、Security.framework（`security-framework` クレート、`logins.rs` の `load_secret` / `save_secret`）で Keychain に置く。service はログインが `shosai-login`（account はホスト）、Slack が `shosai-slack`。作ったアプリ（Shosai）だけが ACL に入り、partition はチーム ID なので、ほかのプログラムが読もうとすると確認が出る。昔は `/usr/bin/security` で `todo-sessions-login` / `todo-sessions-slack` に置いていて（誰でも確認なしに読めた）、起動時の `migrate` が移して読み戻してから古いほうを消す。移るまでは古いほうからも読む。ページのスクリプトは送信時に `todo-sessions://login-captured` で知らせ、`on_page_load` が保存済みのホストにだけ `__todoSessionsFill` を呼ぶ。
+- Claude の認証情報は Keychain の "Claude Code-credentials" を `/usr/bin/security` 経由で読み書きする（`cloud.rs`）。この項目の ACL には `/usr/bin/security` が入っていて（partition は `apple-tool:`）、Shosai は入っていないので、Security.framework で直接読むと確認が出る。
 
 ### GitHub 連携の自動化（`issue_sync_loop`）
 
