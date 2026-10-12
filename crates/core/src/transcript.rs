@@ -80,10 +80,49 @@ pub struct Found {
     pub doc: bool,
 }
 
-/// Every artifact a session published and every doc it made, in its
-/// transcript or events, once each (a new version is the same one), in the
-/// order made. Links merely mentioned are not them.
-pub fn artifacts(text: &str) -> Vec<Found> {
+/// The tools whose results tell what a session made: the Artifact tool, and
+/// the Docs connector's writes (its reads name docs too, made by anyone).
+const ARTIFACT_TOOL: &str = "Artifact";
+const DOCS_WRITES: [&str; 3] = ["Claude_Docs__create", "Claude_Docs__batch", "Claude_Docs__update"];
+
+fn makes_artifacts(tool: &str) -> bool {
+    tool == ARTIFACT_TOOL || DOCS_WRITES.iter().any(|w| tool.ends_with(w))
+}
+
+/// Every artifact a session published and every doc it made, as those
+/// tools' results tell (a result whose call is not among the entries is
+/// left out), once each (a new version is the same one), in the order made.
+/// What other tools show (a page read, code holding such a line) is not them.
+pub fn artifacts(entries: &[Value]) -> Vec<Found> {
+    let mut tools = std::collections::HashMap::new();
+    let mut found = Vec::new();
+    for block in entries.iter().flat_map(|e| e["message"]["content"].as_array().into_iter().flatten()) {
+        match block["type"].as_str() {
+            Some("tool_use") => {
+                if let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) {
+                    tools.insert(id, name);
+                }
+            }
+            Some("tool_result") if block["tool_use_id"].as_str().and_then(|id| tools.get(id)).is_some_and(|t| makes_artifacts(t)) => {
+                found.extend(made_in(&result_text(block)));
+            }
+            _ => {}
+        }
+    }
+    let mut seen = std::collections::HashSet::new();
+    found.into_iter().filter(|f| seen.insert(f.url.clone())).collect()
+}
+
+/// A tool result's text: its content, or its text blocks.
+fn result_text(block: &Value) -> String {
+    match &block["content"] {
+        Value::String(s) => s.clone(),
+        v => v.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+    }
+}
+
+/// What one result of those tools tells made, in its order.
+fn made_in(text: &str) -> Vec<Found> {
     let mut found: Vec<(usize, Found)> = Vec::new();
     for (i, _) in text.match_indices(PUBLISHED) {
         let line = until_line_end(&text[i + PUBLISHED.len()..]);
@@ -106,8 +145,7 @@ pub fn artifacts(text: &str) -> Vec<Found> {
         }
     }
     found.sort_by_key(|(i, _)| *i);
-    let mut seen = std::collections::HashSet::new();
-    found.into_iter().map(|(_, f)| f).filter(|f| seen.insert(f.url.clone())).collect()
+    found.into_iter().map(|(_, f)| f).collect()
 }
 
 /// Up to the end of the line, also where the line is a JSON string's.
@@ -230,45 +268,64 @@ mod tests {
         assert_eq!(question(&entries).unwrap().chars().count(), QUESTION_MAX_CHARS);
     }
 
+    /// A tool called (by id) and what it gave back.
+    fn tool(id: &str, name: &str, result: Value) -> [Value; 2] {
+        [
+            assistant(json!([{"type": "tool_use", "id": id, "name": name, "input": {}}]), json!({})),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": result}]}}),
+        ]
+    }
+
     #[test]
     fn every_artifact_and_doc_a_session_made_is_found_once() {
-        let text = concat!(
-            r#"{"type":"user","message":{"content":"see https://claude.ai/artifact/abc123 in the docs"}}"#,
-            "\n",
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Published /tmp/work/比較表.html at https://claude.ai/artifact/1UnAnmsD3RX7 (Version 1)"}]}}"#,
-            "\n",
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"frame\":{\"artifactUrl\":\"https://claude.ai/code/artifact/e1e71452-f7a7\"}}"}]}}"#,
-            "\n",
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Published /tmp/work/比較表.html at https://claude.ai/artifact/1UnAnmsD3RX7 (Version 2)"}]}}"#,
-        );
+        let doc = json!([{"type": "text", "text": "{\"frame\":{\"artifactUrl\":\"https://claude.ai/code/artifact/e1e71452-f7a7\"}}"}]);
+        let entries: Vec<Value> = [
+            vec![json!({"type": "user", "message": {"content": "see https://claude.ai/artifact/abc123 in the docs"}})],
+            tool("t1", "Artifact", json!("Published /tmp/work/比較表.html at https://claude.ai/artifact/1UnAnmsD3RX7 (Version 1)\n\nLive subscription")).to_vec(),
+            tool("t2", "mcp__claude_ai_Claude_Docs__batch", doc).to_vec(),
+            tool("t3", "Artifact", json!("Published /tmp/work/比較表.html at https://claude.ai/artifact/1UnAnmsD3RX7 (Version 2)")).to_vec(),
+        ]
+        .concat();
         assert_eq!(
-            artifacts(text),
+            artifacts(&entries),
             vec![
                 Found { url: "https://claude.ai/artifact/1UnAnmsD3RX7".into(), title: Some("比較表".into()), doc: false },
                 Found { url: "https://claude.ai/code/artifact/e1e71452-f7a7".into(), title: None, doc: true },
             ],
             "a link merely mentioned is not one, and a new version is the same one"
         );
-        assert!(artifacts("nothing").is_empty());
+        assert!(artifacts(&[]).is_empty());
     }
 
     #[test]
     fn an_artifact_made_from_a_type_is_found_too() {
-        let text = concat!(
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Created a new Artifact at https://claude.ai/artifact/RPPwKWPE6T (version 1791448708-1c76) from the Artifact type https://claude.ai/artifact/QKN21svewx (release 1)."}]}}"#,
-            "\n",
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Updated the Artifact at https://claude.ai/artifact/RPPwKWPE6T (Version 2, version id 1) with /tmp/a.json"}]}}"#,
-            "\n",
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Updated the Artifact at https://claude.ai/artifact/Older9 (Version 5, version id 1) with /tmp/b.json"}]}}"#,
-        );
+        let entries: Vec<Value> = [
+            tool("t1", "Artifact", json!("Created a new Artifact at https://claude.ai/artifact/RPPwKWPE6T (version 1791448708-1c76) from the Artifact type https://claude.ai/artifact/QKN21svewx (release 1).")),
+            tool("t2", "Artifact", json!("Updated the Artifact at https://claude.ai/artifact/RPPwKWPE6T (Version 2, version id 1) with /tmp/a.json")),
+            tool("t3", "Artifact", json!("Updated the Artifact at https://claude.ai/artifact/Older9 (Version 5, version id 1) with /tmp/b.json")),
+        ]
+        .concat();
         assert_eq!(
-            artifacts(text),
+            artifacts(&entries),
             vec![
                 Found { url: "https://claude.ai/artifact/RPPwKWPE6T".into(), title: None, doc: false },
                 Found { url: "https://claude.ai/artifact/Older9".into(), title: None, doc: false },
             ],
             "the type it is made from is not one of them"
         );
+    }
+
+    #[test]
+    fn what_other_tools_show_of_artifacts_is_not_made() {
+        let entries: Vec<Value> = [
+            tool("t1", "Bash", json!("Published /tmp/a.html at https://claude.ai/artifact/Fake1 (Version 1)")),
+            tool("t2", "Read", json!("Created a new Artifact at https://claude.ai/artifact/Fake2 (version 1)")),
+            tool("t3", "mcp__claude_ai_Claude_Docs__read", json!([{"type": "text", "text": "{\"artifactUrl\":\"https://claude.ai/code/artifact/someone-else\"}"}])),
+        ]
+        .concat();
+        assert!(artifacts(&entries).is_empty(), "a page read, or code that holds such a line, is not made by the session");
+        let orphan = json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "gone", "content": "Published /tmp/a.html at https://claude.ai/artifact/Cut1 (Version 1)"}]}});
+        assert!(artifacts(&[orphan]).is_empty(), "a result whose call was cut off is not known to be one");
     }
 
     #[test]

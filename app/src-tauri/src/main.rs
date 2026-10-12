@@ -1114,15 +1114,15 @@ fn transcript_branch(session_id: &str) -> Option<String> {
 
 /// Keeps the claude.ai artifacts and docs a session made, with its todo.
 fn keep_artifacts(session: &Session) {
-    let text = if launch::is_cloud_session(&session.session_id) {
-        match cts_core::cloud::recent_entries(&session.session_id).and_then(|e| serde_json::to_string(&e).map_err(err)) {
-            Ok(t) => t,
+    let entries = if launch::is_cloud_session(&session.session_id) {
+        match cts_core::cloud::recent_entries(&session.session_id) {
+            Ok(e) => e,
             Err(e) => return eprintln!("{e}"),
         }
     } else {
-        transcript_tail(&session.session_id).unwrap_or_default()
+        cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id).unwrap_or_default())
     };
-    let found = cts_core::transcript::artifacts(&text);
+    let found = cts_core::transcript::artifacts(&entries);
     if found.is_empty() {
         return;
     }
