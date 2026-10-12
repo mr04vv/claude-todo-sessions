@@ -71,7 +71,8 @@ pub struct Slack {
     /// The user's groups, once asked (asked again hourly).
     groups: Mutex<Option<Vec<Group>>>,
     /// The channels whose mentions count: the user's, less the muted (asked
-    /// hourly with the groups; None until asked, or when it could not be).
+    /// hourly with the groups, or at the next check when Slack would not
+    /// say; None until asked).
     channels_ok: Mutex<Option<Listening>>,
     /// The people and user groups to mention, asked once a run.
     directory: Mutex<Option<Vec<Mentionable>>>,
@@ -115,30 +116,27 @@ impl Slack {
         Ok(groups)
     }
 
-    /// Whether a mention in `channel` counts: the user is in it and has not
-    /// muted it. Not knowing (Slack would not say), every channel counts.
-    fn listens_to(&self, token: &str, channel: &str) -> bool {
-        let known = self.channels_ok.lock().ok().and_then(|c| c.clone());
-        let listening = match known {
-            Some(l) => l,
-            None => {
-                let member = match slack::member_channels(token) {
-                    Ok(ids) => Some(ids),
-                    Err(e) => {
-                        eprintln!("slack channels: {e}");
-                        None
-                    }
-                };
-                // users.prefs.get is undocumented: refused, nothing counts as muted.
-                let muted = slack::muted_channels(token).map_err(|e| eprintln!("slack muted: {e}")).unwrap_or_default().into_iter().collect();
-                let l = Listening { member, muted };
-                if let Ok(mut c) = self.channels_ok.lock() {
-                    *c = Some(l.clone());
-                }
-                l
-            }
-        };
-        known_or_all(&listening, channel)
+    /// The channels whose mentions count, asked once and kept (until
+    /// `forget_channels`), what Slack would not say among them.
+    fn listening(&self, token: &str) -> Listening {
+        if let Some(l) = self.channels_ok.lock().ok().and_then(|c| c.clone()) {
+            return l;
+        }
+        let member = slack::member_channels(token);
+        // users.prefs.get is undocumented: refused, nothing counts as muted.
+        let muted = slack::muted_channels(token);
+        let trouble: Vec<String> = [
+            member.as_ref().err().map(|e| format!("入っているチャンネルの一覧：{e}。入っていないチャンネルのメンションも出ています。")),
+            muted.as_ref().err().map(|e| format!("ミュートしたチャンネル：{e}。ミュートしたチャンネルのメンションも出ています。")),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let l = Listening { member: member.ok(), muted: muted.unwrap_or_default().into_iter().collect(), trouble: (!trouble.is_empty()).then(|| trouble.join(" ")) };
+        if let Ok(mut c) = self.channels_ok.lock() {
+            *c = Some(l.clone());
+        }
+        l
     }
 
     fn remember_channel(&self, channel: &str, name: &str) {
@@ -246,15 +244,21 @@ impl Slack {
     }
 }
 
-/// The channels the user is in (None: Slack would not say) and those they muted.
+/// The channels the user is in (None: Slack would not say) and those they
+/// muted, and why Slack would not say either.
 #[derive(Clone)]
 struct Listening {
     member: Option<HashSet<String>>,
     muted: HashSet<String>,
+    trouble: Option<String>,
 }
 
-fn known_or_all(l: &Listening, channel: &str) -> bool {
-    l.member.as_ref().is_none_or(|m| m.contains(channel)) && !l.muted.contains(channel)
+impl Listening {
+    /// Whether a mention in `channel` counts: the user is in it and has not
+    /// muted it. Not knowing (Slack would not say), every channel counts.
+    fn counts(&self, channel: &str) -> bool {
+        self.member.as_ref().is_none_or(|m| m.contains(channel)) && !self.muted.contains(channel)
+    }
 }
 
 /// Someone (or a user group) to mention in a reply: how it is written
@@ -611,14 +615,15 @@ fn notify(app: &AppHandle, kept: Vec<SlackMessage>) {
 
 /// One check: the mentions of the user, then of each of their user groups
 /// (the user's own messages left out), kept; the user's new ones notified.
-/// Failing to know the groups, the user's mentions are still kept, and the
-/// failure said.
+/// Failing to know the groups (or the channels to leave out), the user's
+/// mentions are still kept, and the failure said.
 fn check(app: &AppHandle, db: &Db, slack: &Slack, token: &str) -> Result<(), String> {
     let me = slack.me(token)?;
     let (groups, trouble) = match slack.groups(token, &me.user_id) {
         Ok(g) => (g, None),
         Err(e) => (Vec::new(), Some(e)),
     };
+    let listening = slack.listening(token);
     let mut hits = slack::search(token, &slack::mentions_of(&me.user_id))?;
     for g in &groups {
         hits.extend(slack::search(token, &slack::mentions_of_group(&g.id))?);
@@ -627,7 +632,7 @@ fn check(app: &AppHandle, db: &Db, slack: &Slack, token: &str) -> Result<(), Str
     // their groups (as the socket's messages are told) is kept.
     let found: Vec<NewSlackMessage> = hits
         .into_iter()
-        .filter(|h| h.user != me.user_id && slack.listens_to(token, &h.channel))
+        .filter(|h| h.user != me.user_id && listening.counts(&h.channel))
         .filter_map(|h| {
             let via = slack::mention_in(&h.text, &me.user_id, &groups)?;
             Some(to_message(slack, token, h, via, &groups))
@@ -646,7 +651,12 @@ fn check(app: &AppHandle, db: &Db, slack: &Slack, token: &str) -> Result<(), Str
     if !quiet {
         notify(app, kept);
     }
-    trouble.map_or(Ok(()), Err)
+    // Asked again at the next check, not an hour on.
+    if listening.trouble.is_some() {
+        slack.forget_channels();
+    }
+    let trouble: Vec<String> = [trouble, listening.trouble].into_iter().flatten().collect();
+    if trouble.is_empty() { Ok(()) } else { Err(trouble.join(" ")) }
 }
 
 /// Checks Slack while a token is kept: every EVERY, or every CATCH_UP while
@@ -719,7 +729,7 @@ fn on_event(app: &AppHandle, db: &Db, slack: &Slack, token: &str, event: &serde_
         follow(slack)?;
         return db.mark_slack_thread_seen(&posted.channel, &thread_ts).map_err(err);
     }
-    if !slack.listens_to(token, &posted.channel) {
+    if !slack.listening(token).counts(&posted.channel) {
         return Ok(());
     }
     let groups = slack.groups(token, &me.user_id).unwrap_or_default();
