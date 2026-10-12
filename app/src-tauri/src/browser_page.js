@@ -39,6 +39,7 @@
   const ZOOM_OUT = "todo-sessions://zoom-out";
   const ZOOM_RESET = "todo-sessions://zoom-reset";
   const TRANSLATE = "todo-sessions://translate";
+  const OPEN_OUTSIDE = "todo-sessions://open-outside";
   const TRANSLATED = "todo-sessions://translated";
   const TRANSLATE_SELECTION = "todo-sessions://translate-selection";
 
@@ -437,6 +438,8 @@
       e.preventDefault();
       const text = String(getSelection() ?? "").trim();
       const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
+      // A ctrl-click (macOS makes it a right click) on a link opens it in the default browser.
+      if (e.ctrlKey && link) return send(`${OPEN_OUTSIDE}?u=${encodeURIComponent(link.href)}`);
       const items = [];
       if (text) {
         items.push(["選択したテキストを日本語に訳す", () => translateSelection(text)]);

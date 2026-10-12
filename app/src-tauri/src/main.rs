@@ -1590,6 +1590,14 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
     // Translating where it is (translate.rs): the page keeps the keyboard.
     let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
     match url.host_str() {
+        // A ctrl-click on a link: the default browser.
+        Some("open-outside") => {
+            let link = param("u");
+            if let Err(e) = if is_web_url(&link) { open_url(&link) } else { Err(format!("開けない URL です: {link}")) } {
+                eprintln!("{e}");
+            }
+            return;
+        }
         Some("translate") => return translate::on_blocks(app, tab, &param("b")),
         Some("translate-selection") => return translate::on_selection(app, tab, param("i").parse().unwrap_or(0), param("t")),
         Some("translated") => return translate::on_translated(app, tab, param("on") == "1"),
@@ -1848,7 +1856,8 @@ fn forget_site_permission(state: State<'_, AppState>, site: String) -> Result<()
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
 fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, go: bool, keep: Option<String>) -> Result<(), String> {
-    if !is_web_url(&url) {
+    // A file on the Mac too: an artifact a session wrote.
+    if !is_web_url(&url) && !url.starts_with("file://") {
         return Err(format!("開けない URL です: {url}"));
     }
     let tab = tab_id(&tab)?.to_string();

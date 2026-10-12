@@ -12,6 +12,7 @@ import "@xterm/xterm/css/xterm.css";
 import { noteFocusRequest, takeFocusWish } from "./focus";
 import { allKeys, matches, matchesCombo } from "./keymap";
 import { KittyFlags, kittyChord } from "./kitty";
+import { asOutside } from "./outside";
 import { findUrls } from "./links";
 
 /// A command to run, where, and what to call its tab (`TerminalRun` in main.rs).
@@ -134,8 +135,14 @@ const entries = new Map<string, Entry>();
 /// Opens a link from a terminal in the browser, in front (`front`) or behind.
 let linkOpener: ((url: string, front: boolean) => void) | null = null;
 export const setTerminalLinkOpener = (open: typeof linkOpener) => void (linkOpener = open);
-/// ⌘-click opens a link in a new tab behind, ⌘⇧-click in front, as a browser does.
-const openClicked = (ev: MouseEvent, url: string) => ev.metaKey && linkOpener?.(url, ev.shiftKey);
+/// ⌘-click opens a link in a new tab behind, ⌘⇧-click in front, as a browser
+/// does; with ctrl too, in the default browser.
+const openClicked = (ev: MouseEvent, url: string) => {
+  if (!ev.metaKey) return;
+  const open = () => linkOpener?.(url, ev.shiftKey);
+  if (ev.ctrlKey) asOutside(open);
+  else open();
+};
 
 /// A row's text, and the column each of its characters is in (a wide one takes two).
 function rowText(line: IBufferLine) {

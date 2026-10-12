@@ -52,3 +52,9 @@ export function foldReviews<T>(reviews: T[], urgent: (t: T) => boolean, room: nu
   if (reviews.length <= room) return { shown: reviews, folded: [] };
   return { shown: reviews.filter(urgent), folded: reviews.filter((t) => !urgent(t)) };
 }
+
+/// A file on the Mac as a page to open (its path's parts escaped).
+export const fileUrl = (path: string) => `file://${path.split("/").map(encodeURIComponent).join("/")}`;
+
+/// The path a file URL stands for (null for any other URL).
+export const pathOfFileUrl = (url: string) => (url.startsWith("file://") ? decodeURIComponent(url.slice("file://".length)) : null);

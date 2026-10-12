@@ -97,7 +97,8 @@ import { categoryAt, themeGroups, themeLabel, themeRows } from "./themes";
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
-import { addressToUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, SEARCH_URL } from "./tabs";
+import { addressToUrl, fileUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
+import { opensOutside } from "./outside";
 import { ciFailureLine, isFailedReview, isReviewAsk, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -3084,10 +3085,11 @@ const artifactName = (a: Artifact) => a.title ?? (a.kind === "file" ? (a.url.spl
 /// Characters of an untitled artifact's id its name shows.
 const ARTIFACT_ID_SHOWN = 8;
 
-/// Opens an artifact: a claude.ai page in the pane, a file with its app.
-function useOpenArtifact(report: (e: unknown) => void) {
+/// Opens an artifact in the pane: a claude.ai page, or a file on the Mac
+/// (with ctrl, in the default browser or the file's app).
+function useOpenArtifact() {
   const openInBrowser = useContext(BrowserContext);
-  return (a: Artifact) => (a.kind === "file" && !/^https?:/.test(a.url) ? api.openPath(a.url).catch(report) : openInBrowser?.(a.url));
+  return (a: Artifact) => openInBrowser?.(a.kind === "file" && !/^https?:/.test(a.url) ? fileUrl(a.url) : a.url);
 }
 
 /// Artifacts as rows: their kind, name, todo and when; with `onForget`, a
@@ -3100,7 +3102,7 @@ function ArtifactRows({ artifacts, todos, report, onOpenTodo, cursorId, onForget
   cursorId?: string | null;
   onForget?: (a: Artifact) => void;
 }) {
-  const open = useOpenArtifact(report);
+  const open = useOpenArtifact();
   return (
     <ul className="rows compact">
       {artifacts.map((a) => {
@@ -3141,7 +3143,7 @@ function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
   const [todoFilter, setTodoFilter] = useState<number | null>(null);
   const parentOf = (id: number | null) => todos.find((t) => t.id === id)?.parent_id ?? null;
   const shown = todoFilter === null ? artifacts : artifacts.filter((a) => a.todo_id === todoFilter || parentOf(a.todo_id) === todoFilter);
-  const open = useOpenArtifact(report);
+  const open = useOpenArtifact();
   const forget = (a: Artifact) => run(() => api.forgetArtifact(a.id));
   const byRow = (id: string) => shown.find((a) => artifactRow(a) === id);
   const { cursorId, list } = useRowCursor(
@@ -6023,7 +6025,13 @@ export default function App() {
   /// Opening is the user's action, so
   /// the page takes the keyboard (`keys` false leaves it), its text box with
   /// `text` typed in; `behind` leaves the tab shown as it is.
+  /// With ctrl held (see outside.ts): a page in the default browser, a file with its app.
+  const openOutside = (url: string) => {
+    const path = pathOfFileUrl(url);
+    (path ? api.openPath(path) : api.openLink(url)).catch(report);
+  };
   const openInBrowser = (url: string, keys = true, behind = false, text?: string) => {
+    if (opensOutside()) return openOutside(url);
     const open = findTabFor(paneTabs.filter((t) => !t.pinned && !t.term), url);
     if (open) {
       if (behind) return;
@@ -6301,6 +6309,7 @@ export default function App() {
   // A terminal's links open in a new tab, in front (with the keyboard) or
   // behind; in the Input mode, on its left.
   const openTerminalLink = (url: string, front: boolean) => {
+    if (opensOutside()) return openOutside(url);
     if (!focusModeRef.current) return openInBrowser(url, front, !front);
     const [id] = addToFocus([{ url }], spaceKey, !front);
     if (front && id) focusSoon(id);

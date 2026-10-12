@@ -306,6 +306,18 @@ export function matchesCombo(e: KeyboardEvent, combo: string, exact = false): bo
   );
 }
 
+/// The keys that open something (a session, a page), besides Enter.
+const OPENING: Action[] = ["session", "link", "slackOpen", "learnOpen", "learnNote"];
+
+/// Whether a key with ctrl is one that opens, ctrl asking for the default
+/// browser: Enter (⌘Enter too), or an opening key, ctrl being none of its own.
+export function opensWithCtrl(e: KeyboardEvent): boolean {
+  if (!e.ctrlKey) return false;
+  if (e.key === "Enter") return true;
+  const plain = { key: e.key, ctrlKey: false, metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey } as KeyboardEvent;
+  return OPENING.some((a) => matches(plain, a));
+}
+
 const GLYPHS: Record<string, string> = { cmd: "⌘", ctrl: "⌃", alt: "⌥", shift: "⇧" };
 const KEY_NAMES: Record<string, string> = { ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→", Enter: "Enter", Escape: "Esc", " ": "Space", Backspace: "⌫", Tab: "Tab" };
 
