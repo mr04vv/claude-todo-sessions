@@ -662,7 +662,8 @@ CREATE TABLE IF NOT EXISTS artifacts (
     session_id TEXT,
     todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
     theme_id INTEGER,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    gone INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS todo_events (
     id INTEGER PRIMARY KEY,
@@ -864,7 +865,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              COMMIT;"
         ))?;
     }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image"), ("slack_messages", "gone")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -1509,12 +1510,30 @@ impl Db {
         Ok(self.get_todo(id)?.ok_or(Error::TodoNotFound(id))?.fix_count)
     }
 
+    /// Takes back what was handed to the user on the session's todo, as the
+    /// session runs again (answered, through the orchestrator or not);
+    /// whether there was any.
+    pub fn take_back_escalation(&self, session_id: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE todos SET escalation = NULL WHERE escalation IS NOT NULL AND id = (SELECT todo_id FROM sessions WHERE session_id = ?1)",
+            [session_id],
+        )?;
+        Ok(n > 0)
+    }
+
     /// Hands the todo to the user with `why` (None takes it back).
     pub fn escalate(&self, id: i64, why: Option<&str>) -> Result<()> {
         match self.conn.execute("UPDATE todos SET escalation = ?2 WHERE id = ?1", params![id, why])? {
             0 => Err(Error::TodoNotFound(id)),
             _ => Ok(()),
         }
+    }
+
+    /// Takes an artifact off the list. Its row stays, so finding it again in
+    /// its session's record does not bring it back.
+    pub fn forget_artifact(&self, id: i64) -> Result<()> {
+        self.conn.execute("UPDATE artifacts SET gone = 1 WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     /// Keeps an artifact, once per URL; whether it is new.
@@ -1526,9 +1545,9 @@ impl Db {
         Ok(n > 0)
     }
 
-    /// Every artifact, newest first.
+    /// Every artifact not forgotten, newest first.
     pub fn artifacts(&self) -> Result<Vec<Artifact>> {
-        let mut stmt = self.conn.prepare("SELECT id, url, title, kind, session_id, todo_id, theme_id, created_at FROM artifacts ORDER BY id DESC")?;
+        let mut stmt = self.conn.prepare("SELECT id, url, title, kind, session_id, todo_id, theme_id, created_at FROM artifacts WHERE gone = 0 ORDER BY id DESC")?;
         let rows = stmt.query_map([], |r| {
             Ok(Artifact {
                 id: r.get(0)?,

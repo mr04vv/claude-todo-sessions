@@ -3090,15 +3090,23 @@ function useOpenArtifact(report: (e: unknown) => void) {
   return (a: Artifact) => (a.kind === "file" && !/^https?:/.test(a.url) ? api.openPath(a.url).catch(report) : openInBrowser?.(a.url));
 }
 
-/// Artifacts as rows: their kind, name, todo and when.
-function ArtifactRows({ artifacts, todos, report, onOpenTodo }: { artifacts: Artifact[]; todos: Todo[]; report: (e: unknown) => void; onOpenTodo: (id: number) => void }) {
+/// Artifacts as rows: their kind, name, todo and when; with `onForget`, a
+/// way to take each off the list (the cursor's row shown as such).
+function ArtifactRows({ artifacts, todos, report, onOpenTodo, cursorId, onForget }: {
+  artifacts: Artifact[];
+  todos: Todo[];
+  report: (e: unknown) => void;
+  onOpenTodo: (id: number) => void;
+  cursorId?: string | null;
+  onForget?: (a: Artifact) => void;
+}) {
   const open = useOpenArtifact(report);
   return (
     <ul className="rows compact">
       {artifacts.map((a) => {
         const todo = todos.find((t) => t.id === a.todo_id);
         return (
-          <li key={a.id} className="row artifact-row" title={a.url} onClick={() => open(a)}>
+          <li key={a.id} data-row={artifactRow(a)} className={`row artifact-row${artifactRow(a) === cursorId ? " cursor" : ""}`} title={a.url} onClick={() => open(a)}>
             <span className="tag">{ARTIFACT_KIND[a.kind]}</span>
             <span className="row-title ellipsis">{artifactName(a)}</span>
             {todo && (
@@ -3107,6 +3115,11 @@ function ArtifactRows({ artifacts, todos, report, onOpenTodo }: { artifacts: Art
               </button>
             )}
             <span className="muted when">{ago(a.created_at)}</span>
+            {onForget && (
+              <button className="ghost icon" aria-label={`${artifactName(a)} を一覧から消す`} title={`一覧から消す（${keyLabel(keyOf("artifactForget"))}）`} onClick={(e) => (e.stopPropagation(), onForget(a))}>
+                <Icon name="close" size={12} />
+              </button>
+            )}
           </li>
         );
       })}
@@ -3114,12 +3127,36 @@ function ArtifactRows({ artifacts, todos, report, onOpenTodo }: { artifacts: Art
   );
 }
 
+const artifactRow = (a: Artifact) => `a:${a.id}`;
+
 /// What sessions made besides PRs, newest first, narrowed to a todo (a parent
 /// with its subtasks).
-function ArtifactsPage({ artifacts, todos, report, onOpenTodo }: { artifacts: Artifact[]; todos: Todo[]; report: (e: unknown) => void; onOpenTodo: (id: number) => void }) {
+function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
+  artifacts: Artifact[];
+  todos: Todo[];
+  report: (e: unknown) => void;
+  run: (f: () => Promise<unknown>) => void;
+  onOpenTodo: (id: number) => void;
+}) {
   const [todoFilter, setTodoFilter] = useState<number | null>(null);
   const parentOf = (id: number | null) => todos.find((t) => t.id === id)?.parent_id ?? null;
   const shown = todoFilter === null ? artifacts : artifacts.filter((a) => a.todo_id === todoFilter || parentOf(a.todo_id) === todoFilter);
+  const open = useOpenArtifact(report);
+  const forget = (a: Artifact) => run(() => api.forgetArtifact(a.id));
+  const byRow = (id: string) => shown.find((a) => artifactRow(a) === id);
+  const { cursorId, list } = useRowCursor(
+    shown.map(artifactRow),
+    (id) => {
+      const a = byRow(id);
+      if (a) open(a);
+    },
+    (e, id) => {
+      const a = byRow(id);
+      if (!a || !matches(e, "artifactForget")) return false;
+      forget(a);
+      return true;
+    },
+  );
   // The todos with artifacts, and their parents.
   const withArtifacts = new Set(artifacts.flatMap((a) => (a.todo_id === null ? [] : [a.todo_id, parentOf(a.todo_id)].filter((x): x is number => x !== null))));
   return (
@@ -3141,11 +3178,11 @@ function ArtifactsPage({ artifacts, todos, report, onOpenTodo }: { artifacts: Ar
           </select>
         )}
       </header>
-      <div className="content">
+      <div className="content" ref={list}>
         {shown.length === 0 && (
-          <p className="muted empty">まだありません。セッションが claude.ai にアーティファクトやドキュメントを作ると、ひと区切りしたときにここへ並びます。Mac のファイルは、セッションが todo-sessions の add_artifact で登録します。</p>
+          <p className="muted empty">まだありません。セッションが claude.ai にアーティファクトやドキュメントを作ると、ひと区切りしたときにここへ並びます。html スキルで書いた文書も並びます。ほかの Mac のファイルは、セッションが todo-sessions の add_artifact で登録します。</p>
         )}
-        <ArtifactRows artifacts={shown} todos={todos} report={report} onOpenTodo={onOpenTodo} />
+        <ArtifactRows artifacts={shown} todos={todos} report={report} onOpenTodo={onOpenTodo} cursorId={cursorId} onForget={forget} />
       </div>
     </>
   );
@@ -7602,7 +7639,7 @@ export default function App() {
               onOpenTodo={goTodo}
             />
           )}
-          {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} onOpenTodo={goTodo} />}
+          {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />}
           {view === "slack" && board && (
             <SlackPage
               slack={board.slack}

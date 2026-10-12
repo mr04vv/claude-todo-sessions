@@ -1041,6 +1041,51 @@ fn artifacts_are_kept_once_newest_first_with_their_todo() {
 }
 
 #[test]
+fn a_forgotten_artifact_stays_out_even_when_found_again() {
+    let (_d, db) = open();
+    let found = || cts_core::NewArtifact { url: "/tmp/20261012-test.html".into(), title: None, kind: cts_core::ArtifactKind::File, session_id: Some("s1".into()), todo_id: None, theme_id: None };
+    db.add_artifact(found()).unwrap();
+    let id = db.artifacts().unwrap()[0].id;
+    db.forget_artifact(id).unwrap();
+    assert!(db.artifacts().unwrap().is_empty());
+    assert!(!db.add_artifact(found()).unwrap(), "a later look at the session finds it again");
+    assert!(db.artifacts().unwrap().is_empty());
+}
+
+#[test]
+fn artifacts_are_forgotten_on_databases_made_before_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE artifacts (id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, title TEXT, kind TEXT NOT NULL,
+         session_id TEXT, todo_id INTEGER, theme_id INTEGER, created_at INTEGER NOT NULL);
+         INSERT INTO artifacts (url, kind, created_at) VALUES ('https://claude.ai/artifact/a', 'artifact', 0);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let a = &db.artifacts().unwrap()[0];
+    assert_eq!(a.url, "https://claude.ai/artifact/a");
+    db.forget_artifact(a.id).unwrap();
+    assert!(db.artifacts().unwrap().is_empty());
+}
+
+#[test]
+fn a_handover_is_taken_back_when_its_session_runs_again() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("サブタスク")).unwrap();
+    db.record_session("s1", "/w", SessionState::Idle).unwrap();
+    db.link_session("s1", t.id).unwrap();
+    db.record_session("other", "/w", SessionState::Idle).unwrap();
+    db.escalate(t.id, Some("どちらにしますか")).unwrap();
+    assert!(!db.take_back_escalation("other").unwrap(), "a session of no todo leaves it");
+    assert!(db.take_back_escalation("s1").unwrap());
+    assert_eq!(db.get_todo(t.id).unwrap().unwrap().escalation, None);
+    assert!(!db.take_back_escalation("s1").unwrap(), "nothing handed over any more");
+}
+
+#[test]
 fn themes_gather_inputs_and_the_rest_wait_unsorted() {
     let (_d, db) = open();
     let sec = db.create_theme("セキュリティ", Some("Web の攻撃と守りを説明できる"), None).unwrap();

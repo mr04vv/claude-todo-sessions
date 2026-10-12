@@ -497,6 +497,7 @@ export const api = {
   createInput: (title: string) => invoke<Input>("create_input", { title }),
   updateInput: (id: number, update: { title?: string; memo?: string; done?: boolean }) => invoke<Input>("update_input", { id, update }),
   deleteInput: (id: number) => invoke<void>("delete_input", { id }),
+  forgetArtifact: (id: number) => invoke<void>("forget_artifact", { id }),
   addInputLink: (inputId: number, url: string) => invoke<InputLink>("add_input_link", { inputId, url }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */

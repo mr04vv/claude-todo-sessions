@@ -70,6 +70,7 @@ export type Action =
   | "learnShowRead"
   | "learnNote"
   | "learnDeleteTheme"
+  | "artifactForget"
   | "search"
   | "help"
   | "paletteDown"
@@ -181,6 +182,10 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     ],
   },
   {
+    group: "成果物の画面（J K で選ぶ、Enter で開く）",
+    items: [["artifactForget", "一覧から消す"]],
+  },
+  {
     group: "⌘K のメニュー",
     items: [
       ["paletteDown", "下へ"],
@@ -257,6 +262,7 @@ const KEYS: Record<Action, string> = {
   learnShowRead: "f",
   learnNote: "shift+o",
   learnDeleteTheme: "shift+d",
+  artifactForget: "d",
   search: "/",
   help: "?",
   paletteDown: "ctrl+j",

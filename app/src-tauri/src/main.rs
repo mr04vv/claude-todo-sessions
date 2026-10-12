@@ -1141,6 +1141,12 @@ fn keep_artifacts(session: &Session) {
     }
 }
 
+/// Takes an artifact off the list (it is not found again).
+#[tauri::command(async)]
+fn forget_artifact(state: State<AppState>, id: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.forget_artifact(id).map_err(err)
+}
+
 /// Opens a file an artifact is (one a session registered), with its app.
 #[tauri::command(async)]
 fn open_path(path: String) -> Result<(), String> {
@@ -2518,6 +2524,13 @@ fn watch_loop(app: AppHandle) {
                 }
                 for s in live.iter().filter(|s| !archived.contains(&s.session_id)) {
                     let before = last_state.insert(s.session_id.clone(), s.state);
+                    // Running again, it was answered (by the user, or by the
+                    // orchestrator after them): what was handed over is taken back.
+                    if !first && before.is_some_and(|b| b != SessionState::Running) && s.state == SessionState::Running {
+                        if let Err(e) = db.take_back_escalation(&s.session_id) {
+                            eprintln!("{e}");
+                        }
+                    }
                     if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
                         let session = s.clone();
                         std::thread::spawn(move || {
@@ -2704,6 +2717,7 @@ fn main() {
             set_plan,
             todo_events,
             open_path,
+            forget_artifact,
             translate::browser_translate,
             start_terminal,
             start_cloud,
