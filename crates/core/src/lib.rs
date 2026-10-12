@@ -1264,9 +1264,9 @@ impl Db {
         self.query_sessions("todo_id IS NULL", None)
     }
 
-    /// Live sessions that belong to a todo; their state changes get notified.
-    pub fn linked_sessions(&self) -> Result<Vec<Session>> {
-        self.query_sessions("todo_id IS NOT NULL AND state != 'ended'", None)
+    /// Live sessions, with a todo or not; a turn ending in one is watched for.
+    pub fn live_sessions(&self) -> Result<Vec<Session>> {
+        self.query_sessions("state != 'ended'", None)
     }
 
     /// Every session waiting for the user, with a todo or not (and put away

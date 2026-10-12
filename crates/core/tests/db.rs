@@ -451,7 +451,7 @@ fn session_branch_is_stored() {
 }
 
 #[test]
-fn linked_sessions_lists_live_linked_ones() {
+fn live_sessions_lists_the_not_ended_linked_or_not() {
     let (_d, db) = open();
     let t = db.create_todo(new_todo("a")).unwrap();
     for (id, st) in [("a", SessionState::Running), ("b", SessionState::Ended), ("c", SessionState::Idle)] {
@@ -460,8 +460,9 @@ fn linked_sessions_lists_live_linked_ones() {
             db.link_session(id, t.id).unwrap();
         }
     }
-    let ids: Vec<String> = db.linked_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
-    assert_eq!(ids, vec!["a"]);
+    let mut ids: Vec<String> = db.live_sessions().unwrap().into_iter().map(|s| s.session_id).collect();
+    ids.sort();
+    assert_eq!(ids, vec!["a", "c"]);
 }
 
 #[test]

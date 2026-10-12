@@ -39,6 +39,8 @@ const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claud
 /// How the Artifact tool reports a publish: "Published <file> at <url> (…".
 const PUBLISHED: &str = "Published ";
 const PUBLISHED_AT: &str = " at ";
+/// How it reports one made from an Artifact type, and a later write to one.
+const MADE_AT: [&str; 2] = ["Created a new Artifact at ", "Updated the Artifact at "];
 /// The Docs connector's ack for a new doc: `"artifactUrl":"<url>"`.
 const DOC_BORN: &str = "artifactUrl";
 /// The line a theme's document's writer ends with (study::doc_prompt).
@@ -90,6 +92,13 @@ pub fn artifacts(text: &str) -> Vec<Found> {
         let file = line[..j].rsplit('/').next().unwrap_or_default();
         let title = file.rsplit_once('.').map_or(file, |(stem, _)| stem).trim();
         found.push((i, Found { url, title: (!title.is_empty()).then(|| title.to_string()), doc: false }));
+    }
+    for made in MADE_AT {
+        for (i, _) in text.match_indices(made) {
+            if let Some(url) = artifact_at(&text[i + made.len()..]) {
+                found.push((i, Found { url, title: None, doc: false }));
+            }
+        }
     }
     for (i, _) in text.match_indices(DOC_BORN) {
         if let Some(url) = artifact_at(text[i + DOC_BORN.len()..].trim_start_matches(['\\', '"', ':'])) {
@@ -241,6 +250,25 @@ mod tests {
             "a link merely mentioned is not one, and a new version is the same one"
         );
         assert!(artifacts("nothing").is_empty());
+    }
+
+    #[test]
+    fn an_artifact_made_from_a_type_is_found_too() {
+        let text = concat!(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Created a new Artifact at https://claude.ai/artifact/RPPwKWPE6T (version 1791448708-1c76) from the Artifact type https://claude.ai/artifact/QKN21svewx (release 1)."}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Updated the Artifact at https://claude.ai/artifact/RPPwKWPE6T (Version 2, version id 1) with /tmp/a.json"}]}}"#,
+            "\n",
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Updated the Artifact at https://claude.ai/artifact/Older9 (Version 5, version id 1) with /tmp/b.json"}]}}"#,
+        );
+        assert_eq!(
+            artifacts(text),
+            vec![
+                Found { url: "https://claude.ai/artifact/RPPwKWPE6T".into(), title: None, doc: false },
+                Found { url: "https://claude.ai/artifact/Older9".into(), title: None, doc: false },
+            ],
+            "the type it is made from is not one of them"
+        );
     }
 
     #[test]

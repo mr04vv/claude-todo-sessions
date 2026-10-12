@@ -2490,13 +2490,18 @@ fn watch_loop(app: AppHandle) {
                     notify_needs_input(&app, &db, s.clone());
                 }
             }
-            // A linked session that stops running has finished its turn: it is
-            // marked 新着 (not notified), and it often just opened a PR.
-            if let Ok(linked) = db.linked_sessions() {
-                for s in linked.iter().filter(|s| !archived.contains(&s.session_id)) {
+            // A session that stops running has finished its turn: it is marked
+            // 新着 (not notified), what it made goes in the artifacts, and a
+            // linked one often just opened a PR.
+            // At launch, what the live ones made while the app was closed.
+            if let Ok(live) = db.live_sessions() {
+                if first {
+                    let all = live.clone();
+                    std::thread::spawn(move || all.iter().for_each(keep_artifacts));
+                }
+                for s in live.iter().filter(|s| !archived.contains(&s.session_id)) {
                     let before = last_state.insert(s.session_id.clone(), s.state);
                     if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
-                        // What it made in that turn goes in the artifacts.
                         let session = s.clone();
                         std::thread::spawn(move || keep_artifacts(&session));
                         // Look for the PR now.
