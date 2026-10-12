@@ -1089,9 +1089,12 @@ fn mark_done(db: &Db, todo: &Todo) {
 
 /// Bytes read from the end of a transcript to find its latest gitBranch.
 const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
+/// Bytes read to find what a session made: a whole turn, its tools' output
+/// however long (the html skill's call comes well before the file it writes).
+const ARTIFACT_TAIL_BYTES: u64 = 4 * 1024 * 1024;
 
-/// The end of a local session's transcript, `~/.claude/projects/*/<id>.jsonl`.
-fn transcript_tail(session_id: &str) -> Option<String> {
+/// The last `bytes` of a local session's transcript, `~/.claude/projects/*/<id>.jsonl`.
+fn transcript_tail(session_id: &str, bytes: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let projects = home().join(".claude/projects");
     let file = std::fs::read_dir(projects)
@@ -1101,7 +1104,7 @@ fn transcript_tail(session_id: &str) -> Option<String> {
         .find(|p| p.exists())?;
     let mut f = std::fs::File::open(file).ok()?;
     let len = f.metadata().ok()?.len();
-    f.seek(SeekFrom::Start(len.saturating_sub(TRANSCRIPT_TAIL_BYTES))).ok()?;
+    f.seek(SeekFrom::Start(len.saturating_sub(bytes))).ok()?;
     let mut buf = Vec::new();
     f.read_to_end(&mut buf).ok()?;
     Some(String::from_utf8_lossy(&buf).into())
@@ -1109,7 +1112,7 @@ fn transcript_tail(session_id: &str) -> Option<String> {
 
 /// Latest non-default branch a local session worked on, from its transcript.
 fn transcript_branch(session_id: &str) -> Option<String> {
-    launch::last_git_branch(&transcript_tail(session_id)?)
+    launch::last_git_branch(&transcript_tail(session_id, TRANSCRIPT_TAIL_BYTES)?)
 }
 
 /// Keeps the claude.ai artifacts and docs a session made, with its todo.
@@ -1120,7 +1123,7 @@ fn keep_artifacts(session: &Session) {
             Err(e) => return eprintln!("{e}"),
         }
     } else {
-        cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id).unwrap_or_default())
+        cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id, ARTIFACT_TAIL_BYTES).unwrap_or_default())
     };
     let found = cts_core::transcript::artifacts(&entries);
     if found.is_empty() {
@@ -1131,8 +1134,7 @@ fn keep_artifacts(session: &Session) {
         Err(e) => return eprintln!("{e}"),
     };
     for f in found {
-        let kind = if f.doc { cts_core::ArtifactKind::Doc } else { cts_core::ArtifactKind::Artifact };
-        let a = cts_core::NewArtifact { url: f.url, title: f.title, kind, session_id: Some(session.session_id.clone()), todo_id: session.todo_id, theme_id: None };
+        let a = cts_core::NewArtifact { url: f.url, title: f.title, kind: f.kind, session_id: Some(session.session_id.clone()), todo_id: session.todo_id, theme_id: None };
         if let Err(e) = db.add_artifact(a) {
             eprintln!("{e}");
         }
@@ -1157,7 +1159,7 @@ fn session_question(session: &Session) -> Option<String> {
     let entries = if launch::is_cloud_session(&session.session_id) {
         cts_core::cloud::recent_entries(&session.session_id).map_err(|e| eprintln!("{e}")).ok()?
     } else {
-        cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id)?)
+        cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id, TRANSCRIPT_TAIL_BYTES)?)
     };
     cts_core::transcript::question(&entries)
 }

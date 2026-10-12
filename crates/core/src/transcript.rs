@@ -76,8 +76,7 @@ pub struct Found {
     pub url: String,
     /// A published artifact's file name, without its extension.
     pub title: Option<String>,
-    /// A Claude Docs document (else an artifact).
-    pub doc: bool,
+    pub kind: crate::ArtifactKind,
 }
 
 /// The tools whose results tell what a session made: the Artifact tool, and
@@ -89,24 +88,48 @@ fn makes_artifacts(tool: &str) -> bool {
     tool == ARTIFACT_TOOL || DOCS_WRITES.iter().any(|w| tool.ends_with(w))
 }
 
+/// The skill that writes explanations as HTML files, called as a tool or
+/// typed as /html.
+const HTML_SKILL: &str = "html";
+const HTML_TYPED: &str = "<command-name>/html</command-name>";
+
+/// A document as the html skill names it, `{yyyymmdd}-{what}.html` (a page
+/// of an app, index.html, is not one).
+fn html_document(path: &str) -> Option<Found> {
+    let stem = path.rsplit('/').next()?.strip_suffix(".html")?;
+    let (date, rest) = stem.split_at_checked(8)?;
+    (date.bytes().all(|b| b.is_ascii_digit()) && rest.len() > 1 && rest.starts_with('-'))
+        .then(|| Found { url: path.into(), title: Some(stem.into()), kind: crate::ArtifactKind::File })
+}
+
 /// Every artifact a session published and every doc it made, as those
 /// tools' results tell (a result whose call is not among the entries is
-/// left out), once each (a new version is the same one), in the order made.
-/// What other tools show (a page read, code holding such a line) is not them.
+/// left out), and the documents it wrote once it used the html skill, once
+/// each (a new version is the same one), in the order made. What other
+/// tools show (a page read, code holding such a line) is not them.
 pub fn artifacts(entries: &[Value]) -> Vec<Found> {
     let mut tools = std::collections::HashMap::new();
     let mut found = Vec::new();
-    for block in entries.iter().flat_map(|e| e["message"]["content"].as_array().into_iter().flatten()) {
-        match block["type"].as_str() {
-            Some("tool_use") => {
-                if let (Some(id), Some(name)) = (block["id"].as_str(), block["name"].as_str()) {
-                    tools.insert(id, name);
+    let mut html = false;
+    for e in entries {
+        html |= e["type"] == "user" && e["message"]["content"].as_str().is_some_and(|t| t.contains(HTML_TYPED));
+        for block in e["message"]["content"].as_array().into_iter().flatten() {
+            match block["type"].as_str() {
+                Some("tool_use") => {
+                    let name = block["name"].as_str().unwrap_or_default();
+                    if let Some(id) = block["id"].as_str() {
+                        tools.insert(id, name);
+                    }
+                    html |= name == "Skill" && block["input"]["skill"] == HTML_SKILL;
+                    if html && name == "Write" {
+                        found.extend(block["input"]["file_path"].as_str().and_then(html_document));
+                    }
                 }
+                Some("tool_result") if block["tool_use_id"].as_str().and_then(|id| tools.get(id)).is_some_and(|t| makes_artifacts(t)) => {
+                    found.extend(made_in(&result_text(block)));
+                }
+                _ => {}
             }
-            Some("tool_result") if block["tool_use_id"].as_str().and_then(|id| tools.get(id)).is_some_and(|t| makes_artifacts(t)) => {
-                found.extend(made_in(&result_text(block)));
-            }
-            _ => {}
         }
     }
     let mut seen = std::collections::HashSet::new();
@@ -130,18 +153,18 @@ fn made_in(text: &str) -> Vec<Found> {
         let Some(url) = artifact_at(&line[j + PUBLISHED_AT.len()..]) else { continue };
         let file = line[..j].rsplit('/').next().unwrap_or_default();
         let title = file.rsplit_once('.').map_or(file, |(stem, _)| stem).trim();
-        found.push((i, Found { url, title: (!title.is_empty()).then(|| title.to_string()), doc: false }));
+        found.push((i, Found { url, title: (!title.is_empty()).then(|| title.to_string()), kind: crate::ArtifactKind::Artifact }));
     }
     for made in MADE_AT {
         for (i, _) in text.match_indices(made) {
             if let Some(url) = artifact_at(&text[i + made.len()..]) {
-                found.push((i, Found { url, title: None, doc: false }));
+                found.push((i, Found { url, title: None, kind: crate::ArtifactKind::Artifact }));
             }
         }
     }
     for (i, _) in text.match_indices(DOC_BORN) {
         if let Some(url) = artifact_at(text[i + DOC_BORN.len()..].trim_start_matches(['\\', '"', ':'])) {
-            found.push((i, Found { url, title: None, doc: true }));
+            found.push((i, Found { url, title: None, kind: crate::ArtifactKind::Doc }));
         }
     }
     found.sort_by_key(|(i, _)| *i);
@@ -289,8 +312,8 @@ mod tests {
         assert_eq!(
             artifacts(&entries),
             vec![
-                Found { url: "https://claude.ai/artifact/1UnAnmsD3RX7".into(), title: Some("比較表".into()), doc: false },
-                Found { url: "https://claude.ai/code/artifact/e1e71452-f7a7".into(), title: None, doc: true },
+                Found { url: "https://claude.ai/artifact/1UnAnmsD3RX7".into(), title: Some("比較表".into()), kind: crate::ArtifactKind::Artifact },
+                Found { url: "https://claude.ai/code/artifact/e1e71452-f7a7".into(), title: None, kind: crate::ArtifactKind::Doc },
             ],
             "a link merely mentioned is not one, and a new version is the same one"
         );
@@ -308,11 +331,41 @@ mod tests {
         assert_eq!(
             artifacts(&entries),
             vec![
-                Found { url: "https://claude.ai/artifact/RPPwKWPE6T".into(), title: None, doc: false },
-                Found { url: "https://claude.ai/artifact/Older9".into(), title: None, doc: false },
+                Found { url: "https://claude.ai/artifact/RPPwKWPE6T".into(), title: None, kind: crate::ArtifactKind::Artifact },
+                Found { url: "https://claude.ai/artifact/Older9".into(), title: None, kind: crate::ArtifactKind::Artifact },
             ],
             "the type it is made from is not one of them"
         );
+    }
+
+    /// A file written (the Write tool) and its ack.
+    fn write(id: &str, path: &str) -> [Value; 2] {
+        [
+            assistant(json!([{"type": "tool_use", "id": id, "name": "Write", "input": {"file_path": path, "content": "<html></html>"}}]), json!({})),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": id, "content": format!("File created successfully at: {path}")}]}}),
+        ]
+    }
+
+    #[test]
+    fn the_html_skills_documents_are_files_made() {
+        let skill = assistant(json!([{"type": "tool_use", "id": "s1", "name": "Skill", "input": {"skill": "html", "args": "OIDC を説明して"}}]), json!({}));
+        let entries: Vec<Value> = [
+            write("w0", "/w/20261011-before.html").to_vec(),
+            vec![skill],
+            write("w1", "/w/20261012-oidc-flow.html").to_vec(),
+            write("w2", "/w/app/index.html").to_vec(),
+            write("w3", "/w/app/20261012-notes.md").to_vec(),
+            write("w4", "/w/20261012-oidc-flow.html").to_vec(),
+        ]
+        .concat();
+        assert_eq!(
+            artifacts(&entries),
+            vec![Found { url: "/w/20261012-oidc-flow.html".into(), title: Some("20261012-oidc-flow".into()), kind: crate::ArtifactKind::File }],
+            "only what follows the skill and is named as it names its documents ({{yyyymmdd}}-….html), once"
+        );
+        let typed = json!({"type": "user", "message": {"content": "<command-message>html</command-message>\n<command-name>/html</command-name>\n<command-args>CSP</command-args>"}});
+        let entries: Vec<Value> = [vec![typed], write("w1", "/w/20261012-csp.html").to_vec()].concat();
+        assert_eq!(artifacts(&entries).len(), 1, "the skill typed as /html counts too");
     }
 
     #[test]
