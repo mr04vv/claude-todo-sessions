@@ -213,7 +213,7 @@ impl Server {
         orchestra::fix(a.id)
     }
 
-    #[tool(description = "Hand a subtask to the user (it waits on them, and they are notified), with why: a choice the plan does not cover, money, permissions or deleting data, or a CI still failing after two fixes.")]
+    #[tool(description = "Hand a subtask to the user (it waits on them, and they are notified), with why: a choice the plan does not cover, money, permissions or deleting data, a CI still failing after two fixes, or a Cloud subtask stopped on a question with choices (SendMessage does not answer one: give your answer).")]
     async fn escalate(&self, Parameters(a): Parameters<TextArgs>) -> Result<String, String> {
         orchestra::escalate(a.todo_id, &a.text)
     }

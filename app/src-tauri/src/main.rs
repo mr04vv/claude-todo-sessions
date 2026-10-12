@@ -2516,7 +2516,9 @@ fn watch_loop(app: AppHandle) {
                 for s in waiting.iter().filter(|s| !known.contains(&s.session_id)) {
                     let subtask = s.todo_id.and_then(|id| db.get_todo(id).ok().flatten());
                     let question = db.get_session(&s.session_id).ok().flatten().and_then(|s| s.question);
-                    if subtask.is_some_and(|t| relay_to_orchestrator(&db, &t, launch::SubtaskEvent::Asks(question))) {
+                    // On Cloud, waiting is a question with choices, which a message does not answer.
+                    let event = if launch::is_cloud_session(&s.session_id) { launch::SubtaskEvent::CloudAsks(question) } else { launch::SubtaskEvent::Asks(question) };
+                    if subtask.is_some_and(|t| relay_to_orchestrator(&db, &t, event)) {
                         continue;
                     }
                     notify_needs_input(&app, &db, s.clone());

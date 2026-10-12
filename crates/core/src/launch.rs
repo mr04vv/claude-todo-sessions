@@ -206,6 +206,9 @@ pub fn session_command(agent: crate::Agent, session_id: Option<&str>, opts: &Sta
 pub enum SubtaskEvent {
     /// Its session waits for a reply: what it asks.
     Asks(Option<String>),
+    /// A Cloud subtask stopped on a question with choices (AskUserQuestion),
+    /// which a message (SendMessage) does not answer: what it asks.
+    CloudAsks(Option<String>),
     /// Its PR's CI failed: the checks that failed.
     CiFailed(Vec<String>),
     ChangesRequested,
@@ -224,7 +227,11 @@ impl SubtaskEvent {
         let who = format!("サブタスク #{todo_id}「{title}」");
         let what = match self {
             SubtaskEvent::Asks(q) => format!(
-                "{who}が返事を待っています{}。計画で答えられるなら reply_to_subtask（todo_id={todo_id}。Cloud のサブタスクなら SendMessage）で答え、決められないことなら escalate で私に回してください。",
+                "{who}が返事を待っています{}。計画で答えられるなら reply_to_subtask（todo_id={todo_id}）で答え、決められないことなら escalate で私に回してください。",
+                q.as_deref().map(|q| format!("：「{q}」")).unwrap_or_default()
+            ),
+            SubtaskEvent::CloudAsks(q) => format!(
+                "{who}（Cloud）が選択肢の画面で止まっています{}。この画面には SendMessage では答えられません（メッセージは画面のあとに並ぶだけです）。答えの案を添えて escalate で私に回してください。",
                 q.as_deref().map(|q| format!("：「{q}」")).unwrap_or_default()
             ),
             SubtaskEvent::CiFailed(names) => format!(
@@ -240,6 +247,13 @@ impl SubtaskEvent {
         };
         format!("{RELAY_HEAD} {what}")
     }
+}
+
+/// What a Cloud subtask an orchestrator starts is told besides its todo: to
+/// ask in words and end its turn, which the orchestrator hears of and answers
+/// with SendMessage; a question with choices would wait on the user.
+pub fn cloud_subtask_prompt(body: &str) -> String {
+    format!("{body}\n\n## 質問のしかた\n\nこのセッションは、親 todo の指揮役のセッションが見守っています。質問や確認は AskUserQuestion を使わず、文章で書いてそのターンを終えてください。指揮役がメッセージで答えます（選択肢の画面には指揮役から答えられず、止まったままになります）。")
 }
 
 /// Where an orchestrator starts a subtask: as asked (`cloud`), else on Cloud
@@ -678,9 +692,17 @@ mod relay_tests {
         assert!(changes.contains("修正依頼") && changes.contains("fix_subtask"), "{changes}");
         let done = SubtaskEvent::Done.message(42, "グラフ");
         assert!(done.contains("Done") && done.contains("#42"), "{done}");
-        assert!(asks.contains("SendMessage"), "a Cloud subtask is answered with SendMessage: {asks}");
         let turn = SubtaskEvent::TurnEnded(Some("PR を作りました".into())).message(42, "グラフ");
         assert!(turn.contains("#42") && turn.contains("PR を作りました") && turn.contains("SendMessage"), "{turn}");
         assert!(!SubtaskEvent::TurnEnded(None).message(42, "グラフ").contains("「」"));
+        assert!(!asks.contains("SendMessage"), "a herdr subtask's question is typed into its pane: {asks}");
+        let cloud = SubtaskEvent::CloudAsks(Some("どうしますか？".into())).message(42, "グラフ");
+        assert!(cloud.contains("どうしますか？") && cloud.contains("escalate") && cloud.contains("SendMessage では答えられません"), "a question with choices on Cloud is the user's to pick: {cloud}");
+    }
+
+    #[test]
+    fn a_cloud_subtask_asks_its_orchestrator_in_words() {
+        let p = cloud_subtask_prompt("本文");
+        assert!(p.starts_with("本文") && p.contains("AskUserQuestion を使わず"), "{p}");
     }
 }
