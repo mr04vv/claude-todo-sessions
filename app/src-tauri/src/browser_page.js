@@ -431,11 +431,26 @@
     box.querySelector("button")?.focus();
   };
 
+  // ⌃Return asks for the context menu (macOS 15's shortcut), with no
+  // mousedown before it as a right click has: a focused link opens in the
+  // default browser, as a ctrl-click on it does, and no menu shows.
+  const MOUSE_MENU_MS = 500;
+  let ctrlHeld = false;
+  let lastMouseDown = -Infinity;
+  window.addEventListener("mousedown", () => (lastMouseDown = performance.now()), true);
+  window.addEventListener("keydown", (e) => e.key === "Control" && (ctrlHeld = true), true);
+  window.addEventListener("keyup", (e) => e.key === "Control" && (ctrlHeld = false), true);
+  window.addEventListener("blur", () => (ctrlHeld = false));
   window.addEventListener(
     "contextmenu",
     (e) => {
       if (e.altKey) return;
       e.preventDefault();
+      if (ctrlHeld && performance.now() - lastMouseDown > MOUSE_MENU_MS) {
+        const focused = document.activeElement?.closest?.("a[href]");
+        if (focused) send(`${OPEN_OUTSIDE}?u=${encodeURIComponent(focused.href)}`);
+        return;
+      }
       const text = String(getSelection() ?? "").trim();
       const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
       // A ctrl-click (macOS makes it a right click) on a link opens it in the default browser.
