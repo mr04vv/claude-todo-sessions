@@ -2400,6 +2400,21 @@ fn relay_to_orchestrator(db: &Db, subtask: &Todo, event: launch::SubtaskEvent) -
     true
 }
 
+/// Tells a Cloud subtask's orchestrator that its turn ended, with what it
+/// said last: a Cloud session cannot message another one.
+fn relay_cloud_turn(session: &Session) {
+    if !launch::is_cloud_session(&session.session_id) {
+        return;
+    }
+    let db = match open_db() {
+        Ok(db) => db,
+        Err(e) => return eprintln!("{e}"),
+    };
+    if let Some(subtask) = session.todo_id.and_then(|id| db.get_todo(id).ok().flatten()).filter(|t| t.parent_id.is_some()) {
+        relay_to_orchestrator(&db, &subtask, launch::SubtaskEvent::TurnEnded(session_question(session)));
+    }
+}
+
 /// Notifies that an orchestrator handed a todo to the user; clicking it opens the todo.
 fn notify_escalation(app: &AppHandle, todo: &Todo, why: &str) {
     let id = todo.id;
@@ -2505,7 +2520,10 @@ fn watch_loop(app: AppHandle) {
                     let before = last_state.insert(s.session_id.clone(), s.state);
                     if !first && before == Some(SessionState::Running) && s.state == SessionState::Idle {
                         let session = s.clone();
-                        std::thread::spawn(move || keep_artifacts(&session));
+                        std::thread::spawn(move || {
+                            keep_artifacts(&session);
+                            relay_cloud_turn(&session);
+                        });
                         // Look for the PR now.
                         if let (Some(todo_id), Ok(tx)) = (s.todo_id, app.state::<AppState>().github_wake.lock()) {
                             let _ = tx.send(Some(todo_id));

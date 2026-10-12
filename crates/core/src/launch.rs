@@ -210,6 +210,9 @@ pub enum SubtaskEvent {
     CiFailed(Vec<String>),
     ChangesRequested,
     Done,
+    /// A Cloud subtask's turn ended (it cannot message the orchestrator
+    /// itself): what it said last.
+    TurnEnded(Option<String>),
 }
 
 /// How a message to the orchestrator starts, so it tells them from the user's.
@@ -221,7 +224,7 @@ impl SubtaskEvent {
         let who = format!("サブタスク #{todo_id}「{title}」");
         let what = match self {
             SubtaskEvent::Asks(q) => format!(
-                "{who}が返事を待っています{}。計画で答えられるなら reply_to_subtask（todo_id={todo_id}）で答え、決められないことなら escalate で私に回してください。",
+                "{who}が返事を待っています{}。計画で答えられるなら reply_to_subtask（todo_id={todo_id}。Cloud のサブタスクなら SendMessage）で答え、決められないことなら escalate で私に回してください。",
                 q.as_deref().map(|q| format!("：「{q}」")).unwrap_or_default()
             ),
             SubtaskEvent::CiFailed(names) => format!(
@@ -230,6 +233,10 @@ impl SubtaskEvent {
             ),
             SubtaskEvent::ChangesRequested => format!("{who}の PR に修正依頼が来ました。fix_subtask（id={todo_id}）で直させてください。"),
             SubtaskEvent::Done => format!("{who}が Done になりました。"),
+            SubtaskEvent::TurnEnded(said) => format!(
+                "{who}（Cloud）がひと区切りしました{}。続きを頼むなら SendMessage で送ってください。向こうからこのセッションへは返事が来ません。",
+                said.as_deref().map(|s| format!("：「{s}」")).unwrap_or_default()
+            ),
         };
         format!("{RELAY_HEAD} {what}")
     }
@@ -671,5 +678,9 @@ mod relay_tests {
         assert!(changes.contains("修正依頼") && changes.contains("fix_subtask"), "{changes}");
         let done = SubtaskEvent::Done.message(42, "グラフ");
         assert!(done.contains("Done") && done.contains("#42"), "{done}");
+        assert!(asks.contains("SendMessage"), "a Cloud subtask is answered with SendMessage: {asks}");
+        let turn = SubtaskEvent::TurnEnded(Some("PR を作りました".into())).message(42, "グラフ");
+        assert!(turn.contains("#42") && turn.contains("PR を作りました") && turn.contains("SendMessage"), "{turn}");
+        assert!(!SubtaskEvent::TurnEnded(None).message(42, "グラフ").contains("「」"));
     }
 }
