@@ -1,12 +1,12 @@
 // The Slack page's rows: one per thread (a message in no thread is its
 // own), gathering its mentions of the user (#27) and its new replies (#28),
 // shown by its latest unread message. Done or let go, a row takes them all.
-import type { SlackMessage, SlackThread } from "./api";
+import type { SlackBookmark, SlackMessage, SlackThread } from "./api";
 
 export interface SlackItem {
   key: string;
-  /// A message the user just posted shows its thread too.
-  kind: "thread" | "posted";
+  /// A message the user just posted shows its thread too, as a bookmark does.
+  kind: "thread" | "posted" | "bookmark";
   channel: string;
   /// The thread it opens.
   threadTs: string;
@@ -82,3 +82,23 @@ export function slackItems(messages: SlackMessage[], threads: SlackThread[]): Sl
   });
   return items.sort((a, b) => Number(b.ts) - Number(a.ts));
 }
+
+/// The bookmarks as rows, each opening its thread on the message bookmarked.
+export const bookmarkItems = (bookmarks: SlackBookmark[]): SlackItem[] =>
+  bookmarks.map((b) => ({
+    key: `b:${b.channel}:${b.ts}`,
+    kind: "bookmark",
+    channel: b.channel,
+    threadTs: b.thread_ts ?? b.ts,
+    ts: b.ts,
+    channelName: b.channel_name,
+    userName: b.user_name,
+    userImage: b.user_image,
+    text: b.text,
+    permalink: b.permalink,
+    mention: false,
+    via: null,
+    newReplies: 0,
+    read: true,
+    mentions: [],
+  }));

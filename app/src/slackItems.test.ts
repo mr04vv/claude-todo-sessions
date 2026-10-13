@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { SlackMessage, SlackThread } from "./api.ts";
-import { slackItems } from "./slackItems.ts";
+import type { SlackBookmark, SlackMessage, SlackThread } from "./api.ts";
+import { bookmarkItems, slackItems } from "./slackItems.ts";
 
 const mention = (ts: string, patch: Partial<SlackMessage> = {}): SlackMessage => ({
   channel: "C1",
@@ -83,4 +83,15 @@ test("a group's mention is told by its group, unless the user is mentioned too",
 test("rows of different threads stay apart, the newest first", () => {
   const items = slackItems([mention("101.0"), mention("200.0", { thread_ts: "150.0" })], [thread("103.0", { thread_ts: "90.0" })]);
   assert.deepEqual(items.map((i) => i.ts), ["200.0", "103.0", "101.0"]);
+});
+
+test("a bookmark is a row that opens its thread on the message bookmarked", () => {
+  const b = (ts: string, thread_ts: string | null): SlackBookmark => ({ channel: "C1", ts, thread_ts, channel_name: "dev", user_name: "鈴木", user_image: null, text: `saved ${ts}`, permalink: `https://x/${ts}` });
+  const [reply, head] = bookmarkItems([b("102.0", "100.0"), b("100.0", null)]);
+  assert.equal(reply.kind, "bookmark");
+  assert.equal(reply.threadTs, "100.0");
+  assert.equal(reply.ts, "102.0", "the thread opens on it");
+  assert.equal(head.threadTs, "100.0", "a message in no thread is its own");
+  assert.notEqual(reply.key, head.key);
+  assert.ok(reply.read && !reply.mention && reply.mentions.length === 0, "nothing to read or let go");
 });

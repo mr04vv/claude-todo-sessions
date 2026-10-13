@@ -1380,3 +1380,32 @@ fn a_channel_muted_in_the_app_leaves_the_slack_page_until_unmuted() {
     assert_eq!(channels(&db).1.len(), 2);
     assert!(db.slack_muted_channels().unwrap().is_empty());
 }
+
+fn bookmark(channel: &str, ts: &str) -> cts_core::SlackBookmark {
+    cts_core::SlackBookmark {
+        channel: channel.into(),
+        ts: ts.into(),
+        thread_ts: Some("100.0".into()),
+        channel_name: "dev-web".into(),
+        user_name: "鈴木".into(),
+        user_image: None,
+        text: "手順はこちら".into(),
+        permalink: format!("https://acme.slack.com/archives/{channel}/p{ts}"),
+    }
+}
+
+#[test]
+fn slack_bookmarks_stay_until_taken_off_whatever_happens_to_the_mentions() {
+    let (_d, db) = open();
+    db.bookmark_slack(&bookmark("C1", "101.0")).unwrap();
+    db.bookmark_slack(&bookmark("C2", "102.0")).unwrap();
+    db.bookmark_slack(&bookmark("C1", "101.0")).unwrap();
+    let ts = |db: &Db| db.slack_bookmarks().unwrap().into_iter().map(|b| b.ts).collect::<Vec<_>>();
+    assert_eq!(ts(&db), ["102.0", "101.0"], "once each, the last bookmarked first");
+    db.mute_slack_channel("C1", "dev-web", true).unwrap();
+    db.clear_slack().unwrap();
+    db.prune_slack(f64::MAX).unwrap();
+    assert_eq!(ts(&db).len(), 2, "kept through a mute, a new token and the pruning");
+    db.unbookmark_slack("C2", "102.0").unwrap();
+    assert_eq!(db.slack_bookmarks().unwrap(), vec![cts_core::SlackBookmark { ..bookmark("C1", "101.0") }]);
+}

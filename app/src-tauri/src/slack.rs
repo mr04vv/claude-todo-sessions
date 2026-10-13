@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cts_core::slack::{self, Envelope, Group, Hit, Me, Member, Person};
-use cts_core::{Db, MutedChannel, NewSlackMessage, SlackMessage, SlackReply, SlackThread};
+use cts_core::{Db, MutedChannel, NewSlackMessage, SlackBookmark, SlackMessage, SlackReply, SlackThread};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -344,6 +344,8 @@ pub struct SlackView {
     messages: Vec<SlackMessage>,
     /// The threads the user is in with new replies (#28).
     threads: Vec<SlackThread>,
+    /// The last bookmarked first.
+    bookmarks: Vec<SlackBookmark>,
 }
 
 pub fn view(slack: &Slack, db: &Db) -> Result<SlackView, String> {
@@ -357,6 +359,7 @@ pub fn view(slack: &Slack, db: &Db) -> Result<SlackView, String> {
         error: error.or(socket_error),
         messages: db.slack_messages(BOARD_MESSAGES).map_err(err)?,
         threads: db.slack_threads().map_err(err)?,
+        bookmarks: db.slack_bookmarks().map_err(err)?,
     })
 }
 
@@ -520,6 +523,16 @@ pub fn slack_mute_thread(state: State<AppState>, slack: State<Slack>, channel: S
     let db = state.db.lock().map_err(err)?;
     db.follow_slack_thread(&channel, &thread_ts, &name, &slack::permalink(&me.team_url, &channel, &thread_ts, None)).map_err(err)?;
     db.mute_slack_thread(&channel, &thread_ts, muted).map_err(err)
+}
+
+#[tauri::command(async)]
+pub fn slack_bookmark(state: State<AppState>, bookmark: SlackBookmark) -> Result<(), String> {
+    state.db.lock().map_err(err)?.bookmark_slack(&bookmark).map_err(err)
+}
+
+#[tauri::command(async)]
+pub fn slack_unbookmark(state: State<AppState>, channel: String, ts: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.unbookmark_slack(&channel, &ts).map_err(err)
 }
 
 /// Mutes a channel in the app, or unmutes it: its mentions and replies

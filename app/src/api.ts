@@ -224,6 +224,19 @@ export interface SlackMentionable {
   image: string | null;
 }
 
+/** A Slack message bookmarked (a thread's head stands for the thread), as it was then. */
+export interface SlackBookmark {
+  channel: string;
+  ts: string;
+  thread_ts: string | null;
+  channel_name: string;
+  user_name: string;
+  user_image: string | null;
+  /** As plain text. */
+  text: string;
+  permalink: string;
+}
+
 /** A Slack channel muted in Shosai (Slack's own mute cannot be read with a user token). */
 export interface MutedChannel {
   channel: string;
@@ -244,6 +257,8 @@ export interface SlackView {
   messages: SlackMessage[];
   /** The threads the user is in with new replies, the latest first. */
   threads: SlackThread[];
+  /** The last bookmarked first. */
+  bookmarks: SlackBookmark[];
 }
 
 /** Who the kept Slack token is. */
@@ -456,6 +471,8 @@ export const api = {
   slackThread: (channel: string, threadTs: string) => invoke<{ messages: SlackThreadMessage[]; muted: boolean }>("slack_thread", { channel, threadTs }),
   slackThreadSeen: (channel: string, threadTs: string) => invoke<void>("slack_thread_seen", { channel, threadTs }),
   slackMuteThread: (channel: string, threadTs: string, muted: boolean) => invoke<void>("slack_mute_thread", { channel, threadTs, muted }),
+  slackBookmark: (bookmark: SlackBookmark) => invoke<void>("slack_bookmark", { bookmark }),
+  slackUnbookmark: (channel: string, ts: string) => invoke<void>("slack_unbookmark", { channel, ts }),
   slackMuteChannel: (channel: string, muted: boolean) => invoke<void>("slack_mute_channel", { channel, muted }),
   slackMutedChannels: () => invoke<MutedChannel[]>("slack_muted_channels"),
   slackDirectory: () => invoke<SlackMentionable[]>("slack_directory"),

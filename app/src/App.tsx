@@ -92,7 +92,7 @@ import {
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { emojiNames, parseSlack, slackPlain, type Inline } from "./slackText";
 import { nameToEmoji } from "gemoji";
-import { slackItems, type SlackItem } from "./slackItems";
+import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
 import { categoryAt, themeGroups, themeLabel, themeRows } from "./themes";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
@@ -3191,9 +3191,16 @@ function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
   );
 }
 
-type SlackFilter = "unread" | "mention" | "thread" | "read";
-const SLACK_FILTERS: SlackFilter[] = ["unread", "mention", "thread", "read"];
-const SLACK_FILTER_LABEL: Record<SlackFilter, string> = { unread: "未読", mention: "メンション", thread: "スレッド", read: "既読" };
+type SlackFilter = "unread" | "mention" | "thread" | "read" | "bookmark";
+const SLACK_FILTERS: SlackFilter[] = ["unread", "mention", "thread", "read", "bookmark"];
+const SLACK_FILTER_LABEL: Record<SlackFilter, string> = { unread: "未読", mention: "メンション", thread: "スレッド", read: "既読", bookmark: "ブックマーク" };
+const SLACK_EMPTY: Record<SlackFilter, string> = {
+  unread: "未読はありません。",
+  mention: "未読はありません。",
+  thread: "未読はありません。",
+  read: "既読はまだありません。",
+  bookmark: "ブックマークはまだありません。スレッドで選んでいるメッセージ（⇧J ⇧K で選ぶ）を B でブックマークします。",
+};
 /// The Slack page's list width (px), dragged by its edge and kept.
 const SLACK_LIST_KEY = "slackListWidth";
 const SLACK_LIST_WIDTH = { min: 260, max: 720, initial: 380, step: 40 };
@@ -3218,6 +3225,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
 }) {
   const [filter, setFilter] = useState<SlackFilter>("unread");
   const items = slackItems(slack.messages, slack.threads);
+  const marked = bookmarkItems(slack.bookmarks);
   // A notification names a mention: its thread's row is picked.
   const rowOf = (mention: string | null) => items.find((i) => i.mentions.some((m) => mentionKey(m) === mention))?.key ?? null;
   const [selected, setSelected] = useState<string | null>(() => rowOf(pick));
@@ -3236,11 +3244,15 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     mention: unread.filter((i) => i.mention && i.via === null).length,
     thread: unread.filter((i) => i.newReplies > 0).length,
     read: items.length - unread.length,
+    bookmark: marked.length,
   };
-  const inFilter = (i: SlackItem) => (filter === "read" ? i.read : !i.read && (filter === "unread" || (filter === "thread" ? i.newReplies > 0 : i.mention && i.via === null)));
+  const inFilter = (i: SlackItem) =>
+    filter === "bookmark"
+      ? i.kind === "bookmark"
+      : i.kind !== "bookmark" && (filter === "read" ? i.read : !i.read && (filter === "unread" || (filter === "thread" ? i.newReplies > 0 : i.mention && i.via === null)));
   // The one picked stays while it is read, so it does not jump away.
-  const shown = items.filter((i) => i.key === selected || inFilter(i));
-  const current = items.find((i) => i.key === selected) ?? (posted?.key === selected ? posted : null);
+  const shown = [...items, ...marked].filter((i) => i.key === selected || inFilter(i));
+  const current = items.find((i) => i.key === selected) ?? marked.find((i) => i.key === selected) ?? (posted?.key === selected ? posted : null);
   // ↑↓ or j k pick a row, Enter shows its thread.
   const { cursorId, setCursor, list } = useRowCursor(
     shown.map((i) => i.key),
@@ -3275,6 +3287,14 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     run(() => Promise.all([...item.mentions.map((m) => api.slackForget(m.channel, m.ts)), api.slackForgetThread(item.channel, item.threadTs)]));
     goOn(next);
   };
+  /// Bookmarks a message of the row's thread (its head: the thread), or takes it off.
+  const isBookmarked = (channel: string, ts: string) => slack.bookmarks.some((b) => b.channel === channel && b.ts === ts);
+  const toggleBookmark = (item: SlackItem, m: SlackThreadMessage) =>
+    run(() =>
+      isBookmarked(item.channel, m.ts)
+        ? api.slackUnbookmark(item.channel, m.ts)
+        : api.slackBookmark({ channel: item.channel, ts: m.ts, thread_ts: m.ts === item.threadTs ? null : item.threadTs, channel_name: item.channelName, user_name: m.user_name, user_image: m.user_image, text: slackPlain(m.text), permalink: m.permalink }),
+    );
   /// Mutes the row's channel in Shosai: its rows leave; on to a row of another channel.
   const muteChannel = (item: SlackItem) => {
     const next = nextAfter(item, (i) => i.channel === item.channel);
@@ -3302,12 +3322,13 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
       else if (!current) return;
       else if (e.key === "Escape") setSelected(null);
       else if (matches(e, "slackDone")) done(current);
-      else if (matches(e, "slackForget") && current.kind !== "posted") forget(current);
+      else if (matches(e, "slackForget") && current.kind === "thread") forget(current);
       else if (matches(e, "slackReply")) replyRef.current?.focus();
       else if (matches(e, "slackTodo")) onTodo(threadKeys.current?.memo() ?? slackMemo(current));
       else if (matches(e, "slackOpen")) openLink(current.permalink);
       else if (matches(e, "slackMute")) threadKeys.current?.mute();
       else if (matches(e, "slackMuteChannel")) muteChannel(current);
+      else if (matches(e, "slackBookmark")) threadKeys.current?.bookmark();
       else if (matches(e, "slackScrollDown")) threadKeys.current?.move(1);
       else if (matches(e, "slackScrollUp")) threadKeys.current?.move(-1);
       else return;
@@ -3389,7 +3410,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
         <div className="content flush slack-page" style={{ gridTemplateColumns: current || composing ? `${width}px 6px minmax(0, 1fr)` : "minmax(0, 1fr)" }}>
           <div className="slack-list" ref={list}>
             {slack.error && <p className="error-text pad">Slack から読めませんでした：{slack.error}</p>}
-            {shown.length === 0 && <p className="muted pad">{filter === "read" ? "既読はまだありません。" : "未読はありません。"}</p>}
+            {shown.length === 0 && <p className="muted pad">{SLACK_EMPTY[filter]}</p>}
             <ul className="rows">
               {shown.map((i) => (
                 <li key={i.key} data-row={i.key} className={`row slack-row${i.read ? "" : " slack-unread"}${i.key === selected ? " selected" : ""}${i.key === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(i.key), setComposing(false), setSelected(i.key))}>
@@ -3428,6 +3449,8 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
                 onLink={openLink}
                 onDone={() => done(current)}
                 onForget={() => forget(current)}
+                bookmarked={(ts) => isBookmarked(current.channel, ts)}
+                onBookmark={(m) => toggleBookmark(current, m)}
                 onMuteChannel={() => muteChannel(current)}
                 onTodo={onTodo}
                 onClose={() => setSelected(null)}
@@ -3567,9 +3590,11 @@ interface SlackThreadKeys {
   /// 「Todo にする」's memo for the message the cursor is on.
   memo: () => string | null;
   mute: () => void;
+  /// Bookmarks the message picked, or takes it off.
+  bookmark: () => void;
 }
 
-function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onForget, onMuteChannel, onTodo, onClose }: {
+function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onForget, bookmarked, onBookmark, onMuteChannel, onTodo, onClose }: {
   item: SlackItem;
   me: string | null;
   /// The reply box, for the page's r.
@@ -3581,6 +3606,9 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
   onDone: () => void;
   /// 消す (a mention from this Mac, a thread from those followed).
   onForget: () => void;
+  bookmarked: (ts: string) => boolean;
+  /// Bookmarks a message, or takes it off.
+  onBookmark: (m: SlackThreadMessage) => void;
   /// Mutes its channel in Shosai.
   onMuteChannel: () => void;
   /// 「Todo にする」 with the memo of the message picked in the thread.
@@ -3633,6 +3661,7 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
     },
     memo,
     mute: toggleMute,
+    bookmark: () => pickedMessage && onBookmark(pickedMessage),
   };
   const replies = item.newReplies > 0 ? `新しい返信 ${item.newReplies} 件` : "";
   const title =
@@ -3651,9 +3680,14 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
         <button className="ghost small" title="選んでいるメッセージ（⇧J ⇧K で選ぶ）から Todo を作ります" onClick={() => onTodo(memo() ?? slackMemo(item))}>
           Todo にする <span className="kbd">{keyLabel(keyOf("slackTodo"))}</span>
         </button>
-        {item.kind !== "posted" && (
+        {item.kind === "thread" && (
           <button className="ghost small" title="このスレッドのメンションをこの Mac から消し（また見つかっても出しません）、スレッドを追うのもやめます" onClick={onForget}>
             消す <span className="kbd">{keyLabel(keyOf("slackForget"))}</span>
+          </button>
+        )}
+        {pickedMessage && (
+          <button className="ghost small" title="選んでいるメッセージ（⇧J ⇧K で選ぶ）をブックマークします。スレッドの先頭ならスレッドを" onClick={() => onBookmark(pickedMessage)}>
+            {bookmarked(pickedMessage.ts) ? "ブックマークを外す" : "ブックマーク"} <span className="kbd">{keyLabel(keyOf("slackBookmark"))}</span>
           </button>
         )}
         <button className="ghost small" title="このスレッドの新しい返信を、未読に数えない（メンションは届きます）" onClick={toggleMute}>

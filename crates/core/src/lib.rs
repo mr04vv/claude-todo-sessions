@@ -491,6 +491,21 @@ pub struct NewSlackMessage {
     pub user_image: Option<String>,
 }
 
+/// A Slack message the user bookmarked (the head of a thread stands for
+/// the thread), as it was when bookmarked; kept until taken off.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlackBookmark {
+    pub channel: String,
+    pub ts: String,
+    pub thread_ts: Option<String>,
+    pub channel_name: String,
+    pub user_name: String,
+    pub user_image: Option<String>,
+    /// As plain text.
+    pub text: String,
+    pub permalink: String,
+}
+
 /// A Slack channel muted in the app (Slack keeps its own mute where a user
 /// token cannot read it): its mentions and replies are not kept or shown.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -705,6 +720,18 @@ CREATE TABLE IF NOT EXISTS slack_threads (
     new_replies INTEGER NOT NULL DEFAULT 0,
     muted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (channel, thread_ts)
+);
+CREATE TABLE IF NOT EXISTS slack_bookmarks (
+    channel TEXT NOT NULL,
+    ts TEXT NOT NULL,
+    thread_ts TEXT,
+    channel_name TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    user_image TEXT,
+    text TEXT NOT NULL,
+    permalink TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (channel, ts)
 );
 CREATE TABLE IF NOT EXISTS slack_muted_channels (
     channel TEXT PRIMARY KEY,
@@ -1816,6 +1843,41 @@ impl Db {
     pub fn mute_slack_thread(&self, channel: &str, thread_ts: &str, muted: bool) -> Result<()> {
         self.conn.execute("UPDATE slack_threads SET muted = ?3, new_replies = 0 WHERE channel = ?1 AND thread_ts = ?2", params![channel, thread_ts, muted])?;
         Ok(())
+    }
+
+    /// Bookmarks a Slack message (once: bookmarked again, it stays where it was).
+    pub fn bookmark_slack(&self, b: &SlackBookmark) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO slack_bookmarks (channel, ts, thread_ts, channel_name, user_name, user_image, text, permalink, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![b.channel, b.ts, b.thread_ts, b.channel_name, b.user_name, b.user_image, b.text, b.permalink, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn unbookmark_slack(&self, channel: &str, ts: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM slack_bookmarks WHERE channel = ?1 AND ts = ?2", params![channel, ts])?;
+        Ok(())
+    }
+
+    /// The bookmarked Slack messages, the last bookmarked first.
+    pub fn slack_bookmarks(&self) -> Result<Vec<SlackBookmark>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT channel, ts, thread_ts, channel_name, user_name, user_image, text, permalink FROM slack_bookmarks ORDER BY created_at DESC, rowid DESC",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SlackBookmark {
+                channel: r.get(0)?,
+                ts: r.get(1)?,
+                thread_ts: r.get(2)?,
+                channel_name: r.get(3)?,
+                user_name: r.get(4)?,
+                user_image: r.get(5)?,
+                text: r.get(6)?,
+                permalink: r.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Mutes a channel in the app (its mentions and replies leave the Slack
