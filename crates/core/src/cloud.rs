@@ -613,14 +613,18 @@ pub struct SyncReport {
 }
 
 /// How often Cloud sessions are synced: often while one works or waits for a
-/// reply (their state moves), else seldom (asking for a sync, as the window
-/// coming forward does, takes it at once).
+/// reply (their state moves), or is starting, else seldom (asking for a
+/// sync, as the window coming forward does, takes it at once).
 pub const SYNC_BUSY: std::time::Duration = std::time::Duration::from_secs(30);
 pub const SYNC_QUIET: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// How long a session recorded idle when made (or found) counts as starting
+/// until a sync sees it move.
+pub const SYNC_STARTING: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
-/// The wait until the next sync, by the live Cloud sessions' states.
-pub fn sync_interval(states: &[SessionState]) -> std::time::Duration {
-    if states.iter().any(|s| matches!(s, SessionState::Running | SessionState::NeedsInput)) { SYNC_BUSY } else { SYNC_QUIET }
+/// The wait until the next sync, by the live Cloud sessions.
+pub fn sync_interval(sessions: &[crate::Session], now: i64) -> std::time::Duration {
+    let starting = |s: &crate::Session| s.state == SessionState::Idle && s.state_at == s.started_at && now - s.started_at < SYNC_STARTING.as_secs() as i64;
+    if sessions.iter().any(|s| matches!(s.state, SessionState::Running | SessionState::NeedsInput) || starting(s)) { SYNC_BUSY } else { SYNC_QUIET }
 }
 
 pub fn sync(db: &Db) -> Result<SyncReport, String> {
@@ -801,13 +805,43 @@ mod tests {
 #[cfg(test)]
 mod interval_tests {
     use super::*;
-    use crate::SessionState::*;
+    use crate::SessionState::{self, *};
+
+    const NOW: i64 = 100_000;
+
+    /// A session recorded long ago, `state` since a while.
+    fn session(state: SessionState) -> crate::Session {
+        crate::Session {
+            session_id: "cse_1".into(),
+            title: None,
+            todo_id: None,
+            cwd: String::new(),
+            state,
+            state_at: NOW - 60,
+            repos: Vec::new(),
+            branch: None,
+            started_at: NOW - 3600,
+            unread: false,
+            agent: crate::Agent::Claude,
+            review_url: None,
+            hidden: false,
+            question: None,
+            review_auto: false,
+        }
+    }
 
     #[test]
     fn cloud_syncs_often_only_while_a_session_works_or_asks() {
-        assert_eq!(sync_interval(&[Idle, Running]), SYNC_BUSY);
-        assert_eq!(sync_interval(&[NeedsInput]), SYNC_BUSY);
-        assert_eq!(sync_interval(&[Idle, Ended]), SYNC_QUIET);
-        assert_eq!(sync_interval(&[]), SYNC_QUIET);
+        assert_eq!(sync_interval(&[session(Idle), session(Running)], NOW), SYNC_BUSY);
+        assert_eq!(sync_interval(&[session(NeedsInput)], NOW), SYNC_BUSY);
+        assert_eq!(sync_interval(&[session(Idle), session(Ended)], NOW), SYNC_QUIET);
+        assert_eq!(sync_interval(&[], NOW), SYNC_QUIET);
+    }
+
+    #[test]
+    fn cloud_syncs_often_while_a_session_just_made_is_not_seen_to_start() {
+        let made = |ago: i64| crate::Session { state_at: NOW - ago, started_at: NOW - ago, ..session(Idle) };
+        assert_eq!(sync_interval(&[made(10)], NOW), SYNC_BUSY, "recorded idle when made, it is starting");
+        assert_eq!(sync_interval(&[made(SYNC_STARTING.as_secs() as i64)], NOW), SYNC_QUIET, "one that never starts is left to the quiet syncs");
     }
 }

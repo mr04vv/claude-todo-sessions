@@ -10,6 +10,8 @@ export interface Session {
   cwd: string;
   state: SessionState;
   state_at: number;
+  /** When it was first recorded (its state_at then). */
+  started_at: number;
   /** `owner/repo` list; the first is where the session pushes. Present on inbox sessions. */
   repos?: string[];
   /** Its turn ended after it was last looked at (in the app, or its herdr pane). */

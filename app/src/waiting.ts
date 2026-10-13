@@ -35,9 +35,12 @@ export interface WaitItem {
 export const REVIEW_SETTLE_SECS = 150;
 
 /// A review the app started that stopped (its turn over, or ended) and was
-/// not put away as submitted.
+/// not put away as submitted. One whose state never changed since it was
+/// recorded (idle, when made) has not been seen to start: a Cloud one waits
+/// for the next sync. ponytail: a review that runs and stops between two
+/// syncs (30 s apart while one starts) is never taken for failed.
 export const isFailedReview = (s: Session, now: number) =>
-  !!s.review_url && !s.hidden && (s.state === "idle" || s.state === "ended") && now - s.state_at >= REVIEW_SETTLE_SECS;
+  !!s.review_url && !s.hidden && (s.state === "idle" || s.state === "ended") && s.state_at > s.started_at && now - s.state_at >= REVIEW_SETTLE_SECS;
 
 /// A review asked of the user, not a session's: these show as one line
 /// that opens the PR page.

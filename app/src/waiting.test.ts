@@ -12,6 +12,7 @@ const session = (id: string, patch: Partial<Session> = {}): Session => ({
   cwd: "/w",
   state: "idle",
   state_at: NOW - 60,
+  started_at: NOW - 600,
   unread: false,
   agent: "claude",
   review_url: null,
@@ -119,6 +120,13 @@ test("a review that stopped without submitting waits on you once it settles", ()
   assert.deepEqual(keys(items), ["r"], "the request is taken; the stopped session is what waits");
   assert.deepEqual(items[0].reasons, ["review_failed"]);
   assert.ok(!isReviewAsk(items[0]), "a session, shown as one");
+});
+
+test("a review not yet seen to start has not stopped", () => {
+  // Recorded idle when made, and so until a sync sees it run.
+  const made = session("r", { state: "idle", state_at: NOW - 600, started_at: NOW - 600, review_url: pr(61).url });
+  assert.ok(!isFailedReview(made, NOW));
+  assert.deepEqual(keys(waitingOnYou({ todos: [], inbox: [made], reviews: [pr(61)], now: NOW })), [], "nor is it a request left to take");
 });
 
 test("the newest comes first", () => {

@@ -2580,11 +2580,21 @@ fn sync_loop(wake: std::sync::mpsc::Receiver<()>, status: impl Fn(String)) {
             Err(e) => msg.push_str(&format!(" / アーカイブ失敗: {e}")),
         }
         status(msg);
-        // Sleep until the interval passes (shorter while a Cloud session works
-        // or asks) or someone asks for a sync now.
-        let states: Vec<SessionState> = db.live_cloud_sessions().unwrap_or_default().iter().map(|s| s.state).collect();
-        if let Err(std::sync::mpsc::RecvTimeoutError::Disconnected) = wake.recv_timeout(cts_core::cloud::sync_interval(&states)) {
-            return;
+        // Sleep until the interval passes (shorter while a Cloud session works,
+        // asks or starts) or someone asks for a sync now. Looked at again each
+        // SYNC_BUSY, so a session made meanwhile (here or by the plugin) is
+        // followed from the next one.
+        let slept = std::time::Instant::now();
+        loop {
+            let sessions = db.live_cloud_sessions().unwrap_or_default();
+            if slept.elapsed() >= cts_core::cloud::sync_interval(&sessions, cts_core::now()) {
+                break;
+            }
+            match wake.recv_timeout(cts_core::cloud::SYNC_BUSY) {
+                Ok(()) => break,
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return,
+            }
         }
     }
 }
