@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ask;
+mod banner;
 mod cef_browser;
 mod logins;
 mod slack;
@@ -20,7 +21,6 @@ use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, Sess
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
-use mac_notification_sys::{Notification, NotificationResponse};
 
 const DB_ENV: &str = "CTS_DB";
 const DATA_DIR: &str = "Library/Application Support/claude-todo-sessions";
@@ -47,8 +47,6 @@ const ISSUE_SYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// Folders (under $HOME) whose direct children are checkouts, besides the ghq root.
 // ponytail: fixed list; make it a setting if more roots are needed.
 const EXTRA_REPO_ROOTS: &[&str] = &["Works/Atrae"];
-/// Must match `identifier` in tauri.conf.json; notifications are posted as this app.
-const APP_ID: &str = "dev.mr04vv.todo-sessions";
 /// Terminal app hosting herdr, brought forward when a session is focused there.
 const TERMINAL_APP: &str = "Ghostty";
 
@@ -2233,8 +2231,7 @@ fn app_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
 }
 
 /// Records that the session waits for a reply, posts it, and opens the
-/// session when it is clicked. The thread lives until the notification is
-/// clicked or removed from Notification Center.
+/// session when it is clicked.
 fn notify_needs_input(app: &AppHandle, db: &Db, session: Session) {
     let id = db.add_notification(&session, NoticeKind::NeedsInput).map_err(|e| eprintln!("{e}")).ok();
     let label = session.title.clone().unwrap_or_else(|| session.session_id.clone());
@@ -2248,19 +2245,12 @@ fn post_banner(app: &AppHandle, headline: &'static str, label: String, id: Optio
         return;
     }
     let app = app.clone();
-    std::thread::spawn(move || {
-        let response = Notification::new().title(headline).message(&label).wait_for_click(true).send();
-        match response {
-            Ok(NotificationResponse::Click) => {
-                if let (Some(id), Ok(db)) = (id, open_db()) {
-                    let _ = db.mark_notification_read(id).map_err(|e| eprintln!("{e}"));
-                }
-                if let Err(e) = open(&app) {
-                    eprintln!("{e}");
-                }
-            }
-            Ok(_) => {}
-            Err(e) => eprintln!("notification: {e}"),
+    banner::post(headline, &label, move || {
+        if let (Some(id), Ok(db)) = (id, open_db()) {
+            let _ = db.mark_notification_read(id).map_err(|e| eprintln!("{e}"));
+        }
+        if let Err(e) = open(&app) {
+            eprintln!("{e}");
         }
     });
 }
@@ -2658,10 +2648,7 @@ fn main() {
         })
         .setup(|app| {
             cef_browser::start_pump(app.handle());
-            // Without this the crate would post notifications as another app.
-            if let Err(e) = mac_notification_sys::set_application(APP_ID) {
-                eprintln!("notification app id: {e}");
-            }
+            banner::init();
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 sync_loop(cloud_rx, |msg| {
