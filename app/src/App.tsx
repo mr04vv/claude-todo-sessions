@@ -152,7 +152,8 @@ const BROWSER_SHOWN_KEY = "browserShown";
 const HERDR_SESSION_KEY = "herdrSession";
 
 
-type View = "todos" | "inputs" | "sessions" | "prs" | "artifacts" | "slack";
+/// `doing`: the Todo page's list of what is Doing (today's work), on its own.
+type View = "todos" | "doing" | "inputs" | "sessions" | "prs" | "artifacts" | "slack";
 /// The sidebar's groups, in its order.
 type NavGroup = "仕事" | "連絡" | "学び";
 const NAV_GROUPS: NavGroup[] = ["仕事", "連絡", "学び"];
@@ -6941,7 +6942,7 @@ export default function App() {
     }
   }, [dialogUp]); // eslint-disable-line react-hooks/exhaustive-deps
   const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
-  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "inputs", "sessions", "prs", "artifacts", "slack"] as const, "todos"));
+  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "doing", "inputs", "sessions", "prs", "artifacts", "slack"] as const, "todos"));
   const viewRef = useRef(view);
   viewRef.current = view;
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
@@ -7264,8 +7265,15 @@ export default function App() {
   const shownTodos = allTodos.filter((t) => t.parent_id === null || !doneParents.has(t.parent_id));
   const visibleTodos = shownTodos.filter((t) => matchesFilter(t, todoFilter));
   const foldedCols = foldedStatuses(foldedByHand, todoFilter);
+  // The Doing page is the Todo page's list of the Doing todos alone, its
+  // filter and folds left to the Todo page.
+  const doingView = view === "doing";
+  const todoView = view === "todos" || doingView;
+  const doingTodos = shownTodos.filter((t) => t.status === "doing");
+  const pageLayout: Layout = doingView ? "list" : layout;
+  const pageFolded = doingView ? new Set<Status>() : foldedCols;
   // A Done parent without shown subtasks is a card like any other.
-  const lanes = buildLanes(visibleTodos, groupBy, shownTodos);
+  const lanes = buildLanes(doingView ? doingTodos : visibleTodos, groupBy, shownTodos);
   const repoLanes = buildLanes(shownTodos, "repo", shownTodos);
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
@@ -7355,7 +7363,7 @@ export default function App() {
   const todoPage = useRef<HTMLDivElement>(null);
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
   const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
-  const { setCursor: setTodoCursor } = useTodoKeys(todoPage, layout, view === "todos" && !covered && !focusMode && !sideZone, selectedTodo !== null, {
+  const { setCursor: setTodoCursor } = useTodoKeys(todoPage, pageLayout, todoView && !covered && !focusMode && !sideZone, selectedTodo !== null, {
     open: (id) => openTodo(id),
     select: openTodo,
     status: setStatusMenuFor,
@@ -7411,6 +7419,7 @@ export default function App() {
   // user (or how many there are); how a list shows is chosen on its page.
   const nav: { key: string; group: NavGroup; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
     { key: "todos", group: "仕事", label: "Todo", icon: "board", count: openTodoCount, on: view === "todos", go: () => setView("todos") },
+    { key: "doing", group: "仕事", label: "Doing", icon: "list", count: doingTodos.length, on: doingView, go: () => setView("doing") },
     {
       group: "仕事",
       key: "sessions",
@@ -7499,7 +7508,7 @@ export default function App() {
   ];
 
   // A todo picked on the sessions page opens in the same sheet, over the sessions.
-  const panel = (view === "todos" || view === "sessions") && selectedTodo ? "todo" : null;
+  const panel = (todoView || view === "sessions") && selectedTodo ? "todo" : null;
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
@@ -7607,10 +7616,12 @@ export default function App() {
             </div>
           )}
 
-          {view === "todos" && (
+          {todoView && (
             <>
               <header className="toolbar">
-                <h1>Todo</h1>
+                <h1>{doingView ? "Doing" : "Todo"}</h1>
+                {doingView && <span className="muted">今日やるもの（Doing の todo）だけ</span>}
+                {!doingView && (
                 <div className="segmented" role="group" aria-label="見え方">
                   {(["board", "list"] as const).map((l) => (
                     <button key={l} className={layout === l ? "on" : ""} aria-pressed={layout === l} onClick={() => showTodos(l)}>
@@ -7618,6 +7629,7 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                )}
                 <div className="segmented" role="group" aria-label="まとめ方">
                   {GROUPINGS.map((g) => (
                     <button key={g.key} className={groupBy === g.key ? "on" : ""} aria-pressed={groupBy === g.key} onClick={() => setGroupBy(g.key)}>
@@ -7625,6 +7637,7 @@ export default function App() {
                     </button>
                   ))}
                 </div>
+                {!doingView && (
                   <TodoFilterBar
                   filter={todoFilter}
                   version={`${layout}:${filterVersion}`}
@@ -7632,7 +7645,8 @@ export default function App() {
                   onChange={(f) => setTodoFilter(f, f === NO_FILTER)}
                   onSave={saveFilter}
                 />
-                {savedFilters.length > 0 && (
+                )}
+                {!doingView && savedFilters.length > 0 && (
                   <select
                     className="select compact"
                     value={savedFilters.find((f) => f.layout === layout && sameFilter(todoFilter, f.filter))?.id ?? ""}
@@ -7651,7 +7665,7 @@ export default function App() {
                     ))}
                   </select>
                 )}
-                {savedFilters.some((f) => f.layout === layout && sameFilter(todoFilter, f.filter)) && (
+                {!doingView && savedFilters.some((f) => f.layout === layout && sameFilter(todoFilter, f.filter)) && (
                   <button
                     className="ghost icon"
                     aria-label="このビューを消す"
@@ -7669,7 +7683,7 @@ export default function App() {
               <WaitingStrip items={waiting} onShow={showWaiting} onShowPrs={() => setView("prs")} />
               <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
                 <div className="content" ref={todoPage}>
-                  {layout === "board" && lanes.length > 0 && (
+                  {pageLayout === "board" && lanes.length > 0 && (
                     <div className="col-heads" style={{ gridTemplateColumns: columnsTemplate(foldedCols) }}>
                       {COLUMNS.map((c) => (
                         <h2 key={c.status} className={foldedCols.has(c.status) ? "folded" : undefined}>
@@ -7682,7 +7696,7 @@ export default function App() {
                     </div>
                   )}
                   {lanes.map((lane) =>
-                    layout === "board" ? (
+                    pageLayout === "board" ? (
                       <BoardLane
                         key={lane.key}
                         lane={lane}
@@ -7707,15 +7721,19 @@ export default function App() {
                         run={run}
                         setStatus={setStatus}
                         allTodos={allTodos}
-                        folded={foldedCols}
+                        folded={pageFolded}
                         onUnfold={toggleColumn}
-                        onAdd={(title) => addTodoIn(lane, "todo", title)}
+                        onAdd={(title) => addTodoIn(lane, doingView ? "doing" : "todo", title)}
                       />
                     ),
                   )}
                   {board && lanes.length === 0 && (
                     <p className="muted empty">
-                      {filterCount(todoFilter) > 0 ? "フィルターに合う todo はありません。" : "表示できる todo がありません。⌘N で追加するか、⌘K から issue を取り込めます。"}
+                      {doingView
+                        ? "Doing の todo はありません。今日やるものを Doing にすると、ここに並びます。"
+                        : filterCount(todoFilter) > 0
+                          ? "フィルターに合う todo はありません。"
+                          : "表示できる todo がありません。⌘N で追加するか、⌘K から issue を取り込めます。"}
                     </p>
                   )}
                 </div>
