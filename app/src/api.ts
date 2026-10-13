@@ -224,6 +224,12 @@ export interface SlackMentionable {
   image: string | null;
 }
 
+/** A Slack channel muted in Shosai (Slack's own mute cannot be read with a user token). */
+export interface MutedChannel {
+  channel: string;
+  name: string;
+}
+
 export interface SlackView {
   connected: boolean;
   /** Socket Mode brings the messages as they are posted (else a search every 2 minutes). */
@@ -450,6 +456,8 @@ export const api = {
   slackThread: (channel: string, threadTs: string) => invoke<{ messages: SlackThreadMessage[]; muted: boolean }>("slack_thread", { channel, threadTs }),
   slackThreadSeen: (channel: string, threadTs: string) => invoke<void>("slack_thread_seen", { channel, threadTs }),
   slackMuteThread: (channel: string, threadTs: string, muted: boolean) => invoke<void>("slack_mute_thread", { channel, threadTs, muted }),
+  slackMuteChannel: (channel: string, muted: boolean) => invoke<void>("slack_mute_channel", { channel, muted }),
+  slackMutedChannels: () => invoke<MutedChannel[]>("slack_muted_channels"),
   slackDirectory: () => invoke<SlackMentionable[]>("slack_directory"),
   slackEmoji: () => invoke<Record<string, string>>("slack_emoji"),
   slackChannels: () => invoke<SlackChannel[]>("slack_channels"),

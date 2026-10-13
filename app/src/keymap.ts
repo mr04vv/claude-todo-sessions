@@ -46,6 +46,7 @@ export type Action =
   | "slackDone"
   | "slackForget"
   | "slackMute"
+  | "slackMuteChannel"
   | "slackReply"
   | "slackTodo"
   | "slackOpen"
@@ -150,6 +151,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["slackForget", "消す（そのスレッドのメンションをこの Mac からも消し、スレッドを追うのもやめる）"],
       ["slackCompose", "新しいメッセージ（入っているチャンネルへ）"],
       ["slackMute", "このスレッドの返信を数えない／また数える"],
+      ["slackMuteChannel", "このチャンネルを Shosai でミュート（メンションも返信も届かない。解除は設定の Slack）"],
       ["slackReply", "返信欄へ（⌘Enter で送る、Esc で一覧へ戻る）"],
       ["slackTodo", "Todo にする"],
       ["slackOpen", "Slack で開く"],
@@ -238,6 +240,7 @@ const KEYS: Record<Action, string> = {
   slackForget: "d",
   slackCompose: "c",
   slackMute: "m",
+  slackMuteChannel: "shift+m",
   slackReply: "r",
   slackTodo: "t",
   slackOpen: "o",

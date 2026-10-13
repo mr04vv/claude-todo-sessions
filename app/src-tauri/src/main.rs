@@ -2724,6 +2724,8 @@ fn main() {
             slack::slack_forget_thread,
             slack::slack_thread_seen,
             slack::slack_mute_thread,
+            slack::slack_mute_channel,
+            slack::slack_muted_channels,
             create_todo,
             update_todo,
             delete_todo,

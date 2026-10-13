@@ -491,6 +491,14 @@ pub struct NewSlackMessage {
     pub user_image: Option<String>,
 }
 
+/// A Slack channel muted in the app (Slack keeps its own mute where a user
+/// token cannot read it): its mentions and replies are not kept or shown.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MutedChannel {
+    pub channel: String,
+    pub name: String,
+}
+
 /// A Slack thread the user is in (#28): one they wrote in, or were
 /// mentioned in, and its replies since they last saw it (none while muted, #29).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -698,6 +706,10 @@ CREATE TABLE IF NOT EXISTS slack_threads (
     muted INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (channel, thread_ts)
 );
+CREATE TABLE IF NOT EXISTS slack_muted_channels (
+    channel TEXT PRIMARY KEY,
+    name TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS input_links (
     id INTEGER PRIMARY KEY,
     input_id INTEGER NOT NULL REFERENCES inputs(id) ON DELETE CASCADE,
@@ -713,6 +725,8 @@ const THEME_COLS: &str = "id, name, goal, doc_url, updated_at, category_id";
 const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, CAST(parent_id AS INTEGER), ci_state, ci_failed, plan, COALESCE(CAST(fix_count AS INTEGER), 0), escalation";
+/// A Slack row (a message, a thread) not in a channel muted in the app.
+const UNMUTED: &str = "channel NOT IN (SELECT channel FROM slack_muted_channels)";
 const SESSION_COLS: &str = "session_id, todo_id, cwd, state, state_at, title, repos, branch, COALESCE(started_at, state_at),
     (state = 'idle' AND state_at > COALESCE((SELECT seen_at FROM session_seen WHERE session_seen.session_id = sessions.session_id), 0)),
     COALESCE(agent, 'claude'),
@@ -1702,13 +1716,14 @@ impl Db {
         Ok(self.conn.query_row("SELECT EXISTS (SELECT 1 FROM slack_messages)", [], |r| r.get(0))?)
     }
 
-    /// Every unread Slack message and the newest `limit` read ones, newest first.
+    /// Every unread Slack message and the newest `limit` read ones, newest
+    /// first, but those of channels muted in the app.
     pub fn slack_messages(&self, limit: i64) -> Result<Vec<SlackMessage>> {
         const COLS: &str = "channel, ts, thread_ts, channel_name, user_name, text, permalink, via, read, user_image";
         let mut stmt = self.conn.prepare(&format!(
             "SELECT * FROM (SELECT {COLS} FROM slack_messages WHERE read = 0 AND gone = 0
                UNION ALL SELECT * FROM (SELECT {COLS} FROM slack_messages WHERE read = 1 AND gone = 0 ORDER BY CAST(ts AS REAL) DESC LIMIT ?1))
-             ORDER BY CAST(ts AS REAL) DESC"
+             WHERE {UNMUTED} ORDER BY CAST(ts AS REAL) DESC"
         ))?;
         let rows = stmt.query_map([limit], |r| {
             Ok(SlackMessage {
@@ -1803,6 +1818,24 @@ impl Db {
         Ok(())
     }
 
+    /// Mutes a channel in the app (its mentions and replies leave the Slack
+    /// page and are not kept), or unmutes it (what was kept comes back).
+    pub fn mute_slack_channel(&self, channel: &str, name: &str, muted: bool) -> Result<()> {
+        if muted {
+            self.conn.execute("INSERT OR REPLACE INTO slack_muted_channels (channel, name) VALUES (?1, ?2)", params![channel, name])?;
+        } else {
+            self.conn.execute("DELETE FROM slack_muted_channels WHERE channel = ?1", [channel])?;
+        }
+        Ok(())
+    }
+
+    /// The channels muted in the app, by name.
+    pub fn slack_muted_channels(&self) -> Result<Vec<MutedChannel>> {
+        let mut stmt = self.conn.prepare("SELECT channel, name FROM slack_muted_channels ORDER BY name")?;
+        let rows = stmt.query_map([], |r| Ok(MutedChannel { channel: r.get(0)?, name: r.get(1)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn is_slack_thread_muted(&self, channel: &str, thread_ts: &str) -> Result<bool> {
         Ok(self
             .conn
@@ -1811,12 +1844,13 @@ impl Db {
             .unwrap_or(false))
     }
 
-    /// The followed threads with new replies, the latest first.
+    /// The followed threads with new replies, the latest first (but in
+    /// channels muted in the app).
     pub fn slack_threads(&self) -> Result<Vec<SlackThread>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT channel, thread_ts, channel_name, permalink, latest_ts, latest_user_name, latest_text, latest_image, new_replies
-             FROM slack_threads WHERE new_replies > 0 AND muted = 0 ORDER BY CAST(latest_ts AS REAL) DESC",
-        )?;
+             FROM slack_threads WHERE new_replies > 0 AND muted = 0 AND {UNMUTED} ORDER BY CAST(latest_ts AS REAL) DESC"
+        ))?;
         let rows = stmt.query_map([], |r| {
             Ok(SlackThread {
                 channel: r.get(0)?,

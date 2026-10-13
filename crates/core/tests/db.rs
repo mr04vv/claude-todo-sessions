@@ -1361,3 +1361,22 @@ fn a_followed_slack_thread_can_be_let_go() {
     assert!(db.slack_threads().unwrap().is_empty());
     assert!(!db.slack_thread_replied("C1", "100.0", &reply("102.0")).unwrap());
 }
+
+#[test]
+fn a_channel_muted_in_the_app_leaves_the_slack_page_until_unmuted() {
+    let (_d, db) = open();
+    let elsewhere = cts_core::NewSlackMessage { channel: "C2".into(), channel_name: "random".into(), ..slack_message("1700000500.000200", None) };
+    db.add_slack_messages(&[slack_message("1700000000.000100", None), elsewhere], false).unwrap();
+    for channel in ["C1", "C2"] {
+        db.follow_slack_thread(channel, "100.0", "", "").unwrap();
+        db.slack_thread_replied(channel, "100.0", &reply("101.0")).unwrap();
+    }
+    let channels = |db: &Db| (db.slack_messages(10).unwrap().into_iter().map(|m| m.channel).collect::<Vec<_>>(), db.slack_threads().unwrap().into_iter().map(|t| t.channel).collect::<Vec<_>>());
+    db.mute_slack_channel("C1", "dev-web", true).unwrap();
+    assert_eq!(channels(&db), (vec!["C2".to_string()], vec!["C2".to_string()]));
+    assert_eq!(db.slack_muted_channels().unwrap(), vec![cts_core::MutedChannel { channel: "C1".into(), name: "dev-web".into() }]);
+    db.mute_slack_channel("C1", "dev-web", false).unwrap();
+    assert_eq!(channels(&db).0.len(), 2, "its mentions come back");
+    assert_eq!(channels(&db).1.len(), 2);
+    assert!(db.slack_muted_channels().unwrap().is_empty());
+}

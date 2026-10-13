@@ -72,6 +72,7 @@ import {
   type CiState,
   type TodoEvent,
   type Artifact,
+  type MutedChannel,
   type SlackAccount,
   type SlackMentionable,
   type SlackChannel,
@@ -3251,10 +3252,11 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     setComposing(false);
     setSelected(item.key);
   };
-  /// The row after `item` (else before it) still in the view, to go on to.
-  const nextAfter = (item: SlackItem) => {
+  /// The row after `item` (else before it) still in the view, to go on to
+  /// (`gone`: the rows that leave with it).
+  const nextAfter = (item: SlackItem, gone = (i: SlackItem) => i.key === item.key) => {
     const at = shown.findIndex((i) => i.key === item.key);
-    const rest = shown.filter((i) => i.key !== item.key && inFilter(i));
+    const rest = shown.filter((i) => !gone(i) && inFilter(i));
     return rest.find((i) => shown.indexOf(i) > at) ?? rest.reverse().find((i) => shown.indexOf(i) < at);
   };
   const goOn = (next: SlackItem | undefined) => {
@@ -3271,6 +3273,12 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   const forget = (item: SlackItem) => {
     const next = nextAfter(item);
     run(() => Promise.all([...item.mentions.map((m) => api.slackForget(m.channel, m.ts)), api.slackForgetThread(item.channel, item.threadTs)]));
+    goOn(next);
+  };
+  /// Mutes the row's channel in Shosai: its rows leave; on to a row of another channel.
+  const muteChannel = (item: SlackItem) => {
+    const next = nextAfter(item, (i) => i.channel === item.channel);
+    run(() => api.slackMuteChannel(item.channel, true));
     goOn(next);
   };
   const [confirmForgetRead, setConfirmForgetRead] = useState(false);
@@ -3299,6 +3307,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
       else if (matches(e, "slackTodo")) onTodo(threadKeys.current?.memo() ?? slackMemo(current));
       else if (matches(e, "slackOpen")) openLink(current.permalink);
       else if (matches(e, "slackMute")) threadKeys.current?.mute();
+      else if (matches(e, "slackMuteChannel")) muteChannel(current);
       else if (matches(e, "slackScrollDown")) threadKeys.current?.move(1);
       else if (matches(e, "slackScrollUp")) threadKeys.current?.move(-1);
       else return;
@@ -3413,6 +3422,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
                 onLink={openLink}
                 onDone={() => done(current)}
                 onForget={() => forget(current)}
+                onMuteChannel={() => muteChannel(current)}
                 onTodo={onTodo}
                 onClose={() => setSelected(null)}
               />
@@ -3553,7 +3563,7 @@ interface SlackThreadKeys {
   mute: () => void;
 }
 
-function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onForget, onTodo, onClose }: {
+function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onForget, onMuteChannel, onTodo, onClose }: {
   item: SlackItem;
   me: string | null;
   /// The reply box, for the page's r.
@@ -3565,6 +3575,8 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
   onDone: () => void;
   /// 消す (a mention from this Mac, a thread from those followed).
   onForget: () => void;
+  /// Mutes its channel in Shosai.
+  onMuteChannel: () => void;
   /// 「Todo にする」 with the memo of the message picked in the thread.
   onTodo: (memo: string) => void;
   /// Closes the thread (Esc too); the list takes the width.
@@ -3640,6 +3652,9 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
         )}
         <button className="ghost small" title="このスレッドの新しい返信を、未読に数えない（メンションは届きます）" onClick={toggleMute}>
           {muted ? "返信をまた数える" : "返信を数えない"} <span className="kbd">{keyLabel(keyOf("slackMute"))}</span>
+        </button>
+        <button className="ghost small" title="このチャンネルを Shosai でミュートします（メンションも返信も届かなくなります。解除は設定の Slack から）" onClick={onMuteChannel}>
+          チャンネルをミュート <span className="kbd">{keyLabel(keyOf("slackMuteChannel"))}</span>
         </button>
         {item.permalink && (
           <button className="ghost small" onClick={() => onLink(item.permalink)}>
@@ -3999,6 +4014,7 @@ function SlackSettings({ report }: { report: (e: unknown) => void }) {
       )}
       {account && <p className="muted">既読のメンションは、投稿から30日たつとこの Mac から消えます（Slack の画面の「消す」や「既読をすべて消す」で先に消すこともできます）。</p>}
       {account && <SlackRealtime realtime={account.realtime} report={report} onChange={(realtime) => setAccount({ ...account, realtime })} />}
+      {account && <SlackMutedChannels report={report} />}
       {account === null && (
         <>
           <p className="muted">自分用の Slack アプリのユーザートークン（xoxp-…）を入れると、自分とユーザーグループへのメンションが Slack の画面に並びます。トークンは Keychain に置きます。</p>
@@ -4020,6 +4036,27 @@ function SlackSettings({ report }: { report: (e: unknown) => void }) {
         </>
       )}
     </section>
+  );
+}
+
+/// The settings' channels muted in Shosai (⇧M on the Slack page), to unmute.
+function SlackMutedChannels({ report }: { report: (e: unknown) => void }) {
+  const [muted, setMuted] = useState<MutedChannel[]>([]);
+  const load = () => void api.slackMutedChannels().then(setMuted, report);
+  useEffect(load, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (muted.length === 0) return null;
+  return (
+    <>
+      <p className="muted">Shosai でミュートしたチャンネル（Slack の画面の {keyLabel(keyOf("slackMuteChannel"))}）。メンションも返信も届きません。Slack 本体のミュートは、ユーザートークンでは読めないので効きません。</p>
+      {muted.map((c) => (
+        <div className="setting-row" key={c.channel}>
+          <span className="grow">#{c.name}</span>
+          <button className="ghost small" onClick={() => api.slackMuteChannel(c.channel, false).then(load, report)}>
+            解除
+          </button>
+        </div>
+      ))}
+    </>
   );
 }
 

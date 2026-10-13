@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use cts_core::slack::{self, Envelope, Group, Hit, Me, Member, Person};
-use cts_core::{Db, NewSlackMessage, SlackMessage, SlackReply, SlackThread};
+use cts_core::{Db, MutedChannel, NewSlackMessage, SlackMessage, SlackReply, SlackThread};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -70,9 +70,9 @@ pub struct Slack {
     me: Mutex<Option<Me>>,
     /// The user's groups, once asked (asked again hourly).
     groups: Mutex<Option<Vec<Group>>>,
-    /// The channels whose mentions count: the user's, less the muted (asked
-    /// hourly with the groups, or at the next check when Slack would not
-    /// say; None until asked).
+    /// The channels whose mentions count: the user's, less those muted in
+    /// the app (asked hourly with the groups, at the next check when Slack
+    /// would not say, or after a mute; None until asked).
     channels_ok: Mutex<Option<Listening>>,
     /// The people and user groups to mention, asked once a run.
     directory: Mutex<Option<Vec<Mentionable>>>,
@@ -117,22 +117,17 @@ impl Slack {
     }
 
     /// The channels whose mentions count, asked once and kept (until
-    /// `forget_channels`), what Slack would not say among them.
-    fn listening(&self, token: &str) -> Listening {
+    /// `forget_channels`), and why Slack would not say. Slack's own mute
+    /// (users.prefs.get) needs the legacy `read` scope, which a user token
+    /// cannot have: channels are muted in the app instead.
+    fn listening(&self, token: &str, db: &Db) -> Listening {
         if let Some(l) = self.channels_ok.lock().ok().and_then(|c| c.clone()) {
             return l;
         }
         let member = slack::member_channels(token);
-        // users.prefs.get is undocumented: refused, nothing counts as muted.
-        let muted = slack::muted_channels(token);
-        let trouble: Vec<String> = [
-            member.as_ref().err().map(|e| format!("入っているチャンネルの一覧：{e}。入っていないチャンネルのメンションも出ています。")),
-            muted.as_ref().err().map(|e| format!("ミュートしたチャンネル：{e}。ミュートしたチャンネルのメンションも出ています。")),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        let l = Listening { member: member.ok(), muted: muted.unwrap_or_default().into_iter().collect(), trouble: (!trouble.is_empty()).then(|| trouble.join(" ")) };
+        let muted = db.slack_muted_channels().map_err(|e| eprintln!("slack muted channels: {e}")).unwrap_or_default();
+        let trouble = member.as_ref().err().map(|e| format!("入っているチャンネルの一覧：{e}。入っていないチャンネルのメンションも出ています。"));
+        let l = Listening { member: member.ok(), muted: muted.into_iter().map(|m| m.channel).collect(), trouble };
         if let Ok(mut c) = self.channels_ok.lock() {
             *c = Some(l.clone());
         }
@@ -244,8 +239,8 @@ impl Slack {
     }
 }
 
-/// The channels the user is in (None: Slack would not say) and those they
-/// muted, and why Slack would not say either.
+/// The channels the user is in (None: Slack would not say) and those muted
+/// in the app, and why Slack would not say.
 #[derive(Clone)]
 struct Listening {
     member: Option<HashSet<String>>,
@@ -522,6 +517,22 @@ pub fn slack_mute_thread(state: State<AppState>, slack: State<Slack>, channel: S
     db.mute_slack_thread(&channel, &thread_ts, muted).map_err(err)
 }
 
+/// Mutes a channel in the app, or unmutes it: its mentions and replies
+/// leave the Slack page (come back) and are not kept (are again).
+#[tauri::command(async)]
+pub fn slack_mute_channel(state: State<AppState>, slack: State<Slack>, channel: String, muted: bool) -> Result<(), String> {
+    let name = slack.channel_name(&token_or_err()?, &channel);
+    state.db.lock().map_err(err)?.mute_slack_channel(&channel, &name, muted).map_err(err)?;
+    slack.forget_channels();
+    Ok(())
+}
+
+/// The channels muted in the app, for the settings.
+#[tauri::command(async)]
+pub fn slack_muted_channels(state: State<AppState>) -> Result<Vec<MutedChannel>, String> {
+    state.db.lock().map_err(err)?.slack_muted_channels().map_err(err)
+}
+
 /// Replies in a thread as the user (#30).
 #[tauri::command(async)]
 pub fn slack_reply(channel: String, thread_ts: String, text: String) -> Result<(), String> {
@@ -623,7 +634,7 @@ fn check(app: &AppHandle, db: &Db, slack: &Slack, token: &str) -> Result<(), Str
         Ok(g) => (g, None),
         Err(e) => (Vec::new(), Some(e)),
     };
-    let listening = slack.listening(token);
+    let listening = slack.listening(token, db);
     let mut hits = slack::search(token, &slack::mentions_of(&me.user_id))?;
     for g in &groups {
         hits.extend(slack::search(token, &slack::mentions_of_group(&g.id))?);
@@ -729,7 +740,7 @@ fn on_event(app: &AppHandle, db: &Db, slack: &Slack, token: &str, event: &serde_
         follow(slack)?;
         return db.mark_slack_thread_seen(&posted.channel, &thread_ts).map_err(err);
     }
-    if !slack.listening(token).counts(&posted.channel) {
+    if !slack.listening(token, db).counts(&posted.channel) {
         return Ok(());
     }
     let groups = slack.groups(token, &me.user_id).unwrap_or_default();

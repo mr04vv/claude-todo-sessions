@@ -192,17 +192,6 @@ pub fn next_cursor(v: &Value) -> Option<String> {
     v["response_metadata"]["next_cursor"].as_str().filter(|c| !c.is_empty()).map(String::from)
 }
 
-/// The channels the user muted, from users.prefs.get (a method Slack does
-/// not document). Slack now keeps them in `all_notifications_prefs`, a JSON
-/// string whose `channels.<id>.muted` is true; `muted_channels` ("C1,C2") is
-/// the old place, still read.
-pub fn parse_muted(v: &Value) -> Vec<String> {
-    let old = v["prefs"]["muted_channels"].as_str().unwrap_or_default().split(',').filter(|c| !c.is_empty()).map(String::from);
-    let prefs: Value = v["prefs"]["all_notifications_prefs"].as_str().and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default();
-    let new = prefs["channels"].as_object().into_iter().flatten().filter(|(_, p)| p["muted"].as_bool() == Some(true)).map(|(id, _)| id.clone());
-    old.chain(new).collect()
-}
-
 /// A DM or a group DM, which #27 leaves out.
 fn is_dm(channel: &Value) -> bool {
     channel["is_im"].as_bool() == Some(true) || channel["is_mpim"].as_bool() == Some(true) || channel["id"].as_str().is_some_and(|id| id.starts_with('D'))
@@ -504,11 +493,6 @@ pub fn channels(token: &str) -> Result<Vec<Channel>, String> {
     Ok(all)
 }
 
-/// The channels the user muted (users.prefs.get, undocumented: it may refuse).
-pub fn muted_channels(token: &str) -> Result<Vec<String>, String> {
-    Ok(parse_muted(&call(token, "users.prefs.get", &[])?))
-}
-
 /// The workspace's people, to mention.
 pub fn members(token: &str) -> Result<Vec<Member>, String> {
     let mut all = Vec::new();
@@ -704,24 +688,6 @@ mod tests {
     fn a_posted_message_tells_its_ts() {
         assert_eq!(parse_posted_ts(&json!({"ok": true, "channel": "C1", "ts": "1700000000.000100", "message": {}})).as_deref(), Some("1700000000.000100"));
         assert_eq!(parse_posted_ts(&json!({"ok": true})), None);
-    }
-
-    #[test]
-    fn the_muted_channels_come_from_the_users_prefs() {
-        assert_eq!(parse_muted(&json!({"ok": true, "prefs": {"muted_channels": "C1,C2"}})), vec!["C1".to_string(), "C2".to_string()]);
-        assert!(parse_muted(&json!({"ok": true, "prefs": {"muted_channels": ""}})).is_empty());
-        assert!(parse_muted(&json!({"ok": true, "prefs": {}})).is_empty());
-    }
-
-    #[test]
-    fn the_muted_channels_come_from_the_notification_prefs_too() {
-        let prefs = json!({"channels": {"C1": {"muted": true, "desktop": "default"}, "C2": {"muted": false}, "C3": {"suppress_at_channel": true}}}).to_string();
-        assert_eq!(parse_muted(&json!({"ok": true, "prefs": {"muted_channels": "", "all_notifications_prefs": prefs}})), vec!["C1".to_string()]);
-        let prefs = json!({"channels": {"C2": {"muted": true}}}).to_string();
-        let mut both = parse_muted(&json!({"ok": true, "prefs": {"muted_channels": "C1", "all_notifications_prefs": prefs}}));
-        both.sort();
-        assert_eq!(both, vec!["C1".to_string(), "C2".to_string()]);
-        assert!(parse_muted(&json!({"ok": true, "prefs": {"all_notifications_prefs": "not json"}})).is_empty());
     }
 
     #[test]
