@@ -3365,7 +3365,13 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
           </button>
         )}
         {slack.connected && (
-          <span className="muted slack-live" title={slack.live ? "Socket Mode でつながっています。投稿されたその場で届きます" : "設定でアプリのトークン（xapp-…）を入れると、その場で届きます"}>
+          <span className="muted slack-live" title={
+              !slack.live
+                ? "設定でアプリのトークン（xapp-…）を入れると、その場で届きます"
+                : slack.last_event_at
+                  ? "Socket Mode でつながっています。投稿されたその場で届きます"
+                  : `Socket Mode でつながっていますが、まだ何も届いていません。Slack アプリの Event Subscriptions に、${SLACK_USER_EVENTS}を足してください`
+            }>
             <span className={`dot ${slack.live ? "live" : ""}`} /> {slack.live ? `リアルタイム（${slack.last_event_at ? `最後の受信 ${ago(slack.last_event_at)}` : "まだ受信なし"}）` : "2分おきに確認"}
           </span>
         )}
@@ -4060,6 +4066,10 @@ function SlackMutedChannels({ report }: { report: (e: unknown) => void }) {
   );
 }
 
+/// What Socket Mode needs subscribed for messages to come (a bot event comes
+/// only from channels the bot is in).
+const SLACK_USER_EVENTS = "「Subscribe to events on behalf of users」の message.channels と message.groups（ユーザートークンに channels:history と groups:history）";
+
 /// The settings' Slack in real time: the app's token (`xapp-…`) for Socket Mode.
 function SlackRealtime({ realtime, report, onChange }: { realtime: boolean; report: (e: unknown) => void; onChange: (realtime: boolean) => void }) {
   const [token, setToken] = useState("");
@@ -4087,7 +4097,7 @@ function SlackRealtime({ realtime, report, onChange }: { realtime: boolean; repo
   }
   return (
     <>
-      <p className="muted">アプリのトークン（xapp-…、connections:write）を入れると、Socket Mode で投稿されたその場でメンションが届きます。入れないあいだは2分おきに確かめます。</p>
+      <p className="muted">アプリのトークン（xapp-…、connections:write）を入れると、Socket Mode で投稿されたその場でメンションが届きます（Slack アプリの Event Subscriptions に、{SLACK_USER_EVENTS}が要ります）。入れないあいだは2分おきに確かめます。</p>
       <div className="setting-row">
         <input
           type="password"
