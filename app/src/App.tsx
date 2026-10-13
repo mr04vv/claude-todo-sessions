@@ -3281,8 +3281,11 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     run(() => Promise.all([...item.mentions.map((m) => api.slackRead(m.channel, m.ts)), api.slackThreadSeen(item.channel, item.threadTs)]));
     goOn(next);
   };
+  /// The row whose 消す waits for a second press (or its button).
+  const [confirmForget, setConfirmForget] = useState<string | null>(null);
   /// 消す: the row's mentions wiped from this Mac (and kept away), its thread no longer followed.
   const forget = (item: SlackItem) => {
+    setConfirmForget(null);
     const next = nextAfter(item);
     run(() => Promise.all([...item.mentions.map((m) => api.slackForget(m.channel, m.ts)), api.slackForgetThread(item.channel, item.threadTs)]));
     goOn(next);
@@ -3301,7 +3304,8 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     run(() => api.slackMuteChannel(item.channel, true));
     goOn(next);
   };
-  const [confirmForgetRead, setConfirmForgetRead] = useState(false);
+  /// 既読をすべて消す asks twice: 0 not asked, 1 asked, 2 asked again.
+  const [confirmForgetRead, setConfirmForgetRead] = useState<0 | 1 | 2>(0);
   const replyRef = useRef<HTMLTextAreaElement>(null);
   // The open thread's own keys: its message cursor, its todo memo, its mute.
   const threadKeys = useRef<SlackThreadKeys | null>(null);
@@ -3320,9 +3324,9 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
       else if (matches(e, "slackNarrower")) keepWidth(width - SLACK_LIST_WIDTH.step);
       else if (matches(e, "slackWider")) keepWidth(width + SLACK_LIST_WIDTH.step);
       else if (!current) return;
-      else if (e.key === "Escape") setSelected(null);
+      else if (e.key === "Escape") confirmForget ? setConfirmForget(null) : setSelected(null);
       else if (matches(e, "slackDone")) done(current);
-      else if (matches(e, "slackForget") && current.kind === "thread") forget(current);
+      else if (matches(e, "slackForget") && current.kind === "thread") confirmForget === current.key ? forget(current) : setConfirmForget(current.key);
       else if (matches(e, "slackReply")) replyRef.current?.focus();
       else if (matches(e, "slackTodo")) onTodo(threadKeys.current?.memo() ?? slackMemo(current));
       else if (matches(e, "slackOpen")) openLink(current.permalink);
@@ -3365,20 +3369,20 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
         <span className="muted">自分とユーザーグループへのメンションと、参加しているスレッドの返信だけ</span>
         <span className="grow" />
         {slack.connected && filter === "read" && counts.read > 0 &&
-          (confirmForgetRead ? (
+          (confirmForgetRead === 0 ? (
+            <button className="ghost small" title="既読のメンションをこの Mac から消します（30日たつと自動でも消えます）" onClick={() => setConfirmForgetRead(1)}>
+              既読をすべて消す
+            </button>
+          ) : (
             <span className="inline-confirm">
-              既読 {counts.read} 件を、この Mac から消しますか？
-              <button className="danger small" onClick={() => (setConfirmForgetRead(false), run(() => api.slackForgetRead()))}>
-                消す
+              {confirmForgetRead === 1 ? `既読 ${counts.read} 件を、この Mac から消しますか？` : `元に戻せません。本当に既読 ${counts.read} 件を消しますか？`}
+              <button className="danger small" onClick={() => (confirmForgetRead === 1 ? setConfirmForgetRead(2) : (setConfirmForgetRead(0), run(() => api.slackForgetRead())))}>
+                {confirmForgetRead === 1 ? "消す" : "本当に消す"}
               </button>
-              <button className="ghost small" onClick={() => setConfirmForgetRead(false)}>
+              <button className="ghost small" onClick={() => setConfirmForgetRead(0)}>
                 やめる
               </button>
             </span>
-          ) : (
-            <button className="ghost small" title="既読のメンションをこの Mac から消します（30日たつと自動でも消えます）" onClick={() => setConfirmForgetRead(true)}>
-              既読をすべて消す
-            </button>
           ))}
         {slack.connected && (
           <button className="small" onClick={() => setComposing(true)}>
@@ -3448,7 +3452,9 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
                 report={report}
                 onLink={openLink}
                 onDone={() => done(current)}
-                onForget={() => forget(current)}
+                confirmingForget={confirmForget === current.key}
+                onForget={() => (confirmForget === current.key ? forget(current) : setConfirmForget(current.key))}
+                onCancelForget={() => setConfirmForget(null)}
                 bookmarked={(ts) => isBookmarked(current.channel, ts)}
                 onBookmark={(m) => toggleBookmark(current, m)}
                 onMuteChannel={() => muteChannel(current)}
@@ -3594,7 +3600,7 @@ interface SlackThreadKeys {
   bookmark: () => void;
 }
 
-function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onForget, bookmarked, onBookmark, onMuteChannel, onTodo, onClose }: {
+function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, confirmingForget, onForget, onCancelForget, bookmarked, onBookmark, onMuteChannel, onTodo, onClose }: {
   item: SlackItem;
   me: string | null;
   /// The reply box, for the page's r.
@@ -3604,8 +3610,11 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
   report: (e: unknown) => void;
   onLink: (url: string) => void;
   onDone: () => void;
-  /// 消す (a mention from this Mac, a thread from those followed).
+  /// 消す waits for a second press.
+  confirmingForget: boolean;
+  /// 消す (a mention from this Mac, a thread from those followed): asks first.
   onForget: () => void;
+  onCancelForget: () => void;
   bookmarked: (ts: string) => boolean;
   /// Bookmarks a message, or takes it off.
   onBookmark: (m: SlackThreadMessage) => void;
@@ -3672,34 +3681,49 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, onFo
         <span className="grow ellipsis">
           <b>#{item.channelName}</b> <span className="muted">· {title}</span>
         </span>
-        {!item.read && (
-          <button className="small" title="このスレッドのメンションと返信を既読にして、一覧から消して次へ" onClick={onDone}>
-            Done <span className="kbd">{keyLabel(keyOf("slackDone"))}</span>
+        {confirmingForget ? (
+          // While 消す asks, it stands alone: the header has no room beside the rest.
+          <span className="inline-confirm">
+            このスレッドのメンションを、この Mac から消しますか？
+            <button className="danger small" onClick={onForget}>
+              消す <span className="kbd">{keyLabel(keyOf("slackForget"))}</span>
+            </button>
+            <button className="ghost small" onClick={onCancelForget}>
+              やめる <span className="kbd">Esc</span>
+            </button>
+          </span>
+        ) : (
+          <>
+          {!item.read && (
+            <button className="small" title="このスレッドのメンションと返信を既読にして、一覧から消して次へ" onClick={onDone}>
+              Done <span className="kbd">{keyLabel(keyOf("slackDone"))}</span>
+            </button>
+          )}
+          <button className="ghost small" title="選んでいるメッセージ（⇧J ⇧K で選ぶ）から Todo を作ります" onClick={() => onTodo(memo() ?? slackMemo(item))}>
+            Todo にする <span className="kbd">{keyLabel(keyOf("slackTodo"))}</span>
           </button>
-        )}
-        <button className="ghost small" title="選んでいるメッセージ（⇧J ⇧K で選ぶ）から Todo を作ります" onClick={() => onTodo(memo() ?? slackMemo(item))}>
-          Todo にする <span className="kbd">{keyLabel(keyOf("slackTodo"))}</span>
-        </button>
-        {item.kind === "thread" && (
-          <button className="ghost small" title="このスレッドのメンションをこの Mac から消し（また見つかっても出しません）、スレッドを追うのもやめます" onClick={onForget}>
-            消す <span className="kbd">{keyLabel(keyOf("slackForget"))}</span>
+          {item.kind === "thread" && (
+            <button className="ghost small" title="このスレッドのメンションをこの Mac から消し（また見つかっても出しません）、スレッドを追うのもやめます。押すと確認します" onClick={onForget}>
+              消す <span className="kbd">{keyLabel(keyOf("slackForget"))}</span>
+            </button>
+          )}
+          {pickedMessage && (
+            <button className="ghost small" title="選んでいるメッセージ（⇧J ⇧K で選ぶ）をブックマークします。スレッドの先頭ならスレッドを" onClick={() => onBookmark(pickedMessage)}>
+              {bookmarked(pickedMessage.ts) ? "ブックマークを外す" : "ブックマーク"} <span className="kbd">{keyLabel(keyOf("slackBookmark"))}</span>
+            </button>
+          )}
+          <button className="ghost small" title="このスレッドの新しい返信を、未読に数えない（メンションは届きます）" onClick={toggleMute}>
+            {muted ? "返信をまた数える" : "返信を数えない"} <span className="kbd">{keyLabel(keyOf("slackMute"))}</span>
           </button>
-        )}
-        {pickedMessage && (
-          <button className="ghost small" title="選んでいるメッセージ（⇧J ⇧K で選ぶ）をブックマークします。スレッドの先頭ならスレッドを" onClick={() => onBookmark(pickedMessage)}>
-            {bookmarked(pickedMessage.ts) ? "ブックマークを外す" : "ブックマーク"} <span className="kbd">{keyLabel(keyOf("slackBookmark"))}</span>
+          <button className="ghost small" title="このチャンネルを Shosai でミュートします（メンションも返信も届かなくなります。解除は設定の Slack から）" onClick={onMuteChannel}>
+            チャンネルをミュート <span className="kbd">{keyLabel(keyOf("slackMuteChannel"))}</span>
           </button>
-        )}
-        <button className="ghost small" title="このスレッドの新しい返信を、未読に数えない（メンションは届きます）" onClick={toggleMute}>
-          {muted ? "返信をまた数える" : "返信を数えない"} <span className="kbd">{keyLabel(keyOf("slackMute"))}</span>
-        </button>
-        <button className="ghost small" title="このチャンネルを Shosai でミュートします（メンションも返信も届かなくなります。解除は設定の Slack から）" onClick={onMuteChannel}>
-          チャンネルをミュート <span className="kbd">{keyLabel(keyOf("slackMuteChannel"))}</span>
-        </button>
-        {item.permalink && (
-          <button className="ghost small" onClick={() => onLink(item.permalink)}>
-            Slack で開く <span className="kbd">{keyLabel(keyOf("slackOpen"))}</span>
-          </button>
+          {item.permalink && (
+            <button className="ghost small" onClick={() => onLink(item.permalink)}>
+              Slack で開く <span className="kbd">{keyLabel(keyOf("slackOpen"))}</span>
+            </button>
+          )}
+          </>
         )}
         <button className="ghost icon" aria-label="スレッドを閉じる（Esc）" title="スレッドを閉じる（Esc）" onClick={onClose}>
           <Icon name="close" size={13} />
