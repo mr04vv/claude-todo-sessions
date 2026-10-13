@@ -32,8 +32,13 @@ const EVERY: Duration = Duration::from_secs(120);
 /// Between two checks while Socket Mode brings the messages: only to catch
 /// what it missed.
 const CATCH_UP: Duration = Duration::from_secs(600);
-/// How long a read of the socket waits, so a changed token is noticed.
+/// How long a read of the socket waits, so a changed token is noticed; a
+/// read that times out sends a ping.
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(15);
+/// A socket that brought nothing (not even a pong) this long is dead: one
+/// the network dropped (the Mac moved networks) gives neither data nor an
+/// error, and would be taken for connected while no event comes.
+const SOCKET_SILENCE: Duration = Duration::from_secs(60);
 /// Waits before connecting again after a failure, doubling up to the last.
 const SOCKET_RETRY_FIRST: Duration = Duration::from_secs(5);
 const SOCKET_RETRY_MAX: Duration = Duration::from_secs(300);
@@ -779,16 +784,29 @@ fn socket_session(app: &AppHandle, slack: &Slack, token: &str, app_token: &str, 
     let mut socket = connect(&slack::socket_url(app_token)?)?;
     slack.live.store(true, Ordering::Relaxed);
     slack.set_socket_error(None);
+    let mut heard = std::time::Instant::now();
     let result = loop {
         if slack.generation.load(Ordering::Relaxed) != generation {
             let _ = socket.close(None);
             break Ok(());
         }
-        let text = match socket.read() {
+        let read = socket.read();
+        if read.is_ok() {
+            heard = std::time::Instant::now();
+        }
+        let text = match read {
             Ok(tungstenite::Message::Text(text)) => text,
             Ok(tungstenite::Message::Close(_)) => break Ok(()),
             Ok(_) => continue,
-            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => continue,
+            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {
+                if heard.elapsed() >= SOCKET_SILENCE {
+                    break Err(format!("{} 秒なにも届かないので、つなぎ直します", SOCKET_SILENCE.as_secs()));
+                }
+                if let Err(e) = socket.send(tungstenite::Message::Ping(Default::default())) {
+                    break Err(format!("WebSocket: {e}"));
+                }
+                continue;
+            }
             Err(e) => break Err(format!("WebSocket: {e}")),
         };
         match slack::parse_envelope(text.as_str()) {
