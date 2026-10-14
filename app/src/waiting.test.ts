@@ -20,6 +20,7 @@ const session = (id: string, patch: Partial<Session> = {}): Session => ({
   question: null,
   review_auto: false,
   desktop: false,
+  routine: false,
   ...patch,
 });
 

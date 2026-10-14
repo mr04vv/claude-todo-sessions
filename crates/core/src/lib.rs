@@ -309,6 +309,8 @@ pub struct Session {
     pub review_auto: bool,
     /// Made in Claude Desktop (it has a record there). Not stored: the app fills it in.
     pub desktop: bool,
+    /// A run of a Claude Desktop routine (scheduled task). Not stored either.
+    pub routine: bool,
 }
 
 /// Why the app notified about a session.
@@ -863,6 +865,7 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         question: r.get(13)?,
         review_auto: r.get(14)?,
         desktop: false,
+        routine: false,
     })
 }
 

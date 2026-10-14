@@ -28,6 +28,8 @@ export interface Session {
   review_auto: boolean;
   /** Made in Claude Desktop (its Code tab). */
   desktop: boolean;
+  /** A run of a Claude Desktop routine (scheduled task). */
+  routine: boolean;
 }
 
 /** The program a session runs: Claude Code, or Codex (local, in herdr). */

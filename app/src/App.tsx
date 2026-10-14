@@ -259,9 +259,10 @@ const REVIEW_TITLE_PREFIX = "レビュー: ";
 const isReviewSession = (s: Session) =>
   s.todo_id === null &&
   (!!s.review_url || (!!s.title && (s.title.startsWith(REVIEW_TITLE_PREFIX) || s.title.startsWith("/review ") || /^PR https:\/\/github\.com\/\S+\/pull\/\d+ をレビュー/.test(s.title))));
-/// The session lists leave out reviews (one asking is in あなた待ち), and
-/// sessions put away (⌘⇧A, or a review once it is in) unless they ask.
-const listedSession = (s: Session) => (!isReviewSession(s) || s.state === "needs_input") && (!s.hidden || s.state === "needs_input");
+/// The session lists leave out reviews and routines (one asking is in
+/// あなた待ち; the routines have a filter of their own), and sessions put
+/// away (⌘⇧A, or a review once it is in) unless they ask.
+const listedSession = (s: Session) => (!isReviewSession(s) || s.state === "needs_input") && (!s.routine || s.state === "needs_input") && (!s.hidden || s.state === "needs_input");
 
 /// Lanes that start folded, and the ones already folded once on this machine
 /// (so a lane added to the list later folds too, and stays open once opened).
@@ -4196,12 +4197,13 @@ function sessionItemsOf(board: Board): SessionItem[] {
   return [...board.todos.flatMap((todo) => todo.sessions.map((session) => ({ session, todo }))), ...board.inbox.map((session) => ({ session }))];
 }
 
-export type SessionFilter = "all" | "waiting" | "running" | "unread";
+export type SessionFilter = "all" | "waiting" | "running" | "unread" | "routine";
 const SESSION_FILTERS: { key: SessionFilter; label: string }[] = [
   { key: "all", label: "すべて" },
   { key: "waiting", label: "あなた待ち" },
   { key: "running", label: "作業中" },
   { key: "unread", label: "新着" },
+  { key: "routine", label: "ルーティン" },
 ];
 
 /// Where a session runs and what runs it: "Cloud · Claude", "Desktop · Claude", "herdr · Codex".
@@ -4237,17 +4239,22 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
   const all = sessionItemsOf(board).filter(
     (i) => inRepo(i.todo?.repos ?? i.session.repos) && !(i.todo && aside.has(i.todo.id)) && listedSession(i.session) && !waitingIds.has(i.session.session_id),
   );
+  // Routines run on their own: they are listed under their filter alone.
+  const routines = sessionItemsOf(board).filter((i) => i.session.routine && !i.session.hidden && inRepo(i.session.repos));
   const live = all.filter((i) => i.session.state !== "ended");
+  const liveRoutines = routines.filter((i) => i.session.state !== "ended");
   const counts: Record<SessionFilter, number> = {
     all: live.length + waits.length,
     waiting: waits.length,
     running: live.filter((i) => i.session.state === "running").length,
     unread: live.filter((i) => i.session.unread).length,
+    routine: liveRoutines.length,
   };
   const pass = (i: SessionItem) => filter === "all" || (filter === "unread" ? i.session.unread : filter === "running" && i.session.state === "running");
   // Todos with subtasks head groups (sessionTree.ts); a folded group shows its head only.
   // Whether a subtask ever had a session goes by all of them (one asking is above, in あなた待ち).
-  const { ordered } = sessionTree(filter === "waiting" ? [] : (showEnded ? all : live).filter(pass), sessionItemsOf(board), board.todos, showEnded, filter === "all");
+  const listed = filter === "waiting" ? [] : filter === "routine" ? (showEnded ? routines : liveRoutines) : (showEnded ? all : live).filter(pass);
+  const { ordered } = sessionTree(listed, sessionItemsOf(board), board.todos, showEnded, filter === "all");
   const [folded, setFolded] = useState<Set<number>>(new Set());
   const fold = (id: number, on?: boolean) =>
     setFolded((prev) => {
@@ -4261,7 +4268,7 @@ function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTod
   // Review requests are no sessions: one line for them, which opens the PR page.
   const asks = waitsShown.filter(isReviewAsk).length;
   const shownWaits = waitsShown.filter((w) => !isReviewAsk(w));
-  const ended = all.length - live.length;
+  const ended = filter === "routine" ? routines.length - liveRoutines.length : all.length - live.length;
   // Cloud sessions done with their turn, which the bulk archive takes.
   const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
   const [confirmArchive, setConfirmArchive] = useState(false);

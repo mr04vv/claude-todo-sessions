@@ -14,6 +14,9 @@ pub struct Record {
     cli_session_id: Option<String>,
     #[serde(rename = "isArchived", default)]
     is_archived: bool,
+    /// The routine (scheduled task) this session is a run of.
+    #[serde(rename = "scheduledTaskId")]
+    scheduled_task_id: Option<String>,
 }
 
 /// Every `local_*.json` file under `<root>/<account>/<org>/`.
@@ -85,6 +88,11 @@ impl RecordCache {
     pub fn cli_ids(&self) -> HashSet<String> {
         self.files.values().filter_map(|(_, _, r)| r.cli_session_id.clone()).collect()
     }
+
+    /// CLI session ids of routine runs, as `archived_cli_ids` last read them.
+    pub fn routine_cli_ids(&self) -> HashSet<String> {
+        self.files.values().filter(|(_, _, r)| r.scheduled_task_id.is_some()).filter_map(|(_, _, r)| r.cli_session_id.clone()).collect()
+    }
 }
 
 #[cfg(test)]
@@ -136,6 +144,18 @@ mod tests {
         let mut cache = RecordCache::default();
         cache.archived_cli_ids(dir.path());
         assert_eq!(cache.cli_ids(), HashSet::from(["cli-1".to_string(), "cli-2".to_string()]));
+    }
+
+    #[test]
+    fn cache_tells_the_runs_of_a_routine() {
+        let dir = tempfile::tempdir().unwrap();
+        let org = dir.path().join("acct").join("org");
+        std::fs::create_dir_all(&org).unwrap();
+        std::fs::write(org.join("local_a.json"), r#"{"sessionId":"local_a","cliSessionId":"cli-1","scheduledTaskId":"scheduled-task-2"}"#).unwrap();
+        std::fs::write(org.join("local_b.json"), r#"{"sessionId":"local_b","cliSessionId":"cli-2"}"#).unwrap();
+        let mut cache = RecordCache::default();
+        cache.archived_cli_ids(dir.path());
+        assert_eq!(cache.routine_cli_ids(), HashSet::from(["cli-1".to_string()]));
     }
 
     #[test]

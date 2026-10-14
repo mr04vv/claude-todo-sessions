@@ -828,6 +828,7 @@ mod interval_tests {
             question: None,
             review_auto: false,
             desktop: false,
+            routine: false,
         }
     }
 
