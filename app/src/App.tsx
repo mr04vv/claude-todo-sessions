@@ -3399,7 +3399,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
                   ? "Socket Mode でつながっています。投稿されたその場で届きます"
                   : `Socket Mode でつながっていますが、まだ何も届いていません。Slack アプリの Event Subscriptions に、${SLACK_USER_EVENTS}を足してください`
             }>
-            <span className={`dot ${slack.live ? "live" : ""}`} /> {slack.live ? `リアルタイム（${slack.last_event_at ? `最後の受信 ${ago(slack.last_event_at)}` : "まだ受信なし"}）` : "2分おきに確認"}
+            <span className={`dot ${slack.live ? "live" : ""}`} /> {slack.live ? `リアルタイム（${slack.last_event_at ? `最後の受信 ${ago(slack.last_event_at)}` : "まだ受信なし"}）` : "1分おきに確認"}
           </span>
         )}
       </header>
@@ -3416,6 +3416,11 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
         <div className="content flush slack-page" style={{ gridTemplateColumns: current || composing ? `${width}px 6px minmax(0, 1fr)` : "minmax(0, 1fr)" }}>
           <div className="slack-list" ref={list}>
             {slack.error && <p className="error-text pad">Slack から読めませんでした：{slack.error}</p>}
+            {slack.events_quiet && (
+              <p className="error-text pad">
+                リアルタイムでつながっていますが、しばらく何も届いていません。投稿の少ない時間でなければ、Slack アプリの Event Subscriptions の Enable Events が止められていないか確かめてください（Mac が1時間ほど離れていると Slack が止め、メールで知らせてきます）。止まっているあいだも、メンションは1分おきの確認で届きます。
+              </p>
+            )}
             {shown.length === 0 && <p className="muted pad">{SLACK_EMPTY[filter]}</p>}
             <ul className="rows">
               {shown.map((i) => (
@@ -4157,7 +4162,7 @@ function SlackRealtime({ realtime, report, onChange }: { realtime: boolean; repo
   }
   return (
     <>
-      <p className="muted">アプリのトークン（xapp-…、connections:write）を入れると、Socket Mode で投稿されたその場でメンションが届きます（Slack アプリの Event Subscriptions に、{SLACK_USER_EVENTS}が要ります）。入れないあいだは2分おきに確かめます。</p>
+      <p className="muted">アプリのトークン（xapp-…、connections:write）を入れると、Socket Mode で投稿されたその場でメンションが届きます（Slack アプリの Event Subscriptions に、{SLACK_USER_EVENTS}が要ります）。入れても入れなくても、1分おきにも確かめます。</p>
       <div className="setting-row">
         <input
           type="password"

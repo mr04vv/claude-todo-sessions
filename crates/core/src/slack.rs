@@ -375,6 +375,18 @@ pub fn parse_envelope(text: &str) -> Envelope {
     }
 }
 
+/// How long a connected socket may bring no event before the page asks to
+/// look at the app's Enable Events: Slack turns it off (and mails the app's
+/// owner) when nearly all deliveries in an hour failed, the Mac asleep or
+/// offline, and the socket stays connected with nothing coming.
+pub const EVENTS_QUIET_SECS: i64 = 15 * 60;
+
+/// Whether a socket connected at `connected_at` has had no event for
+/// EVENTS_QUIET_SECS (`last_event` the last one's time, 0 for none).
+pub fn events_quiet(connected_at: i64, last_event: i64, now: i64) -> bool {
+    now - connected_at.max(last_event) >= EVENTS_QUIET_SECS
+}
+
 /// What tells Slack an envelope came.
 pub fn ack(envelope_id: &str) -> String {
     serde_json::json!({ "envelope_id": envelope_id }).to_string()
@@ -552,6 +564,15 @@ mod tests {
 
     // Shapes from the method pages on docs.slack.dev (auth.test,
     // usergroups.list, search.messages, conversations.replies, users.info).
+
+    #[test]
+    fn a_socket_is_quiet_once_no_event_came_for_a_while_since_it_connected() {
+        let now = 100_000;
+        assert!(!events_quiet(now - 60, 0, now), "just connected");
+        assert!(!events_quiet(now - 7200, now - 60, now), "an event a minute ago");
+        assert!(events_quiet(now - EVENTS_QUIET_SECS, 0, now), "nothing since it connected");
+        assert!(events_quiet(now - 7200, now - EVENTS_QUIET_SECS, now), "nothing since the last one");
+    }
 
     #[test]
     fn the_user_and_their_workspace_come_from_auth_test() {

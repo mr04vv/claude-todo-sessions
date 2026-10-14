@@ -249,10 +249,12 @@ export interface MutedChannel {
 
 export interface SlackView {
   connected: boolean;
-  /** Socket Mode brings the messages as they are posted (else a search every 2 minutes). */
+  /** Socket Mode brings the messages as they are posted (and a search every minute, either way). */
   live: boolean;
   /** When Socket Mode last brought an event (unix seconds), since launch. */
   last_event_at: number | null;
+  /** Socket Mode is connected but nothing came for a long while: Slack may have turned the app's events off. */
+  events_quiet: boolean;
   /** The user's Slack id, once known (their mentions are marked). */
   user_id: string | null;
   /** Why the last check failed. */

@@ -26,12 +26,12 @@ const SERVICE: &str = "shosai-slack";
 const OLD_SERVICE: &str = "todo-sessions-slack";
 const ACCOUNT: &str = "token";
 const APP_ACCOUNT: &str = "app-token";
-/// Between two checks without Socket Mode: each makes a search per user
-/// group besides the user's, and search.messages allows about 20 a minute (Tier 2).
-const EVERY: Duration = Duration::from_secs(120);
-/// Between two checks while Socket Mode brings the messages: only to catch
-/// what it missed.
-const CATCH_UP: Duration = Duration::from_secs(600);
+/// Between two checks, with Socket Mode or not: Slack stops sending the
+/// app's events after an hour the Mac was asleep or offline, and the
+/// mentions still come within this. Each check searches for the user and
+/// for each of their groups; search.messages allows about 20 a minute (Tier 2).
+/// ponytail: one in more than ~18 groups would pass that; space the checks by them then.
+const EVERY: Duration = Duration::from_secs(60);
 /// How long a read of the socket waits, so a changed token is noticed; a
 /// read that times out sends a ping.
 const SOCKET_READ_TIMEOUT: Duration = Duration::from_secs(15);
@@ -67,6 +67,8 @@ pub struct Slack {
     live: AtomicBool,
     /// When Socket Mode last brought an event (unix seconds; 0: none since launch).
     last_event: AtomicI64,
+    /// When Socket Mode last connected (unix seconds).
+    live_since: AtomicI64,
     /// Why the last check failed, for the Slack page.
     error: Mutex<Option<String>>,
     /// Why Socket Mode could not connect.
@@ -97,6 +99,7 @@ impl Slack {
             connected: AtomicBool::new(token().is_some()),
             live: AtomicBool::new(false),
             last_event: AtomicI64::new(0),
+            live_since: AtomicI64::new(0),
             error: Mutex::new(None),
             socket_error: Mutex::new(None),
             me: Mutex::new(None),
@@ -338,6 +341,9 @@ pub struct SlackView {
     live: bool,
     /// When Socket Mode last brought an event (unix seconds), since launch.
     last_event_at: Option<i64>,
+    /// Socket Mode is connected but nothing came for a long while: the app's
+    /// events may have been turned off by Slack.
+    events_quiet: bool,
     /// The user's id, once known.
     user_id: Option<String>,
     error: Option<String>,
@@ -355,6 +361,7 @@ pub fn view(slack: &Slack, db: &Db) -> Result<SlackView, String> {
         connected: slack.connected.load(Ordering::Relaxed),
         live: slack.live.load(Ordering::Relaxed),
         last_event_at: Some(slack.last_event.load(Ordering::Relaxed)).filter(|at| *at > 0),
+        events_quiet: slack.live.load(Ordering::Relaxed) && slack::events_quiet(slack.live_since.load(Ordering::Relaxed), slack.last_event.load(Ordering::Relaxed), cts_core::now()),
         user_id: slack.me.lock().map_err(err)?.as_ref().map(|m| m.user_id.clone()),
         error: error.or(socket_error),
         messages: db.slack_messages(BOARD_MESSAGES).map_err(err)?,
@@ -412,7 +419,7 @@ pub fn slack_set_app_token(slack: State<Slack>, token: String) -> Result<(), Str
     Ok(())
 }
 
-/// Takes the app's token out: back to checking every EVERY.
+/// Takes the app's token out: the checks alone bring the mentions.
 #[tauri::command(async)]
 pub fn slack_forget_app_token(slack: State<Slack>) -> Result<(), String> {
     forget_token(APP_ACCOUNT)?;
@@ -688,8 +695,7 @@ fn check(app: &AppHandle, db: &Db, slack: &Slack, token: &str) -> Result<(), Str
     if trouble.is_empty() { Ok(()) } else { Err(trouble.join(" ")) }
 }
 
-/// Checks Slack while a token is kept: every EVERY, or every CATCH_UP while
-/// Socket Mode brings the messages; at once when woken.
+/// Checks Slack while a token is kept: every EVERY, and at once when woken.
 pub fn run(app: AppHandle, wake: Receiver<()>) {
     let db = match open_db() {
         Ok(db) => db,
@@ -712,8 +718,7 @@ pub fn run(app: AppHandle, wake: Receiver<()>) {
             slack.set_error(result.err());
             tick = tick.wrapping_add(1);
         }
-        let every = if slack.live.load(Ordering::Relaxed) { CATCH_UP } else { EVERY };
-        match wake.recv_timeout(every) {
+        match wake.recv_timeout(EVERY) {
             Ok(()) => tick = 0,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
@@ -796,6 +801,7 @@ fn socket_session(app: &AppHandle, slack: &Slack, token: &str, app_token: &str, 
     let db = open_db()?;
     let mut socket = connect(&slack::socket_url(app_token)?)?;
     slack.live.store(true, Ordering::Relaxed);
+    slack.live_since.store(cts_core::now(), Ordering::Relaxed);
     slack.set_socket_error(None);
     let mut heard = std::time::Instant::now();
     let result = loop {
