@@ -948,15 +948,9 @@ fn ghq_root() -> Option<PathBuf> {
 /// Open issues assigned to the user that are not todos yet.
 #[tauri::command(async)]
 fn gh_issues(state: State<AppState>) -> Result<Vec<IssueView>, String> {
-    let out = cli("gh")
-        .args(["search", "issues", "--assignee", "@me", "--state", "open", "--limit", GH_ISSUE_LIMIT,
-               "--json", "number,title,url,repository,updatedAt"])
-        .output()
-        .map_err(|e| format!("gh: {e}"))?;
-    if !out.status.success() {
-        return Err(format!("gh search issues: {}", String::from_utf8_lossy(&out.stderr).trim()));
-    }
-    let issues: Vec<GhIssue> = serde_json::from_slice(&out.stdout).map_err(|e| format!("gh output: {e}"))?;
+    let out = gh(&["search", "issues", "--assignee", "@me", "--state", "open", "--limit", GH_ISSUE_LIMIT,
+                   "--json", "number,title,url,repository,updatedAt"])?;
+    let issues: Vec<GhIssue> = serde_json::from_str(&out).map_err(|e| format!("gh output: {e}"))?;
     let known: HashSet<String> = state.db.lock().map_err(err)?.issue_urls().map_err(err)?.into_iter().collect();
     let root = ghq_root();
     Ok(issues
@@ -1040,10 +1034,45 @@ fn local_repos(state: State<AppState>) -> Result<Vec<LocalRepo>, String> {
     Ok(repos)
 }
 
+/// How long one `gh` may take. A request the network dropped (while the Mac
+/// slept) never ends, and held the GitHub sync for good.
+const GH_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often a command run with a timeout is checked on.
+const COMMAND_POLL: Duration = Duration::from_millis(100);
+
+/// Runs `cmd` for its output, killing it after `timeout`.
+fn output_within(cmd: &mut Command, timeout: Duration) -> std::io::Result<std::process::Output> {
+    fn drain(pipe: Option<impl std::io::Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let mut child = cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn()?;
+    let (stdout, stderr) = (drain(child.stdout.take()), drain(child.stderr.take()));
+    let started = std::time::Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if started.elapsed() > timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("{} 秒たっても終わりません", timeout.as_secs())));
+        }
+        std::thread::sleep(COMMAND_POLL);
+    };
+    Ok(std::process::Output { status, stdout: stdout.join().unwrap_or_default(), stderr: stderr.join().unwrap_or_default() })
+}
+
 fn gh(args: &[&str]) -> Result<String, String> {
-    let out = cli("gh").args(args).output().map_err(|e| format!("gh: {e}"))?;
+    let what = args.iter().take(2).cloned().collect::<Vec<_>>().join(" ");
+    let out = output_within(cli("gh").args(args), GH_TIMEOUT).map_err(|e| format!("gh {what}: {e}"))?;
     if !out.status.success() {
-        return Err(format!("gh {}: {}", args.iter().take(2).cloned().collect::<Vec<_>>().join(" "), String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!("gh {what}: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -2818,6 +2847,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_command_that_hangs_is_killed_after_the_timeout() {
+        let started = std::time::Instant::now();
+        assert!(output_within(Command::new("sleep").arg("10"), Duration::from_millis(200)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        let out = output_within(Command::new("echo").arg("hi"), Duration::from_secs(5)).unwrap();
+        assert_eq!(out.stdout, b"hi\n");
+    }
 
     #[test]
     fn a_login_is_kept_for_its_site_with_its_port() {
