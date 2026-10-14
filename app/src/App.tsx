@@ -3214,7 +3214,8 @@ const slackMemo = (i: SlackItem) => `Slack #${i.channelName} の ${i.userName}�
 
 /// Slack (#27, #28): the unread mentions of the user and of their user
 /// groups, and the threads they are in with new replies, newest first. One
-/// stays unread until 既読にする (e) takes it off; 既読 shows the read mentions.
+/// is read once opened (it leaves the unread when another is) or Done (e);
+/// 既読 shows the read mentions.
 function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   slack: SlackView;
   /// A mention to show (a notification's click), by mentionKey.
@@ -3277,10 +3278,16 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
     setSelected(next?.key ?? null);
     if (next) setCursor(next.key);
   };
-  /// Done: the row's mentions read and its replies seen, off the unread; on to the next row.
+  /// The row's mentions read and its replies seen.
+  const markRead = (item: SlackItem) => run(() => Promise.all([...item.mentions.map((m) => api.slackRead(m.channel, m.ts)), api.slackThreadSeen(item.channel, item.threadTs)]));
+  // Opening a row reads it; it stays in the list until another is opened.
+  useEffect(() => {
+    if (current?.kind === "thread" && !current.read) markRead(current);
+  }, [current?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  /// Done: the row read, off the unread; on to the next row.
   const done = (item: SlackItem) => {
     const next = nextAfter(item);
-    run(() => Promise.all([...item.mentions.map((m) => api.slackRead(m.channel, m.ts)), api.slackThreadSeen(item.channel, item.threadTs)]));
+    markRead(item);
     goOn(next);
   };
   /// The row whose 消す waits for a second press (or its button).
