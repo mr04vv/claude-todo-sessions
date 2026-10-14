@@ -4204,8 +4204,8 @@ const SESSION_FILTERS: { key: SessionFilter; label: string }[] = [
   { key: "unread", label: "新着" },
 ];
 
-/// Where a session runs and what runs it: "Cloud · Claude", "herdr · Codex".
-const placeOf = (s: Session) => `${isCloud(s) ? "Cloud" : "herdr"} · ${s.agent === "codex" ? "Codex" : "Claude"}`;
+/// Where a session runs and what runs it: "Cloud · Claude", "Desktop · Claude", "herdr · Codex".
+const placeOf = (s: Session) => `${isCloud(s) ? "Cloud" : s.desktop ? "Desktop" : "herdr"} · ${s.agent === "codex" ? "Codex" : "Claude"}`;
 
 /// The sessions page, the place to keep up with what runs: あなた待ち pinned
 /// on top, then the sessions as they changed last (a parent's under it).

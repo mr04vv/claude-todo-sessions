@@ -827,6 +827,7 @@ mod interval_tests {
             hidden: false,
             question: None,
             review_auto: false,
+            desktop: false,
         }
     }
 

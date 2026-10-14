@@ -307,6 +307,8 @@ pub struct Session {
     pub question: Option<String>,
     /// A review that submits on its own, without asking first.
     pub review_auto: bool,
+    /// Made in Claude Desktop (it has a record there). Not stored: the app fills it in.
+    pub desktop: bool,
 }
 
 /// Why the app notified about a session.
@@ -860,6 +862,7 @@ fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
         hidden: r.get(12)?,
         question: r.get(13)?,
         review_auto: r.get(14)?,
+        desktop: false,
     })
 }
 

@@ -79,6 +79,12 @@ impl RecordCache {
         self.files = seen;
         archived(self.files.values().map(|(_, _, r)| r.clone()))
     }
+
+    /// CLI session ids Desktop has a record of, archived or not (its
+    /// sessions), as `archived_cli_ids` last read them.
+    pub fn cli_ids(&self) -> HashSet<String> {
+        self.files.values().filter_map(|(_, _, r)| r.cli_session_id.clone()).collect()
+    }
 }
 
 #[cfg(test)]
@@ -117,6 +123,19 @@ mod tests {
         assert_eq!(cache.archived_cli_ids(dir.path()), HashSet::from(["cli-2".to_string()]));
         std::fs::remove_file(org.join("local_b.json")).unwrap();
         assert!(cache.archived_cli_ids(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn cache_tells_every_session_desktop_has_archived_or_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let org = dir.path().join("acct").join("org");
+        std::fs::create_dir_all(&org).unwrap();
+        std::fs::write(org.join("local_a.json"), r#"{"sessionId":"local_a","cliSessionId":"cli-1","isArchived":true}"#).unwrap();
+        std::fs::write(org.join("local_b.json"), r#"{"sessionId":"local_b","cliSessionId":"cli-2"}"#).unwrap();
+        std::fs::write(org.join("local_c.json"), r#"{"sessionId":"local_c"}"#).unwrap();
+        let mut cache = RecordCache::default();
+        cache.archived_cli_ids(dir.path());
+        assert_eq!(cache.cli_ids(), HashSet::from(["cli-1".to_string(), "cli-2".to_string()]));
     }
 
     #[test]

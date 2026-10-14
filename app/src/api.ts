@@ -26,6 +26,8 @@ export interface Session {
   question: string | null;
   /** A review that submits on its own, without asking first. */
   review_auto: boolean;
+  /** Made in Claude Desktop (its Code tab). */
+  desktop: boolean;
 }
 
 /** The program a session runs: Claude Code, or Codex (local, in herdr). */

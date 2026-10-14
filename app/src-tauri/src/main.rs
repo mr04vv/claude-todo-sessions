@@ -82,6 +82,8 @@ struct AppState {
     /// CLI session ids archived in Desktop. Reading every Desktop record is
     /// slow, so the watch loop refreshes this and the board only reads it.
     archived: Mutex<HashSet<String>>,
+    /// CLI session ids made in Desktop, kept the same way.
+    desktop: Mutex<HashSet<String>>,
     /// Each site's zoom set with the keys (1.0 is none), kept across restarts (ZOOMS_FILE).
     zooms: Mutex<HashMap<String, f64>>,
     /// Each site's answer to its ask for the microphone or camera, kept (SITE_PERMISSIONS_FILE).
@@ -230,6 +232,10 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Boa
     let (todos, inputs, inbox, feynman, artifacts, themes, categories, slack) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
+        let desktop = state.desktop.lock().map_err(err)?.clone();
+        for s in sessions.values_mut().flatten() {
+            s.desktop = desktop.contains(&s.session_id);
+        }
         let todos = db
             .list_todos(None)
             .map_err(err)?
@@ -243,6 +249,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Boa
             .into_iter()
             // A review that ended without being put away stopped before submitting: it waits on the user.
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
+            .map(|s| Session { desktop: desktop.contains(&s.session_id), ..s })
             .collect();
         (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?, db.list_themes().map_err(err)?, db.list_categories().map_err(err)?, slack::view(&slack_state, &db)?)
     };
@@ -2526,6 +2533,9 @@ fn watch_loop(app: AppHandle) {
             if let Ok(mut shared) = app.state::<AppState>().archived.lock() {
                 shared.clone_from(&archived);
             }
+            if let Ok(mut shared) = app.state::<AppState>().desktop.lock() {
+                *shared = records.cli_ids();
+            }
             waiting.retain(|s| !archived.contains(&s.session_id));
             let now: HashSet<String> = waiting.iter().map(|s| s.session_id.clone()).collect();
             // What each session asks, read once as it starts waiting (the lists show it).
@@ -2674,6 +2684,7 @@ fn main() {
             login_never: Mutex::new(load_kept(LOGIN_NEVER_FILE)),
             page_keys: Mutex::new("{}".into()),
             archived: Mutex::new(HashSet::new()),
+            desktop: Mutex::new(HashSet::new()),
             zooms: Mutex::new(load_kept(ZOOMS_FILE)),
             site_permissions: Mutex::new(load_kept(SITE_PERMISSIONS_FILE)),
             browser_lock: Mutex::new(()),
@@ -2885,7 +2896,7 @@ mod tests {
     fn a_review_session_names_its_pr_by_record_or_title() {
         let session = |title: Option<&str>, url: Option<&str>| cts_core::Session {
             session_id: "s".into(), title: title.map(Into::into), todo_id: None, cwd: "/".into(), state: SessionState::Idle, state_at: 0,
-            repos: vec![], branch: None, started_at: 0, unread: false, agent: cts_core::Agent::Claude, review_url: url.map(Into::into), hidden: false, question: None, review_auto: false,
+            repos: vec![], branch: None, started_at: 0, unread: false, agent: cts_core::Agent::Claude, review_url: url.map(Into::into), hidden: false, question: None, review_auto: false, desktop: false,
         };
         let pr = "https://github.com/o/r/pull/12";
         assert_eq!(review_pr(&session(Some("レビュー: x"), Some(pr))).as_deref(), Some(pr));
