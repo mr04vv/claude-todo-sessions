@@ -2132,10 +2132,15 @@ fn iso_utc(secs: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z", rem / 3600, rem % 3600 / 60, rem % 60)
 }
 
-/// The user's GitHub login, asked once a run.
+/// The user's GitHub login, asked until it is known (not once a run, which
+/// kept a failure, offline at launch, until the app quit).
 fn github_login() -> Option<String> {
-    static LOGIN: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    LOGIN.get_or_init(|| gh(&["api", "user", "--jq", ".login"]).ok().filter(|l| !l.is_empty())).clone()
+    static LOGIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    if let Some(login) = LOGIN.get() {
+        return Some(login.clone());
+    }
+    let login = gh(&["api", "user", "--jq", ".login"]).ok().filter(|l| !l.is_empty())?;
+    Some(LOGIN.get_or_init(|| login).clone())
 }
 
 /// Tells the page a review went in: `{url, title, verdict}` (APPROVED,
