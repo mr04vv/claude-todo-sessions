@@ -31,6 +31,14 @@ export function emojiNames(query: string, limit = 8): { name: string; emoji: str
   return [...starting, ...holding].slice(0, limit).map((name) => ({ name, emoji: nameToEmoji[name] }));
 }
 
+/// The emoji to pick for `query`: the workspace's own (`custom`) first, then
+/// the standard ones, each by what it starts with first; at most `limit`.
+export function emojiChoices(query: string, custom: string[], limit: number): string[] {
+  const q = query.toLowerCase();
+  const own = custom.filter((n) => n.includes(q)).sort((a, b) => Number(!a.startsWith(q)) - Number(!b.startsWith(q)));
+  return [...new Set([...own, ...emojiNames(q, limit).map((e) => e.name)])].slice(0, limit);
+}
+
 /// A line of plain text with its emoji names as emoji (a list's row).
 export function emojiInline(text: string): Inline[] {
   const out: Inline[] = [];

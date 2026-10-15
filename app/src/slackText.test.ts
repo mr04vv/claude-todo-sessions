@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emojiInline, emojiNames, parseSlack, slackPlain } from "./slackText.ts";
+import { emojiChoices, emojiInline, emojiNames, parseSlack, slackPlain } from "./slackText.ts";
 
 const inlines = (text: string, me?: string) => {
   const blocks = parseSlack(text, me);
@@ -80,6 +80,13 @@ test("a line's emoji names come out as emoji, the rest as it is", () => {
     { t: "emoji", v: ":arigatougozaimasu:", name: "arigatougozaimasu" },
     { t: "text", v: " <b> 10:30" },
   ]);
+});
+
+test("emoji to pick: the workspace's own first, then the standard ones, each name once", () => {
+  const got = emojiChoices("bo", ["hobo", "boss", "bow", "cat"], 5);
+  assert.deepEqual(got.slice(0, 3), ["boss", "bow", "hobo"]);
+  assert.equal(got.length, 5);
+  assert.equal(new Set(got).size, 5, "bow (standard too) comes once");
 });
 
 test("code blocks and quotes are blocks of their own", () => {

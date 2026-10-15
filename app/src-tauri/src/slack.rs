@@ -595,6 +595,12 @@ pub fn slack_reply(channel: String, thread_ts: String, text: String) -> Result<(
     slack::post_message(&token_or_err()?, &channel, Some(&thread_ts), &text).map(|_| ())
 }
 
+/// Gives the user's reaction to a message, or takes it off.
+#[tauri::command(async)]
+pub fn slack_react(channel: String, ts: String, name: String, on: bool) -> Result<(), String> {
+    slack::react(&token_or_err()?, &channel, &ts, &name, on)
+}
+
 /// The channels the user is in, to post in (asked each time the composer opens).
 #[tauri::command(async)]
 pub fn slack_channels(slack: State<Slack>) -> Result<Vec<slack::Channel>, String> {

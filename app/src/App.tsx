@@ -90,7 +90,7 @@ import {
   type PageText,
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
-import { emojiInline, emojiNames, parseSlack, slackPlain, type Inline } from "./slackText";
+import { emojiChoices, emojiInline, parseSlack, slackPlain, type Inline } from "./slackText";
 import { nameToEmoji } from "gemoji";
 import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
 import { categoryAt, themeGroups, themeLabel, themeRows } from "./themes";
@@ -3352,6 +3352,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
       else if (matches(e, "slackMute")) threadKeys.current?.mute();
       else if (matches(e, "slackMuteChannel")) muteChannel(current);
       else if (matches(e, "slackBookmark")) threadKeys.current?.bookmark();
+      else if (matches(e, "slackReact")) threadKeys.current?.react();
       else if (matches(e, "slackScrollDown")) threadKeys.current?.move(1);
       else if (matches(e, "slackScrollUp")) threadKeys.current?.move(-1);
       else return;
@@ -3597,17 +3598,67 @@ function SlackText({ text, me, onLink }: { text: string; me?: string; onLink: (u
 }
 
 /// A message's reactions: each emoji with how many, the user's own marked,
-/// who gave it on hover.
-function SlackReactions({ reactions }: { reactions: SlackThreadMessage["reactions"] }) {
+/// who gave it on hover; a click gives the user's too, or takes it off, as in Slack.
+function SlackReactions({ reactions, onToggle }: { reactions: SlackThreadMessage["reactions"]; onToggle: (name: string, on: boolean) => void }) {
   const custom = useSlackEmoji();
   return (
     <div className="slack-reactions">
       {reactions.map((r) => (
-        <span key={r.name} className={`slack-reaction${r.mine ? " mine" : ""}`} title={`:${r.name}: ${r.who.join("、")}${r.count > r.who.length ? ` ほか ${r.count - r.who.length} 人` : ""}`}>
+        <button
+          key={r.name}
+          className={`slack-reaction${r.mine ? " mine" : ""}`}
+          title={`:${r.name}: ${r.who.join("、")}${r.count > r.who.length ? ` ほか ${r.count - r.who.length} 人` : ""}（${r.mine ? "クリックで外す" : "クリックで付ける"}）`}
+          onClick={(e) => (e.stopPropagation(), onToggle(r.name, !r.mine))}
+        >
           <SlackEmoji name={r.name} custom={custom} />
           <span>{r.count}</span>
-        </span>
+        </button>
       ))}
+    </div>
+  );
+}
+
+/// Picks an emoji by its name to react with (↑↓ or ⌃N ⌃P, Enter or Tab); Esc or leaving it gives up.
+function SlackEmojiPicker({ onPick, onClose }: { onPick: (name: string) => void; onClose: () => void }) {
+  const custom = useSlackEmoji();
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => ref.current?.scrollIntoView({ block: "nearest" }), [query]);
+  const names = query ? emojiChoices(query, Object.keys(custom), SLACK_SUGGESTIONS) : [];
+  return (
+    <div className="slack-react-pick" ref={ref} onClick={(e) => e.stopPropagation()}>
+      <input
+        autoFocus
+        value={query}
+        placeholder="リアクション（絵文字の名前、Enter で付ける、Esc でやめる）"
+        aria-label="リアクションの絵文字"
+        onChange={(e) => (setQuery(e.target.value.replace(/[:：]/g, "")), setActive(0))}
+        onBlur={onClose}
+        onKeyDown={(e) => {
+          if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+          const step = e.key === "ArrowDown" || (e.ctrlKey && e.key === "n") ? 1 : e.key === "ArrowUp" || (e.ctrlKey && e.key === "p") ? -1 : 0;
+          if (step && names.length) setActive((a) => (a + step + names.length) % names.length);
+          else if ((e.key === "Enter" || e.key === "Tab") && names[active]) onPick(names[active]);
+          else if (e.key === "Escape") onClose();
+          else return;
+          e.preventDefault();
+          e.stopPropagation();
+        }}
+      />
+      {names.length > 0 && (
+        <ul className="slack-suggest" role="listbox" aria-label="絵文字の候補">
+          {names.map((name, i) => (
+            <li key={name} role="option" aria-selected={i === active} className={i === active ? "on" : ""} onMouseDown={(e) => (e.preventDefault(), onPick(name))}>
+              <span className="slack-suggest-emoji">
+                <SlackEmoji name={name} custom={custom} />
+              </span>
+              <b>:{name}:</b>
+              {custom[name] && <span className="muted ellipsis">このワークスペースの絵文字</span>}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -3635,6 +3686,8 @@ interface SlackThreadKeys {
   mute: () => void;
   /// Bookmarks the message picked, or takes it off.
   bookmark: () => void;
+  /// Picks an emoji to react to the message picked with.
+  react: () => void;
 }
 
 function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, confirmingForget, onForget, onCancelForget, bookmarked, onBookmark, onMuteChannel, onTodo, onClose }: {
@@ -3667,6 +3720,8 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, conf
   const [error, setError] = useState<string | null>(null);
   // The message picked (⇧J ⇧K or a click): what 「Todo にする」 takes. The row's message at first.
   const [picked, setPicked] = useState<string>(item.ts);
+  // The message an emoji is being picked for (the page's key), to react with.
+  const [reacting, setReacting] = useState<string | null>(null);
   const body = useRef<HTMLDivElement>(null);
   const { channel, threadTs } = item;
   const read = useCallback(() => {
@@ -3708,7 +3763,9 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, conf
     memo,
     mute: toggleMute,
     bookmark: () => pickedMessage && onBookmark(pickedMessage),
+    react: () => pickedMessage && setReacting(pickedMessage.ts),
   };
+  const react = (ts: string, name: string, on: boolean) => api.slackReact(channel, ts, name, on).then(read, report);
   const replies = item.newReplies > 0 ? `新しい返信 ${item.newReplies} 件` : "";
   const title =
     item.kind === "posted" ? "送ったメッセージ" : [item.mention ? (item.via ? `@${item.via} へのメンション` : "あなたへのメンション") : "", replies].filter(Boolean).join("・") || "スレッド";
@@ -3785,7 +3842,16 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, conf
                     </div>
                   )}
                   <SlackText text={t.text} me={me ?? undefined} onLink={onLink} />
-                  {t.reactions.length > 0 && <SlackReactions reactions={t.reactions} />}
+                  {t.reactions.length > 0 && <SlackReactions reactions={t.reactions} onToggle={(name, on) => react(t.ts, name, on)} />}
+                  {reacting === t.ts && (
+                    <SlackEmojiPicker
+                      onPick={(name) => {
+                        setReacting(null);
+                        react(t.ts, name, true);
+                      }}
+                      onClose={() => setReacting(null)}
+                    />
+                  )}
                 </div>
               </div>
             </div>
@@ -3850,13 +3916,7 @@ function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, 
   const candidates: Suggestion[] = !typed
     ? []
     : typed.kind === "emoji"
-      ? [
-          ...Object.keys(custom)
-            .filter((n) => n.includes(q))
-            .sort((a, b) => Number(!a.startsWith(q)) - Number(!b.startsWith(q)))
-            .map((name) => ({ key: `e:${name}`, name, insert: `:${name}:`, emoji: name, note: "このワークスペースの絵文字" })),
-          ...emojiNames(q, SLACK_SUGGESTIONS).map((e) => ({ key: `e:${e.name}`, name: e.name, insert: `:${e.name}:`, emoji: e.name, note: "" })),
-        ].slice(0, SLACK_SUGGESTIONS)
+      ? emojiChoices(q, Object.keys(custom), SLACK_SUGGESTIONS).map((name) => ({ key: `e:${name}`, name, insert: `:${name}:`, emoji: name, note: custom[name] ? "このワークスペースの絵文字" : "" }))
       : people
           .map((p) => {
             const names = [p.name, ...p.also].map((n) => n.toLowerCase());

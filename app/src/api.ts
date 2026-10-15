@@ -489,6 +489,8 @@ export const api = {
   slackForgetRead: () => invoke<void>("slack_forget_read"),
   slackForgetThread: (channel: string, threadTs: string) => invoke<void>("slack_forget_thread", { channel, threadTs }),
   slackReply: (channel: string, threadTs: string, text: string) => invoke<void>("slack_reply", { channel, threadTs, text }),
+  /// Gives the user's reaction to a message (`on`), or takes it off.
+  slackReact: (channel: string, ts: string, name: string, on: boolean) => invoke<void>("slack_react", { channel, ts, name, on }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
   /// A page's own title (og:title, else <title>), when it has one.

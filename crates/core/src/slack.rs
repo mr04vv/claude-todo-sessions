@@ -579,6 +579,29 @@ pub fn post_message(token: &str, channel: &str, thread_ts: Option<&str>, text: &
     parse_posted_ts(&answer(v)?).ok_or_else(|| "Slack chat.postMessage: ts がありません".into())
 }
 
+/// reactions.add's or reactions.remove's answer: one already as asked
+/// (given before, or taken off before) is done too.
+fn reacted(v: Value) -> Result<(), String> {
+    if matches!(v["error"].as_str(), Some("already_reacted" | "no_reaction")) {
+        return Ok(());
+    }
+    answer(v).map(|_| ())
+}
+
+/// Gives the user's reaction `name` to a message, or takes it off (`reactions:write`).
+pub fn react(token: &str, channel: &str, ts: &str, name: &str, on: bool) -> Result<(), String> {
+    let method = if on { "reactions.add" } else { "reactions.remove" };
+    let v: Value = AGENT
+        .post(format!("{API}/{method}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send_json(serde_json::json!({ "channel": channel, "timestamp": ts, "name": name }))
+        .map_err(|e| failed(method, e))?
+        .body_mut()
+        .read_json()
+        .map_err(|e| failed(method, e))?;
+    reacted(v)
+}
+
 pub fn person(token: &str, user: &str) -> Result<Option<Person>, String> {
     Ok(parse_person(&call(token, "users.info", &[("user", user)])?))
 }
@@ -694,6 +717,14 @@ mod tests {
         ]});
         let r = &parse_replies(&v)[0].reactions;
         assert_eq!(r, &vec![Reaction { name: "+1".into(), users: vec!["U1".into(), "U3".into()], count: 2 }, Reaction { name: "party-parrot".into(), users: vec!["U3".into()], count: 1 }]);
+    }
+
+    #[test]
+    fn a_reaction_already_as_asked_is_no_failure() {
+        assert_eq!(reacted(json!({"ok": true})), Ok(()));
+        assert_eq!(reacted(json!({"ok": false, "error": "already_reacted"})), Ok(()));
+        assert_eq!(reacted(json!({"ok": false, "error": "no_reaction"})), Ok(()));
+        assert_eq!(reacted(json!({"ok": false, "error": "missing_scope", "needed": "reactions:write"})), Err("Slack: missing_scope（reactions:write が要ります）".into()));
     }
 
     #[test]

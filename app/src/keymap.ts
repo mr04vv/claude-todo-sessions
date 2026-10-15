@@ -48,6 +48,7 @@ export type Action =
   | "slackMute"
   | "slackMuteChannel"
   | "slackBookmark"
+  | "slackReact"
   | "slackReply"
   | "slackTodo"
   | "slackOpen"
@@ -153,6 +154,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["slackCompose", "新しいメッセージ（入っているチャンネルへ）"],
       ["slackMute", "このスレッドの返信を数えない／また数える"],
       ["slackBookmark", "選んでいるメッセージをブックマークする／外す（スレッドの先頭ならスレッド。f の「ブックマーク」で一覧）"],
+      ["slackReact", "選んでいるメッセージにリアクションを付ける（絵文字の名前を入れて Enter、Esc でやめる）"],
       ["slackMuteChannel", "このチャンネルを Shosai でミュート（メンションも返信も届かない。解除は設定の Slack）"],
       ["slackReply", "返信欄へ（⌘Enter で送る、Esc で一覧へ戻る）"],
       ["slackTodo", "Todo にする"],
@@ -244,6 +246,7 @@ const KEYS: Record<Action, string> = {
   slackMute: "m",
   slackMuteChannel: "shift+m",
   slackBookmark: "b",
+  slackReact: ":",
   slackReply: "r",
   slackTodo: "t",
   slackOpen: "o",

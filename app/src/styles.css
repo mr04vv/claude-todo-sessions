@@ -3582,3 +3582,28 @@ input.theme-goal:focus-visible {
   justify-content: center;
   width: 20px;
 }
+
+button.slack-reaction {
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+button.slack-reaction:hover {
+  border-color: var(--accent-line);
+}
+
+/* An emoji being picked to react with, under its message; the suggestions below the box. */
+.slack-react-pick {
+  margin-top: 6px;
+}
+
+.slack-react-pick input {
+  width: min(360px, 100%);
+}
+
+.slack-react-pick .slack-suggest {
+  position: static;
+  margin-top: 4px;
+  width: min(360px, 100%);
+}
