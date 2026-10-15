@@ -4589,16 +4589,16 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
 
 type PrFilter = "all" | "review" | "mine";
 
-/// Where a review asked of the user stands, by its session.
-function reviewStanding(p: Pr, sessions: Session[], submitted: Map<string, string>, now: number): { word: string; cls: string; failed?: Session } {
+/// Where a review asked of the user stands, by its session (`session`, to open).
+function reviewStanding(p: Pr, sessions: Session[], submitted: Map<string, string>, now: number): { word: string; cls: string; session?: Session; failed?: Session } {
   const s = sessions.filter((x) => x.review_url === p.url && !x.hidden).sort((a, b) => b.state_at - a.state_at)[0];
   if (!s) return submitted.has(p.url) ? { word: `提出済み（${REVIEW_VERDICT[submitted.get(p.url)!] ?? submitted.get(p.url)}）`, cls: "state-merged" } : { word: "未着手", cls: "state-needs_input" };
-  if (s.state === "needs_input") return { word: "返事待ち", cls: "state-needs_input" };
-  if (isFailedReview(s, now)) return { word: "失敗", cls: "state-ended", failed: s };
-  return { word: s.review_auto ? "レビュー中（自動で提出）" : "レビュー中", cls: "state-running" };
+  if (s.state === "needs_input") return { word: "返事待ち", cls: "state-needs_input", session: s };
+  if (isFailedReview(s, now)) return { word: "失敗", cls: "state-ended", session: s, failed: s };
+  return { word: s.review_auto ? "レビュー中（自動で提出）" : "レビュー中", cls: "state-running", session: s };
 }
 
-function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, browserUrl, run, onRefresh, onOpenTodo }: {
+function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, browserUrl, run, report, onRefresh, onOpenTodo }: {
   prs: PrLists | null;
   /// While the PRs are being taken again, so ↻ turns.
   prsLoading: boolean;
@@ -4612,6 +4612,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   /// The page the browser pane shows, to mark its row.
   browserUrl: string | null;
   run: (f: () => Promise<unknown>) => void;
+  report: (e: unknown) => void;
   onRefresh: () => void;
   onOpenTodo: (id: number) => void;
 }) {
@@ -4776,6 +4777,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
                         レビューを始める <span className="kbd">↵</span>
                       </button>
                     )}
+                    {st.session && <OpenMenu session={st.session} report={report} label="セッションを開く" />}
                     {st.failed && (
                       <button
                         className="small"
@@ -7797,6 +7799,7 @@ export default function App() {
               local={local}
               browserUrl={browserUrl}
               run={run}
+              report={report}
               onRefresh={loadPrs}
               onOpenTodo={goTodo}
             />
