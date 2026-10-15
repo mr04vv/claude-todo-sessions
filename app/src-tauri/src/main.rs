@@ -1902,10 +1902,12 @@ fn forget_site_permission(state: State<'_, AppState>, site: String) -> Result<()
 /// the main window at the given rectangle (logical pixels), created on first
 /// use, with the other tabs hidden behind it (but `keep`, shown beside it in
 /// the focus mode). An open tab goes to `url` only with `go`. GitHub refuses
-/// to be framed, so the pane cannot be an iframe.
+/// to be framed, so the pane cannot be an iframe. True when the tab was made
+/// now: its page has nothing to take the keys yet (the app's come with the
+/// page; see `tab_load`).
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, go: bool, keep: Option<String>) -> Result<(), String> {
+fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, go: bool, keep: Option<String>) -> Result<bool, String> {
     // A file on the Mac too: an artifact a session wrote.
     if !is_web_url(&url) && !url.starts_with("file://") {
         return Err(format!("開けない URL です: {url}"));
@@ -1925,9 +1927,11 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             cef_browser::navigate(&app, &tab, parsed.as_str())?;
         }
         cef_browser::set_rect(&app, &tab, rect)?;
-        return cef_browser::set_hidden(&app, Some(&tab), &[], false);
+        cef_browser::set_hidden(&app, Some(&tab), &[], false)?;
+        return Ok(false);
     }
-    cef_browser::create(&app, &tab, parsed.as_str(), rect)
+    cef_browser::create(&app, &tab, parsed.as_str(), rect)?;
+    Ok(true)
 }
 
 /// Follows tab `tab`'s placeholder when the layout changes.

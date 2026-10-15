@@ -2483,9 +2483,12 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
   const navigate = (to: string, go: boolean) =>
     api
       .browserOpen(active.id, to, rect(), go, keep)
-      .then(() => {
+      .then((made) => {
         // Only when the user asked for it and has not done anything since: a
         // page that took long to come up does not take the keyboard back.
+        // A tab made now takes it as its page comes (BROWSER_URL_EVENT): until
+        // then nothing there takes the app's keys, and the app keeps them.
+        if (made) return;
         const wish = takeFocusWish(active.id);
         if (wish) return api.browserFocus(active.id, wish.input || undefined, wish.text);
       })
@@ -6841,6 +6844,9 @@ export default function App() {
   useEffect(() => {
     const offs = [
       listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) => {
+        // A tab made with a wish for the keyboard takes it as its page comes, with the app's keys (TabView).
+        const wish = payload.loading ? takeFocusWish(payload.tab) : null;
+        if (wish) api.browserFocus(payload.tab, wish.input || undefined, wish.text).catch(report);
         // A new page starts in its own words (one translated before says so as it loads).
         if (payload.loading) setTabs((prev) => prev.map((t) => (t.id === payload.tab && t.translated ? { ...t, translated: false } : t)));
         // A page loaded is a visit, for the address field's suggestions.
