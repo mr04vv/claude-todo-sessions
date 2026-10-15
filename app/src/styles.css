@@ -3466,6 +3466,33 @@ input.theme-goal:focus-visible {
 
 .slack-reply {
   position: relative;
+  flex-wrap: wrap;
+}
+
+/* The files to send, on their own line over the box. */
+.slack-attached {
+  flex-basis: 100%;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.slack-attached-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 220px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.slack-attached-item img {
+  height: 56px;
+  max-width: 180px;
+  border-radius: 4px;
+  object-fit: cover;
 }
 
 /* A message's files: pictures, and the others by name. */

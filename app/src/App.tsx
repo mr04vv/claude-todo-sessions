@@ -78,6 +78,7 @@ import {
   type SlackChannel,
   type SlackAttachment,
   type SlackFile,
+  type SlackUpload,
   type SlackThreadMessage,
   type SlackView,
   SLACK_POSTED_EVENT,
@@ -3947,7 +3948,7 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, conf
         sendLabel="返信する"
         near={thread?.map((t) => t.user_name) ?? []}
         report={report}
-        onSend={(text) => api.slackReply(channel, threadTs, text).then(read)}
+        onSend={(text, files) => api.slackReply(channel, threadTs, text, files).then(read)}
       />
     </section>
   );
@@ -3969,9 +3970,19 @@ interface Suggestion {
 /// The `:emoji` being written just before the caret (two letters or more, so a time is not one).
 const EMOJI_TYPED = /(?:^|[\s　(（])[:：]([a-z0-9_+'-]{2,})$/;
 
+/// A file's bytes in base64, to give the app.
+const base64Of = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).slice(String(r.result).indexOf(",") + 1));
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+
 /// A Slack message box: "@" (or "＠") suggests people and user groups, ":"
 /// emoji (↑↓ or ⌃N ⌃P, Enter or Tab to pick); mentions are written as
-/// Slack writes them when sent with ⌘Enter; Esc leaves it.
+/// Slack writes them when sent with ⌘Enter; Esc leaves it. Pictures pasted
+/// (or files picked with 添付) go in the same message.
 function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, report, onSend }: {
   boxRef: React.RefObject<HTMLTextAreaElement | null>;
   label: string;
@@ -3981,11 +3992,19 @@ function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, 
   near: string[];
   disabled?: boolean;
   report: (e: unknown) => void;
-  /// Sends the text, its mentions written as Slack writes them.
-  onSend: (text: string) => Promise<unknown>;
+  /// Sends the text, its mentions written as Slack writes them, and the files.
+  onSend: (text: string, files: SlackUpload[]) => Promise<unknown>;
 }) {
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  // The files to send, each with its preview's object URL.
+  const [files, setFiles] = useState<{ file: File; url: string }[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const attach = (list: File[]) => setFiles((had) => [...had, ...list.map((file) => ({ file, url: URL.createObjectURL(file) }))]);
+  const detach = (url: string) => {
+    URL.revokeObjectURL(url);
+    setFiles((had) => had.filter((f) => f.url !== url));
+  };
   const [people, setPeople] = useState<SlackMentionable[]>([]);
   const custom = useSlackEmoji();
   // What is being written after "@" (a mention) or ":" (an emoji), and where it starts.
@@ -4031,13 +4050,17 @@ function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, 
   };
   const withMentions = (value: string) =>
     [...picked.current.entries()].sort((a, b) => b[0].length - a[0].length).reduce((t, [name, token]) => t.split(`@${name}`).join(token), value);
+  const empty = !text.trim() && files.length === 0;
   const send = () => {
-    if (!text.trim() || sending || disabled) return;
+    if (empty || sending || disabled) return;
     setSending(true);
-    onSend(withMentions(text))
+    Promise.all(files.map(({ file }) => base64Of(file).then((data) => ({ name: file.name, data }))))
+      .then((uploads) => onSend(withMentions(text), uploads))
       .then(() => {
         setText("");
         picked.current.clear();
+        files.forEach((f) => URL.revokeObjectURL(f.url));
+        setFiles([]);
       }, report)
       .finally(() => setSending(false));
   };
@@ -4060,12 +4083,31 @@ function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, 
           ))}
         </ul>
       )}
+      {files.length > 0 && (
+        <div className="slack-attached">
+          {files.map((f) => (
+            <span key={f.url} className="slack-attached-item" title={f.file.name}>
+              {f.file.type.startsWith("image/") ? <img src={f.url} alt={f.file.name} /> : <span className="ellipsis">📎 {f.file.name}</span>}
+              <button className="ghost icon" aria-label={`${f.file.name} を外す`} onClick={() => detach(f.url)}>
+                <Icon name="close" size={11} />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <textarea
         ref={boxRef}
         rows={2}
         value={text}
         placeholder={placeholder}
         aria-label={label}
+        onPaste={(e) => {
+          // A picture copied alone (a screenshot); text copied with a picture of it (a sheet's cells) stays text.
+          const pasted = [...e.clipboardData.files];
+          if (pasted.length === 0 || e.clipboardData.types.includes("text/plain")) return;
+          e.preventDefault();
+          attach(pasted);
+        }}
         onChange={(e) => {
           setText(e.target.value);
           watchTyping(e.target.value, e.target.selectionStart);
@@ -4101,7 +4143,11 @@ function SlackComposer({ boxRef, label, placeholder, sendLabel, near, disabled, 
           }
         }}
       />
-      <button className="primary small" disabled={!text.trim() || sending || disabled} onClick={send}>
+      <input ref={fileInput} type="file" multiple hidden onChange={(e) => (attach([...(e.target.files ?? [])]), (e.target.value = ""))} />
+      <button className="ghost small" title="画像やファイルを添える（画像は貼り付けでも添えられます）" disabled={sending || disabled} onClick={() => fileInput.current?.click()}>
+        添付
+      </button>
+      <button className="primary small" disabled={empty || sending || disabled} onClick={send}>
         {sending ? "送っています…" : sendLabel} <span className="kbd">⌘↵</span>
       </button>
     </div>
@@ -4196,7 +4242,7 @@ function SlackCompose({ report, onPosted, onClose }: {
         near={[]}
         disabled={!to}
         report={report}
-        onSend={(text) => (to ? api.slackPost(to.id, text).then((ts) => onPosted(to, ts)) : Promise.resolve())}
+        onSend={(text, files) => (to ? api.slackPost(to.id, text, files).then((ts) => (ts ? onPosted(to, ts) : onClose())) : Promise.resolve())}
       />
     </section>
   );

@@ -14,6 +14,8 @@ const API: &str = "https://slack.com/api";
 const TIMEOUT: Duration = Duration::from_secs(20);
 /// Slack's search takes longer in a large workspace.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
+/// A file sent to Slack may be large.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// Where Slack keeps the files of messages: only there does the token go.
 const FILES_HOST: &str = "https://files.slack.com/";
 /// Matches asked of a search: the newest, enough between two checks.
@@ -271,6 +273,16 @@ pub fn parse_channels(v: &Value) -> Vec<Channel> {
         .flatten()
         .filter_map(|c| Some(Channel { id: c["id"].as_str()?.into(), name: c["name"].as_str()?.into(), private: c["is_private"].as_bool().unwrap_or(false) }))
         .collect()
+}
+
+/// files.getUploadURLExternal's address to send the file to, and its id.
+pub fn parse_upload_url(v: &Value) -> Option<(String, String)> {
+    Some((v["upload_url"].as_str()?.into(), v["file_id"].as_str()?.into()))
+}
+
+/// The ts of the message files.info's file was shared in to `channel`; None until Slack has shared it.
+pub fn parse_share_ts(v: &Value, channel: &str) -> Option<String> {
+    ["public", "private"].iter().find_map(|kind| v["file"]["shares"][*kind][channel][0]["ts"].as_str()).map(String::from)
 }
 
 /// chat.postMessage's ts for the message it posted.
@@ -651,6 +663,48 @@ pub fn post_message(token: &str, channel: &str, thread_ts: Option<&str>, text: &
     parse_posted_ts(&answer(v)?).ok_or_else(|| "Slack chat.postMessage: ts がありません".into())
 }
 
+/// Calls Web API `method` with the user's token, its arguments as a form.
+fn post_form(token: &str, method: &str, form: &[(&str, &str)]) -> Result<Value, String> {
+    let v: Value = AGENT
+        .post(format!("{API}/{method}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send_form(form.iter().copied())
+        .map_err(|e| failed(method, e))?
+        .body_mut()
+        .read_json()
+        .map_err(|e| failed(method, e))?;
+    answer(v)
+}
+
+/// Shares `files` (name, bytes) as the user in one message with `text`
+/// (`files:write`): in a thread, or in the channel itself. Slack shares
+/// them after it answers (`shared_ts` finds the message); the first file's id.
+pub fn upload(token: &str, channel: &str, thread_ts: Option<&str>, text: &str, files: &[(String, Vec<u8>)]) -> Result<String, String> {
+    let mut ids = Vec::new();
+    for (name, bytes) in files {
+        let v = post_form(token, "files.getUploadURLExternal", &[("filename", name), ("length", &bytes.len().to_string())])?;
+        let (url, id) = parse_upload_url(&v).ok_or("Slack files.getUploadURLExternal: 送り先がありません")?;
+        AGENT.post(&url).config().timeout_global(Some(UPLOAD_TIMEOUT)).build().send(&bytes[..]).map_err(|e| failed("upload", e))?;
+        ids.push(id);
+    }
+    let first = ids.first().cloned().ok_or("Slack: 送るファイルがありません")?;
+    let listed = Value::from(ids.into_iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>()).to_string();
+    let mut form = vec![("files", listed.as_str()), ("channel_id", channel)];
+    if let Some(thread) = thread_ts {
+        form.push(("thread_ts", thread));
+    }
+    if !text.trim().is_empty() {
+        form.push(("initial_comment", text));
+    }
+    post_form(token, "files.completeUploadExternal", &form)?;
+    Ok(first)
+}
+
+/// The ts of the message `file` was shared in to `channel`, once Slack has (`files:read`).
+pub fn shared_ts(token: &str, file: &str, channel: &str) -> Result<Option<String>, String> {
+    Ok(parse_share_ts(&call(token, "files.info", &[("file", file)])?, channel))
+}
+
 /// A file of a message (`files:read`), its bytes.
 pub fn file(token: &str, url: &str) -> Result<Vec<u8>, String> {
     if !is_file_url(url) {
@@ -853,6 +907,21 @@ mod tests {
         assert!(!is_file_url("https://files.slack.com.evil.example/x.png"));
         assert!(!is_file_url("http://files.slack.com/files-pri/T1-F1/x.png"));
         assert!(!is_file_url("https://example.com/files.slack.com/x.png"));
+    }
+
+    #[test]
+    fn an_upload_is_sent_where_slack_says() {
+        assert_eq!(parse_upload_url(&json!({"ok": true, "upload_url": "https://files.slack.com/upload/v1/ABC", "file_id": "F1"})), Some(("https://files.slack.com/upload/v1/ABC".into(), "F1".into())));
+        assert_eq!(parse_upload_url(&json!({"ok": true})), None);
+    }
+
+    #[test]
+    fn a_shared_files_message_is_found_once_slack_has_shared_it() {
+        let shared = |kind: &str| json!({"ok": true, "file": {"id": "F1", "shares": {kind: {"C1": [{"ts": "1531763348.000001", "thread_ts": "1531763273.000015"}]}}}});
+        assert_eq!(parse_share_ts(&shared("public"), "C1").as_deref(), Some("1531763348.000001"));
+        assert_eq!(parse_share_ts(&shared("private"), "C1").as_deref(), Some("1531763348.000001"), "a private channel");
+        assert_eq!(parse_share_ts(&shared("public"), "C2"), None, "another channel");
+        assert_eq!(parse_share_ts(&json!({"ok": true, "file": {"id": "F1", "shares": {}}}), "C1"), None, "not shared yet");
     }
 
     #[test]
