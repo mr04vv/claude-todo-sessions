@@ -17,11 +17,37 @@ const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// Matches asked of a search: the newest, enough between two checks.
 pub const SEARCH_COUNT: &str = "20";
 
-/// Who the token is: the user, and their workspace's address.
+/// Who the token is: the user, and their workspace's address and id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Me {
     pub user_id: String,
     pub team_url: String,
+    pub team_id: String,
+}
+
+/// A permalink's message id (`p1792030019944529`) as Slack writes a ts.
+const PERMALINK_TS_DIGITS: usize = 6;
+
+impl Me {
+    /// The Slack app's address for a permalink of the workspace (a channel's,
+    /// a message's, a reply's in its thread); None for any other address.
+    /// ponytail: `message` and `thread_ts` are not among Slack's documented
+    /// deep links (only the channel is); the channel opens if they stop working.
+    pub fn app_link(&self, url: &str) -> Option<String> {
+        let rest = url.strip_prefix(self.team_url.trim_end_matches('/'))?.strip_prefix("/archives/")?;
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+        let mut parts = path.split('/');
+        let channel = parts.next().filter(|c| !c.is_empty())?;
+        let mut link = format!("slack://channel?team={}&id={channel}", self.team_id);
+        if let Some(digits) = parts.next().and_then(|p| p.strip_prefix('p')).filter(|d| d.len() > PERMALINK_TS_DIGITS && d.bytes().all(|b| b.is_ascii_digit())) {
+            let (secs, micros) = digits.split_at(digits.len() - PERMALINK_TS_DIGITS);
+            link += &format!("&message={secs}.{micros}");
+        }
+        if let Some(thread) = query.split('&').find_map(|kv| kv.strip_prefix("thread_ts=")) {
+            link += &format!("&thread_ts={thread}");
+        }
+        Some(link)
+    }
 }
 
 /// A user group the user is in.
@@ -111,7 +137,7 @@ fn call_within(token: &str, method: &str, args: &[(&str, &str)], timeout: Durati
 
 pub fn parse_me(v: &Value) -> Result<Me, String> {
     let user_id = v["user_id"].as_str().ok_or("Slack: auth.test にユーザーがありません")?;
-    Ok(Me { user_id: user_id.into(), team_url: v["url"].as_str().unwrap_or_default().into() })
+    Ok(Me { user_id: user_id.into(), team_url: v["url"].as_str().unwrap_or_default().into(), team_id: v["team_id"].as_str().unwrap_or_default().into() })
 }
 
 /// The user groups not deleted, whose members pass `keep`.
@@ -577,8 +603,22 @@ mod tests {
     #[test]
     fn the_user_and_their_workspace_come_from_auth_test() {
         let me = parse_me(&json!({"ok": true, "url": "https://acme.slack.com/", "team": "Acme", "user": "mori", "team_id": "T1", "user_id": "U1"})).unwrap();
-        assert_eq!(me, Me { user_id: "U1".into(), team_url: "https://acme.slack.com/".into() });
+        assert_eq!(me, Me { user_id: "U1".into(), team_url: "https://acme.slack.com/".into(), team_id: "T1".into() });
         assert!(parse_me(&json!({"ok": true})).is_err());
+    }
+
+    #[test]
+    fn a_permalink_of_the_workspace_opens_in_the_slack_app() {
+        let me = Me { user_id: "U1".into(), team_url: "https://acme.slack.com/".into(), team_id: "T1".into() };
+        assert_eq!(me.app_link("https://acme.slack.com/archives/C1/p1792030019944529").as_deref(), Some("slack://channel?team=T1&id=C1&message=1792030019.944529"));
+        assert_eq!(
+            me.app_link("https://acme.slack.com/archives/C1/p1792030019944529?thread_ts=1792028224.840479&cid=C1").as_deref(),
+            Some("slack://channel?team=T1&id=C1&message=1792030019.944529&thread_ts=1792028224.840479"),
+            "a reply opens in its thread"
+        );
+        assert_eq!(me.app_link("https://acme.slack.com/archives/C1").as_deref(), Some("slack://channel?team=T1&id=C1"), "a channel's");
+        assert_eq!(me.app_link("https://other.slack.com/archives/C1/p1792030019944529"), None, "another workspace's");
+        assert_eq!(me.app_link("https://acme.slack.com/apps"), None);
     }
 
     #[test]

@@ -320,6 +320,12 @@ fn directory(slack: &Slack) -> Result<Vec<Mentionable>, String> {
     Ok(all)
 }
 
+/// The Slack app's address for a permalink of the workspace, once it is
+/// known; None for any other address.
+pub fn app_link(slack: &Slack, url: &str) -> Option<String> {
+    slack.me.lock().ok()?.as_ref()?.app_link(url)
+}
+
 /// A token kept, read from where it was kept before until it has moved (logins::migrate).
 fn kept(account: &str) -> Option<String> {
     logins::load_secret(SERVICE, account).or_else(|| logins::old_secret(OLD_SERVICE, account)).filter(|t| !t.is_empty())

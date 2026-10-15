@@ -602,12 +602,26 @@ fn is_web_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
 }
 
+/// Opens a page in the default browser; a Slack permalink in the Slack app.
 #[tauri::command(async)]
-fn open_link(url: String) -> Result<(), String> {
+fn open_link(slack: State<slack::Slack>, url: String) -> Result<(), String> {
     if !is_web_url(&url) {
         return Err(format!("開けない URL です: {url}"));
     }
-    open_url(&url)
+    open_url(&slack::app_link(&slack, &url).unwrap_or(url))
+}
+
+/// Opens a Slack permalink a page links to in the Slack app, not in the
+/// pane; false for any other address. Called on the main thread, so the
+/// opening is not waited for.
+fn open_in_slack(app: &AppHandle, url: &str) -> bool {
+    let Some(link) = slack::app_link(&app.state::<slack::Slack>(), url) else { return false };
+    std::thread::spawn(move || {
+        if let Err(e) = open_url(&link) {
+            eprintln!("{e}");
+        }
+    });
+    true
 }
 
 /// Attaches a URL to a todo. The page's title and image are fetched in the
@@ -1732,7 +1746,7 @@ fn tab_address_changed(app: &AppHandle, tab: &str, url: String) {
 /// a popup (sign-in pages rely on those); a plain "open in new window" link
 /// becomes a tab instead, next to `tab`, `behind` it for a ⌘-click.
 fn tab_new_window(app: &AppHandle, tab: &str, url: String, sized: bool, behind: bool) -> bool {
-    if !sized {
+    if !sized && !open_in_slack(app, &url) {
         let _ = app.emit(BROWSER_NEW_TAB_EVENT, NewTab { url, tab: tab.to_string(), behind });
     }
     sized

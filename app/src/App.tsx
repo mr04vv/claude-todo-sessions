@@ -3594,6 +3594,8 @@ function SlackReactions({ reactions }: { reactions: SlackThreadMessage["reaction
   );
 }
 
+/// A Slack channel's or message's address, opened in the Slack app rather than the pane.
+const SLACK_PERMALINK = /^https:\/\/[^/]+\.slack\.com\/archives\//;
 /// Messages from one person within this many seconds read as one.
 const SLACK_GROUP_SECS = 300;
 /// Mention suggestions shown at once.
@@ -6153,13 +6155,14 @@ export default function App() {
   /// Opening is the user's action, so
   /// the page takes the keyboard (`keys` false leaves it), its text box with
   /// `text` typed in; `behind` leaves the tab shown as it is.
-  /// With ctrl held (see outside.ts): a page in the default browser, a file with its app.
+  /// With ctrl held (see outside.ts): a page in the default browser, a file
+  /// with its app. A Slack permalink always (open_link opens it in Slack).
   const openOutside = (url: string) => {
     const path = pathOfFileUrl(url);
     (path ? api.openPath(path) : api.openLink(url)).catch(report);
   };
   const openInBrowser = (url: string, keys = true, behind = false, text?: string) => {
-    if (opensOutside()) return openOutside(url);
+    if (opensOutside() || SLACK_PERMALINK.test(url)) return openOutside(url);
     const open = findTabFor(paneTabs.filter((t) => !t.pinned && !t.term), url);
     if (open) {
       if (behind) return;

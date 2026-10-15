@@ -367,6 +367,20 @@ wrap_request_handler! {
     }
 
     impl RequestHandler {
+        // A Slack permalink clicked opens in the Slack app; the page stays.
+        fn on_before_browse(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            user_gesture: ::std::os::raw::c_int,
+            _is_redirect: ::std::os::raw::c_int,
+        ) -> ::std::os::raw::c_int {
+            let clicked = user_gesture == 1 && frame.is_some_and(|f| f.is_main() == 1);
+            let url = request.map(|r| CefString::from(&r.url()).to_string()).unwrap_or_default();
+            i32::from(clicked && crate::open_in_slack(&self.app, &url))
+        }
+
         // A link clicked with ⌘ (behind) or ⌘⇧ (in front), or a middle click: a
         // new tab, as in a browser (left to CEF, the link would load in this tab).
         fn on_open_urlfrom_tab(
