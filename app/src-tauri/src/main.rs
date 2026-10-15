@@ -2722,6 +2722,8 @@ fn main() {
             std::thread::spawn(move || slack::run(handle, slack_rx));
             let handle = app.handle().clone();
             std::thread::spawn(move || slack::socket_run(handle));
+            let handle = app.handle().clone();
+            std::thread::spawn(move || slack::warm_directory(handle));
             Ok(())
         })
         .menu(app_menu)

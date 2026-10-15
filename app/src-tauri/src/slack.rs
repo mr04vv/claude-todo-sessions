@@ -292,15 +292,31 @@ pub fn slack_emoji(slack: State<Slack>) -> Result<HashMap<String, String>, Strin
 /// The workspace's people and user groups, to mention in a reply (asked once a run).
 #[tauri::command(async)]
 pub fn slack_directory(slack: State<Slack>) -> Result<Vec<Mentionable>, String> {
-    if let Some(known) = slack.directory.lock().map_err(err)?.clone() {
-        return Ok(known);
+    directory(&slack)
+}
+
+/// Asks for the people and groups at launch: the first "@" would wait for
+/// every page of users.list.
+pub fn warm_directory(app: AppHandle) {
+    if token().is_some() {
+        if let Err(e) = directory(&app.state::<Slack>()) {
+            eprintln!("slack directory: {e}");
+        }
+    }
+}
+
+/// Held while asked, so an "@" during the launch's asking waits for it, not asks again.
+fn directory(slack: &Slack) -> Result<Vec<Mentionable>, String> {
+    let mut known = slack.directory.lock().map_err(err)?;
+    if let Some(all) = known.clone() {
+        return Ok(all);
     }
     let token = token_or_err()?;
     let people = slack::members(&token)?.into_iter().map(|m: Member| Mentionable { token: format!("<@{}>", m.id), name: m.name, also: [Some(m.handle), m.real_name].into_iter().flatten().collect(), image: m.image });
     // Groups need usergroups:read, which the app has; failing that, people only.
     let groups = slack::all_groups(&token).map_err(|e| eprintln!("slack groups: {e}")).unwrap_or_default();
     let all: Vec<Mentionable> = people.chain(groups.into_iter().map(|g| Mentionable { token: format!("<!subteam^{}>", g.id), name: g.handle, also: Vec::new(), image: None })).collect();
-    *slack.directory.lock().map_err(err)? = Some(all.clone());
+    *known = Some(all.clone());
     Ok(all)
 }
 
