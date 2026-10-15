@@ -89,7 +89,7 @@ scripts/bundle-cef.sh                        # その .app に Chromium とヘ�
 
 - todos に列を足すときは `TODOS_TABLE`・`TODO_TABLE_COLS`・`TODO_COLS`・`todo_from_row` のインデックス・`migrate` の列リストをそろえて直す。古い DB は `ALTER TABLE` で列を足し、CHECK 制約の変更はテーブルを作り直す（`migrate` 末尾）。後から足した整数列は TEXT 型で入っている DB があるので、`TODO_COLS` で `CAST(... AS INTEGER)` している。
 - マイグレーションを足したら、古いスキーマから開くテストを `crates/core/tests/db.rs` に足す。
-- notifications の `url` はレビュー依頼の PR（そのときの `session_id` は空文字）。画面は未読だけを出すが、同じ PR を二度通知しないように既読の行も消さずに残す（`add_review_notice`）。初めての確認では、来ているレビュー依頼を既読で記録するだけにする。
+- notifications の `url` はレビュー依頼の PR（そのときの `session_id` は空文字）。画面は未読だけを出すが、同じ依頼を二度通知しないように既読の行も消さずに残す（`add_review_notice`）。依頼が外れた PR の行は `gone` にし（`end_review_notices`）、また依頼されたら改めて通知する。初めての確認では、来ているレビュー依頼を既読で記録するだけにする。
 - フロントは3秒ごとに board を取り直す。その場で編集する入力欄は非制御（`defaultValue` + `key`）にしてある。制御コンポーネントにすると、IME の変換中に文字が消えることがある。
 - Enter の判定は `isEnter` を使う。WebKit では、変換確定の Enter の時点で `isComposing` がもう false になっているので、keyCode 229 も見ている。
 - Tauri の WebView では `window.confirm` が true を返さない。確認はインラインで出す。

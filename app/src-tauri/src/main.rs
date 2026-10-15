@@ -2298,13 +2298,14 @@ fn post_banner(app: &AppHandle, headline: &'static str, label: String, id: Optio
     });
 }
 
-/// Notifies each PR newly asking for the user's review. The first check,
-/// before any was ever recorded, only records the ones already waiting.
-/// ponytail: a PR re-requested after an earlier request is not noticed again.
+/// Notifies each PR newly asking for the user's review, and one asking
+/// again once it had stopped (the user reviewed it). The first check, before
+/// any was ever recorded, only records the ones already waiting.
 fn notify_review_requests(app: &AppHandle, db: &Db, seeded: &mut bool) -> Result<(), String> {
     let prs = search_prs("--review-requested")?;
     let quiet = !*seeded && !db.has_review_notices().map_err(err)?;
     *seeded = true;
+    db.end_review_notices(&prs.iter().map(|p| p.url.clone()).collect::<Vec<_>>()).map_err(err)?;
     for p in prs {
         let title = format!("{}#{} {}", p.repo, p.number, p.title);
         let Some(id) = db.add_review_notice(&p.url, &title, quiet).map_err(err)? else { continue };

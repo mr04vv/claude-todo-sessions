@@ -714,6 +714,18 @@ fn review_requests_are_noticed_once_per_pr() {
 }
 
 #[test]
+fn a_review_asked_again_after_the_request_ended_is_noticed_again() {
+    let (_d, db) = open();
+    let url = "https://github.com/o/r/pull/1";
+    assert!(db.add_review_notice(url, "feat: x", false).unwrap().is_some());
+    db.end_review_notices(&[url.to_string()]).unwrap();
+    assert_eq!(db.add_review_notice(url, "feat: x", false).unwrap(), None, "still asked");
+    db.end_review_notices(&[]).unwrap();
+    assert!(db.add_review_notice(url, "feat: x", false).unwrap().is_some(), "asked again");
+    assert_eq!(db.notifications().unwrap().len(), 2);
+}
+
+#[test]
 fn review_notices_work_on_databases_made_before_them() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.sqlite");
@@ -728,6 +740,7 @@ fn review_notices_work_on_databases_made_before_them() {
     let db = Db::open(&path).unwrap();
     assert_eq!(db.notifications().unwrap()[0].url, None);
     db.add_review_notice("https://github.com/o/r/pull/1", "x", false).unwrap();
+    db.end_review_notices(&[]).unwrap();
     assert_eq!(db.notifications().unwrap().len(), 2);
 }
 

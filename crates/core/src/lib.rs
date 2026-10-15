@@ -634,7 +634,9 @@ CREATE TABLE IF NOT EXISTS notifications (
     created_at INTEGER NOT NULL,
     read_at INTEGER,
     url TEXT,
-    input_id INTEGER
+    input_id INTEGER,
+    -- A review request's PR no longer asks for the user's review.
+    gone INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS feynman_points (
     id INTEGER PRIMARY KEY,
@@ -913,7 +915,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              COMMIT;"
         ))?;
     }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -1455,10 +1457,11 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Records a review request on the PR unless one was recorded before, and
-    /// returns its id when it is new. `read` keeps it out of the unread ones.
+    /// Records a review request on the PR unless one still asking was
+    /// recorded, and returns its id when it is new. `read` keeps it out of
+    /// the unread ones.
     pub fn add_review_notice(&self, url: &str, title: &str, read: bool) -> Result<Option<i64>> {
-        let seen: bool = self.conn.query_row("SELECT EXISTS (SELECT 1 FROM notifications WHERE url = ?1)", [url], |r| r.get(0))?;
+        let seen: bool = self.conn.query_row("SELECT EXISTS (SELECT 1 FROM notifications WHERE url = ?1 AND gone = 0)", [url], |r| r.get(0))?;
         if seen {
             return Ok(None);
         }
@@ -1468,6 +1471,16 @@ impl Db {
             params![NoticeKind::ReviewRequested.as_str(), title, at, read.then_some(at), url],
         )?;
         Ok(Some(self.conn.last_insert_rowid()))
+    }
+
+    /// Ends the review requests of the PRs no longer asking (all but
+    /// `waiting`), so one asked again is noticed again.
+    pub fn end_review_notices(&self, waiting: &[String]) -> Result<()> {
+        self.conn.execute(
+            "UPDATE notifications SET gone = 1 WHERE url IS NOT NULL AND gone = 0 AND url NOT IN (SELECT value FROM json_each(?1))",
+            [serde_json::to_string(waiting).expect("strings serialize")],
+        )?;
+        Ok(())
     }
 
     /// Whether any review request was ever recorded.
