@@ -3607,3 +3607,61 @@ button.slack-reaction:hover {
   margin-top: 4px;
   width: min(360px, 100%);
 }
+
+/* What Slack unfurled under a message: a page's preview, a Slack message's. */
+.slack-unfurl {
+  display: flex;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--border-2);
+  max-width: 560px;
+}
+
+.slack-unfurl-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.slack-unfurl-source {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-2);
+}
+
+.slack-unfurl-source img {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+.slack-unfurl-title {
+  font-weight: 600;
+}
+
+.slack-unfurl-image {
+  max-width: 100%;
+  max-height: 240px;
+  margin-top: 4px;
+  border-radius: 6px;
+  object-fit: contain;
+  align-self: flex-start;
+}
+
+.slack-unfurl-thumb {
+  width: 64px;
+  height: 64px;
+  border-radius: 6px;
+  object-fit: cover;
+}
+
+.slack-unfurl-footer {
+  font-size: 11px;
+  color: var(--text-3);
+}

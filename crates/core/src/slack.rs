@@ -82,6 +82,44 @@ pub struct Message {
     pub text: String,
     pub ts: String,
     pub reactions: Vec<Reaction>,
+    pub attachments: Vec<Attachment>,
+}
+
+/// What Slack shows under a message: a link it unfurled (a page's preview,
+/// a Slack message's), or a bot's attachment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Attachment {
+    /// Where it is from: who posted the message, or the site.
+    pub source: Option<String>,
+    pub icon: Option<String>,
+    pub title: Option<String>,
+    pub link: Option<String>,
+    /// Slack's markup.
+    pub text: Option<String>,
+    /// A picture under it, or a small one beside it.
+    pub image: Option<String>,
+    pub thumb: Option<String>,
+    /// A Slack message's channel ("Posted in #dev").
+    pub footer: Option<String>,
+}
+
+/// An attachment of conversations.replies; one with nothing to show is left out.
+fn parse_attachment(a: &Value) -> Option<Attachment> {
+    let field = |keys: &[&str]| keys.iter().find_map(|k| a[*k].as_str().filter(|s| !s.is_empty()).map(String::from));
+    let mut found = Attachment {
+        source: field(&["author_name", "author_subname", "service_name"]),
+        icon: field(&["author_icon", "service_icon"]),
+        title: field(&["title"]),
+        link: field(&["title_link", "from_url", "original_url"]),
+        text: field(&["text"]),
+        image: field(&["image_url"]),
+        thumb: field(&["thumb_url"]),
+        footer: field(&["footer"]),
+    };
+    if found.title.is_none() && found.text.is_none() && found.image.is_none() {
+        found.text = field(&["fallback"]);
+    }
+    (found.title.is_some() || found.text.is_some() || found.image.is_some()).then_some(found)
 }
 
 /// A reaction on a message: its emoji's name, and who gave it.
@@ -276,6 +314,7 @@ pub fn parse_replies(v: &Value) -> Vec<Message> {
                         })
                     })
                     .collect(),
+                attachments: m["attachments"].as_array().into_iter().flatten().filter_map(parse_attachment).collect(),
             })
         })
         .collect()
@@ -702,7 +741,7 @@ mod tests {
         ]});
         let messages = parse_replies(&v);
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0], Message { user: "U2".into(), user_name: None, text: "決済のタイムアウト".into(), ts: "100.0".into(), reactions: Vec::new() });
+        assert_eq!(messages[0], Message { user: "U2".into(), user_name: None, text: "決済のタイムアウト".into(), ts: "100.0".into(), reactions: Vec::new(), attachments: Vec::new() });
         assert_eq!(messages[2].user, "", "a bot has no user");
         assert_eq!(messages[2].user_name.as_deref(), Some("ci"), "but its name");
     }
@@ -717,6 +756,28 @@ mod tests {
         ]});
         let r = &parse_replies(&v)[0].reactions;
         assert_eq!(r, &vec![Reaction { name: "+1".into(), users: vec!["U1".into(), "U3".into()], count: 2 }, Reaction { name: "party-parrot".into(), users: vec!["U3".into()], count: 1 }]);
+    }
+
+    #[test]
+    fn a_messages_unfurled_links_come_with_it() {
+        let v = json!({"ok": true, "messages": [
+            {"user": "U2", "text": "見て", "ts": "100.0", "attachments": [
+                {"service_name": "GitHub", "service_icon": "https://g/icon.png", "title": "feat: x", "title_link": "https://github.com/o/r/pull/1", "text": "PR の説明", "thumb_url": "https://g/a.png", "from_url": "https://github.com/o/r/pull/1"},
+                {"is_msg_unfurl": true, "author_name": "鈴木", "author_icon": "https://a/s.png", "text": "<@U3> 決済の件", "from_url": "https://ws.slack.com/archives/C1/p100", "footer": "Posted in #dev", "fallback": "[10/14] 鈴木: 決済の件"},
+                {"image_url": "https://i/big.png", "original_url": "https://i/page"},
+                {"fallback": "通知です"}
+            ]}
+        ]});
+        let none = Attachment { source: None, icon: None, title: None, link: None, text: None, image: None, thumb: None, footer: None };
+        assert_eq!(
+            parse_replies(&v)[0].attachments,
+            vec![
+                Attachment { source: Some("GitHub".into()), icon: Some("https://g/icon.png".into()), title: Some("feat: x".into()), link: Some("https://github.com/o/r/pull/1".into()), text: Some("PR の説明".into()), thumb: Some("https://g/a.png".into()), ..none.clone() },
+                Attachment { source: Some("鈴木".into()), icon: Some("https://a/s.png".into()), link: Some("https://ws.slack.com/archives/C1/p100".into()), text: Some("<@U3> 決済の件".into()), footer: Some("Posted in #dev".into()), ..none.clone() },
+                Attachment { image: Some("https://i/big.png".into()), link: Some("https://i/page".into()), ..none.clone() },
+                Attachment { text: Some("通知です".into()), ..none },
+            ]
+        );
     }
 
     #[test]

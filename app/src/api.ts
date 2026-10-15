@@ -287,6 +287,20 @@ export interface SlackThreadMessage {
   permalink: string;
   /** Each emoji with how many gave it, whether the user did, and the first who did. */
   reactions: { name: string; count: number; mine: boolean; who: string[] }[];
+  /** The links Slack unfurled under it (a page's preview, a Slack message's), or a bot's attachments. */
+  attachments: SlackAttachment[];
+}
+
+/** What Slack shows under a message; `text` is Slack's markup, `source` who posted or the site. */
+export interface SlackAttachment {
+  source: string | null;
+  icon: string | null;
+  title: string | null;
+  link: string | null;
+  text: string | null;
+  image: string | null;
+  thumb: string | null;
+  footer: string | null;
 }
 
 export interface Board {

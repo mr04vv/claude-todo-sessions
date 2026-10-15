@@ -76,6 +76,7 @@ import {
   type SlackAccount,
   type SlackMentionable,
   type SlackChannel,
+  type SlackAttachment,
   type SlackThreadMessage,
   type SlackView,
   SLACK_POSTED_EVENT,
@@ -3618,6 +3619,46 @@ function SlackReactions({ reactions, onToggle }: { reactions: SlackThreadMessage
   );
 }
 
+/// What Slack shows under a message: the links it unfurled (a page's
+/// preview, a Slack message's) and bots' attachments.
+function SlackAttachments({ items, me, onLink }: { items: SlackAttachment[]; me?: string; onLink: (url: string) => void }) {
+  const open = (url: string) => (e: React.MouseEvent) => (e.preventDefault(), onLink(url));
+  return (
+    <>
+      {items.map((a, i) => (
+        <div key={i} className="slack-unfurl">
+          <div className="slack-unfurl-main">
+            {a.source && (
+              <div className="slack-unfurl-source">
+                {a.icon && <img src={a.icon} alt="" />}
+                {!a.title && a.link ? (
+                  <a href={a.link} onClick={open(a.link)}>
+                    {a.source}
+                  </a>
+                ) : (
+                  a.source
+                )}
+              </div>
+            )}
+            {a.title &&
+              (a.link ? (
+                <a className="slack-unfurl-title" href={a.link} onClick={open(a.link)}>
+                  {a.title}
+                </a>
+              ) : (
+                <b className="slack-unfurl-title">{a.title}</b>
+              ))}
+            {a.text && <SlackText text={a.text} me={me} onLink={onLink} />}
+            {a.image && <img className="slack-unfurl-image" src={a.image} alt="" />}
+            {a.footer && <div className="slack-unfurl-footer">{a.footer}</div>}
+          </div>
+          {a.thumb && !a.image && <img className="slack-unfurl-thumb" src={a.thumb} alt="" />}
+        </div>
+      ))}
+    </>
+  );
+}
+
 /// Picks an emoji by its name to react with (↑↓ or ⌃N ⌃P, Enter or Tab); Esc or leaving it gives up.
 function SlackEmojiPicker({ onPick, onClose }: { onPick: (name: string) => void; onClose: () => void }) {
   const custom = useSlackEmoji();
@@ -3842,6 +3883,7 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, conf
                     </div>
                   )}
                   <SlackText text={t.text} me={me ?? undefined} onLink={onLink} />
+                  {t.attachments.length > 0 && <SlackAttachments items={t.attachments} me={me ?? undefined} onLink={onLink} />}
                   {t.reactions.length > 0 && <SlackReactions reactions={t.reactions} onToggle={(name, on) => react(t.ts, name, on)} />}
                   {reacting === t.ts && (
                     <SlackEmojiPicker

@@ -485,6 +485,8 @@ pub struct ThreadMessage {
     /// Its link, for a todo made from it.
     permalink: String,
     reactions: Vec<ThreadReaction>,
+    /// The links Slack unfurled under it, their mentions named.
+    attachments: Vec<slack::Attachment>,
 }
 
 /// A reaction as the page shows it: the emoji, how many, whether the user
@@ -519,10 +521,12 @@ pub fn slack_thread(state: State<AppState>, slack: State<Slack>, channel: String
         .into_iter()
         .map(|m| {
             let person = slack.person(&token, &m.user);
+            let named = |text: &str| slack::label_mentions(&slack::label_groups(text, &groups), |user| slack.name_of(&token, user));
             ThreadMessage {
                 user_name: person.as_ref().map(|p| p.name.clone()).or(m.user_name).unwrap_or_else(|| m.user.clone()),
                 user_image: person.and_then(|p| p.image),
-                text: slack::label_mentions(&slack::label_groups(&m.text, &groups), |user| slack.name_of(&token, user)),
+                text: named(&m.text),
+                attachments: m.attachments.into_iter().map(|a| slack::Attachment { text: a.text.as_deref().map(named), ..a }).collect(),
                 mine: m.user == me.user_id,
                 permalink: slack::permalink(&me.team_url, &channel, &m.ts, Some(thread_ts.as_str()).filter(|t| *t != m.ts)),
                 reactions: m
