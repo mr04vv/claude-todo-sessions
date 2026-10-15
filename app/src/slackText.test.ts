@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emojiNames, parseSlack, slackPlain } from "./slackText.ts";
+import { emojiInline, emojiNames, parseSlack, slackPlain } from "./slackText.ts";
 
 const inlines = (text: string, me?: string) => {
   const blocks = parseSlack(text, me);
@@ -70,6 +70,16 @@ test("emoji names are found by what they start with, then what they hold", () =>
   assert.ok(names.length > 0 && names.every((n) => n.name.includes("thumbs")));
   assert.equal(names[0].name.startsWith("thumbs"), true);
   assert.equal(emojiNames("pray")[0].emoji, "🙏");
+});
+
+test("a line's emoji names come out as emoji, the rest as it is", () => {
+  assert.deepEqual(emojiInline("了解 :pray: :arigatougozaimasu: <b> 10:30"), [
+    { t: "text", v: "了解 " },
+    { t: "emoji", v: "🙏", name: "pray" },
+    { t: "text", v: " " },
+    { t: "emoji", v: ":arigatougozaimasu:", name: "arigatougozaimasu" },
+    { t: "text", v: " <b> 10:30" },
+  ]);
 });
 
 test("code blocks and quotes are blocks of their own", () => {

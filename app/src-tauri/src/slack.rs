@@ -274,19 +274,21 @@ pub struct Mentionable {
     image: Option<String>,
 }
 
-/// The workspace's own emoji, name → picture (asked once a run; none
-/// without `emoji:read`, said once in the log).
+/// The workspace's own emoji, name → picture (asked once a run; needs `emoji:read`).
 #[tauri::command(async)]
 pub fn slack_emoji(slack: State<Slack>) -> Result<HashMap<String, String>, String> {
-    if let Some(known) = slack.emoji.lock().map_err(err)?.clone() {
-        return Ok(known);
+    emoji(&slack)
+}
+
+/// Held while asked, like `directory`; a failure is asked again next time.
+fn emoji(slack: &Slack) -> Result<HashMap<String, String>, String> {
+    let mut known = slack.emoji.lock().map_err(err)?;
+    if let Some(all) = known.clone() {
+        return Ok(all);
     }
-    let emoji = slack::emoji(&token_or_err()?).unwrap_or_else(|e| {
-        eprintln!("slack emoji: {e}");
-        HashMap::new()
-    });
-    *slack.emoji.lock().map_err(err)? = Some(emoji.clone());
-    Ok(emoji)
+    let all = slack::emoji(&token_or_err()?)?;
+    *known = Some(all.clone());
+    Ok(all)
 }
 
 /// The workspace's people and user groups, to mention in a reply (asked once a run).
@@ -295,11 +297,15 @@ pub fn slack_directory(slack: State<Slack>) -> Result<Vec<Mentionable>, String> 
     directory(&slack)
 }
 
-/// Asks for the people and groups at launch: the first "@" would wait for
-/// every page of users.list.
-pub fn warm_directory(app: AppHandle) {
+/// Asks for the emoji and the people and groups at launch: the first ":"
+/// and "@" would wait for them (every page of users.list).
+pub fn warm(app: AppHandle) {
     if token().is_some() {
-        if let Err(e) = directory(&app.state::<Slack>()) {
+        let slack = app.state::<Slack>();
+        if let Err(e) = emoji(&slack) {
+            eprintln!("slack emoji: {e}");
+        }
+        if let Err(e) = directory(&slack) {
             eprintln!("slack directory: {e}");
         }
     }

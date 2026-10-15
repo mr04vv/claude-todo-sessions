@@ -90,7 +90,7 @@ import {
   type PageText,
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
-import { emojiNames, parseSlack, slackPlain, type Inline } from "./slackText";
+import { emojiInline, emojiNames, parseSlack, slackPlain, type Inline } from "./slackText";
 import { nameToEmoji } from "gemoji";
 import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
 import { categoryAt, themeGroups, themeLabel, themeRows } from "./themes";
@@ -3324,6 +3324,10 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   const replyRef = useRef<HTMLTextAreaElement>(null);
   // The open thread's own keys: its message cursor, its todo memo, its mute.
   const threadKeys = useRef<SlackThreadKeys | null>(null);
+  // The workspace's emoji not had (emoji:read missing, say): shown as names, and said here.
+  useEffect(() => {
+    if (slack.connected) customEmoji().catch(report);
+  }, [slack.connected]); // eslint-disable-line react-hooks/exhaustive-deps
   const keepWidth = (w: number) => {
     const next = Math.min(Math.max(w, SLACK_LIST_WIDTH.min), SLACK_LIST_WIDTH.max);
     setWidth(next);
@@ -3448,7 +3452,9 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
                       <span className="grow" />
                       <span className="slack-time">{ago(Number(i.ts))}</span>
                     </span>
-                    <span className="slack-body">{i.text}</span>
+                    <span className="slack-body">
+                      <SlackLine text={i.text} />
+                    </span>
                   </span>
                 </li>
               ))}
@@ -3509,17 +3515,26 @@ function slackTime(ts: string) {
 }
 
 /// Slack's markup, formatted (slackText.ts); links open with `onLink`.
-/// The workspace's own emoji (name → picture), asked once a run.
+/// The workspace's own emoji (name → picture), asked once a run (again after a failure).
 let slackCustomEmoji: Promise<Record<string, string>> | null = null;
+const customEmoji = () =>
+  (slackCustomEmoji ??= api.slackEmoji().catch((e) => {
+    slackCustomEmoji = null;
+    throw e;
+  }));
 
-/// The workspace's own emoji, once Slack has said them (none until then).
+/// The workspace's own emoji, once Slack has said them (none until then;
+/// why they could not be had, the Slack page says).
 function useSlackEmoji(): Record<string, string> {
   const [emoji, setEmoji] = useState<Record<string, string>>({});
-  useEffect(() => {
-    if (!slackCustomEmoji) slackCustomEmoji = api.slackEmoji().catch(() => ({}));
-    slackCustomEmoji.then(setEmoji);
-  }, []);
+  useEffect(() => void customEmoji().then(setEmoji, () => {}), []);
   return emoji;
+}
+
+/// A list's line of plain text, its emoji names as emoji.
+function SlackLine({ text }: { text: string }) {
+  const custom = useSlackEmoji();
+  return <>{emojiInline(text).map((p, i) => (p.t === "emoji" ? <SlackEmoji key={i} name={p.name} glyph={p.v} custom={custom} /> : p.t === "text" ? p.v : null))}</>;
 }
 
 /// An emoji by its Slack name: the standard one, the workspace's own picture, or its name.

@@ -31,6 +31,13 @@ export function emojiNames(query: string, limit = 8): { name: string; emoji: str
   return [...starting, ...holding].slice(0, limit).map((name) => ({ name, emoji: nameToEmoji[name] }));
 }
 
+/// A line of plain text with its emoji names as emoji (a list's row).
+export function emojiInline(text: string): Inline[] {
+  const out: Inline[] = [];
+  emoji(text, out);
+  return out;
+}
+
 const decode = (s: string) => s.replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
 
 /// Appends, joining a text to the text before it.
