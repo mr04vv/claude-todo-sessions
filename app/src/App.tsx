@@ -6824,6 +6824,8 @@ export default function App() {
     });
     return () => void off.then((f) => f());
   }, []);
+  const submittedRef = useRef(submittedReviews);
+  submittedRef.current = submittedReviews;
   const showToastRef = useRef(showToast);
   showToastRef.current = showToast;
   const openCloudRef = useRef(openCloud);
@@ -7096,10 +7098,13 @@ export default function App() {
   const loadPrs = useCallback(() => {
     prsLoadedAt.current = Date.now();
     setPrsLoading(true);
+    // The PRs taken show the reviews that went in before this began (a PR
+    // asked again is to be reviewed again); one that goes in meanwhile stays.
+    const known = submittedRef.current;
     api
       .ghPrs()
       .then(
-        (p) => (setPrs(p), setPrError(null)),
+        (p) => (setPrs(p), setPrError(null), setSubmittedReviews((cur) => new Map([...cur].filter(([url]) => !known.has(url))))),
         (e) => setPrError(String(e)),
       )
       .finally(() => setPrsLoading(false));
