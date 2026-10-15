@@ -51,20 +51,20 @@ export function slackItems(messages: SlackMessage[], threads: SlackThread[]): Sl
   for (const t of threads) groupOf(t.channel, t.thread_ts).thread = t;
   const items = [...groups.entries()].map(([key, g]): SlackItem => {
     const unread = g.mentions.filter((m) => !m.read);
-    const reply: Shown | undefined =
-      g.thread && g.thread.new_replies > 0
-        ? {
-            ts: g.thread.latest_ts ?? g.thread.thread_ts,
-            channelName: g.thread.channel_name,
-            userName: g.thread.latest_user_name ?? "",
-            userImage: g.thread.latest_image,
-            text: g.thread.latest_text ?? "",
-            permalink: g.thread.permalink,
-          }
-        : undefined;
+    const latest: Shown | undefined = g.thread?.latest_ts
+      ? {
+          ts: g.thread.latest_ts,
+          channelName: g.thread.channel_name,
+          userName: g.thread.latest_user_name ?? "",
+          userImage: g.thread.latest_image,
+          text: g.thread.latest_text ?? "",
+          permalink: g.thread.permalink,
+        }
+      : undefined;
+    const reply = g.thread && g.thread.new_replies > 0 ? latest : undefined;
     const asShown = (m: SlackMessage): Shown => ({ ts: m.ts, channelName: m.channel_name, userName: m.user_name, userImage: m.user_image, text: m.text, permalink: m.permalink });
     const isRead = unread.length === 0 && !reply;
-    const pool: Shown[] = isRead ? g.mentions.map(asShown) : [...unread.map(asShown), ...(reply ? [reply] : [])];
+    const pool: Shown[] = isRead ? [...g.mentions.map(asShown), ...(latest ? [latest] : [])] : [...unread.map(asShown), ...(reply ? [reply] : [])];
     const shown = newest(pool)!;
     const mentioning = isRead ? g.mentions : unread;
     return {

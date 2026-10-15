@@ -1912,12 +1912,12 @@ impl Db {
             .unwrap_or(false))
     }
 
-    /// The followed threads with new replies, the latest first (but in
-    /// channels muted in the app).
+    /// The followed threads with replies, new or seen (to be read again),
+    /// the latest first (but in channels muted in the app).
     pub fn slack_threads(&self) -> Result<Vec<SlackThread>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT channel, thread_ts, channel_name, permalink, latest_ts, latest_user_name, latest_text, latest_image, new_replies
-             FROM slack_threads WHERE new_replies > 0 AND muted = 0 AND {UNMUTED} ORDER BY CAST(latest_ts AS REAL) DESC"
+             FROM slack_threads WHERE latest_ts IS NOT NULL AND muted = 0 AND {UNMUTED} ORDER BY CAST(latest_ts AS REAL) DESC"
         ))?;
         let rows = stmt.query_map([], |r| {
             Ok(SlackThread {

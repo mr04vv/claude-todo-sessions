@@ -3215,7 +3215,7 @@ const slackMemo = (i: SlackItem) => `Slack #${i.channelName} の ${i.userName}�
 /// Slack (#27, #28): the unread mentions of the user and of their user
 /// groups, and the threads they are in with new replies, newest first. One
 /// is read once opened (it leaves the unread when another is) or Done (e);
-/// 既読 shows the read mentions.
+/// 既読 shows the read rows.
 function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   slack: SlackView;
   /// A mention to show (a notification's click), by mentionKey.
@@ -3233,7 +3233,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   const rowOf = (mention: string | null) => items.find((i) => i.mentions.some((m) => mentionKey(m) === mention))?.key ?? null;
   const [selected, setSelected] = useState<string | null>(() => rowOf(pick));
   useEffect(() => {
-    if (pick) setSelected(rowOf(pick));
+    if (pick) open(rowOf(pick));
   }, [pick]); // eslint-disable-line react-hooks/exhaustive-deps
   const [width, setWidth] = useState(() => loadJson<number>(SLACK_LIST_KEY, SLACK_LIST_WIDTH.initial));
   // The right side: a new message being written, or the one just posted.
@@ -3259,7 +3259,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   // ↑↓ or j k pick a row, Enter shows its thread.
   const { cursorId, setCursor, list } = useRowCursor(
     shown.map((i) => i.key),
-    (id) => (setComposing(false), setSelected(id)),
+    (id) => (setComposing(false), open(id)),
   );
   const onPosted = (channel: { id: string; name: string }, ts: string) => {
     const item: SlackItem = { key: `p:${channel.id}:${ts}`, kind: "posted", channel: channel.id, threadTs: ts, ts, channelName: channel.name, userName: "", userImage: null, text: "", permalink: "", mention: false, via: null, newReplies: 0, read: true, mentions: [] };
@@ -3280,10 +3280,13 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   };
   /// The row's mentions read and its replies seen.
   const markRead = (item: SlackItem) => run(() => Promise.all([...item.mentions.map((m) => api.slackRead(m.channel, m.ts)), api.slackThreadSeen(item.channel, item.threadTs)]));
-  // Opening a row reads it; it stays in the list until another is opened.
-  useEffect(() => {
-    if (current?.kind === "thread" && !current.read) markRead(current);
-  }, [current?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  /// Opening a row reads it; it stays in the list until another is opened.
+  /// The row Done or 消す goes on to is shown, not read.
+  const open = (key: string | null) => {
+    setSelected(key);
+    const item = items.find((i) => i.key === key);
+    if (item && !item.read) markRead(item);
+  };
   /// Done: the row read, off the unread; on to the next row.
   const done = (item: SlackItem) => {
     const next = nextAfter(item);
@@ -3431,7 +3434,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
             {shown.length === 0 && <p className="muted pad">{SLACK_EMPTY[filter]}</p>}
             <ul className="rows">
               {shown.map((i) => (
-                <li key={i.key} data-row={i.key} className={`row slack-row${i.read ? "" : " slack-unread"}${i.key === selected ? " selected" : ""}${i.key === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(i.key), setComposing(false), setSelected(i.key))}>
+                <li key={i.key} data-row={i.key} className={`row slack-row${i.read ? "" : " slack-unread"}${i.key === selected ? " selected" : ""}${i.key === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(i.key), setComposing(false), open(i.key))}>
                   <SlackAvatar name={i.userName} image={i.userImage} size={32} />
                   <span className="slack-row-main">
                     <span className="slack-meta">

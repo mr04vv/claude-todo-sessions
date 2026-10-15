@@ -1288,7 +1288,8 @@ fn a_thread_the_user_is_in_counts_its_new_replies_until_seen() {
     assert_eq!((threads[0].new_replies, threads[0].latest_ts.as_deref(), threads[0].channel_name.as_str()), (2, Some("102.0"), "incident"));
     assert_eq!(threads[0].permalink, "https://acme.slack.com/archives/C1/p1000", "the first link kept");
     db.mark_slack_thread_seen("C1", "100.0").unwrap();
-    assert!(db.slack_threads().unwrap().is_empty());
+    let seen = db.slack_threads().unwrap();
+    assert_eq!((seen.len(), seen[0].new_replies, seen[0].latest_ts.as_deref()), (1, 0, Some("102.0")), "seen, it stays to be read again");
 }
 
 #[test]

@@ -69,6 +69,13 @@ test("a thread read through is a read row", () => {
   assert.equal(item.ts, "102.0");
 });
 
+test("a thread whose replies were seen is a read row, its latest reply shown", () => {
+  const [item] = slackItems([], [thread("103.0", { new_replies: 0 })]);
+  assert.equal(item.read, true);
+  assert.equal(item.ts, "103.0");
+  assert.equal(item.text, "reply 103.0");
+});
+
 test("a mention in the channel and the replies to it share a row", () => {
   const items = slackItems([mention("100.0", { thread_ts: null })], [thread("103.0")]);
   assert.equal(items.length, 1);
