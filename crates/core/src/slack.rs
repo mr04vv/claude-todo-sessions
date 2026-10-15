@@ -14,6 +14,8 @@ const API: &str = "https://slack.com/api";
 const TIMEOUT: Duration = Duration::from_secs(20);
 /// Slack's search takes longer in a large workspace.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
+/// Where Slack keeps the files of messages: only there does the token go.
+const FILES_HOST: &str = "https://files.slack.com/";
 /// Matches asked of a search: the newest, enough between two checks.
 pub const SEARCH_COUNT: &str = "20";
 
@@ -83,6 +85,36 @@ pub struct Message {
     pub ts: String,
     pub reactions: Vec<Reaction>,
     pub attachments: Vec<Attachment>,
+    pub files: Vec<File>,
+}
+
+/// A file shared in a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct File {
+    pub name: String,
+    /// A picture's largest thumbnail (itself without one), on FILES_HOST;
+    /// None for another kind of file.
+    pub image: Option<String>,
+    pub permalink: Option<String>,
+}
+
+/// A picture's addresses, the one to show first.
+const PICTURE_KEYS: [&str; 4] = ["thumb_720", "thumb_480", "thumb_360", "url_private"];
+
+/// A message's file; a deleted one (a tombstone, without a name) is left out.
+fn parse_file(f: &Value) -> Option<File> {
+    let name = f["name"].as_str().filter(|n| !n.is_empty())?;
+    let picture = f["mimetype"].as_str().is_some_and(|m| m.starts_with("image/"));
+    Some(File {
+        name: name.into(),
+        image: picture.then(|| PICTURE_KEYS.iter().find_map(|k| f[*k].as_str().map(String::from))).flatten(),
+        permalink: f["permalink"].as_str().map(String::from),
+    })
+}
+
+/// Whether `url` is a file of Slack's, to read with the token.
+pub fn is_file_url(url: &str) -> bool {
+    url.starts_with(FILES_HOST)
 }
 
 /// What Slack shows under a message: a link it unfurled (a page's preview,
@@ -315,6 +347,7 @@ pub fn parse_replies(v: &Value) -> Vec<Message> {
                     })
                     .collect(),
                 attachments: m["attachments"].as_array().into_iter().flatten().filter_map(parse_attachment).collect(),
+                files: m["files"].as_array().into_iter().flatten().filter_map(parse_file).collect(),
             })
         })
         .collect()
@@ -618,6 +651,19 @@ pub fn post_message(token: &str, channel: &str, thread_ts: Option<&str>, text: &
     parse_posted_ts(&answer(v)?).ok_or_else(|| "Slack chat.postMessage: ts がありません".into())
 }
 
+/// A file of a message (`files:read`), its bytes.
+pub fn file(token: &str, url: &str) -> Result<Vec<u8>, String> {
+    if !is_file_url(url) {
+        return Err(format!("Slack のファイルではありません: {url}"));
+    }
+    let mut res = AGENT.get(url).header("Authorization", format!("Bearer {token}")).call().map_err(|e| failed("files", e))?;
+    // A token that may not read it is answered with the sign-in page.
+    if res.headers().get("content-type").and_then(|t| t.to_str().ok()).is_some_and(|t| t.starts_with("text/html")) {
+        return Err("Slack: ファイルを読めませんでした（files:read が要ります）".into());
+    }
+    res.body_mut().read_to_vec().map_err(|e| failed("files", e))
+}
+
 /// reactions.add's or reactions.remove's answer: one already as asked
 /// (given before, or taken off before) is done too.
 fn reacted(v: Value) -> Result<(), String> {
@@ -741,7 +787,7 @@ mod tests {
         ]});
         let messages = parse_replies(&v);
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0], Message { user: "U2".into(), user_name: None, text: "決済のタイムアウト".into(), ts: "100.0".into(), reactions: Vec::new(), attachments: Vec::new() });
+        assert_eq!(messages[0], Message { user: "U2".into(), user_name: None, text: "決済のタイムアウト".into(), ts: "100.0".into(), reactions: Vec::new(), attachments: Vec::new(), files: Vec::new() });
         assert_eq!(messages[2].user, "", "a bot has no user");
         assert_eq!(messages[2].user_name.as_deref(), Some("ci"), "but its name");
     }
@@ -778,6 +824,35 @@ mod tests {
                 Attachment { text: Some("通知です".into()), ..none },
             ]
         );
+    }
+
+    #[test]
+    fn a_messages_files_come_with_it_pictures_by_their_largest_thumbnail() {
+        let v = json!({"ok": true, "messages": [
+            {"user": "U2", "text": "", "ts": "100.0", "files": [
+                {"id": "F1", "name": "screen.png", "mimetype": "image/png", "url_private": "https://files.slack.com/files-pri/T1-F1/screen.png", "thumb_360": "https://files.slack.com/files-tmb/T1-F1/screen_360.png", "thumb_720": "https://files.slack.com/files-tmb/T1-F1/screen_720.png", "permalink": "https://acme.slack.com/files/U2/F1/screen.png"},
+                {"id": "F2", "name": "tiny.gif", "mimetype": "image/gif", "url_private": "https://files.slack.com/files-pri/T1-F2/tiny.gif"},
+                {"id": "F3", "name": "spec.pdf", "mimetype": "application/pdf", "url_private": "https://files.slack.com/files-pri/T1-F3/spec.pdf", "thumb_360": "https://files.slack.com/files-tmb/T1-F3/spec_360.png", "permalink": "https://acme.slack.com/files/U2/F3/spec.pdf"},
+                {"id": "F4", "mode": "tombstone"}
+            ]}
+        ]});
+        assert_eq!(
+            parse_replies(&v)[0].files,
+            vec![
+                File { name: "screen.png".into(), image: Some("https://files.slack.com/files-tmb/T1-F1/screen_720.png".into()), permalink: Some("https://acme.slack.com/files/U2/F1/screen.png".into()) },
+                File { name: "tiny.gif".into(), image: Some("https://files.slack.com/files-pri/T1-F2/tiny.gif".into()), permalink: None },
+                File { name: "spec.pdf".into(), image: None, permalink: Some("https://acme.slack.com/files/U2/F3/spec.pdf".into()) },
+            ],
+            "a picture without thumbnails is itself, another kind of file has none, a deleted one is left out"
+        );
+    }
+
+    #[test]
+    fn only_slacks_own_file_addresses_are_read_with_the_token() {
+        assert!(is_file_url("https://files.slack.com/files-tmb/T1-F1/screen_720.png"));
+        assert!(!is_file_url("https://files.slack.com.evil.example/x.png"));
+        assert!(!is_file_url("http://files.slack.com/files-pri/T1-F1/x.png"));
+        assert!(!is_file_url("https://example.com/files.slack.com/x.png"));
     }
 
     #[test]

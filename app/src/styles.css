@@ -3468,6 +3468,32 @@ input.theme-goal:focus-visible {
   position: relative;
 }
 
+/* A message's files: pictures, and the others by name. */
+.slack-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.slack-picture {
+  max-width: min(100%, 480px);
+  max-height: 320px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  object-fit: contain;
+}
+
+.slack-picture.loading {
+  width: 160px;
+  height: 100px;
+  background: var(--border);
+}
+
+.slack-file {
+  font-size: 13px;
+}
+
 /* The mention suggestions, over the reply box. */
 .slack-suggest {
   position: absolute;

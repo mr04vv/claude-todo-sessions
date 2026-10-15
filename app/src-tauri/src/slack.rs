@@ -487,6 +487,7 @@ pub struct ThreadMessage {
     reactions: Vec<ThreadReaction>,
     /// The links Slack unfurled under it, their mentions named.
     attachments: Vec<slack::Attachment>,
+    files: Vec<slack::File>,
 }
 
 /// A reaction as the page shows it: the emoji, how many, whether the user
@@ -527,6 +528,7 @@ pub fn slack_thread(state: State<AppState>, slack: State<Slack>, channel: String
                 user_image: person.and_then(|p| p.image),
                 text: named(&m.text),
                 attachments: m.attachments.into_iter().map(|a| slack::Attachment { text: a.text.as_deref().map(named), ..a }).collect(),
+                files: m.files,
                 mine: m.user == me.user_id,
                 permalink: slack::permalink(&me.team_url, &channel, &m.ts, Some(thread_ts.as_str()).filter(|t| *t != m.ts)),
                 reactions: m
@@ -597,6 +599,12 @@ pub fn slack_reply(channel: String, thread_ts: String, text: String) -> Result<(
         return Err("返信が空です".into());
     }
     slack::post_message(&token_or_err()?, &channel, Some(&thread_ts), &text).map(|_| ())
+}
+
+/// A file of a message (a picture), read with the user's token: files.slack.com wants it.
+#[tauri::command(async)]
+pub fn slack_file(url: String) -> Result<tauri::ipc::Response, String> {
+    Ok(tauri::ipc::Response::new(slack::file(&token_or_err()?, &url)?))
 }
 
 /// Gives the user's reaction to a message, or takes it off.

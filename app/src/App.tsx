@@ -77,6 +77,7 @@ import {
   type SlackMentionable,
   type SlackChannel,
   type SlackAttachment,
+  type SlackFile,
   type SlackThreadMessage,
   type SlackView,
   SLACK_POSTED_EVENT,
@@ -3659,6 +3660,44 @@ function SlackAttachments({ items, me, onLink }: { items: SlackAttachment[]; me?
   );
 }
 
+/// Pictures of messages, read once a run (files.slack.com wants the token): their object URLs by address.
+/// ponytail: kept for the whole run; drop the oldest if memory grows.
+const slackPictures = new Map<string, Promise<string>>();
+const slackPicture = (url: string) => {
+  let p = slackPictures.get(url);
+  if (!p) {
+    p = api.slackFile(url).then((data) => URL.createObjectURL(new Blob([data])));
+    p.catch(() => slackPictures.delete(url));
+    slackPictures.set(url, p);
+  }
+  return p;
+};
+
+function SlackPicture({ url, name }: { url: string; name: string }) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => void slackPicture(url).then(setSrc, (e) => setError(String(e))), [url]);
+  if (error) return <span className="slack-file muted">🖼 {name}：{error}</span>;
+  return src ? <img className="slack-picture" src={src} alt={name} title={name} /> : <span className="slack-picture loading" aria-label={`${name} を読んでいます`} />;
+}
+
+/// A message's files: pictures shown, the others by name (a click opens them in Slack).
+function SlackFiles({ files, onLink }: { files: SlackFile[]; onLink: (url: string) => void }) {
+  return (
+    <div className="slack-files">
+      {files.map((f, i) =>
+        f.image ? (
+          <SlackPicture key={i} url={f.image} name={f.name} />
+        ) : (
+          <a key={i} className="slack-file" href={f.permalink ?? undefined} onClick={(e) => (e.preventDefault(), f.permalink && onLink(f.permalink))}>
+            📎 {f.name}
+          </a>
+        ),
+      )}
+    </div>
+  );
+}
+
 /// Picks an emoji by its name to react with (↑↓ or ⌃N ⌃P, Enter or Tab); Esc or leaving it gives up.
 function SlackEmojiPicker({ onPick, onClose }: { onPick: (name: string) => void; onClose: () => void }) {
   const custom = useSlackEmoji();
@@ -3883,6 +3922,7 @@ function SlackThread({ item, me, replyRef, keysRef, report, onLink, onDone, conf
                     </div>
                   )}
                   <SlackText text={t.text} me={me ?? undefined} onLink={onLink} />
+                  {t.files.length > 0 && <SlackFiles files={t.files} onLink={onLink} />}
                   {t.attachments.length > 0 && <SlackAttachments items={t.attachments} me={me ?? undefined} onLink={onLink} />}
                   {t.reactions.length > 0 && <SlackReactions reactions={t.reactions} onToggle={(name, on) => react(t.ts, name, on)} />}
                   {reacting === t.ts && (

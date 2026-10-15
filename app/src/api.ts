@@ -289,6 +289,14 @@ export interface SlackThreadMessage {
   reactions: { name: string; count: number; mine: boolean; who: string[] }[];
   /** The links Slack unfurled under it (a page's preview, a Slack message's), or a bot's attachments. */
   attachments: SlackAttachment[];
+  files: SlackFile[];
+}
+
+/** A file shared in a Slack message: a picture (`image`, on files.slack.com, read through `slackFile`), or another file by its name. */
+export interface SlackFile {
+  name: string;
+  image: string | null;
+  permalink: string | null;
 }
 
 /** What Slack shows under a message; `text` is Slack's markup, `source` who posted or the site. */
@@ -503,6 +511,8 @@ export const api = {
   slackForgetRead: () => invoke<void>("slack_forget_read"),
   slackForgetThread: (channel: string, threadTs: string) => invoke<void>("slack_forget_thread", { channel, threadTs }),
   slackReply: (channel: string, threadTs: string, text: string) => invoke<void>("slack_reply", { channel, threadTs, text }),
+  /// A file of a message (a picture), read with the token.
+  slackFile: (url: string) => invoke<ArrayBuffer>("slack_file", { url }),
   /// Gives the user's reaction to a message (`on`), or takes it off.
   slackReact: (channel: string, ts: string, name: string, on: boolean) => invoke<void>("slack_react", { channel, ts, name, on }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
