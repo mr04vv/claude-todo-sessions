@@ -289,6 +289,20 @@ export interface SlackThreadMessage {
   reactions: { name: string; count: number; mine: boolean; who: string[] }[];
   /** The links Slack unfurled under it (a page's preview, a Slack message's), or a bot's attachments. */
   attachments: SlackAttachment[];
+  files: SlackFile[];
+}
+
+/** A file shared in a Slack message: a picture (`image`, on files.slack.com, read through `slackFile`), or another file by its name. */
+export interface SlackFile {
+  name: string;
+  image: string | null;
+  permalink: string | null;
+}
+
+/** A file to send in a Slack message, its bytes in base64. */
+export interface SlackUpload {
+  name: string;
+  data: string;
 }
 
 /** What Slack shows under a message; `text` is Slack's markup, `source` who posted or the site. */
@@ -500,11 +514,14 @@ export const api = {
   slackDirectory: () => invoke<SlackMentionable[]>("slack_directory"),
   slackEmoji: () => invoke<Record<string, string>>("slack_emoji"),
   slackChannels: () => invoke<SlackChannel[]>("slack_channels"),
-  slackPost: (channel: string, text: string) => invoke<string>("slack_post", { channel, text }),
+  /// The message's ts; null when its files went but Slack has not said where yet.
+  slackPost: (channel: string, text: string, files: SlackUpload[]) => invoke<string | null>("slack_post", { channel, text, files }),
   slackForget: (channel: string, ts: string) => invoke<void>("slack_forget", { channel, ts }),
   slackForgetRead: () => invoke<void>("slack_forget_read"),
   slackForgetThread: (channel: string, threadTs: string) => invoke<void>("slack_forget_thread", { channel, threadTs }),
-  slackReply: (channel: string, threadTs: string, text: string) => invoke<void>("slack_reply", { channel, threadTs, text }),
+  slackReply: (channel: string, threadTs: string, text: string, files: SlackUpload[]) => invoke<void>("slack_reply", { channel, threadTs, text, files }),
+  /// A file of a message (a picture), read with the token.
+  slackFile: (url: string) => invoke<ArrayBuffer>("slack_file", { url }),
   /// Gives the user's reaction to a message (`on`), or takes it off.
   slackReact: (channel: string, ts: string, name: string, on: boolean) => invoke<void>("slack_react", { channel, ts, name, on }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),

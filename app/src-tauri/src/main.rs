@@ -2775,6 +2775,7 @@ fn main() {
             slack::slack_thread,
             slack::slack_reply,
             slack::slack_react,
+            slack::slack_file,
             slack::slack_directory,
             slack::slack_emoji,
             slack::slack_channels,

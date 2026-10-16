@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use cts_core::slack::{self, Envelope, Group, Hit, Me, Member, Person};
 use cts_core::{Db, MutedChannel, NewSlackMessage, SlackBookmark, SlackMessage, SlackReply, SlackThread};
-use serde::Serialize;
+use base64::Engine;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{err, load_kept, logins, open_db, post_banner, save_kept, show_window, AppState};
@@ -60,6 +61,10 @@ const BOARD_MESSAGES: i64 = 100;
 const BANNER_CHARS: usize = 120;
 /// `{channel, ts}` from a notification's click: the Slack page on that message.
 const OPEN_SLACK_EVENT: &str = "open-slack";
+/// Slack shares the files sent after it answers: asked this often, this many
+/// times, for the message they went in (so the thread read again has it).
+const SHARE_WAIT: Duration = Duration::from_millis(500);
+const SHARE_TRIES: u32 = 10;
 
 pub struct Slack {
     connected: AtomicBool,
@@ -487,6 +492,7 @@ pub struct ThreadMessage {
     reactions: Vec<ThreadReaction>,
     /// The links Slack unfurled under it, their mentions named.
     attachments: Vec<slack::Attachment>,
+    files: Vec<slack::File>,
 }
 
 /// A reaction as the page shows it: the emoji, how many, whether the user
@@ -527,6 +533,7 @@ pub fn slack_thread(state: State<AppState>, slack: State<Slack>, channel: String
                 user_image: person.and_then(|p| p.image),
                 text: named(&m.text),
                 attachments: m.attachments.into_iter().map(|a| slack::Attachment { text: a.text.as_deref().map(named), ..a }).collect(),
+                files: m.files,
                 mine: m.user == me.user_id,
                 permalink: slack::permalink(&me.team_url, &channel, &m.ts, Some(thread_ts.as_str()).filter(|t| *t != m.ts)),
                 reactions: m
@@ -590,13 +597,51 @@ pub fn slack_muted_channels(state: State<AppState>) -> Result<Vec<MutedChannel>,
     state.db.lock().map_err(err)?.slack_muted_channels().map_err(err)
 }
 
-/// Replies in a thread as the user (#30).
+/// A file to send, as the page gives it: its name, and its bytes in base64.
+#[derive(Deserialize)]
+pub struct Upload {
+    name: String,
+    data: String,
+}
+
+/// Sends `text` as the user, with `files` in the same message: in a thread,
+/// or in the channel itself. The message's ts; None when the files went but
+/// Slack has not said where yet.
+fn send(channel: &str, thread_ts: Option<&str>, text: &str, files: Vec<Upload>) -> Result<Option<String>, String> {
+    let token = token_or_err()?;
+    if files.is_empty() {
+        return slack::post_message(&token, channel, thread_ts, text).map(Some);
+    }
+    let files = files.into_iter().map(|f| Ok((f.name, base64::engine::general_purpose::STANDARD.decode(f.data).map_err(err)?))).collect::<Result<Vec<_>, String>>()?;
+    let file = slack::upload(&token, channel, thread_ts, text, &files)?;
+    for _ in 0..SHARE_TRIES {
+        std::thread::sleep(SHARE_WAIT);
+        match slack::shared_ts(&token, &file, channel) {
+            Ok(Some(ts)) => return Ok(Some(ts)),
+            Ok(None) => {}
+            // Sent all the same; only where is not known (files:read missing, say).
+            Err(e) => {
+                eprintln!("slack shared_ts: {e}");
+                return Ok(None);
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Replies in a thread as the user (#30), with files.
 #[tauri::command(async)]
-pub fn slack_reply(channel: String, thread_ts: String, text: String) -> Result<(), String> {
-    if text.trim().is_empty() {
+pub fn slack_reply(channel: String, thread_ts: String, text: String, files: Vec<Upload>) -> Result<(), String> {
+    if text.trim().is_empty() && files.is_empty() {
         return Err("返信が空です".into());
     }
-    slack::post_message(&token_or_err()?, &channel, Some(&thread_ts), &text).map(|_| ())
+    send(&channel, Some(&thread_ts), &text, files).map(|_| ())
+}
+
+/// A file of a message (a picture), read with the user's token: files.slack.com wants it.
+#[tauri::command(async)]
+pub fn slack_file(url: String) -> Result<tauri::ipc::Response, String> {
+    Ok(tauri::ipc::Response::new(slack::file(&token_or_err()?, &url)?))
 }
 
 /// Gives the user's reaction to a message, or takes it off.
@@ -615,13 +660,14 @@ pub fn slack_channels(slack: State<Slack>) -> Result<Vec<slack::Channel>, String
     Ok(channels)
 }
 
-/// Posts a new message in a channel as the user; its ts, to open its thread.
+/// Posts a new message in a channel as the user, with files; its ts, to
+/// open its thread (None when Slack has not said it yet).
 #[tauri::command(async)]
-pub fn slack_post(channel: String, text: String) -> Result<String, String> {
-    if text.trim().is_empty() {
+pub fn slack_post(channel: String, text: String, files: Vec<Upload>) -> Result<Option<String>, String> {
+    if text.trim().is_empty() && files.is_empty() {
         return Err("メッセージが空です".into());
     }
-    slack::post_message(&token_or_err()?, &channel, None, &text)
+    send(&channel, None, &text, files)
 }
 
 #[derive(Clone, Serialize)]
