@@ -365,6 +365,8 @@ export interface Limit {
   percent: number;
   resets_at: string | null;
   severity: string;
+  /** What has been spent against the limit, when the limit is money. */
+  amount: { used: number; limit: number; currency: string } | null;
 }
 
 export interface Pr {

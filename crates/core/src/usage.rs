@@ -12,9 +12,43 @@ pub struct Limit {
     pub resets_at: Option<String>,
     /// "normal", or a warning level when close to the limit.
     pub severity: String,
+    /// What has been spent against the limit, when the limit is money.
+    pub amount: Option<Amount>,
 }
 
-/// The limits the plan has, in the order the API lists them.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Amount {
+    pub used: f64,
+    pub limit: f64,
+    /// ISO 4217, "USD".
+    pub currency: String,
+}
+
+/// `{"amount_minor": 11087, "exponent": 2}` is 110.87.
+fn money(v: &Value) -> Option<f64> {
+    Some(v["amount_minor"].as_f64()? / 10f64.powi(v["exponent"].as_i64()? as i32))
+}
+
+/// The spending limit plans billed by usage have instead of `limits`.
+fn spend(s: &Value) -> Option<Limit> {
+    if !s["enabled"].as_bool()? {
+        return None;
+    }
+    Some(Limit {
+        // `spend` names no period; it is monthly as `extra_usage.monthly_limit` says.
+        label: "利用額（月間）".into(),
+        percent: s["percent"].as_f64()?,
+        resets_at: None,
+        severity: s["severity"].as_str().unwrap_or("normal").into(),
+        amount: Some(Amount {
+            used: money(&s["used"])?,
+            limit: money(&s["limit"])?,
+            currency: s["used"]["currency"].as_str()?.into(),
+        }),
+    })
+}
+
+/// The limits the plan has, in the order the API lists them, then the spending limit.
 pub fn parse_limits(usage: &Value) -> Vec<Limit> {
     usage["limits"]
         .as_array()
@@ -32,8 +66,10 @@ pub fn parse_limits(usage: &Value) -> Vec<Limit> {
                 percent: l["percent"].as_f64()?,
                 resets_at: l["resets_at"].as_str().map(Into::into),
                 severity: l["severity"].as_str().unwrap_or("normal").into(),
+                amount: None,
             })
         })
+        .chain(spend(&usage["spend"]))
         .collect()
 }
 
@@ -57,6 +93,34 @@ mod tests {
         assert_eq!(l[0].percent, 35.0);
         assert_eq!(l[0].resets_at.as_deref(), Some("2026-09-28T07:40:00+00:00"));
         assert_eq!((l[2].percent, l[2].severity.as_str(), l[2].resets_at.as_deref()), (59.5, "warning", None));
+    }
+
+    #[test]
+    fn spend_is_a_limit_with_its_amounts() {
+        let v = json!({"limits": [], "spend": {
+            "used": {"amount_minor": 11087, "currency": "USD", "exponent": 2},
+            "limit": {"amount_minor": 800000, "currency": "USD", "exponent": 2},
+            "percent": 1, "severity": "normal", "enabled": true
+        }});
+        assert_eq!(
+            parse_limits(&v),
+            [Limit {
+                label: "利用額（月間）".into(),
+                percent: 1.0,
+                resets_at: None,
+                severity: "normal".into(),
+                amount: Some(Amount { used: 110.87, limit: 8000.0, currency: "USD".into() }),
+            }]
+        );
+    }
+
+    #[test]
+    fn disabled_spend_is_not_shown() {
+        let v = json!({"spend": {
+            "used": {"amount_minor": 0, "currency": "USD", "exponent": 2},
+            "limit": null, "percent": 0, "severity": "normal", "enabled": false
+        }});
+        assert!(parse_limits(&v).is_empty());
     }
 
     #[test]

@@ -5968,7 +5968,9 @@ function resetLabel(iso: string | null) {
   return `${new Date(iso).toLocaleString("ja-JP", { month: "numeric", day: "numeric", weekday: "short", hour: "numeric", minute: "2-digit" })} にリセット`;
 }
 
-/// Plan usage kept in view (session, weekly, per model), warning colours from the API.
+const money = (n: number, currency: string) => n.toLocaleString("ja-JP", { style: "currency", currency });
+
+/// Plan usage kept in view (session, weekly, per model, or what has been spent), warning colours from the API.
 function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | null }) {
   return (
     <div className="usage" title={error ?? undefined}>
@@ -5979,7 +5981,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
         <div key={l.label} className={`meter${l.severity !== "normal" || l.percent >= 80 ? " warn" : ""}`}>
           <div className="meter-row">
             <span>{l.label}</span>
-            <b>{Math.round(l.percent)}%</b>
+            <b>{l.amount ? `${money(l.amount.used, l.amount.currency)} / ${money(l.amount.limit, l.amount.currency)}` : `${Math.round(l.percent)}%`}</b>
           </div>
           <div className="bar">
             <i style={{ width: `${Math.min(100, l.percent)}%` }} />
