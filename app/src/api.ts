@@ -273,6 +273,8 @@ export interface SlackAccount {
   user_id: string;
   /** The app's token is kept (Socket Mode). */
   realtime: boolean;
+  /** A configuration token is kept: the app's events are out while the Mac sleeps. */
+  config: boolean;
 }
 
 /** A message of a Slack thread, its head first. */
@@ -489,6 +491,8 @@ export const api = {
   slackDisconnect: () => invoke<void>("slack_disconnect"),
   slackSetAppToken: (token: string) => invoke<void>("slack_set_app_token", { token }),
   slackForgetAppToken: () => invoke<void>("slack_forget_app_token"),
+  slackSetConfigToken: (token: string) => invoke<void>("slack_set_config_token", { token }),
+  slackForgetConfigToken: () => invoke<void>("slack_forget_config_token"),
   slackRead: (channel: string, ts: string) => invoke<void>("slack_read", { channel, ts }),
   slackThread: (channel: string, threadTs: string) => invoke<{ messages: SlackThreadMessage[]; muted: boolean }>("slack_thread", { channel, threadTs }),
   slackThreadSeen: (channel: string, threadTs: string) => invoke<void>("slack_thread_seen", { channel, threadTs }),

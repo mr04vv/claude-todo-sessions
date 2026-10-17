@@ -21,11 +21,18 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use crate::{err, load_kept, logins, open_db, post_banner, save_kept, show_window, AppState};
 
 /// The tokens' Keychain items (logins.rs, for Shosai alone): the user's
-/// (`xoxp-…`) and the app's (`xapp-…`); and where they were kept before.
+/// (`xoxp-…`), the app's (`xapp-…`) and a configuration token's (JSON of a
+/// `slack::ConfigToken`); and where they were kept before.
 const SERVICE: &str = "shosai-slack";
 const OLD_SERVICE: &str = "todo-sessions-slack";
 const ACCOUNT: &str = "token";
 const APP_ACCOUNT: &str = "app-token";
+const CONFIG_ACCOUNT: &str = "config-token";
+/// A configuration token this near its end (unix seconds) is renewed first.
+const CONFIG_RENEW_SECS: i64 = 10 * 60;
+/// How long the Mac is kept from sleeping while the app's events are taken
+/// out (it waits up to 30 seconds).
+const SLEEP_WAIT: Duration = Duration::from_secs(10);
 /// Between two checks, with Socket Mode or not: Slack stops sending the
 /// app's events after an hour the Mac was asleep or offline, and the
 /// mentions still come within this. Each check searches for the user and
@@ -91,6 +98,10 @@ pub struct Slack {
     /// Changed with the tokens: the socket connects again.
     generation: AtomicU64,
     wake: Mutex<Sender<()>>,
+    /// The Mac is going to sleep or asleep: the app's events stay out.
+    asleep: AtomicBool,
+    /// Held while the app's events are written (a refresh token goes once).
+    writing_events: Mutex<()>,
 }
 
 impl Slack {
@@ -111,7 +122,23 @@ impl Slack {
             channels: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
             wake: Mutex::new(wake),
+            asleep: AtomicBool::new(false),
+            writing_events: Mutex::new(()),
         }
+    }
+
+    /// Subscribes Shosai's Slack app to the messages, or takes them out, when
+    /// a configuration token is kept: Slack turns the events off after an
+    /// hour of failing to send them (the Mac asleep), and has nothing to send
+    /// while they are out. Not put back while the Mac goes to sleep.
+    fn set_events(&self, on: bool) -> Result<(), String> {
+        let _writing = self.writing_events.lock().map_err(err)?;
+        if on && self.asleep.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+        let (Some(config), Some(app_token)) = (config_token()?, app_token()) else { return Ok(()) };
+        let app_id = slack::app_id_of(&app_token).ok_or("アプリのトークンから App ID が読めません")?;
+        slack::set_events(&config, app_id, on)
     }
 
     /// The user's groups, asked of Slack when not known.
@@ -345,6 +372,45 @@ fn app_token() -> Option<String> {
     kept(APP_ACCOUNT)
 }
 
+fn keep_config(config: &slack::ConfigToken) -> Result<(), String> {
+    logins::save_secret(SERVICE, CONFIG_ACCOUNT, &serde_json::to_string(config).map_err(err)?)
+}
+
+/// The kept configuration token, renewed when its 12 hours are nearly up
+/// (Slack.writing_events held: each refresh token goes once). None without one.
+fn config_token() -> Result<Option<String>, String> {
+    let Some(kept) = logins::load_secret(SERVICE, CONFIG_ACCOUNT) else { return Ok(None) };
+    let mut config: slack::ConfigToken = serde_json::from_str(&kept).map_err(err)?;
+    if config.exp - cts_core::now() < CONFIG_RENEW_SECS {
+        config = slack::rotate(&config.refresh)?;
+        keep_config(&config)?;
+    }
+    Ok(Some(config.token))
+}
+
+/// Before the Mac sleeps (on the main thread): the app's events taken out,
+/// waiting up to SLEEP_WAIT for Slack.
+pub fn before_sleep(app: &AppHandle) {
+    app.state::<Slack>().asleep.store(true, Ordering::Relaxed);
+    let (done, wait) = std::sync::mpsc::channel();
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let _ = done.send(handle.state::<Slack>().set_events(false));
+    });
+    match wait.recv_timeout(SLEEP_WAIT) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => eprintln!("slack events before sleep: {e}"),
+        Err(_) => eprintln!("slack events before sleep: {} 秒で終わりませんでした", SLEEP_WAIT.as_secs()),
+    }
+}
+
+/// After the Mac wakes: the socket connected again, which puts the events back.
+pub fn after_wake(app: &AppHandle) {
+    let slack = app.state::<Slack>();
+    slack.asleep.store(false, Ordering::Relaxed);
+    slack.renew_socket();
+}
+
 /// Moves the tokens kept before to items for Shosai alone (see logins::migrate).
 pub fn migrate() -> Vec<String> {
     logins::migrate(OLD_SERVICE, SERVICE)
@@ -405,6 +471,14 @@ pub struct SlackAccount {
     user_id: String,
     /// The app's token is kept (Socket Mode).
     realtime: bool,
+    /// A configuration token is kept: the app's events are out while the Mac sleeps.
+    config: bool,
+}
+
+impl SlackAccount {
+    fn of(me: Me) -> SlackAccount {
+        SlackAccount { team_url: me.team_url, user_id: me.user_id, realtime: app_token().is_some(), config: logins::load_secret(SERVICE, CONFIG_ACCOUNT).is_some() }
+    }
 }
 
 /// Keeps the user's token once Slack takes it, and checks at once. Starts
@@ -422,15 +496,14 @@ pub fn slack_connect(state: State<AppState>, slack: State<Slack>, token: String)
     slack.connected.store(true, Ordering::Relaxed);
     slack.set_error(None);
     slack.restart();
-    Ok(SlackAccount { team_url: me.team_url, user_id: me.user_id, realtime: app_token().is_some() })
+    Ok(SlackAccount::of(me))
 }
 
 /// Who the kept token is; None without one.
 #[tauri::command(async)]
 pub fn slack_account(slack: State<Slack>) -> Result<Option<SlackAccount>, String> {
     let Some(token) = token() else { return Ok(None) };
-    let me = slack.me(&token)?;
-    Ok(Some(SlackAccount { team_url: me.team_url, user_id: me.user_id, realtime: app_token().is_some() }))
+    Ok(Some(SlackAccount::of(slack.me(&token)?)))
 }
 
 /// Keeps the app's token (`xapp-…` with `connections:write`) once Slack
@@ -456,11 +529,31 @@ pub fn slack_forget_app_token(slack: State<Slack>) -> Result<(), String> {
     Ok(())
 }
 
-/// Lets Slack go: both tokens out of the Keychain, its messages forgotten.
+/// Keeps a configuration token got with the refresh token given (`xoxe-…`,
+/// from "Your App Configuration Tokens"), and subscribes the app to the
+/// messages at once (turning its events on again, had Slack turned them off).
+#[tauri::command(async)]
+pub fn slack_set_config_token(slack: State<Slack>, token: String) -> Result<(), String> {
+    let token = token.trim();
+    if !token.starts_with("xoxe-") {
+        return Err("Refresh Token（xoxe- で始まるもの）を入れてください".into());
+    }
+    keep_config(&slack::rotate(token)?)?;
+    slack.set_events(true)
+}
+
+/// Takes the configuration token out: the app's events stay in while the Mac sleeps.
+#[tauri::command(async)]
+pub fn slack_forget_config_token() -> Result<(), String> {
+    logins::delete_secret(SERVICE, CONFIG_ACCOUNT).map(|_| ())
+}
+
+/// Lets Slack go: the tokens out of the Keychain, its messages forgotten.
 #[tauri::command(async)]
 pub fn slack_disconnect(state: State<AppState>, slack: State<Slack>) -> Result<(), String> {
     forget_token(ACCOUNT)?;
     forget_token(APP_ACCOUNT)?;
+    forget_token(CONFIG_ACCOUNT)?;
     state.db.lock().map_err(err)?.clear_slack().map_err(err)?;
     slack.connected.store(false, Ordering::Relaxed);
     slack.set_error(None);
@@ -841,6 +934,15 @@ fn socket_session(app: &AppHandle, slack: &Slack, token: &str, app_token: &str, 
     slack.live.store(true, Ordering::Relaxed);
     slack.live_since.store(cts_core::now(), Ordering::Relaxed);
     slack.set_socket_error(None);
+    // Connected (at launch, after a wake, back online): the events put back,
+    // which turns them on again had Slack turned them off meanwhile.
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let slack = handle.state::<Slack>();
+        if let Err(e) = slack.set_events(true) {
+            slack.set_socket_error(Some(format!("イベントを付け直せませんでした：{e}")));
+        }
+    });
     let mut heard = std::time::Instant::now();
     let result = loop {
         if slack.generation.load(Ordering::Relaxed) != generation {

@@ -3437,7 +3437,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
             {slack.error && <p className="error-text pad">Slack から読めませんでした：{slack.error}</p>}
             {slack.events_quiet && (
               <p className="error-text pad">
-                リアルタイムでつながっていますが、しばらく何も届いていません。投稿の少ない時間でなければ、Slack アプリの Event Subscriptions の Enable Events が止められていないか確かめてください（Mac が1時間ほど離れていると Slack が止め、メールで知らせてきます）。止まっているあいだも、メンションは1分おきの確認で届きます。
+                リアルタイムでつながっていますが、しばらく何も届いていません。投稿の少ない時間でなければ、Slack アプリの Event Subscriptions の Enable Events が止められていないか確かめてください（Mac が1時間ほど離れていると Slack が止め、メールで知らせてきます。設定で設定用トークンを入れておくと、スリープ中はイベントを外し、止められていてもつなぎ直すときに ON に戻します）。止まっているあいだも、メンションは1分おきの確認で届きます。
               </p>
             )}
             {shown.length === 0 && <p className="muted pad">{SLACK_EMPTY[filter]}</p>}
@@ -4217,6 +4217,7 @@ function SlackSettings({ report }: { report: (e: unknown) => void }) {
       )}
       {account && <p className="muted">既読のメンションは、投稿から30日たつとこの Mac から消えます（Slack の画面の「消す」や「既読をすべて消す」で先に消すこともできます）。</p>}
       {account && <SlackRealtime realtime={account.realtime} report={report} onChange={(realtime) => setAccount({ ...account, realtime })} />}
+      {account?.realtime && <SlackKeepEvents config={account.config} report={report} onChange={(config) => setAccount({ ...account, config })} />}
       {account && <SlackMutedChannels report={report} />}
       {account === null && (
         <>
@@ -4308,6 +4309,56 @@ function SlackRealtime({ realtime, report, onChange }: { realtime: boolean; repo
         />
         <button className="primary small" disabled={!token.trim() || busy} onClick={save}>
           {busy ? "確かめています…" : "リアルタイムにする"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+/// The settings' configuration token (its refresh token, `xoxe-…`): the app's
+/// events are taken out while the Mac sleeps, and put back as it wakes.
+function SlackKeepEvents({ config, report, onChange }: { config: boolean; report: (e: unknown) => void; onChange: (config: boolean) => void }) {
+  const [token, setToken] = useState("");
+  const [busy, setBusy] = useState(false);
+  const save = () => {
+    if (!token.trim() || busy) return;
+    setBusy(true);
+    api
+      .slackSetConfigToken(token)
+      .then(() => {
+        onChange(true);
+        setToken("");
+      }, report)
+      .finally(() => setBusy(false));
+  };
+  if (config) {
+    return (
+      <div className="setting-row">
+        <span className="grow">スリープ中は Slack のイベントを外し、戻ったら付け直します（設定用トークンを Keychain に置いています）</span>
+        <button className="ghost small" onClick={() => api.slackForgetConfigToken().then(() => onChange(false), report)}>
+          やめる
+        </button>
+      </div>
+    );
+  }
+  return (
+    <>
+      <p className="muted">
+        Mac が1時間ほどスリープしていると、Slack はアプリのイベントを止めます（Enable Events が OFF になり、メールが届きます）。設定用トークンを入れると、スリープの前にイベントを外し、戻ったら付け直します。止められていたときも、つなぎ直すときに ON に戻します。api.slack.com/apps の一番下の「Your App Configuration Tokens」で Generate Token を押し、出てきた Refresh Token（xoxe-1-…）を入れてください。Keychain に置き、12時間ごとに取り直します。
+      </p>
+      <div className="setting-row">
+        <input
+          type="password"
+          className="grow"
+          value={token}
+          placeholder="xoxe-1-…"
+          aria-label="Slack の設定用トークン（Refresh Token）"
+          autoComplete="off"
+          onChange={(e) => setToken(e.target.value)}
+          onKeyDown={(e) => isEnter(e) && save()}
+        />
+        <button className="primary small" disabled={!token.trim() || busy} onClick={save}>
+          {busy ? "確かめています…" : "止められないようにする"}
         </button>
       </div>
     </>

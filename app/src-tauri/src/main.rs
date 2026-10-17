@@ -4,6 +4,7 @@ mod ask;
 mod banner;
 mod cef_browser;
 mod logins;
+mod power;
 mod slack;
 mod study;
 mod terminal;
@@ -2719,6 +2720,8 @@ fn main() {
         .setup(|app| {
             cef_browser::start_pump(app.handle());
             banner::init();
+            let (asleep, awake) = (app.handle().clone(), app.handle().clone());
+            power::watch(move || slack::before_sleep(&asleep), move || slack::after_wake(&awake));
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 sync_loop(cloud_rx, |msg| {
@@ -2771,6 +2774,8 @@ fn main() {
             slack::slack_disconnect,
             slack::slack_set_app_token,
             slack::slack_forget_app_token,
+            slack::slack_set_config_token,
+            slack::slack_forget_config_token,
             slack::slack_read,
             slack::slack_thread,
             slack::slack_reply,
