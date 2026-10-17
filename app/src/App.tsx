@@ -94,7 +94,7 @@ import { TYPING, useTodoKeys } from "./todoKeys";
 import { emojiChoices, emojiInline, parseSlack, slackPlain, type Inline } from "./slackText";
 import { nameToEmoji } from "gemoji";
 import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
-import { categoryAt, themeGroups, themeLabel, themeRows } from "./themes";
+import { categoryAt, themeGroups, themeLabel, themeRows, themeUrls } from "./themes";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
@@ -402,8 +402,9 @@ const FREE_SPACE = "free";
 const subjectKey = (s: Subject | null) => (s === null ? FREE_SPACE : `h${s.id}`);
 const FOCUS_RIGHT_W_KEY = "focusRightWidth";
 const FOCUS_RIGHT_SHARE = 0.45;
-/// The right pages a space may show: the LLM to ask while reading.
-const RIGHT_KINDS = ["pinchatgpt", "pinclaude"];
+/// The right pages a space may show: the LLM to ask while reading, or the
+/// theme's NotebookLM notebook (NOTEBOOK_PAGE).
+const RIGHT_KINDS = ["pinchatgpt", "pinclaude", "notebooklm"];
 /// After how many days to review again, by the last score (as feynman.rs decides it).
 const reviewAfterDays = (score: number) => (score < 60 ? 1 : score < 85 ? 3 : 7);
 const VERDICT_MARK: Record<FeynmanVerdict, string> = { said: "✓", vague: "△", missing: "✗" };
@@ -1810,8 +1811,12 @@ const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[]
 /// Pinned pages whose text box takes the typing when the keyboard comes over
 /// (⌃l), and the focus mode's selection pasted in.
 const CHAT_PAGES = ["pinchatgpt", "pinclaude"];
-/// What the focus mode's right side can keep: the pinned pages.
-const FOCUS_PAGES = PINNED_PAGES;
+/// NotebookLM on the focus mode's right: the notebook a theme's space opens
+/// there is kept with the space, as a conversation is. No API adds sources to
+/// it (the personal NotebookLM has none): its button copies the theme's pages to paste.
+const NOTEBOOK_PAGE = { id: "notebooklm", label: "NotebookLM", url: "https://notebook.google.com/", icon: "list" as IconName };
+/// What the focus mode's right side can keep: the pinned pages, and NotebookLM.
+const FOCUS_PAGES = [...PINNED_PAGES, NOTEBOOK_PAGE];
 
 /// The browser pane: a tab strip over the active tab's page, or a new-tab
 /// page when no tab is picked.
@@ -2212,8 +2217,11 @@ function FocusPicker({ terminals, inputs, onPick, onClose }: {
 /// right (its conversation the theme's own), after the review (`overlay`,
 /// over both while it is up); 「読み終わった」 writes what was read into the
 /// theme's document.
-function FocusMode({ theme, lefts, left, right, rightKind, overlay, finishing, onFinish, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit, typing }: {
+function FocusMode({ theme, urls, onCopyUrls, lefts, left, right, rightKind, overlay, finishing, onFinish, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit, typing }: {
   theme: Theme | undefined;
+  /// The theme's pages, which NotebookLM's button copies (onCopyUrls).
+  urls: string[];
+  onCopyUrls: () => void;
   /// Which side has the keyboard: the browser's keys (⌘[ ⌘] ⌘L) are that side's only.
   typing: "left" | "right" | null;
   /// A click on the left's tab strip: its page shown (the tab picked) takes the keyboard.
@@ -2295,6 +2303,11 @@ function FocusMode({ theme, lefts, left, right, rightKind, overlay, finishing, o
                 </button>
               ))}
             </div>
+            {rightKind === NOTEBOOK_PAGE.id && urls.length > 0 && (
+              <button className="ghost small" title="NotebookLM のソースの追加（ウェブサイト）に貼れるよう、このテーマの読むものの URL を1行ずつコピーします" onClick={onCopyUrls}>
+                URL をコピー（{urls.length}）
+              </button>
+            )}
             <span className="grow" />
             <span className="muted small-text" title="学ぶ時間のあいだは macOS の通知を出しません。終えたときに、増えたあなた待ちを知らせます">
               通知は止めています
@@ -6511,6 +6524,7 @@ export default function App() {
   }, [savedSpaceJson]); // eslint-disable-line react-hooks/exhaustive-deps
   /// The theme the study time is open for, and the right side's tab (its LLM).
   const focusTheme = focusSubject ? board?.themes.find((t) => t.id === focusSubject.id) : undefined;
+  const focusUrls = focusTheme ? themeUrls(board?.inputs ?? [], focusTheme.id) : [];
   const focusRightTab = tabs.find((t) => t.id === focusRightId);
   // The review a study time starts with, over the pages until done or skipped.
   const [reviewing, setReviewing] = useState(false);
@@ -8018,6 +8032,8 @@ export default function App() {
         {focusMode && (
           <FocusMode
             theme={focusTheme}
+            urls={focusUrls}
+            onCopyUrls={() => api.copyText(focusUrls.join("\n")).then(() => showToast(`${focusUrls.length} 件の URL をコピーしました。NotebookLM のソースの追加に貼ってください`), report)}
             overlay={reviewing && focusTheme ? <ReviewPanel theme={focusTheme} report={report} onDone={() => setReviewing(false)} onExit={exitFocus} /> : null}
             finishing={!!focusTheme && finishing.has(focusTheme.id)}
             onFinish={finishReading}

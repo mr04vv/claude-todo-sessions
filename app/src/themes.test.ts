@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Category, Theme } from "./api.ts";
-import { categoryAt, themeGroups, themeLabel, themeRows } from "./themes.ts";
+import type { Category, Input, Theme } from "./api.ts";
+import { categoryAt, themeGroups, themeLabel, themeRows, themeUrls } from "./themes.ts";
 
 const theme = (id: number, name: string, category_id: number | null): Theme => ({ id, name, goal: null, doc_url: null, updated_at: 0, category_id });
 const categories: Category[] = [
@@ -37,4 +37,12 @@ test("a new theme goes in the category the cursor is on, or the one of the theme
   assert.equal(categoryAt("t:12", themes), 1);
   assert.equal(categoryAt("t:11", themes), null);
   assert.equal(categoryAt("unsorted", themes), null);
+});
+
+test("a theme's pages are its inputs' links, read or not, once each", () => {
+  const link = (input_id: number, url: string) => ({ id: 0, input_id, url, title: null, image: null, created_at: 0 });
+  const input = (id: number, theme_id: number | null, done: boolean, urls: string[]): Input => ({ id, title: "", memo: null, done, theme_id, updated_at: 0, links: urls.map((url) => link(id, url)) });
+  const inputs = [input(1, 10, false, ["https://a.dev/1", "https://a.dev/2"]), input(2, 11, false, ["https://b.dev/"]), input(3, 10, true, ["https://a.dev/3", "https://a.dev/1"])];
+  assert.deepEqual(themeUrls(inputs, 10), ["https://a.dev/1", "https://a.dev/2", "https://a.dev/3"]);
+  assert.deepEqual(themeUrls(inputs, 12), []);
 });

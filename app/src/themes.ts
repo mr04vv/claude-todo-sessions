@@ -1,7 +1,7 @@
 // The learning page's themes by category (one level: a category gathers
 // themes, a theme keeps its note and reviews), and the rows its list's
 // cursor goes over.
-import type { Category, Theme } from "./api";
+import type { Category, Input, Theme } from "./api";
 
 /// The themes by category, in the categories' order, those in none last.
 export function themeGroups(themes: Theme[], categories: Category[]): { category: Category | null; themes: Theme[] }[] {
@@ -32,4 +32,10 @@ export function themeRows(themes: Theme[], categories: Category[], folded: Set<n
 export function categoryAt(row: string | null, themes: Theme[]): number | null {
   if (row?.startsWith("c:")) return Number(row.slice(2));
   return (row?.startsWith("t:") && themes.find((t) => t.id === Number(row.slice(2)))?.category_id) || null;
+}
+
+/// The theme's pages (its inputs' links, read or not), once each in the order
+/// they came: to paste into NotebookLM as its notebook's sources.
+export function themeUrls(inputs: Input[], themeId: number): string[] {
+  return [...new Set(inputs.filter((i) => i.theme_id === themeId).flatMap((i) => i.links.map((l) => l.url)))];
 }

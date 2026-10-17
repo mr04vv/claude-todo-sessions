@@ -531,6 +531,7 @@ export const api = {
   browserText: (tab: string) => invoke<string | null>("browser_text", { tab }),
   /// A page's text fetched afresh (one behind a login comes back as its sign-in page).
   pageText: (url: string) => invoke<string>("page_text", { url }),
+  copyText: (text: string) => invoke<void>("copy_text", { text }),
   createTheme: (name: string, goal?: string, categoryId?: number | null) => invoke<Theme>("create_theme", { name, goal: goal ?? null, categoryId: categoryId ?? null }),
   createCategory: (name: string) => invoke<Category>("create_category", { name }),
   /// Puts a theme in a category, or (null) in none.

@@ -326,6 +326,17 @@ fn open_url(url: &str) -> Result<(), String> {
     status.success().then_some(()).ok_or_else(|| format!("open {url} failed: {status}"))
 }
 
+/// Puts `text` on the clipboard, through pbcopy: the WebView's clipboard API
+/// is not sure to be let in.
+#[tauri::command(async)]
+fn copy_text(text: String) -> Result<(), String> {
+    use std::io::Write;
+    let mut pbcopy = cli("pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(err)?;
+    pbcopy.stdin.take().ok_or("pbcopy: 入力を渡せません")?.write_all(text.as_bytes()).map_err(err)?;
+    let status = pbcopy.wait().map_err(err)?;
+    status.success().then_some(()).ok_or_else(|| format!("pbcopy failed: {status}"))
+}
+
 /// Focuses the herdr pane running this session, if any, and brings the
 /// terminal forward. Returns false when herdr does not host it.
 fn focus_in_herdr(session_id: &str) -> bool {
@@ -2799,6 +2810,7 @@ fn main() {
             open_link,
             link_session,
             unlink_session,
+            copy_text,
             open_session,
             sync_now,
             quick_claude,

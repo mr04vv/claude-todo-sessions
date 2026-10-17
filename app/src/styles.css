@@ -2755,6 +2755,10 @@ body.resizing {
 .focus-head {
   align-items: center;
   padding: 4px 8px;
+  /* A narrow right side puts what does not fit on a second line. */
+  flex-wrap: wrap;
+  row-gap: 4px;
+  white-space: nowrap;
 }
 
 /* The study time's review (ReviewPanel), over both sides until it is done. */
