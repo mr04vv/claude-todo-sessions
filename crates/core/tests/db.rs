@@ -1,4 +1,4 @@
-use cts_core::{parse_todo_marker, Db, Error, InputPatch, NewTodo, NoticeKind, SessionState, Status, Subject, TodoPatch};
+use cts_core::{parse_todo_marker, Db, Error, NewReading, NewTodo, NoticeKind, ReadingKind, SessionState, Status, TodoPatch};
 
 fn open() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -387,32 +387,7 @@ fn prompts_ask_through_ask_user_question_and_implementation_asks_whom_to_review(
 }
 
 #[test]
-fn inputs_are_kept_apart_from_todos() {
-    let (_d, db) = open();
-    let todo = db.create_todo(new_todo("fix it")).unwrap();
-    let a = db.create_input("Rust の所有権", None).unwrap();
-    let b = db.create_input("React の入門", Some("SC から")).unwrap();
-    assert_eq!((a.title.as_str(), a.done, a.links.len()), ("Rust の所有権", false, 0));
-    assert_eq!(b.memo.as_deref(), Some("SC から"));
-    // Not todos: the todos list is the todos' alone.
-    assert_eq!(db.list_todos(None).unwrap(), vec![db.get_todo(todo.id).unwrap().unwrap()]);
-    let l1 = db.add_input_link(a.id, "https://doc.rust-lang.org/book/ch04-00.html").unwrap();
-    db.add_input_link(a.id, "https://doc.rust-lang.org/book/ch04-01.html").unwrap();
-    db.set_input_link_meta(l1.id, Some("Understanding Ownership"), None).unwrap();
-    let a = db.get_input(a.id).unwrap().unwrap();
-    assert_eq!(a.links.iter().map(|l| l.url.as_str()).collect::<Vec<_>>(), ["https://doc.rust-lang.org/book/ch04-00.html", "https://doc.rust-lang.org/book/ch04-01.html"]);
-    assert_eq!(a.links[0].title.as_deref(), Some("Understanding Ownership"));
-    let a = db.update_input(a.id, InputPatch { title: Some("所有権".into()), done: Some(true), ..Default::default() }).unwrap();
-    assert_eq!((a.title.as_str(), a.done, a.links.len()), ("所有権", true, 2));
-    // (The latest changed come first: see the migration's test, whose times differ.)
-    assert_eq!(db.list_inputs().unwrap().len(), 2);
-    db.delete_input(a.id).unwrap();
-    assert_eq!(db.list_inputs().unwrap().len(), 1);
-    assert!(matches!(db.add_input_link(a.id, "https://x.example/"), Err(Error::InputNotFound(_))));
-}
-
-#[test]
-fn input_todos_become_inputs_with_their_ids() {
+fn input_todos_become_readings() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("db.sqlite");
     let old = rusqlite::Connection::open(&path).unwrap();
@@ -434,14 +409,129 @@ fn input_todos_become_inputs_with_their_ids() {
     drop(old);
     let db = Db::open(&path).unwrap();
     assert_eq!(db.list_todos(None).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), [3]);
-    let inputs = db.list_inputs().unwrap();
-    assert_eq!(inputs.iter().map(|i| (i.id, i.title.as_str(), i.done)).collect::<Vec<_>>(), [(9, "読んだ", true), (7, "Rust の所有権", false)]);
-    let rust = &inputs[1];
-    assert_eq!((rust.memo.as_deref(), rust.updated_at), (Some("ch4"), 6));
-    assert_eq!(rust.links.iter().map(|l| (l.url.as_str(), l.title.as_deref())).collect::<Vec<_>>(), [("https://doc.rust-lang.org/book/ch04-00.html", Some("Ownership"))]);
+    // Their pages are articles to read; one with no page has nothing to keep.
+    let readings = db.list_readings().unwrap();
+    assert_eq!(
+        readings.iter().map(|r| (r.kind, r.url.as_str(), r.title.as_str(), r.created_at)).collect::<Vec<_>>(),
+        [(ReadingKind::Article, "https://doc.rust-lang.org/book/ch04-00.html", "Ownership", 1)]
+    );
     // Opening again moves nothing twice.
     drop(db);
-    assert_eq!(Db::open(&path).unwrap().list_inputs().unwrap().len(), 2);
+    assert_eq!(Db::open(&path).unwrap().list_readings().unwrap().len(), 1);
+}
+
+fn article(url: &str, title: &str) -> NewReading {
+    NewReading { kind: ReadingKind::Article, url: url.into(), title: title.into(), ..Default::default() }
+}
+
+#[test]
+fn readings_are_kept_once_newest_first() {
+    let (_d, db) = open();
+    let a = db.add_reading(&article("https://a.example/", "A")).unwrap();
+    let post = NewReading { kind: ReadingKind::Post, url: "https://x.com/u/status/1".into(), title: "@u: 投稿".into(), text: Some("投稿の本文".into()), ..Default::default() };
+    let b = db.add_reading(&post).unwrap();
+    assert_eq!((b.kind, b.title.as_str(), b.text.as_deref(), b.tags.clone()), (ReadingKind::Post, "@u: 投稿", Some("投稿の本文"), None), "not sorted yet");
+    // Kept again: still the one, as it was.
+    assert_eq!(db.add_reading(&article("https://a.example/", "A again")).unwrap(), a);
+    assert_eq!(db.list_readings().unwrap().iter().map(|x| x.id).collect::<Vec<_>>(), [b.id, a.id]);
+    db.delete_reading(a.id).unwrap();
+    assert_eq!(db.list_readings().unwrap().len(), 1);
+    assert!(matches!(db.delete_reading(a.id), Err(Error::ReadingNotFound(_))));
+}
+
+#[test]
+fn a_reading_is_sorted_into_tags_once_and_can_be_retagged() {
+    let (_d, db) = open();
+    let a = db.add_reading(&article("https://a.example/", "A")).unwrap();
+    let b = db.add_reading(&NewReading { text: Some("投稿の本文".into()), ..article("https://b.example/", "B") }).unwrap();
+    assert_eq!(db.unsorted_readings().unwrap().iter().map(|x| x.id).collect::<Vec<_>>(), [a.id, b.id], "the oldest first");
+    // What its page says fills in only what it lacks.
+    db.fill_reading(a.id, Some("説明"), Some("https://a.example/og.png")).unwrap();
+    db.fill_reading(b.id, Some("ページの説明"), None).unwrap();
+    db.set_reading_tags(a.id, &["フロントエンド".into(), "パフォーマンス".into()]).unwrap();
+    db.set_reading_tags(b.id, &[]).unwrap();
+    let list = db.list_readings().unwrap();
+    let a = list.iter().find(|x| x.id == a.id).unwrap();
+    assert_eq!(a.tags, Some(vec!["フロントエンド".to_string(), "パフォーマンス".to_string()]));
+    assert_eq!((a.text.as_deref(), a.image.as_deref()), (Some("説明"), Some("https://a.example/og.png")));
+    let b = list.iter().find(|x| x.id == b.id).unwrap();
+    assert_eq!((b.text.as_deref(), b.tags.clone()), (Some("投稿の本文"), Some(vec![])), "none fits: sorted all the same");
+    assert!(db.unsorted_readings().unwrap().is_empty());
+    assert!(matches!(db.set_reading_tags(999, &[]), Err(Error::ReadingNotFound(999))));
+}
+
+#[test]
+fn a_book_keeps_its_chapters_and_which_are_read() {
+    let (_d, db) = open();
+    let root = "https://learning.oreilly.com/library/view/ddia/9781491903063/";
+    let ch = |n: u32| format!("{root}ch{n:02}.html");
+    let book = NewReading {
+        kind: ReadingKind::Book,
+        url: root.into(),
+        title: "Designing Data-Intensive Applications".into(),
+        chapters: vec![("Reliable, Scalable, and Maintainable Applications".into(), ch(1)), ("Data Models and Query Languages".into(), ch(2)), ("Storage and Retrieval".into(), ch(3))],
+        ..Default::default()
+    };
+    let b = db.add_reading(&book).unwrap();
+    assert_eq!(b.chapters.iter().map(|c| (c.position, c.title.as_str(), c.read)).collect::<Vec<_>>(), [(1, "Reliable, Scalable, and Maintainable Applications", false), (2, "Data Models and Query Languages", false), (3, "Storage and Retrieval", false)]);
+    db.set_chapter_read(b.id, 2, true).unwrap();
+    // A chapter's page read to its end marks it, wherever it is linked from.
+    assert!(db.mark_chapter_read(&format!("{}#sec1", ch(1))).unwrap());
+    assert!(!db.mark_chapter_read("https://example.com/other").unwrap(), "not a chapter");
+    let read = |db: &Db| db.list_readings().unwrap()[0].chapters.iter().filter(|c| c.read).map(|c| c.position).collect::<Vec<_>>();
+    assert_eq!(read(&db), [1, 2]);
+    db.set_chapter_read(b.id, 2, false).unwrap();
+    assert_eq!(read(&db), [1]);
+    // Kept again from another chapter's page: the marks stay, a chapter added since joins.
+    let again = NewReading { chapters: [book.chapters.clone(), vec![("Encoding and Evolution".into(), ch(4))]].concat(), ..book };
+    assert_eq!(db.add_reading(&again).unwrap().chapters.len(), 4);
+    assert_eq!(read(&db), [1]);
+    db.delete_reading(b.id).unwrap();
+    assert!(!db.mark_chapter_read(&ch(3)).unwrap(), "its chapters went with it");
+}
+
+#[test]
+fn inputs_become_readings_and_the_themes_go() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("db.sqlite");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        "CREATE TABLE categories (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+         CREATE TABLE themes (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, goal TEXT, doc_url TEXT, updated_at INTEGER NOT NULL, category_id INTEGER);
+         CREATE TABLE inputs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, memo TEXT, done INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, theme_id INTEGER);
+         CREATE TABLE input_links (id INTEGER PRIMARY KEY, input_id INTEGER NOT NULL, url TEXT NOT NULL, title TEXT, image TEXT, created_at INTEGER NOT NULL);
+         CREATE TABLE feynman_points (id INTEGER PRIMARY KEY, subject_kind TEXT NOT NULL, subject_id INTEGER NOT NULL, position INTEGER NOT NULL, text TEXT NOT NULL, created_at INTEGER NOT NULL);
+         CREATE TABLE feynman_attempts (id INTEGER PRIMARY KEY, subject_kind TEXT NOT NULL, subject_id INTEGER NOT NULL, explanation TEXT NOT NULL, grade TEXT NOT NULL, score INTEGER NOT NULL, created_at INTEGER NOT NULL);
+         INSERT INTO categories (name) VALUES ('Rust');
+         INSERT INTO themes (name, updated_at, category_id) VALUES ('所有権', 1, 1);
+         INSERT INTO inputs (id, title, updated_at, theme_id) VALUES (1, 'Rust の所有権', 2, 1);
+         INSERT INTO inputs (id, title, done, updated_at) VALUES (2, '読んだ', 1, 2);
+         INSERT INTO input_links (input_id, url, title, image, created_at) VALUES (1, 'https://doc.rust-lang.org/book/ch04-00.html', 'Ownership', 'https://i.example/o.png', 3);
+         INSERT INTO input_links (input_id, url, created_at) VALUES (1, 'https://doc.rust-lang.org/book/ch04-01.html', 4);
+         INSERT INTO input_links (input_id, url, created_at) VALUES (2, 'https://a.example/', 5);
+         INSERT INTO feynman_attempts (subject_kind, subject_id, explanation, grade, score, created_at) VALUES ('theme', 1, 'x', '{}', 50, 1);",
+    )
+    .unwrap();
+    drop(old);
+    let db = Db::open(&path).unwrap();
+    let readings = db.list_readings().unwrap();
+    assert!(readings.iter().all(|r| r.kind == ReadingKind::Article && r.tags.is_none()), "articles, to be sorted");
+    assert_eq!(
+        readings.iter().map(|r| (r.url.as_str(), r.title.as_str(), r.image.as_deref())).collect::<Vec<_>>(),
+        [
+            ("https://a.example/", "読んだ", None),
+            ("https://doc.rust-lang.org/book/ch04-01.html", "Rust の所有権", None),
+            ("https://doc.rust-lang.org/book/ch04-00.html", "Ownership", Some("https://i.example/o.png")),
+        ],
+        "each page an article, named as its input when it had no name"
+    );
+    let left: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT COUNT(*) FROM sqlite_master WHERE name IN ('inputs', 'input_links', 'themes', 'categories', 'feynman_points', 'feynman_attempts')", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 0, "the themes, their reviews and the inputs go");
+    drop(db);
+    assert_eq!(Db::open(&path).unwrap().list_readings().unwrap().len(), 3, "only once");
 }
 
 #[test]
@@ -769,29 +859,6 @@ fn cloud_sessions_of_done_todos_are_the_ones_to_archive() {
 }
 
 #[test]
-fn feynman_attempts_are_kept_per_subject() {
-    use cts_core::feynman::{Grade, PointVerdict, Verdict};
-    let (_d, db) = open();
-    let theme = db.create_theme("article", None, None).unwrap();
-    let subject = Subject::Theme(theme.id);
-    let grade = Grade {
-        verdicts: vec![PointVerdict { point: 0, verdict: Verdict::Vague, note: "ほぼ".into() }],
-        mistakes: vec![],
-        jargon: vec!["API".into()],
-        questions: vec!["なぜ？".into()],
-    };
-    let first = db.add_feynman_attempt(subject, "説明", &grade, 50).unwrap();
-    let second = db.add_feynman_attempt(subject, "説明2", &grade, 100).unwrap();
-    let attempts = db.feynman_attempts(subject).unwrap();
-    assert_eq!(attempts.iter().map(|a| a.id).collect::<Vec<_>>(), [second.id, first.id], "newest first");
-    assert_eq!(attempts[1].grade, grade);
-    let summaries = db.feynman_summaries().unwrap();
-    assert_eq!(summaries.len(), 1);
-    assert_eq!((summaries[0].subject, summaries[0].score), (subject, 100));
-    assert_eq!(summaries[0].due_at, second.created_at + 7 * 86_400, "a high score waits a week");
-}
-
-#[test]
 fn a_session_done_with_its_turn_is_unread_until_seen() {
     let (_d, db) = open();
     let unread = |db: &Db| db.get_session("s1").unwrap().unwrap().unread;
@@ -1043,9 +1110,9 @@ fn reviews_that_ended_before_failures_were_shown_are_put_away_once() {
 fn artifacts_are_kept_once_newest_first_with_their_todo() {
     let (_d, db) = open();
     let t = db.create_todo(new_todo("比較")).unwrap();
-    assert!(db.add_artifact(cts_core::NewArtifact { url: "https://claude.ai/artifact/a".into(), title: Some("比較表".into()), kind: cts_core::ArtifactKind::Artifact, session_id: Some("s1".into()), todo_id: Some(t.id), theme_id: None }).unwrap());
-    assert!(!db.add_artifact(cts_core::NewArtifact { url: "https://claude.ai/artifact/a".into(), title: None, kind: cts_core::ArtifactKind::Artifact, session_id: Some("s1".into()), todo_id: Some(t.id), theme_id: None }).unwrap(), "once");
-    db.add_artifact(cts_core::NewArtifact { url: "/Users/me/report.pdf".into(), title: Some("報告".into()), kind: cts_core::ArtifactKind::File, session_id: None, todo_id: None, theme_id: None }).unwrap();
+    assert!(db.add_artifact(cts_core::NewArtifact { url: "https://claude.ai/artifact/a".into(), title: Some("比較表".into()), kind: cts_core::ArtifactKind::Artifact, session_id: Some("s1".into()), todo_id: Some(t.id) }).unwrap());
+    assert!(!db.add_artifact(cts_core::NewArtifact { url: "https://claude.ai/artifact/a".into(), title: None, kind: cts_core::ArtifactKind::Artifact, session_id: Some("s1".into()), todo_id: Some(t.id) }).unwrap(), "once");
+    db.add_artifact(cts_core::NewArtifact { url: "/Users/me/report.pdf".into(), title: Some("報告".into()), kind: cts_core::ArtifactKind::File, session_id: None, todo_id: None }).unwrap();
     let all = db.artifacts().unwrap();
     assert_eq!(all.iter().map(|a| a.url.as_str()).collect::<Vec<_>>(), ["/Users/me/report.pdf", "https://claude.ai/artifact/a"]);
     assert_eq!((all[1].title.as_deref(), all[1].todo_id, all[1].kind), (Some("比較表"), Some(t.id), cts_core::ArtifactKind::Artifact));
@@ -1056,7 +1123,7 @@ fn artifacts_are_kept_once_newest_first_with_their_todo() {
 #[test]
 fn a_forgotten_artifact_stays_out_even_when_found_again() {
     let (_d, db) = open();
-    let found = || cts_core::NewArtifact { url: "/tmp/20261012-test.html".into(), title: None, kind: cts_core::ArtifactKind::File, session_id: Some("s1".into()), todo_id: None, theme_id: None };
+    let found = || cts_core::NewArtifact { url: "/tmp/20261012-test.html".into(), title: None, kind: cts_core::ArtifactKind::File, session_id: Some("s1".into()), todo_id: None };
     db.add_artifact(found()).unwrap();
     let id = db.artifacts().unwrap()[0].id;
     db.forget_artifact(id).unwrap();
@@ -1096,93 +1163,6 @@ fn a_handover_is_taken_back_when_its_session_runs_again() {
     assert!(db.take_back_escalation("s1").unwrap());
     assert_eq!(db.get_todo(t.id).unwrap().unwrap().escalation, None);
     assert!(!db.take_back_escalation("s1").unwrap(), "nothing handed over any more");
-}
-
-#[test]
-fn themes_gather_inputs_and_the_rest_wait_unsorted() {
-    let (_d, db) = open();
-    let sec = db.create_theme("セキュリティ", Some("Web の攻撃と守りを説明できる"), None).unwrap();
-    assert_eq!((sec.name.as_str(), sec.goal.as_deref(), sec.doc_url.clone()), ("セキュリティ", Some("Web の攻撃と守りを説明できる"), None));
-    let a = db.create_input("CSRF とは", None).unwrap();
-    let b = db.create_input("Rust の所有権", None).unwrap();
-    assert_eq!(a.theme_id, None, "a new one waits unsorted");
-    db.set_input_theme(a.id, Some(sec.id)).unwrap();
-    let inputs = db.list_inputs().unwrap();
-    assert_eq!(inputs.iter().find(|i| i.id == a.id).unwrap().theme_id, Some(sec.id));
-    assert_eq!(inputs.iter().find(|i| i.id == b.id).unwrap().theme_id, None);
-    let sec = db.update_theme(sec.id, cts_core::ThemePatch { doc_url: Some("https://claude.ai/code/artifact/x".into()), ..Default::default() }).unwrap();
-    assert_eq!(sec.doc_url.as_deref(), Some("https://claude.ai/code/artifact/x"));
-    assert_eq!(db.list_themes().unwrap().len(), 1);
-    db.delete_theme(sec.id).unwrap();
-    assert_eq!(db.get_input(a.id).unwrap().unwrap().theme_id, None, "its inputs go back to unsorted");
-}
-
-#[test]
-fn a_themes_review_is_due_by_its_last_score() {
-    let (_d, db) = open();
-    let t = db.create_theme("Rust", None, None).unwrap();
-    let grade = cts_core::feynman::Grade::default();
-    db.add_feynman_attempt(Subject::Theme(t.id), "Q/A", &grade, 50).unwrap();
-    let summary = db.feynman_summaries().unwrap().into_iter().find(|s| s.subject == Subject::Theme(t.id)).unwrap();
-    assert_eq!(summary.due_at - summary.attempted_at, 86_400, "under 60%: the next day");
-}
-
-#[test]
-fn themes_work_on_databases_made_before_them() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db.sqlite");
-    let old = rusqlite::Connection::open(&path).unwrap();
-    old.execute_batch(
-        "CREATE TABLE inputs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, memo TEXT, done INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL);
-         INSERT INTO inputs (title, updated_at) VALUES ('old one', 5);",
-    )
-    .unwrap();
-    drop(old);
-    let db = Db::open(&path).unwrap();
-    let t = db.create_theme("x", None, None).unwrap();
-    assert_eq!(db.get_input(1).unwrap().unwrap().theme_id, None, "the inputs from before wait unsorted");
-    db.set_input_theme(1, Some(t.id)).unwrap();
-}
-
-#[test]
-fn categories_gather_themes() {
-    let (_d, db) = open();
-    let sec = db.create_category(" セキュリティ ").unwrap();
-    let perf = db.create_category("パフォーマンス").unwrap();
-    let names: Vec<String> = db.list_categories().unwrap().into_iter().map(|c| c.name).collect();
-    assert_eq!(names, ["セキュリティ", "パフォーマンス"], "in the order made");
-    let oidc = db.create_theme("OIDC", None, Some(sec.id)).unwrap();
-    assert_eq!(oidc.category_id, Some(sec.id));
-    db.set_theme_category(oidc.id, Some(perf.id)).unwrap();
-    assert_eq!(db.get_theme(oidc.id).unwrap().unwrap().category_id, Some(perf.id));
-    db.set_theme_category(oidc.id, None).unwrap();
-    assert_eq!(db.get_theme(oidc.id).unwrap().unwrap().category_id, None);
-    assert!(matches!(db.set_theme_category(999, None), Err(Error::ThemeNotFound(999))));
-}
-
-#[test]
-fn themes_from_before_categories_become_categories() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("db.sqlite");
-    let old = rusqlite::Connection::open(&path).unwrap();
-    old.execute_batch(
-        "CREATE TABLE themes (id INTEGER PRIMARY KEY, name TEXT NOT NULL, goal TEXT, doc_url TEXT, updated_at INTEGER NOT NULL);
-         CREATE TABLE inputs (id INTEGER PRIMARY KEY, title TEXT NOT NULL, memo TEXT, done INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, theme_id INTEGER);
-         INSERT INTO themes (id, name, goal, updated_at) VALUES (1, 'セキュリティ', '守りを説明できる', 6), (9, 'DevOps', NULL, 5);
-         INSERT INTO inputs (title, updated_at, theme_id) VALUES ('CSRF とは', 5, 1);",
-    )
-    .unwrap();
-    drop(old);
-    let db = Db::open(&path).unwrap();
-    let categories = db.list_categories().unwrap();
-    assert_eq!(categories.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["セキュリティ", "DevOps"], "the broad themes from before are categories now");
-    assert!(db.list_themes().unwrap().is_empty());
-    assert_eq!(db.get_input(1).unwrap().unwrap().theme_id, None, "what was in them waits unsorted");
-    let oidc = db.create_theme("OIDC", None, Some(categories[0].id)).unwrap();
-    assert!(oidc.id > 9, "a theme's id is not used again (the study spaces kept go by it)");
-    drop(db);
-    let db = Db::open(&path).unwrap();
-    assert_eq!((db.list_categories().unwrap().len(), db.list_themes().unwrap().len()), (2, 1), "only once");
 }
 
 fn slack_message(ts: &str, via: Option<&str>) -> cts_core::NewSlackMessage {

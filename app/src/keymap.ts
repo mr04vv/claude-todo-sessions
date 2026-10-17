@@ -15,7 +15,11 @@ export type Action =
   | "sideApp"
   | "sidePane"
   | "archive"
-  | "toInput"
+  | "bookmark"
+  | "spaceManage"
+  | "spaceWork"
+  | "spaceStudy"
+  | "spaceBrowser"
   | "focusUrl"
   | "terminalLinks"
   | "back"
@@ -56,23 +60,15 @@ export type Action =
   | "slackScrollUp"
   | "slackNarrower"
   | "slackWider"
-  | "learnAdd"
-  | "learnNewTheme"
-  | "learnNewCategory"
-  | "learnAsk"
-  | "learnApply"
-  | "learnNextInput"
-  | "learnPrevInput"
-  | "learnOpen"
-  | "learnRead"
-  | "learnForget"
-  | "learnMove"
-  | "learnRename"
-  | "learnGoal"
-  | "learnCategory"
-  | "learnShowRead"
-  | "learnNote"
-  | "learnDeleteTheme"
+  | "studyPick"
+  | "studyRead"
+  | "studyBrowser"
+  | "studyForget"
+  | "studyTags"
+  | "studyKind"
+  | "studyCopy"
+  | "studyChapter"
+  | "studyList"
   | "artifactForget"
   | "search"
   | "help"
@@ -84,12 +80,16 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
   {
     group: "どこでも",
     items: [
+      ["spaceManage", "管理へ（Todo・PR・成果物・Slack）"],
+      ["spaceWork", "作業へ（セッション）"],
+      ["spaceStudy", "学習へ（読みもの）"],
+      ["spaceBrowser", "ブラウザへ"],
       ["palette", "コマンド（⌘K のメニュー）"],
       ["sessions", "セッション一覧（⌘K の一番上）"],
-      ["newTodo", "新しい todo（Input の画面では input）"],
+      ["newTodo", "新しい todo"],
       ["reload", "今の画面を取り直す（ページでは再読み込み）"],
-      ["sideApp", "入力先を Todo 側へ（学ぶ時間では左へ）"],
-      ["sidePane", "入力先を右のペインへ（学ぶ時間では右へ）"],
+      ["sideApp", "入力先を左へ（一覧、作業・学習では左のページ）"],
+      ["sidePane", "入力先を右へ（ページ、作業・学習では右のページ）"],
     ],
   },
   {
@@ -97,8 +97,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     items: [
       ["newTab", "新しいタブ"],
       ["closeTab", "タブを閉じる"],
-      ["prevTab", "前のタブ（学ぶ時間では入力先の側のタブ、Todo では前のレーン）"],
-      ["nextTab", "次のタブ（学ぶ時間では入力先の側のタブ、Todo では次のレーン）"],
+      ["prevTab", "前のタブ（作業・学習では入力先の側のタブ、Todo では前のレーン）"],
+      ["nextTab", "次のタブ（作業・学習では入力先の側のタブ、Todo では次のレーン）"],
       ["focusUrl", "アドレス欄へ"],
       ["terminalLinks", "ターミナルに出ているリンクを選んで開く（⌘ クリックで後ろのタブ、⌘⇧ クリックで前に開く）"],
       ["back", "戻る"],
@@ -106,8 +106,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["zoomIn", "拡大"],
       ["zoomOut", "縮小"],
       ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
-      ["archive", "Cloud セッションのページをアーカイブ（セッション一覧では、行のセッションを片付ける）"],
-      ["toInput", "表示中のページを学びに入れる"],
+      ["archive", "Cloud セッションのページをアーカイブ（作業の一覧では、行のセッションを片付ける）"],
+      ["bookmark", "表示中のページを読みものに入れる（O'Reilly の本のページなら本として目次ごと）"],
     ],
   },
   {
@@ -120,7 +120,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["moveLeft", "カンバン：カードを左の列へ"],
       ["moveRight", "カンバン：カードを右の列へ"],
       ["status", "ステータスを変える"],
-      ["session", "セッションを開く"],
+      ["session", "作業で開く（セッションがなければ起動シート）"],
       ["link", "PR / issue を開く"],
       ["parent", "親の todo を開く"],
       ["add", "その場所に todo を追加"],
@@ -166,25 +166,17 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     ],
   },
   {
-    group: "学びの画面（J K でテーマを選ぶ、Enter で学ぶ時間を始める。カテゴリでは Enter か H L で畳む・開く）",
+    group: "学習の一覧（J K で選ぶ、Enter で読む）",
     items: [
-      ["learnAdd", "URL の欄へ（選んでいるテーマに入れる）"],
-      ["learnNewTheme", "新しいテーマ（選んでいるカテゴリに）"],
-      ["learnNewCategory", "新しいカテゴリ"],
-      ["learnAsk", "Claude に聞く（まだテーマにないものは振り分け、テーマは次に読むもの）"],
-      ["learnApply", "Claude の振り分けの通りにする（Esc でやめる）"],
-      ["learnNextInput", "次の読むものへ"],
-      ["learnPrevInput", "前の読むものへ"],
-      ["learnOpen", "読むものを開く"],
-      ["learnRead", "読み終わった／まだ読み終わっていない"],
-      ["learnForget", "読むものを消す"],
-      ["learnMove", "読むものを別のテーマへ"],
-      ["learnRename", "テーマの名前を編集"],
-      ["learnGoal", "テーマの目標を編集"],
-      ["learnCategory", "テーマのカテゴリを変える"],
-      ["learnShowRead", "読み終わったものを出す・隠す"],
-      ["learnNote", "テーマのノートを開く"],
-      ["learnDeleteTheme", "テーマを消す（Enter で消す、Esc でやめる）"],
+      ["studyPick", "選ぶ・外す（選んだものはまとめて読む）"],
+      ["studyRead", "選んだものをまとめて読む"],
+      ["studyBrowser", "ブラウザで開く"],
+      ["studyForget", "消す（もう一度押すと消す、Esc でやめる）"],
+      ["studyTags", "タグを直す"],
+      ["studyKind", "種類を切り替える（すべて・記事・X の投稿・本）"],
+      ["studyCopy", "選んだもの（なければカーソルの行）の URL をコピー（NotebookLM 用）"],
+      ["studyChapter", "目次：章を読んだ・まだにする"],
+      ["studyList", "読んでいるところから一覧へ"],
     ],
   },
   {
@@ -213,7 +205,11 @@ const KEYS: Record<Action, string> = {
   sidePane: "ctrl+l",
   archive: "cmd+shift+a",
   // As Safari's "Add to Reading List".
-  toInput: "cmd+shift+d",
+  bookmark: "cmd+shift+d",
+  spaceManage: "cmd+1",
+  spaceWork: "cmd+2",
+  spaceStudy: "cmd+3",
+  spaceBrowser: "cmd+4",
   focusUrl: "cmd+l",
   terminalLinks: "cmd+shift+l",
   back: "cmd+[",
@@ -254,23 +250,15 @@ const KEYS: Record<Action, string> = {
   slackScrollUp: "shift+k",
   slackNarrower: "[",
   slackWider: "]",
-  learnAdd: "c",
-  learnNewTheme: "n",
-  learnNewCategory: "shift+n",
-  learnAsk: "a",
-  learnApply: "cmd+Enter",
-  learnNextInput: "shift+j",
-  learnPrevInput: "shift+k",
-  learnOpen: "o",
-  learnRead: "e",
-  learnForget: "d",
-  learnMove: "t",
-  learnRename: "r",
-  learnGoal: "g",
-  learnCategory: "m",
-  learnShowRead: "f",
-  learnNote: "shift+o",
-  learnDeleteTheme: "shift+d",
+  studyPick: "x",
+  studyRead: "cmd+Enter",
+  studyBrowser: "o",
+  studyForget: "d",
+  studyTags: "t",
+  studyKind: "f",
+  studyCopy: "c",
+  studyChapter: "m",
+  studyList: "Escape",
   artifactForget: "d",
   search: "/",
   help: "?",
@@ -316,7 +304,7 @@ export function matchesCombo(e: KeyboardEvent, combo: string, exact = false): bo
 }
 
 /// The keys that open something (a session, a page), besides Enter.
-const OPENING: Action[] = ["session", "link", "slackOpen", "learnOpen", "learnNote"];
+const OPENING: Action[] = ["session", "link", "slackOpen", "studyBrowser"];
 
 /// Whether a key with ctrl is one that opens, ctrl asking for the default
 /// browser: Enter (⌘Enter too), or an opening key, ctrl being none of its own.

@@ -1,4 +1,5 @@
-//! What a linked page says about itself, for showing a todo's attachments.
+//! What a linked page says about itself, for showing a todo's attachments
+//! and a bookmark (and for sorting it into tags).
 use std::io::Read;
 use std::time::Duration;
 
@@ -11,6 +12,8 @@ const USER_AGENT: &str = "Mozilla/5.0 (compatible; todo-sessions)";
 pub struct Meta {
     pub title: Option<String>,
     pub image: Option<String>,
+    /// What the page says it is about (`og:description`, else `description`).
+    pub description: Option<String>,
 }
 
 /// Open Graph title and image of the page at `url`.
@@ -31,23 +34,13 @@ pub fn fetch_within(url: &str, timeout: Duration) -> Result<Meta, String> {
     Ok(parse(&String::from_utf8_lossy(&buf)))
 }
 
-/// The page's readable text (feynman::text_of_html), for a page the app has
-/// no tab of; one behind a login comes back as its sign-in page.
-pub fn fetch_text(url: &str, timeout: Duration) -> Result<String, String> {
-    let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
-    let config = ureq::Agent::config_builder().timeout_global(Some(timeout)).user_agent(USER_AGENT).tls_config(tls).build();
-    let agent = ureq::Agent::new_with_config(config);
-    let mut resp = agent.get(url).header("Accept", "text/html").call().map_err(|e| e.to_string())?;
-    let mut buf = Vec::new();
-    resp.body_mut().as_reader().take(MAX_BYTES).read_to_end(&mut buf).map_err(|e| e.to_string())?;
-    Ok(crate::feynman::text_of_html(&String::from_utf8_lossy(&buf)))
-}
-
-/// `og:title` and `og:image` from a page's HTML, with <title> as the
-/// fallback title.
+/// `og:title`, `og:image` and `og:description` from a page's HTML, with
+/// <title> and the plain description as the fallbacks.
 pub fn parse(html: &str) -> Meta {
     let mut og_title = None;
     let mut image = None;
+    let mut og_description = None;
+    let mut description = None;
     let mut rest = html;
     while let Some(i) = rest.find("<meta") {
         let tag = &rest[i..];
@@ -57,12 +50,15 @@ pub fn parse(html: &str) -> Meta {
         match key.as_deref() {
             Some("og:title") if og_title.is_none() => og_title = attr(tag, "content"),
             Some("og:image") | Some("og:image:url") if image.is_none() => image = attr(tag, "content"),
+            Some("og:description") if og_description.is_none() => og_description = attr(tag, "content"),
+            Some("description") if description.is_none() => description = attr(tag, "content"),
             _ => {}
         }
         rest = &rest[i + end..];
     }
     let title = og_title.or_else(|| title_tag(html)).map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
-    Meta { title, image: image.filter(|i| !i.is_empty()) }
+    let description = og_description.or(description).map(|d| d.trim().to_string()).filter(|d| !d.is_empty());
+    Meta { title, image: image.filter(|i| !i.is_empty()), description }
 }
 
 fn title_tag(html: &str) -> Option<String> {
@@ -93,7 +89,7 @@ fn attr(tag: &str, name: &str) -> Option<String> {
 }
 
 /// The few entities that show up in titles.
-pub(crate) fn decode(s: &str) -> String {
+fn decode(s: &str) -> String {
     s.replace("&quot;", "\"")
         .replace("&#39;", "'")
         .replace("&#x27;", "'")
@@ -113,13 +109,19 @@ mod tests {
           <meta content="OG &amp; Title" property="og:title">
           <meta property='og:image' content='https://x/y.png'/>
           <meta name="description" content="d"></head></html>"#;
-        assert_eq!(parse(html), Meta { title: Some("OG & Title".into()), image: Some("https://x/y.png".into()) });
+        assert_eq!(parse(html), Meta { title: Some("OG & Title".into()), image: Some("https://x/y.png".into()), description: Some("d".into()) });
+    }
+
+    #[test]
+    fn og_description_wins_over_the_description() {
+        let html = r#"<meta name="description" content="plain"><meta property="og:description" content="OG">"#;
+        assert_eq!(parse(html).description.as_deref(), Some("OG"));
     }
 
     #[test]
     fn falls_back_to_the_title_tag() {
         let m = parse("<title> Fallback &amp; more </title><meta name='viewport' content='w'>");
-        assert_eq!(m, Meta { title: Some("Fallback & more".into()), image: None });
+        assert_eq!(m, Meta { title: Some("Fallback & more".into()), image: None, description: None });
         assert_eq!(parse("nothing here"), Meta::default());
         assert_eq!(parse("<meta property=\"og:title\" content=\"\">").title, None);
     }

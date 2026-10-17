@@ -40,8 +40,6 @@ const SHUTDOWN_WAIT: Duration = Duration::from_millis(1500);
 const MAIN_THREAD_WAIT: Duration = Duration::from_secs(10);
 /// How long the browser may take to start.
 const READY_WAIT: Duration = Duration::from_secs(20);
-/// How long a page's text is waited for.
-const TEXT_WAIT: Duration = Duration::from_secs(15);
 
 /// Where the framework is in the .app, from the folder of the executable.
 const FRAMEWORK: &str = "../Frameworks/Chromium Embedded Framework.framework";
@@ -714,18 +712,6 @@ pub fn answer_media(app: &AppHandle, id: u64, allow: bool) -> Result<(), String>
     })
 }
 
-wrap_string_visitor! {
-    struct TextVisitor {
-        out: Sender<String>,
-    }
-
-    impl CefStringVisitor {
-        fn visit(&self, string: Option<&CefString>) {
-            let _ = self.out.send(string.map(CefString::to_string).unwrap_or_default());
-        }
-    }
-}
-
 /// Runs Chromium's work until its context is up, which a browser needs to be made (a tab
 /// restored right after launch would come first).
 fn wait_ready() -> Result<(), String> {
@@ -875,19 +861,6 @@ pub fn zoom(app: &AppHandle, tab: &str) -> Option<f64> {
     let level = on_main(app, move || with_tab(&tab, |b| b.host().map(|h| h.zoom_level())).flatten()).ok().flatten()?;
     // Rounded: the steps (1.1, 1.25, ...) are compared with it.
     Some((ZOOM_LEVEL_BASE.powf(level) * 100.0).round() / 100.0)
-}
-
-/// The text of the tab's page, or None when the tab has no page open.
-pub fn text(app: &AppHandle, tab: &str) -> Result<Option<String>, String> {
-    let tab = tab.to_string();
-    let (tx, rx) = channel();
-    let asked = on_main(app, move || {
-        with_tab(&tab, |b| b.main_frame().map(|f| f.text(Some(&mut TextVisitor::new(tx))))).flatten().is_some()
-    })?;
-    if !asked {
-        return Ok(None);
-    }
-    rx.recv_timeout(TEXT_WAIT).map(Some).map_err(|_| "ページの本文を読めませんでした".to_string())
 }
 
 /// At quit: closes the pages and lets Chromium write what it keeps (cookies among it).

@@ -2,7 +2,9 @@
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
 // commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling (and
 // picking a Google result), as the user set them), the page translates where it is (Claude, through the app),
-// and ⌥ + click keeps a link as an input todo.
+// and what is worth reading is kept (読みもの): the page (⌘⇧D; an O'Reilly
+// book's page as the book, with its contents), a link ⌥-clicked, a post
+// bookmarked on X. A book's chapter read to its end is marked read.
 // It runs in the page's frames too (a doc's editor on claude.ai is one), which
 // get the app's keys as the page does and tell the app themselves (FRAME), but
 // for the page's own history keys.
@@ -26,14 +28,14 @@
   const PREV_TAB = "todo-sessions://tab-prev";
   const NEXT_TAB = "todo-sessions://tab-next";
   const ARCHIVE = "todo-sessions://archive";
-  const TO_INPUT = "todo-sessions://to-input";
   const PALETTE = "todo-sessions://palette";
   const SESSIONS = "todo-sessions://sessions";
   const FOCUS_APP = "todo-sessions://focus-app";
   const FOCUS_PANE = "todo-sessions://focus-pane";
-  const FOCUS_EXIT = "todo-sessions://focus-exit";
+  const SPACE = "todo-sessions://space";
   const CLOSE_TAB = "todo-sessions://close-tab";
-  const ADD_INPUT = "todo-sessions://add-input";
+  const BOOKMARK = "todo-sessions://bookmark";
+  const CHAPTER_READ = "todo-sessions://chapter-read";
   const NEW_TODO = "todo-sessions://new-todo";
   const ZOOM_IN = "todo-sessions://zoom-in";
   const ZOOM_OUT = "todo-sessions://zoom-out";
@@ -79,6 +81,10 @@
       send(text ? `${FOCUS_PANE}?text=${encodeURIComponent(text)}` : FOCUS_PANE);
     }],
     ["palette", () => send(PALETTE)],
+    ["spaceManage", () => send(`${SPACE}?s=manage`)],
+    ["spaceWork", () => send(`${SPACE}?s=work`)],
+    ["spaceStudy", () => send(`${SPACE}?s=study`)],
+    ["spaceBrowser", () => send(`${SPACE}?s=browser`)],
     ["sessions", () => send(SESSIONS)],
     ["focusUrl", () => send(FOCUS_URL)],
     ["newTab", () => send(NEW_TAB)],
@@ -87,7 +93,7 @@
     ["prevTab", () => send(PREV_TAB)],
     ["nextTab", () => send(NEXT_TAB)],
     ["archive", () => send(ARCHIVE)],
-    ["toInput", () => send(TO_INPUT)],
+    ["bookmark", () => window.__todoSessionsBookmark?.()],
     ["zoomIn", () => send(ZOOM_IN)],
     ["zoomOut", () => send(ZOOM_OUT)],
     ["zoomReset", () => send(ZOOM_RESET)],
@@ -101,21 +107,14 @@
   // ⌘⇧A archives the Cloud session a claude.ai page shows; elsewhere the key is the page's.
   const SESSION_PAGE = /^https:\/\/claude\.ai\/code\/session_/;
   const appliesHere = (action) => action !== "archive" || SESSION_PAGE.test(location.href);
-  // In the focus mode the app shows which side has the keyboard; a page (or
-  // one of its frames) taking it says so.
+  // In a split view (作業・学習) the app shows which side has the keyboard; a
+  // page (or one of its frames) taking it says so.
   const FOCUSED = "todo-sessions://page-focused";
   window.addEventListener("focus", () => window.__todoSessionsFocusMode && send(FOCUSED));
 
   window.addEventListener(
     "keydown",
     (e) => {
-      // In the focus mode (the app sets the flag) Esc asks about leaving it.
-      if (window.__todoSessionsFocusMode && e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        send(FOCUS_EXIT);
-        return;
-      }
       // Ahead of the page's own keys (ChatGPT's ⌘K search, say).
       const hit = KEY_ACTIONS.find(([action]) => is(e, action) && appliesHere(action) && !(FRAME && PAGE_ONLY.includes(action)));
       if (!hit) return;
@@ -279,7 +278,43 @@
     setTimeout(() => clearInterval(timer), FILL_FOR_MS);
   };
 
-  // ⌥ + click keeps the link as an input instead of following it.
+  // Readings (読みもの) the app keeps: a kind (article, post, book), the page,
+  // its title, what it says (for its tags) and a book's chapters ([title, page]).
+  const TEXT_MAX = 2000;
+  const TITLE_MAX = 120;
+  const enc = encodeURIComponent;
+  const oneLine = (text) => (text ?? "").trim().replace(/\s+/g, " ");
+  const keep = (kind, url, title, text, chapters) =>
+    send(`${BOOKMARK}?k=${kind}&u=${enc(url)}&t=${enc(title || url)}&x=${enc((text ?? "").slice(0, TEXT_MAX))}${chapters ? `&c=${enc(JSON.stringify(chapters))}` : ""}`);
+  const meta = (name) => document.querySelector(`meta[property="${name}"], meta[name="${name}"]`)?.content?.trim() ?? "";
+  // An O'Reilly book's pages are under its own (…/library/view/<book>/<isbn>/).
+  const OREILLY_BOOK = /^https:\/\/learning\.oreilly\.com\/library\/view\/[^/]+\/[^/]+\//;
+  const X_HOST = /(^|\.)(x|twitter)\.com$/;
+  const X_STATUS = /^\/([^/]+)\/status\/\d+/;
+  /// A post on X: its own page, its author and its text.
+  const keepPost = (url, user, text) => keep("post", url, `@${user}: ${oneLine(text).slice(0, TITLE_MAX) || url}`, text);
+  // ⌘⇧D (here, or from the app's side): the page shown. A book's page keeps
+  // the book with the chapters it links to (its table of contents).
+  window.__todoSessionsBookmark = () => {
+    const book = location.href.match(OREILLY_BOOK);
+    if (book) {
+      const root = book[0];
+      const seen = new Set();
+      const chapters = [];
+      for (const a of document.querySelectorAll("a[href]")) {
+        const url = a.href.split("#")[0];
+        const title = oneLine(a.textContent);
+        if (!url.startsWith(root) || !/\.x?html$/.test(url) || !title || seen.has(url)) continue;
+        seen.add(url);
+        chapters.push([title, url]);
+      }
+      return keep("book", root, meta("og:title") || document.title.split("|").pop().trim(), meta("og:description") || meta("description"), chapters);
+    }
+    const status = X_HOST.test(location.hostname) && location.pathname.match(X_STATUS);
+    if (status) return keepPost(location.href.split("?")[0], status[1], document.querySelector('article [data-testid="tweetText"]')?.innerText);
+    keep("article", location.href, document.title, meta("og:description") || meta("description"));
+  };
+  // ⌥ + click keeps the link to read instead of following it.
   window.addEventListener(
     "click",
     (e) => {
@@ -287,8 +322,36 @@
       if (!e.altKey || e.metaKey || e.ctrlKey || !link || !/^https?:/.test(link.href)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      const text = (link.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
-      send(`${ADD_INPUT}?u=${encodeURIComponent(link.href)}&t=${encodeURIComponent(text || link.href)}`);
+      keep("article", link.href, oneLine(link.textContent).slice(0, TITLE_MAX));
+    },
+    true,
+  );
+  // X's own bookmark button keeps the post here too (X bookmarks it as well).
+  window.addEventListener(
+    "click",
+    (e) => {
+      if (!X_HOST.test(location.hostname)) return;
+      const button = e.target instanceof Element ? e.target.closest('[data-testid="bookmark"]') : null;
+      const post = button?.closest("article");
+      const link = post && [...post.querySelectorAll('a[href*="/status/"]')].find((a) => a.querySelector("time"));
+      const status = link?.pathname.match(X_STATUS);
+      if (!status) return;
+      keepPost(link.href.split("?")[0], status[1], post.querySelector('[data-testid="tweetText"]')?.innerText);
+    },
+    true,
+  );
+  // A book's chapter scrolled to its end is read (once per page).
+  const END_SLACK_PX = 80;
+  const readChapters = new Set();
+  window.addEventListener(
+    "scroll",
+    (e) => {
+      const page = location.href.split("#")[0];
+      if (!OREILLY_BOOK.test(page) || !/\.x?html$/.test(page) || readChapters.has(page)) return;
+      const el = e.target instanceof Element ? e.target : document.scrollingElement;
+      if (!el || el.scrollTop + el.clientHeight < el.scrollHeight - END_SLACK_PX) return;
+      readChapters.add(page);
+      send(`${CHAPTER_READ}?u=${enc(page)}`);
     },
     true,
   );

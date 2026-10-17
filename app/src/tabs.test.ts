@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressToUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, sameObject } from "./tabs.ts";
+import { addressToUrl, findTabFor, insertAfter, nextAfterClose, sameObject } from "./tabs.ts";
 
 const tabs = (...ids: string[]) => ids.map((id) => ({ id }));
 
@@ -60,18 +60,3 @@ test("a host with a port, or localhost, opens as a URL", () => {
   assert.equal(addressToUrl("example.com:8443/x"), "https://example.com:8443/x");
 });
 
-test("reviews show as tabs while they fit", () => {
-  const { shown, folded } = foldReviews(tabs("a", "b", "c"), () => false, 3);
-  assert.deepEqual(shown.map((t) => t.id), ["a", "b", "c"]);
-  assert.deepEqual(folded, []);
-});
-
-test("more reviews than fit fold, but the ones waiting for a reply stay out", () => {
-  const { shown, folded } = foldReviews(tabs("a", "b", "c", "d"), (t) => t.id === "c", 3);
-  assert.deepEqual(shown.map((t) => t.id), ["c"]);
-  assert.deepEqual(folded.map((t) => t.id), ["a", "b", "d"]);
-});
-
-test("with no room even one review folds", () => {
-  assert.deepEqual(foldReviews(tabs("a"), () => false, 0).folded.map((t) => t.id), ["a"]);
-});

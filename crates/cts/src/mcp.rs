@@ -185,7 +185,7 @@ impl Server {
         let todo_id = db.get_session(&a.session_id).map_err(|e| e.to_string())?.and_then(|s| s.todo_id);
         let kind = if a.path.starts_with("http") { cts_core::ArtifactKind::Artifact } else { cts_core::ArtifactKind::File };
         let new = db
-            .add_artifact(cts_core::NewArtifact { url: a.path.clone(), title: a.title, kind, session_id: Some(a.session_id), todo_id, theme_id: None })
+            .add_artifact(cts_core::NewArtifact { url: a.path.clone(), title: a.title, kind, session_id: Some(a.session_id), todo_id })
             .map_err(|e| e.to_string())?;
         Ok(if new { format!("registered {}", a.path) } else { format!("{} was registered already", a.path) })
     }

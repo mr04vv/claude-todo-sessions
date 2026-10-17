@@ -1,7 +1,5 @@
-// Claude asked once through `claude -p`, without a session or the built-in
-// tools: translations, the learning themes' sorting, picks and reviews (in
-// a JSON schema), and writing a theme's document (with the Claude Docs
-// connector's tools).
+// Claude asked once through `claude -p`, without a session, the built-in
+// tools or MCP servers: the in-place translations (in a JSON schema).
 use std::io::{Read, Write};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -10,28 +8,20 @@ use serde_json::Value;
 
 use crate::err;
 
-/// How long one answer may take (the points of eight pages take a while).
+/// How long one answer may take.
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
-
-/// The MCP server whose tools a theme's document is read and written with.
-const DOCS_TOOLS: &str = "mcp__claude_ai_Claude_Docs";
 
 /// Asks Claude once, without a session or the built-in tools, for an answer
 /// in `schema` (its structured output), or without one for its text (a
-/// string). `docs` lets it use the Claude Docs connector; otherwise no MCP
-/// server loads. The prompt goes in on stdin (a long one would not fit in
-/// an argument).
-pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>, docs: bool) -> Result<Value, String> {
+/// string). The prompt goes in on stdin (a long one would not fit in an
+/// argument).
+pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>) -> Result<Value, String> {
     let mut cmd = crate::cli("claude");
     cmd.args(["-p", "--output-format", "json", "--tools", "", "--no-session-persistence"]);
     if let Some(schema) = schema {
         cmd.args(["--json-schema", &schema.to_string()]);
     }
-    if docs {
-        cmd.args(["--allowedTools", DOCS_TOOLS]);
-    } else {
-        cmd.arg("--strict-mcp-config");
-    }
+    cmd.arg("--strict-mcp-config");
     if let Some(model) = model {
         cmd.args(["--model", model]);
     }

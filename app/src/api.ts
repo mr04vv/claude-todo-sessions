@@ -68,92 +68,39 @@ export interface Todo {
   is_orchestrator: boolean;
 }
 
-/** Material to read in the Input mode, apart from the todos. */
-export interface Input {
+/** What a reading is: a web page, a post on X, or a book (O'Reilly's) with chapters. */
+export type ReadingKind = "article" | "post" | "book";
+
+/** Something kept to read (読みもの), sorted into tags. */
+export interface Reading {
   id: number;
+  kind: ReadingKind;
+  /** A book's is the book's own page. */
+  url: string;
   title: string;
-  memo: string | null;
-  /** Read already. */
-  done: boolean;
-  /** The theme it is in; null waits unsorted. */
-  theme_id: number | null;
-  updated_at: number;
-  /** Its pages and its note, in the order added. */
-  links: InputLink[];
-}
-
-/** A page of an input; its title and image come once the page has been read. */
-export interface InputLink {
-  id: number;
-  input_id: number;
-  url: string;
-  title: string | null;
+  /** A post's text, or what its page says it is about. */
+  text: string | null;
   image: string | null;
+  /** Null until sorted; empty when no tag fits. */
+  tags: string[] | null;
+  /** A book's table of contents, in order. */
+  chapters: Chapter[];
   created_at: number;
 }
 
-/** What a study time (the Input mode) is open for: a learning theme. */
-export type Subject = { kind: "theme"; id: number };
-
-/** Something to learn: its name, goal and claude.ai document. */
-export interface Theme {
-  id: number;
-  name: string;
-  goal: string | null;
-  doc_url: string | null;
-  updated_at: number;
-  /** The category it is in, if any. */
-  category_id: number | null;
-}
-
-/** A field the themes are gathered in (セキュリティ, with OIDC and CSP in it). */
-export interface Category {
-  id: number;
-  name: string;
-}
-
-/** Where Claude proposes an unsorted input goes: a theme, or a new one in a
- *  category (`category`), a new category (`new_category`) or none. */
-export interface Placement {
-  input: number;
-  place: { theme: number } | { new_theme: { name: string; category: number | null; new_category: string | null } };
-  why: string;
-}
-
-/** A review's question, and the point an answer should make. */
-export interface ReviewQuestion {
-  question: string;
-  point: string;
-}
-
-export type FeynmanVerdict = "said" | "vague" | "missing";
-export interface FeynmanGrade {
-  verdicts: { point: number; verdict: FeynmanVerdict; note: string }[];
-  mistakes: string[];
-  jargon: string[];
-  questions: string[];
-}
-/** One review (its answers) and its grading. */
-export interface FeynmanAttempt {
-  id: number;
-  explanation: string;
-  grade: FeynmanGrade;
-  /** Percent. */
-  score: number;
-  created_at: number;
-}
-/** A theme's latest review, and when the next is due (seconds). */
-export interface FeynmanSummary {
-  subject: Subject;
-  score: number;
-  attempted_at: number;
-  due_at: number;
-}
-/** A page's text, as read from its tab (or fetched). */
-export interface PageText {
+export interface Chapter {
+  /** From 1. */
+  position: number;
+  title: string;
   url: string;
-  title: string | null;
-  text: string;
+  read: boolean;
+}
+
+/** How sorting the readings into tags stands: an API key kept, why the last run stopped, and the tags. */
+export interface ReadingSort {
+  has_key: boolean;
+  error: string | null;
+  tags: string[];
 }
 
 export type CiState = "pending" | "success" | "failure";
@@ -178,7 +125,6 @@ export interface Artifact {
   kind: "artifact" | "doc" | "file";
   session_id: string | null;
   todo_id: number | null;
-  theme_id: number | null;
   created_at: number;
 }
 
@@ -308,14 +254,10 @@ export interface SlackAttachment {
 export interface Board {
   todos: Todo[];
   slack: SlackView;
-  inputs: Input[];
+  /** Newest first. */
+  readings: Reading[];
+  reading_sort: ReadingSort;
   inbox: Session[];
-  /** Each theme's latest review. */
-  feynman: FeynmanSummary[];
-  /** The latest changed first. */
-  themes: Theme[];
-  /** The categories, in the order made. */
-  categories: Category[];
   /** Newest first. */
   artifacts: Artifact[];
   sync_status: string;
@@ -513,49 +455,28 @@ export const api = {
   slackReact: (channel: string, ts: string, name: string, on: boolean) => invoke<void>("slack_react", { channel, ts, name, on }),
   herdrSessions: () => invoke<HerdrSessions>("herdr_sessions"),
   setHerdrSession: (name: string | null) => invoke<void>("set_herdr_session", { name }),
-  /// A page's own title (og:title, else <title>), when it has one.
-  pageTitle: (url: string) => invoke<string | null>("page_title", { url }),
   openSession: (sessionId: string, target?: "desktop" | "herdr") => invoke<void>("open_session", { sessionId, target }),
   windowFocused: () => invoke<boolean>("window_focused"),
   /// Gives the app's own page the keyboard, which a browser tab may hold.
   focusAppPage: () => invoke<void>("term_focus"),
-  setFocusMode: (on: boolean) => invoke<void>("set_focus_mode", { on }),
+  /// The space shown: the pages learn whether a split view (作業・学習) is up, and 学習 holds the notifications.
+  setSpace: (space: "manage" | "work" | "study" | "browser") => invoke<void>("set_space", { space }),
   /// The app's keys (keymap.ts), as JSON, for the pages' script.
   setPageKeys: (keys: string) => invoke<void>("set_page_keys", { keys }),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
   archiveSessions: (ids: string[]) => invoke<void>("archive_sessions", { ids }),
-  /// A session making the focus mode's note of `urls` for the todo; locally, the
-  /// in-app terminal gets the command to run (`run`), herdr runs it itself.
-  /// The note the session published, once it has (kept as a link of the todo).
-  /// The text of a tab's page; null when the tab has no page open.
-  browserText: (tab: string) => invoke<string | null>("browser_text", { tab }),
-  /// A page's text fetched afresh (one behind a login comes back as its sign-in page).
-  pageText: (url: string) => invoke<string>("page_text", { url }),
   copyText: (text: string) => invoke<void>("copy_text", { text }),
   takeOpened: () => invoke<string[]>("take_opened"),
-  createTheme: (name: string, goal?: string, categoryId?: number | null) => invoke<Theme>("create_theme", { name, goal: goal ?? null, categoryId: categoryId ?? null }),
-  createCategory: (name: string) => invoke<Category>("create_category", { name }),
-  /// Puts a theme in a category, or (null) in none.
-  setThemeCategory: (themeId: number, categoryId: number | null) => invoke<void>("set_theme_category", { themeId, categoryId }),
-  updateTheme: (id: number, patch: { name?: string; goal?: string }) => invoke<Theme>("update_theme", { id, patch }),
-  deleteTheme: (id: number) => invoke<void>("delete_theme", { id }),
-  /// Puts an input in a theme, or (null) back among the unsorted.
-  setInputTheme: (inputId: number, themeId: number | null) => invoke<void>("set_input_theme", { inputId, themeId }),
-  /// Claude's proposal of where each unsorted input goes.
-  sortUnsorted: () => invoke<Placement[]>("sort_unsorted"),
-  /// Claude's picks of what of a theme to read next.
-  nextReads: (themeId: number) => invoke<{ input_id: number; why: string }[]>("next_reads", { themeId }),
-  /// A review's questions from the theme's document (none without one).
-  reviewQuestions: (themeId: number) => invoke<ReviewQuestion[]>("review_questions", { themeId }),
-  reviewGrade: (themeId: number, questions: ReviewQuestion[], answers: string[]) => invoke<FeynmanAttempt>("review_grade", { themeId, questions, answers }),
-  /// 「読み終わった」: what was read goes into the theme's document, behind.
-  finishReading: (themeId: number, pages: PageText[], conversation: string | null, inputIds: number[]) => invoke<void>("finish_reading", { themeId, pages, conversation, inputIds }),
-  themeReviews: (themeId: number) => invoke<FeynmanAttempt[]>("theme_reviews", { themeId }),
-  createInput: (title: string) => invoke<Input>("create_input", { title }),
-  updateInput: (id: number, update: { title?: string; memo?: string; done?: boolean }) => invoke<Input>("update_input", { id, update }),
-  deleteInput: (id: number) => invoke<void>("delete_input", { id }),
+  addReading: (reading: { kind: ReadingKind; url: string; title: string; text?: string; chapters?: [string, string][] }) => invoke<Reading>("add_reading", { reading }),
+  deleteReading: (id: number) => invoke<void>("delete_reading", { id }),
+  /// The tags put right by hand (from ReadingSort's tags).
+  setReadingTags: (id: number, tags: string[]) => invoke<void>("set_reading_tags", { id, tags }),
+  setChapterRead: (readingId: number, position: number, read: boolean) => invoke<void>("set_chapter_read", { readingId, position, read }),
+  /// Keeps the OpenAI API key (blank takes it out); what waits is sorted then.
+  setOpenaiKey: (key: string) => invoke<void>("set_openai_key", { key }),
+  /// The tab's page keeps itself to read, as its own ⌘⇧D does.
+  browserBookmark: (tab: string) => invoke<void>("browser_bookmark", { tab }),
   forgetArtifact: (id: number) => invoke<void>("forget_artifact", { id }),
-  addInputLink: (inputId: number, url: string) => invoke<InputLink>("add_input_link", { inputId, url }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
   startCloud: (todoId: number, options?: StartOptions) => invoke<string>("start_cloud", { todoId, options: options ?? null }),
@@ -604,15 +525,15 @@ export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";
 export const BROWSER_CLOSE_TAB_EVENT = "browser-close-tab";
 /** When the window's focus changes (another app, or a browser tab, took the keyboard). */
 export const WINDOW_FOCUS_EVENT = "window-focus";
-/** `{tab}` when a page's ⌃l asks for the focus mode's right side. */
+/** `{tab}` when a page's ⌃l asks for the split view's right side. */
 export const FOCUS_PANE_EVENT = "focus-pane";
-/** `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo. */
-export const ADD_INPUT_EVENT = "add-input";
-/** When a page's Esc, in the focus mode, asks about leaving it. */
-export const FOCUS_EXIT_EVENT = "focus-exit";
+/** `{title, kind, chapters}` once a page kept itself to read (⌘⇧D, a link ⌥-clicked, X's bookmark button). */
+export const READING_ADDED_EVENT = "reading-added";
+/** `{space}` when a page's ⌘1–⌘4 asks for a space. */
+export const SPACE_EVENT = "space";
 /** When a page's ⌃h hands the typing back to the app's side. */
 export const FOCUS_APP_EVENT = "focus-app";
-/** `{tab}` when a page takes the keyboard in the Input mode. */
+/** `{tab}` when a page takes the keyboard in a split view (作業・学習). */
 export const PAGE_FOCUSED_EVENT = "page-focused";
 /** When a page's ⌘K asks for the app's commands. */
 export const OPEN_PALETTE_EVENT = "open-palette";
@@ -620,8 +541,6 @@ export const OPEN_PALETTE_EVENT = "open-palette";
 export const LOGIN_CAPTURED_EVENT = "login-captured";
 /** When a page's ⌘⇧K asks for the list of sessions. */
 export const OPEN_SESSIONS_EVENT = "open-sessions";
-/** `{theme_id, error}` once a theme's document was written (or failed to be). */
-export const THEME_DOC_EVENT = "theme-doc-written";
 /// A review went in: `{url, title, verdict}` (APPROVED, CHANGES_REQUESTED or COMMENTED).
 export const REVIEW_SUBMITTED_EVENT = "review-submitted";
 /// `{id}`: a todo to open (a handover's notification).
@@ -634,8 +553,6 @@ export const SLACK_POSTED_EVENT = "slack-posted";
 export const BROWSER_TRANSLATED_EVENT = "browser-translated";
 /** `{tab}` when a cloud session's page asks to archive it (⌘⇧A). */
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
-/** `{tab}` when a page asks to go into an input (⌘⇧D). */
-export const BROWSER_TO_INPUT_EVENT = "browser-to-input";
 /** When a page asks for a new tab (⌘T). */
 export const BROWSER_OPEN_NEW_TAB_EVENT = "browser-open-new-tab";
 /** `{tab}` when a page asks for the address bar (⌘L). */
@@ -666,9 +583,6 @@ export const SITE_PERMISSION_EVENT = "site-permission";
 export const isCloud = (s: Session) => s.session_id.startsWith("cse_");
 
 const CLOUD_WEB = "https://claude.ai/code/";
-/** claude.ai's Claude Code page, shown while a new cloud session is created. */
-export const CLOUD_HOME = "https://claude.ai/code";
-
 /** claude.ai page of a cloud session; the web names `cse_…` as `session_…`. */
 export const cloudWebUrl = (sessionId: string) => CLOUD_WEB + sessionId.replace(/^cse_/, "session_");
 

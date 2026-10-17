@@ -34,8 +34,9 @@ export const terminalApi = {
   quick: (prompt: string, cwd?: string, title?: string, agent?: "claude" | "codex", options?: { model?: string; effort?: string }) =>
     invoke<TerminalRun>("terminal_quick", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null, options: options ?? null }),
   /// A session running in herdr comes back as attaching herdr (its pane
-  /// focused); null when (with `desktop`) Claude Desktop knows it and opens it.
-  resume: (sessionId: string, desktop: boolean) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop }),
+  /// focused); null when (with `desktop`) Claude Desktop knows it and opens
+  /// it, or (with `attachOnly`) it runs in no herdr pane.
+  resume: (sessionId: string, desktop: boolean, attachOnly = false) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop, attachOnly }),
   /// Lets notifications open local sessions through the page.
   setInApp: (on: boolean) => invoke<void>("set_in_app_terminal", { on }),
   /// The Claude session a herdr session shows (its focused pane), if any.

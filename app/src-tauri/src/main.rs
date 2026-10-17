@@ -5,8 +5,8 @@ mod banner;
 mod cef_browser;
 mod logins;
 mod power;
+mod readings;
 mod slack;
-mod study;
 mod terminal;
 mod translate;
 
@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use cts_core::launch::StartOptions;
-use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
+use cts_core::{launch, Db, NewReading, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
@@ -65,9 +65,11 @@ struct AppState {
     herdr_session: Mutex<Option<String>>,
     /// Local sessions run in the in-app terminal pane rather than herdr.
     in_app_terminal: AtomicBool,
-    /// The focus mode is on: pages' Esc asks about leaving it, and macOS
-    /// notifications wait (the in-app list still gets them).
+    /// A split view (作業・学習) is shown: a page taking the keyboard says so,
+    /// for the side that has the typing.
     focus_mode: AtomicBool,
+    /// 学習 is shown: macOS notifications wait (the in-app list still gets them).
+    studying: AtomicBool,
     /// Logins kept per host (logins.rs), as read from the Keychain this run (None: none kept).
     logins: Mutex<HashMap<String, Option<logins::Login>>>,
     /// A login a page just sent, asked about before it is kept: its host and the login.
@@ -154,15 +156,11 @@ struct Board {
     todos: Vec<TodoView>,
     /// The Slack messages for the user (#27), and whether Slack is connected.
     slack: slack::SlackView,
-    /// The Input page's reading material, apart from the todos.
-    inputs: Vec<Input>,
+    /// What there is to read (学習), the newest first.
+    readings: Vec<cts_core::Reading>,
+    /// How sorting the readings into tags stands, and the tags.
+    reading_sort: readings::SortingView,
     inbox: Vec<SessionView>,
-    /// Each theme's latest review, and when the next is due.
-    feynman: Vec<cts_core::FeynmanSummary>,
-    /// The learning themes, the latest changed first.
-    themes: Vec<cts_core::Theme>,
-    /// The categories the themes are gathered in, in the order made.
-    categories: Vec<cts_core::Category>,
     /// What sessions made besides PRs, newest first.
     artifacts: Vec<cts_core::Artifact>,
     sync_status: String,
@@ -233,8 +231,8 @@ struct TodoUpdate {
 }
 
 #[tauri::command(async)]
-fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Board, String> {
-    let (todos, inputs, inbox, feynman, artifacts, themes, categories, slack) = {
+fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: State<readings::Sorting>) -> Result<Board, String> {
+    let (todos, readings, inbox, artifacts, slack) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
         let (desktop, routines) = (state.desktop.lock().map_err(err)?.clone(), state.routines.lock().map_err(err)?.clone());
@@ -257,7 +255,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Boa
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .map(mark)
             .collect();
-        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?, db.list_themes().map_err(err)?, db.list_categories().map_err(err)?, slack::view(&slack_state, &db)?)
+        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -276,7 +274,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Boa
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, slack, inputs, inbox, feynman, artifacts, themes, categories, sync_status })
+    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, inbox, artifacts, sync_status })
 }
 
 #[tauri::command(async)]
@@ -420,7 +418,7 @@ fn fix_in_session(state: State<AppState>, session_id: String, todo_id: i64) -> R
     } else {
         let TerminalRun { cwd, title, command, .. } = resume_run(&state, &session_id)?;
         let command = format!("{command} {}", launch::shell_quote(&prompt));
-        start_in_herdr(&state, &cwd, &title, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
+        start_in_herdr(&state, &cwd, &title, &command, false, todo.parent_id.is_some()).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
     }
     Ok(FixSent { sent: true, prompt })
 }
@@ -433,7 +431,7 @@ fn fix_in_session(state: State<AppState>, session_id: String, todo_id: i64) -> R
 fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> Result<(), String> {
     let TerminalRun { cwd, title: label, command, .. } = quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default());
     // Started behind: neither herdr's view nor the terminal app comes forward (opening it does).
-    start_in_herdr(&state, &cwd, &label, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))
+    start_in_herdr(&state, &cwd, &label, &command, false, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))
 }
 
 /// A plain `claude` (at home unless `cwd` is given), with the prompt if one
@@ -472,26 +470,27 @@ fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -
 /// claude and reopening a session (see `terminal.rs`).
 #[tauri::command(async)]
 fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<TerminalRun, String> {
-    Ok(via_herdr(&state, prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)?, false))
+    Ok(via_herdr(&state, prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)?, false, is_subtask(&state, Some(todo_id))))
 }
 
 #[tauri::command(async)]
 fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> TerminalRun {
-    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()), false)
+    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()), false, false)
 }
 
 /// The in-app terminal's sessions run in herdr when one runs (so they go on
 /// with the app closed): `run` goes to a new workspace there (herdr shows it
 /// with `show`: opening, not starting), and the tab attaches that herdr session
-/// (one tab for it, as `terminal_resume`'s). Without herdr, or when it fails,
-/// `run` runs in the tab itself.
-fn via_herdr(state: &AppState, run: TerminalRun, show: bool) -> TerminalRun {
+/// (one tab for it, as `terminal_resume`'s); a `subtask`'s goes to the
+/// subtasks' herdr session. Without herdr, or when it fails, `run` runs in
+/// the tab itself.
+fn via_herdr(state: &AppState, run: TerminalRun, show: bool, subtask: bool) -> TerminalRun {
     let Some(name) = herdr_target(state) else { return run };
-    if let Err(e) = start_in_herdr(state, &run.cwd, &run.title, &run.command, show) {
+    if let Err(e) = start_in_herdr(state, &run.cwd, &run.title, &run.command, show, subtask) {
         eprintln!("herdr: {e}; running in the tab instead");
         return run;
     }
-    herdr_attach_run(name)
+    herdr_attach_run(if subtask { cts_core::herdr::subtasks_session(&name) } else { name })
 }
 
 /// What the in-app terminal runs to show herdr session `name`.
@@ -508,11 +507,15 @@ fn herdr_attach_run(name: String) -> TerminalRun {
 /// What the in-app terminal runs to show a session: a session running in
 /// herdr gets its pane focused and the herdr session attached in the app;
 /// with `desktop`, one still running in Claude Desktop opens there (None);
-/// any other is resumed with `claude --resume`.
+/// any other is resumed with `claude --resume`, but for `attach_only` (only
+/// looking at it: a session running outside herdr is not started twice), None.
 #[tauri::command(async)]
-fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) -> Result<Option<TerminalRun>, String> {
+fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool, attach_only: Option<bool>) -> Result<Option<TerminalRun>, String> {
     if let Some(name) = focus_herdr_pane(&session_id) {
         return Ok(Some(herdr_attach_run(name)));
+    }
+    if attach_only == Some(true) {
+        return Ok(None);
     }
     // One still going in Desktop stays there; a finished one resumes here.
     let running = state.db.lock().map_err(err)?.get_session(&session_id).map_err(err)?.is_some_and(|s| s.state != SessionState::Ended);
@@ -521,7 +524,7 @@ fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) ->
             return open_url(&launch::jump_url(&session_id, Some(&local))).map(|_| None);
         }
     }
-    resume_run(&state, &session_id).map(|run| Some(via_herdr(&state, run, true)))
+    resume_run(&state, &session_id).map(|run| Some(via_herdr(&state, run, true, of_subtask(&state, &session_id))))
 }
 
 #[tauri::command]
@@ -563,11 +566,14 @@ fn set_page_keys(app: AppHandle, state: State<AppState>, keys: String) -> Result
     Ok(())
 }
 
-/// Turns the focus mode on or off for the pages (and the notifications).
+/// The space shown (manage, work, study or browser): the pages learn whether
+/// a split view is up, and 学習 holds the notifications.
 #[tauri::command]
-fn set_focus_mode(app: AppHandle, state: State<AppState>, on: bool) {
-    state.focus_mode.store(on, Ordering::Relaxed);
-    cef_browser::eval_all(&app, &focus_mode_script(on));
+fn set_space(app: AppHandle, state: State<AppState>, space: String) {
+    let split = space == "work" || space == "study";
+    state.focus_mode.store(split, Ordering::Relaxed);
+    state.studying.store(space == "study", Ordering::Relaxed);
+    cef_browser::eval_all(&app, &focus_mode_script(split));
 }
 
 /// Whether the app is in front. With the page not having the keyboard, a
@@ -659,47 +665,6 @@ fn open_in_slack(app: &AppHandle, url: &str) -> bool {
     true
 }
 
-/// Attaches a URL to a todo. The page's title and image are fetched in the
-/// background, so the link shows up at once and fills in on the next refresh.
-#[tauri::command(async)]
-fn create_input(state: State<AppState>, title: String) -> Result<Input, String> {
-    let title = title.trim();
-    if title.is_empty() {
-        return Err("タイトルを入れてください".into());
-    }
-    state.db.lock().map_err(err)?.create_input(title, None).map_err(err)
-}
-
-#[tauri::command(async)]
-fn update_input(state: State<AppState>, id: i64, update: InputPatch) -> Result<Input, String> {
-    state.db.lock().map_err(err)?.update_input(id, update).map_err(err)
-}
-
-#[tauri::command(async)]
-fn delete_input(state: State<AppState>, id: i64) -> Result<(), String> {
-    state.db.lock().map_err(err)?.delete_input(id).map_err(err)
-}
-
-/// A page for an input; what it says about itself comes in the background, as for a todo's link.
-#[tauri::command(async)]
-fn add_input_link(app: AppHandle, input_id: i64, url: String) -> Result<cts_core::InputLink, String> {
-    let url = url.trim().to_string();
-    if !is_web_url(&url) {
-        return Err("http(s) の URL を入れてください".into());
-    }
-    let link = app.state::<AppState>().db.lock().map_err(err)?.add_input_link(input_id, &url).map_err(err)?;
-    let id = link.id;
-    std::thread::spawn(move || {
-        let Ok(meta) = cts_core::ogp::fetch(&url) else { return };
-        if let Ok(db) = app.state::<AppState>().db.lock() {
-            if let Err(e) = db.set_input_link_meta(id, meta.title.as_deref(), meta.image.as_deref()) {
-                eprintln!("{e}");
-            }
-        }
-    });
-    Ok(link)
-}
-
 #[tauri::command(async)]
 fn open_session(state: State<AppState>, session_id: String, target: Option<String>) -> Result<(), String> {
     if target.as_deref() == Some("herdr") {
@@ -749,7 +714,7 @@ fn jump_to_session(session_id: &str, desktop: bool) -> Result<(), String> {
 /// herdr workspace at the folder it ran in, which is where its transcript lives.
 fn resume_in_herdr(state: &AppState, session_id: &str) -> Result<(), String> {
     let TerminalRun { cwd, title, command, .. } = resume_run(state, session_id)?;
-    start_in_herdr(state, &cwd, &title, &command, true)?;
+    start_in_herdr(state, &cwd, &title, &command, true, of_subtask(state, session_id))?;
     cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
 }
 
@@ -801,7 +766,7 @@ fn start_review(state: State<AppState>, url: String, repo: String, title: String
         db.set_session_title(id, &title).map_err(err)?;
         db.record_review_session(id, &url, auto).map_err(err)?;
     }
-    start_in_herdr(&state, &cwd, &label, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
+    start_in_herdr(&state, &cwd, &label, &command, false, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
     Ok(session)
 }
 
@@ -848,11 +813,32 @@ fn herdr_target(state: &AppState) -> Option<String> {
     cts_core::herdr::pick_session(&running_herdr_sessions(), picked.as_deref())
 }
 
-/// Opens a workspace in the picked herdr session and runs `command` in it.
+/// Opens a workspace in the picked herdr session and runs `command` in it;
+/// a `subtask`'s in the subtasks' herdr session beside it (started when it
+/// does not run), so 作業 shows a parent's pane and a subtask's side by side.
 /// Without `--session` herdr talks to its default session, which may not run.
-fn start_in_herdr(state: &AppState, cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
+fn start_in_herdr(state: &AppState, cwd: &str, label: &str, command: &str, focus: bool, subtask: bool) -> Result<(), String> {
     let session = herdr_target(state).ok_or("herdr のセッションが動いていません")?;
+    let session = if subtask {
+        let sub = cts_core::herdr::subtasks_session(&session);
+        cts_core::herdr::ensure_session(&sub, || cli("herdr"))?;
+        sub
+    } else {
+        session
+    };
     cts_core::herdr::start_workspace(herdr, Some(&session), cwd, label, command, focus)
+}
+
+/// Whether the todo is a subtask, whose sessions run in the subtasks' herdr session.
+fn is_subtask(state: &AppState, todo_id: Option<i64>) -> bool {
+    let Some(id) = todo_id else { return false };
+    state.db.lock().ok().and_then(|db| db.get_todo(id).ok().flatten()).is_some_and(|t| t.parent_id.is_some())
+}
+
+/// Whether the session is a subtask's.
+fn of_subtask(state: &AppState, session_id: &str) -> bool {
+    let todo = state.db.lock().ok().and_then(|db| db.get_session(session_id).ok().flatten()).and_then(|s| s.todo_id);
+    is_subtask(state, todo)
 }
 
 #[derive(Serialize)]
@@ -933,7 +919,7 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: O
 /// Returns the session's id.
 fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOptions, body: Option<String>) -> Result<String, String> {
     let TerminalRun { cwd, title, command, session, .. } = prepare_terminal(state, todo_id, opts, body)?;
-    start_in_herdr(state, &cwd, &title, &command, focus).or_else(|herdr_err| {
+    start_in_herdr(state, &cwd, &title, &command, focus, is_subtask(state, Some(todo_id))).or_else(|herdr_err| {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", launch::shell_quote(&cwd)))
             .map_err(|e| format!("{herdr_err} / {e}"))
     })?;
@@ -1219,7 +1205,7 @@ fn keep_artifacts(session: &Session) {
         Err(e) => return eprintln!("{e}"),
     };
     for f in found {
-        let a = cts_core::NewArtifact { url: f.url, title: f.title, kind: f.kind, session_id: Some(session.session_id.clone()), todo_id: session.todo_id, theme_id: None };
+        let a = cts_core::NewArtifact { url: f.url, title: f.title, kind: f.kind, session_id: Some(session.session_id.clone()), todo_id: session.todo_id };
         if let Err(e) = db.add_artifact(a) {
             eprintln!("{e}");
         }
@@ -1424,9 +1410,8 @@ const PAGE_FOCUSED_EVENT: &str = "page-focused";
 /// the text selected in it (to paste there), if any.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
 /// A page's keys whose action gives a page or terminal the keyboard
-/// (switching and closing tabs, ⌃l to the Input mode's right), not the app,
-/// and messages that leave the keyboard where it is (⌥-click keeping a link).
-const KEYS_HANDED_ON: [&str; 5] = ["tab-prev", "tab-next", "close-tab", "focus-pane", "add-input"];
+/// (switching and closing tabs, ⌃l to the focus mode's right), not the app.
+const KEYS_HANDED_ON: [&str; 4] = ["tab-prev", "tab-next", "close-tab", "focus-pane"];
 /// When a page's ⌘N asks for a new todo.
 const OPEN_NEW_TODO_EVENT: &str = "open-new-todo";
 
@@ -1516,15 +1501,6 @@ fn forget_login(state: State<'_, AppState>, host: String) -> Result<(), String> 
     Ok(())
 }
 
-/// `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo.
-const ADD_INPUT_EVENT: &str = "add-input";
-
-#[derive(Clone, Serialize)]
-struct InputLink {
-    url: String,
-    title: String,
-}
-
 #[derive(Clone, Serialize)]
 struct TabDelta {
     tab: String,
@@ -1537,23 +1513,15 @@ struct TabText {
     text: Option<String>,
 }
 
-/// How long an input added without a title waits for its page's.
-const PAGE_TITLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// `{space}` when a page's ⌘1–⌘4 asks for a space.
+const SPACE_EVENT: &str = "space";
 
-/// A page's own title (og:title, else <title>), for an input added without one.
-#[tauri::command]
-async fn page_title(url: String) -> Result<Option<String>, String> {
-    if !is_web_url(&url) {
-        return Err(format!("開けない URL です: {url}"));
-    }
-    tauri::async_runtime::spawn_blocking(move || cts_core::ogp::fetch_within(&url, PAGE_TITLE_TIMEOUT).map(|m| m.title))
-        .await
-        .map_err(err)?
+#[derive(Clone, Serialize)]
+struct SpaceAsk {
+    space: String,
 }
 
-/// When a page's Esc, in the focus mode, asks about leaving it.
-const FOCUS_EXIT_EVENT: &str = "focus-exit";
-/// Tells every page whether the focus mode is on (their Esc then asks about leaving).
+/// Tells every page whether a split view is shown (a page taking the keyboard then says so).
 fn focus_mode_script(on: bool) -> String {
     format!("window.__todoSessionsFocusMode = {on}")
 }
@@ -1563,8 +1531,6 @@ const OPEN_PALETTE_EVENT: &str = "open-palette";
 const OPEN_SESSIONS_EVENT: &str = "open-sessions";
 /// `{tab}` when a cloud session's page asks to archive it (⌘⇧A).
 const BROWSER_ARCHIVE_EVENT: &str = "browser-archive";
-/// `{tab}` when a page asks to go into an input (⌘⇧D).
-const BROWSER_TO_INPUT_EVENT: &str = "browser-to-input";
 
 #[derive(Clone, Serialize)]
 struct TabOnly {
@@ -1688,6 +1654,27 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         Some("translate") => return translate::on_blocks(app, tab, &param("b")),
         Some("translate-selection") => return translate::on_selection(app, tab, param("i").parse().unwrap_or(0), param("t")),
         Some("translated") => return translate::on_translated(app, tab, param("on") == "1"),
+        // Kept to read (⌘⇧D, a link ⌥-clicked, X's bookmark button): the page keeps the keyboard.
+        Some("bookmark") => {
+            let reading = NewReading {
+                kind: serde_json::from_value(serde_json::Value::String(param("k"))).unwrap_or_default(),
+                url: param("u"),
+                title: param("t"),
+                text: Some(param("x")).filter(|x| !x.is_empty()),
+                chapters: serde_json::from_str(&param("c")).unwrap_or_default(),
+            };
+            if let Err(e) = readings::add(app, reading) {
+                eprintln!("bookmark: {e}");
+            }
+            return;
+        }
+        // A book's chapter read to its end.
+        Some("chapter-read") => {
+            if let Err(e) = app.state::<AppState>().db.lock().map_err(err).and_then(|db| db.mark_chapter_read(&param("u")).map_err(err)) {
+                eprintln!("chapter-read: {e}");
+            }
+            return;
+        }
         _ => {}
     }
     // Only telling: the page keeps the keyboard.
@@ -1709,7 +1696,6 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         Some("tab-prev") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: -1 }),
         Some("tab-next") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: 1 }),
         Some("archive") => app.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab }),
-        Some("to-input") => app.emit(BROWSER_TO_INPUT_EVENT, TabOnly { tab }),
         Some("palette") => app.emit(OPEN_PALETTE_EVENT, ()),
         Some("sessions") => app.emit(OPEN_SESSIONS_EVENT, ()),
         Some("focus-app") => app.emit(FOCUS_APP_EVENT, TabOnly { tab }),
@@ -1717,12 +1703,8 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
             let text = url.query_pairs().find(|(k, _)| k == "text").map(|(_, v)| v.into_owned());
             app.emit(FOCUS_PANE_EVENT, TabText { tab, text })
         }
-        Some("focus-exit") => app.emit(FOCUS_EXIT_EVENT, ()),
+        Some("space") => app.emit(SPACE_EVENT, SpaceAsk { space: url.query_pairs().find(|(k, _)| k == "s").map(|(_, v)| v.into_owned()).unwrap_or_default() }),
         Some("close-tab") => app.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab }),
-        Some("add-input") => {
-            let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
-            app.emit(ADD_INPUT_EVENT, InputLink { url: param("u"), title: param("t") })
-        }
         _ => app.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab }),
     };
 }
@@ -2024,6 +2006,13 @@ fn browser_url(app: AppHandle, tab: String) -> Result<Option<String>, String> {
 #[tauri::command(async)]
 fn browser_go(app: AppHandle, tab: String, action: String) -> Result<(), String> {
     cef_browser::go(&app, tab_id(&tab)?, &action)
+}
+
+/// ⌘⇧D from the app's side: the tab's page keeps itself to read, as its own
+/// ⌘⇧D does (a book's page with its table of contents).
+#[tauri::command(async)]
+fn browser_bookmark(app: AppHandle, tab: String) -> Result<(), String> {
+    cef_browser::eval(&app, tab_id(&tab)?, "window.__todoSessionsBookmark?.()")
 }
 
 /// A PR opened from the branch any of the todo's sessions works on, however
@@ -2338,8 +2327,8 @@ fn notify_needs_input(app: &AppHandle, db: &Db, session: Session) {
 
 /// Posts a macOS notification; clicking it reads notice `id` and runs `open`.
 fn post_banner(app: &AppHandle, headline: &'static str, label: String, id: Option<i64>, open: impl FnOnce(&AppHandle) -> Result<(), String> + Send + 'static) {
-    // The focus mode holds them; the in-app list has them, and the page tells of them after.
-    if app.state::<AppState>().focus_mode.load(Ordering::Relaxed) {
+    // 学習 holds them; the in-app list has them, and the page tells of them after.
+    if app.state::<AppState>().studying.load(Ordering::Relaxed) {
         return;
     }
     let app = app.clone();
@@ -2732,6 +2721,7 @@ fn main() {
         .manage(terminal::Terminals::default())
         .manage(translate::Kept::load())
         .manage(slack::Slack::new(slack_tx))
+        .manage(readings::Sorting::load())
         .manage(AppState {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
@@ -2740,6 +2730,7 @@ fn main() {
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
             focus_mode: AtomicBool::new(false),
+            studying: AtomicBool::new(false),
             logins: Mutex::new(HashMap::new()),
             pending_login: Mutex::new(None),
             login_never: Mutex::new(load_kept(LOGIN_NEVER_FILE)),
@@ -2783,6 +2774,9 @@ fn main() {
             std::thread::spawn(move || slack::socket_run(handle));
             let handle = app.handle().clone();
             std::thread::spawn(move || slack::warm(handle));
+            // What was kept while the app was closed (or before a key) is sorted now.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || readings::sort_all(&handle));
             Ok(())
         })
         .menu(app_menu)
@@ -2868,18 +2862,13 @@ fn main() {
             terminal_start,
             archive_sessions,
             window_focused,
-            set_focus_mode,
+            set_space,
             set_page_keys,
             start_review,
             stop_review,
             terminal_quick,
             terminal_resume,
             set_in_app_terminal,
-            create_input,
-            update_input,
-            delete_input,
-            add_input_link,
-            page_title,
             mark_session_seen,
             hide_session,
             answer_login,
@@ -2894,20 +2883,12 @@ fn main() {
             forget_site_permission,
             herdr_focused,
             codex_models,
-            study::browser_text,
-            study::page_text,
-            study::create_theme,
-            study::create_category,
-            study::set_theme_category,
-            study::update_theme,
-            study::delete_theme,
-            study::set_input_theme,
-            study::sort_unsorted,
-            study::next_reads,
-            study::review_questions,
-            study::review_grade,
-            study::finish_reading,
-            study::theme_reviews,
+            readings::add_reading,
+            readings::delete_reading,
+            readings::set_reading_tags,
+            readings::set_chapter_read,
+            readings::set_openai_key,
+            browser_bookmark,
             terminal::term_open,
             terminal::term_write,
             terminal::term_resize,

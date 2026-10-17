@@ -19,7 +19,6 @@ test("ctrl with Enter or a key that opens something opens outside", () => {
   assert.ok(opensWithCtrl(key("Enter", { ctrlKey: true, metaKey: true })), "⌃⌘Enter too");
   assert.ok(opensWithCtrl(key("o", { ctrlKey: true })), "o opens a session or a page");
   assert.ok(opensWithCtrl(key("p", { ctrlKey: true })), "p opens a PR");
-  assert.ok(opensWithCtrl(key("O", { ctrlKey: true, shiftKey: true })), "⇧O opens a theme's note");
 });
 
 test("ctrl keeps its own keys, and nothing without ctrl changes", () => {

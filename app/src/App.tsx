@@ -1,4 +1,4 @@
-import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -22,10 +22,10 @@ import {
   BROWSER_SWITCH_TAB_EVENT,
   BROWSER_CLOSE_TAB_EVENT,
   BROWSER_ARCHIVE_EVENT,
-  BROWSER_TO_INPUT_EVENT,
   OPEN_PALETTE_EVENT,
   OPEN_SESSIONS_EVENT,
-  THEME_DOC_EVENT,
+  READING_ADDED_EVENT,
+  SPACE_EVENT,
   REVIEW_SUBMITTED_EVENT,
   OPEN_TODO_EVENT,
   OPEN_SLACK_EVENT,
@@ -35,8 +35,6 @@ import {
   FOCUS_APP_EVENT,
   PAGE_FOCUSED_EVENT,
   FOCUS_PANE_EVENT,
-  FOCUS_EXIT_EVENT,
-  ADD_INPUT_EVENT,
   WINDOW_FOCUS_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_URL_EVENT,
@@ -49,20 +47,15 @@ import {
   BROWSER_TITLE_EVENT,
   BROWSER_ZOOM_EVENT,
   BROWSER_URL_EVENT,
-  CLOUD_HOME,
   cloudWebUrl,
   EFFORTS,
   isCloud,
   issueRef,
   MODELS,
   type Board,
-  type Input,
-  type Theme,
-  type Category,
-  type Placement,
-  type ReviewQuestion,
-  type FeynmanAttempt,
-  type Subject,
+  type Reading,
+  type ReadingKind,
+  type ReadingSort,
   type Issue,
   type HerdrSessions,
   type Limit,
@@ -87,20 +80,15 @@ import {
   type Status,
   type Todo,
   type Agent,
-  type FeynmanSummary,
-  type FeynmanVerdict,
-  type PageText,
 } from "./api";
 import { TYPING, useTodoKeys } from "./todoKeys";
 import { emojiChoices, emojiInline, parseSlack, slackPlain, type Inline } from "./slackText";
 import { nameToEmoji } from "gemoji";
 import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
-import { categoryAt, themeGroups, themeLabel, themeRows, themeUrls } from "./themes";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
-import { groupRowId, sessionTree, type TreeRow } from "./sessionTree";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
-import { addressToUrl, fileUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
+import { addressToUrl, fileUrl, findTabFor, insertAfter, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { ciFailureLine, isFailedReview, isReviewAsk, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
@@ -150,15 +138,19 @@ const START_KEY = "startChoice";
 /// How todos last started, apart for planning and implementing (launch.ts).
 const LAUNCH_KEY = "launchPrefs";
 const REVIEW_RUNNER_KEY = "reviewRunner";
-const BROWSER_SHOWN_KEY = "browserShown";
 const HERDR_SESSION_KEY = "herdrSession";
 
+/// The spaces (場), each the home of one kind of object: 管理 the todos,
+/// PRs, artifacts and Slack; 作業 the sessions; 学習 the readings; ブラウザ
+/// the pages. ⌘1–⌘4 go to them, and each shows what it showed last.
+type Space = "manage" | "work" | "study" | "browser";
+const SPACE_KEY = "space";
 
-/// `doing`: the Todo page's list of what is Doing (today's work), on its own.
-type View = "todos" | "doing" | "inputs" | "sessions" | "prs" | "artifacts" | "slack";
+/// 管理's pages. `doing`: the Todo page's list of what is Doing (today's work), on its own.
+type View = "todos" | "doing" | "prs" | "artifacts" | "slack";
 /// The sidebar's groups, in its order.
-type NavGroup = "仕事" | "連絡" | "学び";
-const NAV_GROUPS: NavGroup[] = ["仕事", "連絡", "学び"];
+type NavGroup = "仕事" | "連絡";
+const NAV_GROUPS: NavGroup[] = ["仕事", "連絡"];
 type Layout = "board" | "list";
 type GroupBy = "repo" | "parent";
 
@@ -167,19 +159,17 @@ const GROUPINGS: { key: GroupBy; label: string }[] = [
   { key: "parent", label: "親 Todo" },
 ];
 
-/// Opens a page in the browser pane docked on the right. It stays open across
-/// screens until closed, so opening a page never leaves the current one.
+/// Opens a page in the browser space (a new tab, or the one opened for it),
+/// which comes up with it.
 type OpenInBrowser = (url: string) => void;
 const BrowserContext = createContext<OpenInBrowser | null>(null);
 
-/// Creating a cloud session takes seconds, so its tab opens at once on
-/// claude.ai (loading alongside) and moves to the session once it exists.
-/// Call the returned function with the session id, or null if it failed.
-/// With `review`, the tab goes in the strip's review group.
-type BeginWeb = (review?: ReviewTab) => (sessionId: string | null) => void;
-const BeginWebContext = createContext<BeginWeb | null>(null);
+/// Opens the work space at a todo (its sessions: a parent's planning one and
+/// its subtasks') or at a session.
+type OpenWork = (at: { todo: number } | { session: string }) => void;
+const WorkContext = createContext<OpenWork | null>(null);
 
-/// Where "開く" takes a cloud session: its web page, or Claude Desktop.
+/// Where "開く" takes a cloud session: its page in the work space, or Claude Desktop.
 type CloudTarget = "web" | "desktop";
 const CLOUD_TARGET_KEY = "cloudTarget";
 const OpenCloudContext = createContext<((sessionId: string) => void) | null>(null);
@@ -188,15 +178,15 @@ const OpenCloudContext = createContext<((sessionId: string) => void) | null>(nul
 type FixInSession = (session: Session, todo: Todo) => void;
 const FixContext = createContext<FixInSession | null>(null);
 
-/// With the in-app terminal chosen: opens a run in a terminal tab, and brings
-/// up the tab a session already runs in (false when there is none).
+/// With the in-app terminal chosen: shows a run in the work space, and brings
+/// up the session a terminal there runs already (false when there is none).
 interface InAppTerminal {
-  /// Shows `run` in a terminal tab; `focus` (opening, not starting) brings it up with the keyboard.
+  /// Shows `run` in the work space; `focus` (opening, not starting) brings it up with the keyboard.
   open: (run: TerminalRun, focus?: boolean) => void;
   focus: (sessionId: string) => boolean;
 }
 const TerminalContext = createContext<InAppTerminal | null>(null);
-/// Opens a local session in herdr, or in a terminal tab when the in-app
+/// Opens a local session in herdr, or in the work space when the in-app
 /// terminal is chosen; one still running comes to the front where it runs.
 /// `main` is "開く": with herdr it falls back to Desktop, and with the
 /// in-app terminal a session Desktop knows opens there.
@@ -332,19 +322,6 @@ function sessionLabel(s: Session) {
 
 const liveSessions = (t: Todo) => t.sessions.filter((s) => s.state !== "ended");
 
-/// The session state that most needs the user, among the live ones.
-function urgentState(sessions: Session[]): SessionState | null {
-  return STATE_ORDER.find((st) => st !== "ended" && sessions.some((s) => s.state === st)) ?? null;
-}
-
-/// One obvious session to jump to: the most urgent live one, or the only one.
-function directSession(todo: Todo): Session | null {
-  const live = liveSessions(todo);
-  const urgent = urgentState(live);
-  if (urgent) return live.find((s) => s.state === urgent) ?? null;
-  return todo.sessions.length === 1 ? todo.sessions[0] : null;
-}
-
 /// Where a todo's GitHub button goes: its PR, else its issue, else its repository.
 function githubTarget(todo: Todo): string | null {
   const repo = todo.repos.find(isGithubRepo);
@@ -368,6 +345,15 @@ function load<T extends string>(key: string, allowed: readonly T[], fallback: T)
   }
 }
 
+/// A text kept as it was written ("" when none is kept).
+function loadText(key: string): string {
+  try {
+    return localStorage.getItem(key) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function loadJson<T>(key: string, fallback: T): T {
   try {
     const v = localStorage.getItem(key);
@@ -387,35 +373,24 @@ function remember(key: string, value: string) {
 }
 
 const PANEL_W_KEY = "panelWidth";
-const DOCK_W_KEY = "dockWidth";
 const PANEL_DEFAULT_W = 440;
-const PANEL_MIN_W = 320;
 const DOCK_MIN_W = 360;
-/// The browser pane starts at this share of the window.
-const DOCK_DEFAULT_SHARE = 0.44;
-/// The study time (the Input mode): the page a new space shows on the right, and that side's width.
-const FOCUS_RIGHT_KEY = "focusRight";
-/// Each theme's space, saved to be resumed (SavedSpace by subjectKey).
-const INPUT_SPACES_KEY = "inputSpaces";
-/// The space of pages picked without a theme; it closes with the study time.
-const FREE_SPACE = "free";
-/// A theme's space is kept under this (letters and digits, as tab ids are).
-const subjectKey = (s: Subject | null) => (s === null ? FREE_SPACE : `h${s.id}`);
+/// The split views' (作業・学習) right side: its width, and the share of the window it starts at.
 const FOCUS_RIGHT_W_KEY = "focusRightWidth";
 const FOCUS_RIGHT_SHARE = 0.45;
-/// The right pages a space may show: the LLM to ask while reading, or the
-/// theme's NotebookLM notebook (NOTEBOOK_PAGE).
-const RIGHT_KINDS = ["pinchatgpt", "pinclaude", "notebooklm"];
-/// After how many days to review again, by the last score (as feynman.rs decides it).
-const reviewAfterDays = (score: number) => (score < 60 ? 1 : score < 85 ? 3 : 7);
-const VERDICT_MARK: Record<FeynmanVerdict, string> = { said: "✓", vague: "△", missing: "✗" };
-const VERDICT_LABEL: Record<FeynmanVerdict, string> = { said: "言えた", vague: "あいまい", missing: "抜けている" };
-/// A space's tab for a right page (ids are letters and digits only).
-const rightTabId = (space: string, kind: string) => `s${space}${kind}`;
-const newSpace = (right: string): InputSpace => ({ lefts: [], active: null, right, pages: [], rightUrls: {} });
+/// The browser space's tab list: its width.
+const TAB_LIST_W_KEY = "tabListWidth";
+const TAB_LIST_DEFAULT_W = 248;
+const TAB_LIST_MIN_W = 180;
+const TAB_LIST_MAX_W = 420;
+/// The work space's list of what runs: its width.
+const WORK_RAIL_W_KEY = "workRailWidth";
+const WORK_RAIL_DEFAULT_W = 300;
+const RAIL_MIN_W = 200;
+const RAIL_MAX_W = 480;
 /// How often a parent's 経過 is read again while its sheet is open.
 const EVENTS_REFRESH_MS = 5000;
-/// How long a short note at the bottom ("学びに入れました") stays.
+/// How long a short note at the bottom ("読みものに入れました") stays.
 const TOAST_MS = 4000;
 /// How long the toast about a finished download stays.
 const DOWNLOADED_MS = 8000;
@@ -433,18 +408,15 @@ interface SiteAsk {
   site: string;
   camera: boolean;
 }
-/// The pane's tabs as kept across restarts (PANE_TABS_KEY): their pages, and the one shown.
+/// The browser space's tabs as kept across restarts (PANE_TABS_KEY): their pages, and the one shown.
 interface SavedTabs {
   /// `pinned` is the pinned page's id.
-  tabs: { url: string; openedFor?: string; title: string | null; pinned?: string; term?: TerminalRun }[];
+  tabs: { url: string; openedFor?: string; title: string | null; pinned?: string }[];
   active: number;
 }
 const PANE_TABS_KEY = "paneTabs";
-/// The focus mode's left side keeps at least this.
+/// The split views' left side keeps at least this.
 const FOCUS_LEFT_MIN_W = 360;
-const SIDEBAR_W = 232;
-/// Room always left for the screen in the middle.
-const MAIN_MIN_W = 320;
 /// Arrow keys on a resizer move it this far.
 const RESIZE_STEP = 24;
 
@@ -453,21 +425,22 @@ const PANE_RESIZED_EVENT = "pane-resized";
 /// On the body while a Resizer is dragged.
 const RESIZING_CLASS = "resizing";
 
-/// Widest a side pane may get, leaving the sidebar, `others` and the middle.
-const maxPaneWidth = (others: number) => Math.max(PANEL_MIN_W, window.innerWidth - SIDEBAR_W - MAIN_MIN_W - others);
-
-/// A strip on a pane's left edge; dragging it (or the arrow keys) sets the
-/// pane's width, the CSS variable `cssVar` on the app. While dragging only
-/// that variable moves, once a frame; `onResize` (a re-render) runs on release.
-function Resizer({ label, cssVar, width, min, max, onResize }: {
+/// A strip on a pane's left edge (a list's right edge, with `edge`);
+/// dragging it (or the arrow keys) sets the pane's width, the CSS variable
+/// `cssVar` on the app. While dragging only that variable moves, once a
+/// frame; `onResize` (a re-render) runs on release.
+function Resizer({ label, cssVar, width, min, max, onResize, edge = "left" }: {
   label: string;
   cssVar: string;
   width: number;
   min: number;
   max: () => number;
   onResize: (w: number) => void;
+  edge?: "left" | "right";
 }) {
   const clamp = (w: number) => Math.round(Math.min(max(), Math.max(min, w)));
+  // Toward the pane's own side it grows.
+  const grow = edge === "left" ? -1 : 1;
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     const app = (e.currentTarget as HTMLElement).closest<HTMLElement>(".app");
@@ -475,7 +448,7 @@ function Resizer({ label, cssVar, width, min, max, onResize }: {
     let next = width;
     let frame = 0;
     const move = (ev: PointerEvent) => {
-      next = clamp(width + startX - ev.clientX);
+      next = clamp(width + grow * (ev.clientX - startX));
       if (frame) return;
       frame = requestAnimationFrame(() => {
         frame = 0;
@@ -497,7 +470,7 @@ function Resizer({ label, cssVar, width, min, max, onResize }: {
   };
   return (
     <div
-      className="resizer"
+      className={`resizer${edge === "right" ? " right-edge" : ""}`}
       role="separator"
       aria-orientation="vertical"
       aria-label={label}
@@ -505,8 +478,8 @@ function Resizer({ label, cssVar, width, min, max, onResize }: {
       tabIndex={0}
       onPointerDown={onPointerDown}
       onKeyDown={(e) => {
-        if (e.key === "ArrowLeft") onResize(clamp(width + RESIZE_STEP));
-        if (e.key === "ArrowRight") onResize(clamp(width - RESIZE_STEP));
+        if (e.key === "ArrowLeft") onResize(clamp(width - grow * RESIZE_STEP));
+        if (e.key === "ArrowRight") onResize(clamp(width + grow * RESIZE_STEP));
       }}
     />
   );
@@ -563,7 +536,7 @@ function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
 type IconName =
   | "board" | "list" | "spark" | "pr" | "search" | "sync" | "check" | "plus" | "import" | "close" | "open"
   | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "chat"
-  | "globe";
+  | "globe" | "terminal" | "book" | "bookmark" | "key";
 
 const ICON_PATHS: Record<IconName, string> = {
   board: "M4 4h6v16H4zM14 4h6v9h-6z",
@@ -587,6 +560,10 @@ const ICON_PATHS: Record<IconName, string> = {
   reload: "M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6",
   chat: "M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z",
   globe: "M12 3a9 9 0 1 0 0 18a9 9 0 1 0 0-18zM3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18",
+  terminal: "M4 5h16v14H4zM8 10l3 2.5L8 15M13 15h3",
+  book: "M4 5h6a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H4zM20 5h-6a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h6z",
+  bookmark: "M7 4h10v16l-5-4-5 4z",
+  key: "M14 4a6 6 0 1 0 0.01 0M11 12l-7 7M6 17l2 2",
 };
 
 function Icon({ name, size = 15 }: { name: IconName; size?: number }) {
@@ -779,7 +756,7 @@ function useRowCursor(
     const onKeyDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       // A todo's sheet over the list takes the keys.
-      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app.focus, .app[data-zone=sidebar], .sheet-backdrop")) return;
+      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app[data-zone=sidebar], .sheet-backdrop")) return;
       const { ids, cursorId, onEnter, onKey } = state.current;
       const step = stepOf(e);
       if (step && ids.length > 0) {
@@ -831,14 +808,14 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
   const [open, setOpen] = useState(false);
   const root = useRef<HTMLSpanElement>(null);
   useOutsideClose(root, open, () => setOpen(false));
-  const openInBrowser = useContext(BrowserContext);
+  const openWork = useContext(WorkContext);
   const openCloud = useContext(OpenCloudContext);
   const terminal = useContext(TerminalContext);
   const cloud = isCloud(session);
   const go = (target?: "desktop" | "herdr" | "web") => {
     setOpen(false);
     api.markSessionSeen(session.session_id).catch(report);
-    if (target === "web" && openInBrowser) openInBrowser(cloudWebUrl(session.session_id));
+    if (target === "web" && openWork) openWork({ session: session.session_id });
     else if (target === "herdr") openLocal(terminal, session.session_id, report);
     else api.openSession(session.session_id, target === "web" ? "desktop" : target).catch(report);
   };
@@ -862,9 +839,9 @@ function OpenMenu({ session, report, primary, label = "開く" }: { session: Ses
       </button>
       {open && (
         <span className="menu" role="menu" {...menuKeys}>
-          {cloud && openInBrowser && (
+          {cloud && openWork && (
             <button role="menuitem" onClick={() => go("web")}>
-              Web で開く（アプリ内）
+              作業で開く（アプリ内）
             </button>
           )}
           <button role="menuitem" onClick={() => go("desktop")}>
@@ -1011,30 +988,28 @@ function TodoCard({ todo, selected, onSelect, report, allTodos }: {
   allTodos: Todo[];
 }) {
   const drag = useDraggable({ id: `todo:${todo.id}` });
-  const urgent = urgentState(liveSessions(todo));
-  const direct = directSession(todo);
+  // Only what asks the user shows here; the sessions are 作業's.
+  const asking = liveSessions(todo).some((s) => s.state === "needs_input");
   const rel = relationLabel(todo, allTodos);
   return (
     <article
       ref={drag.setNodeRef}
       {...drag.listeners}
       {...drag.attributes}
-      className={`card${selected ? " selected" : ""}${drag.isDragging ? " dragging" : ""}${urgent === "needs_input" ? " waiting" : ""}${todo.status === "done" ? " done" : ""}`}
+      className={`card${selected ? " selected" : ""}${drag.isDragging ? " dragging" : ""}${asking ? " waiting" : ""}${todo.status === "done" ? " done" : ""}`}
       data-row={`todo:${todo.id}`}
       onClick={onSelect}
     >
       <div className="card-head">
         <span className="mono">{todoRef(todo)}</span>
-        {urgent && <StateBadge state={urgent} unread={todo.sessions.some((s) => s.unread) || undefined} />}
+        {asking && <StateBadge state="needs_input" />}
       </div>
       <div className="card-title">{todo.title}</div>
-      {(todo.pr_url || todo.issue_url || rel || direct) && (
+      {(todo.pr_url || todo.issue_url || rel) && (
         <div className="card-foot">
           <GhChip todo={todo} report={report} />
           <CiChip todo={todo} />
           {rel && <span className="tag">{rel}</span>}
-          <span className="grow" />
-          {direct && <OpenMenu session={direct} report={report} primary={urgent === "needs_input"} />}
         </div>
       )}
     </article>
@@ -1266,39 +1241,8 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
   );
 }
 
-/// あなた待ち above the board; it opens the sessions page on them, and the
-/// review requests (one chip for them all) the PR page.
-function WaitingStrip({ items, onShow, onShowPrs }: { items: WaitItem[]; onShow: () => void; onShowPrs: () => void }) {
-  if (items.length === 0) return null;
-  const asks = items.filter(isReviewAsk).length;
-  const rest = items.filter((w) => !isReviewAsk(w));
-  return (
-    <div className="waiting-strip">
-      <button className="waiting-strip-main" title="セッション画面のあなた待ちを開く" onClick={onShow}>
-        <span className="pill waiting">
-          <i />
-          あなた待ち {items.length}
-        </span>
-        {rest.slice(0, WAITING_STRIP_MAX).map((w) => (
-          <span key={w.key} className="waiting-item">
-            <span className="ellipsis">{w.session ? sessionLabel(w.session) : w.todo?.title}</span>
-            <span className="muted ellipsis">{w.line}</span>
-          </span>
-        ))}
-        {rest.length > WAITING_STRIP_MAX && <span className="muted">ほか {rest.length - WAITING_STRIP_MAX} 件</span>}
-      </button>
-      {asks > 0 && (
-        <button className="waiting-item" title="PR の画面のレビュー依頼を開く" onClick={onShowPrs}>
-          新着のレビュー依頼 {asks} 件
-        </button>
-      )}
-    </div>
-  );
-}
-/// The sessions page's one line for the review requests, as its row.
+/// 作業's list's one line for the review requests, as its row.
 const ASKS_ROW = "w:reviews";
-/// Items the strip over the board names; the rest are counted.
-const WAITING_STRIP_MAX = 3;
 
 /// Picks a todo's parent, or none. Subtasks go one level deep, so only
 /// top-level todos are offered and a todo with subtasks cannot move.
@@ -1354,14 +1298,13 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
   const open = lane.todos.filter((t) => !folded.has(t.status)).sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || (a.status === "done" ? b.updated_at - a.updated_at : a.id - b.id));
   const foldedCounts = COLUMNS.map((c) => ({ ...c, n: lane.todos.filter((t) => t.status === c.status).length })).filter((c) => folded.has(c.status) && c.n > 0);
   const row = (t: Todo) => {
-    const urgent = urgentState(liveSessions(t));
-    const direct = directSession(t);
+    const asking = liveSessions(t).some((s) => s.state === "needs_input");
     return (
       <li key={t.id} data-row={`todo:${t.id}`} className={`row${t.id === selectedId ? " selected" : ""}${t.status === "done" ? " done" : ""}`} onClick={() => onSelectTodo(t.id)}>
         <StatusIcon status={t.status} />
         <span className="mono muted ref">{todoRef(t)}</span>
         <span className="row-title">{t.title}</span>
-        {urgent && <StateBadge state={urgent} unread={t.sessions.some((s) => s.unread) || undefined} />}
+        {asking && <StateBadge state="needs_input" />}
         <GhChip todo={t} report={report} />
         <CiChip todo={t} />
         {lane.key === ORPHAN_LANE && <ParentPicker todo={t} allTodos={allTodos} run={run} compact />}
@@ -1373,7 +1316,6 @@ function ListLane({ lane, selectedId, onSelectTodo, report, run, setStatus, allT
         )}
         <StatusSelect todo={t} setStatus={setStatus} />
         <span className="muted when">{ago(t.updated_at)}</span>
-        {direct && <OpenMenu session={direct} report={report} primary={urgent === "needs_input"} />}
       </li>
     );
   };
@@ -1707,7 +1649,8 @@ function Composer({ todo, run, onStarted }: { todo: Todo; run: (f: () => Promise
 /// The `cse_…` id of the cloud session a claude.ai page shows, if it shows one.
 const cloudIdOfPage = (url: string) => url.match(/^https:\/\/claude\.ai\/code\/session_([A-Za-z0-9]+)/)?.[1]?.replace(/^/, "cse_") ?? null;
 
-/// A page in the browser pane.
+/// A page the app shows (a tab of the browser space, a reading's page in
+/// 学習, a Cloud session's in 作業), or a local session's terminal (作業).
 interface BrowserTab {
   id: string;
   url: string;
@@ -1719,130 +1662,80 @@ interface BrowserTab {
   loading: boolean;
   /// Bumped when the app sends the tab to `url` (not when the page moves).
   nav: number;
-  /// Set on an in-app terminal tab, which shows no web page.
+  /// Set on a terminal (a local session's), which shows no web page.
   term?: TerminalRun;
   /// The page's zoom from the keys, when not 1.
   zoom?: number;
   /// One of PINNED_PAGES.
   pinned?: boolean;
-  /// The Input mode's own page (on its left or right), apart from the pane's tabs.
-  focus?: boolean;
-  /// The Input mode's space it belongs to (InputSpace's key, subjectKey).
-  space?: string;
-  /// On the right: which page it is (a FOCUS_PAGES id or NOTE_TAB).
-  kind?: string;
-  /// A Cloud session being made for it (BeginWeb): not kept across restarts.
-  creating?: boolean;
-  /// A review's session page, in the strip's review group (made again from
-  /// the sessions after a restart, not kept).
-  review?: ReviewTab;
+  /// Not a tab of the browser space: a reading's page (学習) or a session's (作業).
+  area?: "study" | "work";
+  /// 学習: the reading it shows.
+  reading?: number;
+  /// 作業: the session it shows.
+  session?: string;
   /// Its page is translated where it is (原文 / 日本語).
   translated?: boolean;
 }
 
-/// A review tab's PR, and the session reviewing it once it is made (`seen`
-/// once the board has it, so it goes when the board no longer does).
-interface ReviewTab {
-  url: string;
-  /// "web#61", the tab's label.
-  ref: string;
-  title: string;
-  session?: string;
-  seen?: boolean;
-}
-/// Review tabs the strip shows before folding them into "レビュー n ▾", and
-/// the pane width under which they fold anyway.
-const REVIEW_TABS_MAX = 3;
-const REVIEW_FOLD_W = 560;
-
-/// The pane's tabs kept from the last run (PANE_TABS_KEY), with new ids; the
-/// pages load when shown.
+/// The browser space's tabs kept from the last run (PANE_TABS_KEY), with new
+/// ids; the pages load when shown.
 function restoreTabs(): { tabs: BrowserTab[]; active: string | null } {
   const saved = loadJson<SavedTabs>(PANE_TABS_KEY, { tabs: [], active: -1 });
   let n = 1;
-  const tabs = saved.tabs.map((t): BrowserTab => {
-    const pinned = PINNED_PAGES.find((p) => p.id === t.pinned);
-    return { id: pinned?.id ?? `t${n++}`, url: t.url, openedFor: t.openedFor, title: t.title, loading: false, nav: 0, pinned: pinned ? true : undefined, term: t.term };
-  });
+  const tabs = saved.tabs
+    .filter((t) => !t.pinned || PINNED_PAGES.some((p) => p.id === t.pinned))
+    .map((t): BrowserTab => {
+      const pinned = PINNED_PAGES.find((p) => p.id === t.pinned);
+      return { id: pinned?.id ?? `t${n++}`, url: t.url, openedFor: t.openedFor, title: t.title, loading: false, nav: 0, pinned: pinned ? true : undefined };
+    });
   return { tabs, active: tabs[saved.active]?.id ?? null };
 }
 
-/// One Input mode space: the pages a todo or an input (or FREE_SPACE) has open on the
-/// left and right, kept while the app runs (hidden while another is shown).
-interface InputSpace {
-  /// Tab ids on the left (its own pages, and the pane's terminals), and the
-  /// one shown, or a new tab (⌘T) in front of them.
-  lefts: string[];
-  active: string | null;
-  newTab?: boolean;
-  /// The right page shown (a FOCUS_PAGES id or NOTE_TAB).
-  right: string;
-  /// The pages put on its left, so a subject's added since are known.
-  pages: string[];
-  /// Right pages to open where they were (a resumed space's), by kind.
-  rightUrls: Record<string, string>;
-}
-
-/// What is kept of a subject's space across restarts (INPUT_SPACES_KEY).
-interface SavedSpace {
-  lefts: { url: string; title: string | null }[];
-  active: number;
-  right: string;
-  rightUrls: Record<string, string>;
-  pages: string[];
-}
-
-/// The browser pane: tabs of web pages, each a webview laid over this one on
-/// a placeholder that follows the layout. `covered` hides them while a dialog
-/// is up, since a native webview draws above everything in the page.
-/// Pages offered on a new tab.
 /// Pages the new tab page offers, which the user sets there (none at first).
 interface StartPage {
   label: string;
   url: string;
 }
 const START_PAGES_KEY = "startPages";
-/// Pages that stay in the pane as fixed tabs ahead of the others, opened
-/// from there or the sidebar and never closed, so they keep their state.
+/// The OneLogin portal the pinned page opens, as set in the settings.
+const ONELOGIN_URL_KEY = "oneLoginUrl";
+const ONELOGIN_DEFAULT_URL = "https://app.onelogin.com/login";
+/// Pages kept at the top of the browser space's tab list, opened from there
+/// (or ⌘K) and never closed, so they keep their state. NotebookLM, ChatGPT
+/// and Claude are also 学習's right side: the same pages, the same chats.
 /// Ids are letters and digits only, as the backend takes tab ids.
-const PINNED_PAGES: { id: string; label: string; url: string; icon: IconName }[] = [
-  { id: "pinchatgpt", label: "ChatGPT", url: "https://chatgpt.com/", icon: "chat" },
-  { id: "pinclaude", label: "Claude Code", url: CLOUD_HOME, icon: "spark" },
+const PINNED_PAGES: { id: string; label: string; short: string; url: string }[] = [
+  { id: "pinonelogin", label: "OneLogin", short: "OL", url: ONELOGIN_DEFAULT_URL },
+  { id: "pinnotebooklm", label: "NotebookLM", short: "NL", url: "https://notebooklm.google.com/" },
+  { id: "pinchatgpt", label: "ChatGPT", short: "GP", url: "https://chatgpt.com/" },
+  { id: "pinclaude", label: "Claude", short: "Cl", url: "https://claude.ai/new" },
 ];
+/// Where a pinned page opens (OneLogin's portal is the user's own).
+const pinnedUrl = (id: string) => (id === "pinonelogin" ? loadText(ONELOGIN_URL_KEY) || ONELOGIN_DEFAULT_URL : (PINNED_PAGES.find((p) => p.id === id)?.url ?? ""));
+/// The pinned pages 学習 keeps on its right, to ask while reading.
+const STUDY_RIGHT = ["pinnotebooklm", "pinchatgpt", "pinclaude"];
 /// Pinned pages whose text box takes the typing when the keyboard comes over
-/// (⌃l), and the focus mode's selection pasted in.
-const CHAT_PAGES = ["pinchatgpt", "pinclaude"];
-/// NotebookLM on the focus mode's right: the notebook a theme's space opens
-/// there is kept with the space, as a conversation is. No API adds sources to
-/// it (the personal NotebookLM has none): its button copies the theme's pages to paste.
-const NOTEBOOK_PAGE = { id: "notebooklm", label: "NotebookLM", url: "https://notebook.google.com/", icon: "list" as IconName };
-/// What the focus mode's right side can keep: the pinned pages, and NotebookLM.
-const FOCUS_PAGES = [...PINNED_PAGES, NOTEBOOK_PAGE];
+/// (⌃l), with what was selected on the other side typed in.
+const CHAT_PAGES = ["pinchatgpt", "pinclaude", "pinnotebooklm"];
 
-/// The browser pane: a tab strip over the active tab's page, or a new-tab
+/// The browser space: the tab list on the left (the pinned pages at its top,
+/// then the tabs, which move by dragging), and the page shown, or a new tab
 /// page when no tab is picked.
-function BrowserDock({ tabs, reviews, narrow, sessionOf, active, covered, report, onSelect, onPinned, onClose, onStopReview, onNewTab, onHide, onOpen, onAddress, onMove, onArchive, onToInput, onStrip }: {
-  /// The review group's tabs, apart from `tabs` (the others).
-  reviews: BrowserTab[];
-  /// Too narrow for review tabs: they fold.
-  narrow: boolean;
-  sessionOf: (id: string | undefined) => Session | undefined;
-  /// × on a review's tab, once confirmed: the review stops.
-  onStopReview: (id: string) => void;
-  /// A click on the tab strip: the page shown (the tab picked) takes the keyboard.
-  onStrip: () => void;
-  /// Puts the shown page in an input (AddToInputDialog).
-  onToInput: () => void;
+function BrowserSpace({ tabs, active, covered, width, report, onResize, onSelect, onPinned, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
+  /// The tabs, apart from the pinned pages.
   tabs: BrowserTab[];
   active: BrowserTab | null;
   covered: boolean;
+  /// The tab list's.
+  width: number;
   report: (e: unknown) => void;
+  onResize: (w: number) => void;
   onSelect: (id: string) => void;
   /// Shows a pinned page, opening it the first time.
   onPinned: (id: string) => void;
   onClose: (id: string) => void;
   onNewTab: () => void;
-  onHide: () => void;
   /// Opens what was typed on the new tab page, in a new tab with the keyboard.
   onOpen: (url: string) => void;
   onAddress: (tab: string, url: string) => void;
@@ -1850,51 +1743,21 @@ function BrowserDock({ tabs, reviews, narrow, sessionOf, active, covered, report
   onMove: (tab: string, to: string) => void;
   /// Archives the cloud session the shown tab is on and closes it (⌘⇧A).
   onArchive: () => void;
+  /// Keeps the shown page to read (⌘⇧D).
+  onBookmark: () => void;
+  /// A press on the tab list (not on a tab): the page shown takes the keyboard.
+  onStrip: () => void;
 }) {
   // Tabs move by dragging with the pointer; the tab under it takes the dragged
   // one's place. (Pointer events rather than HTML drag and drop, which the
   // webview's file drop handling can swallow.)
   const [dragging, setDragging] = useState<string | null>(null);
-  // Reviews waiting for a reply stay out when the others fold.
-  const urgent = (t: BrowserTab) => sessionOf(t.review?.session)?.state === "needs_input";
-  const { shown: shownReviews, folded } = foldReviews(reviews, urgent, narrow ? 0 : REVIEW_TABS_MAX);
-  const [foldOpen, setFoldOpen] = useState(false);
-  // The review whose × asks once before it stops it.
-  const [stopping, setStopping] = useState<string | null>(null);
-  const reviewTab = (t: BrowserTab) => {
-    const r = t.review!;
-    const s = sessionOf(r.session);
-    return (
-      <span key={t.id} data-tab={t.id} className={`browser-tab review${t.id === active?.id ? " on" : ""}${urgent(t) ? " urgent" : ""}`}>
-        <button role="tab" aria-selected={t.id === active?.id} className="browser-tab-main" title={`${r.ref} ${r.title}${urgent(t) ? "（返事待ち）" : ""}`} onClick={() => onSelect(t.id)}>
-          {(t.creating || s?.state === "running") && <span className="spinner" aria-label="作業中" />}
-          <span className="mono review-ref">
-            <span className="ellipsis">{r.ref.split("#")[0]}</span>#{r.ref.split("#")[1]}
-          </span>
-        </button>
-        {stopping === t.id ? (
-          <span className="review-stop">
-            <button className="small danger" onClick={() => (setStopping(null), onStopReview(t.id))}>
-              やめる
-            </button>
-            <button className="ghost small" onClick={() => setStopping(null)}>
-              戻す
-            </button>
-          </span>
-        ) : (
-          <button className="ghost icon browser-tab-close" aria-label={`${r.ref} のレビューをやめる`} title="このレビューをやめる（セッションも止めます）" onClick={() => setStopping(t.id)}>
-            <Icon name="close" size={11} />
-          </button>
-        )}
-      </span>
-    );
-  };
   const dragTab = (e: React.PointerEvent, id: string) => {
     if (e.button !== 0) return;
-    const startX = e.clientX;
+    const startY = e.clientY;
     let moved = false;
     const move = (ev: PointerEvent) => {
-      if (!moved && Math.abs(ev.clientX - startX) < TAB_DRAG_PX) return;
+      if (!moved && Math.abs(ev.clientY - startY) < TAB_DRAG_PX) return;
       moved = true;
       setDragging(id);
       const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-tab]")?.dataset.tab;
@@ -1909,77 +1772,49 @@ function BrowserDock({ tabs, reviews, narrow, sessionOf, active, covered, report
     window.addEventListener("pointerup", up);
   };
   return (
-    <section className="browser" aria-label="ブラウザ">
-      {/* A press around the tabs leaves the keyboard with the page shown (a tab's own click gives it to its page). */}
-      <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onStrip()}>
-        {PINNED_PAGES.map((p) => {
-          const t = tabs.find((x) => x.id === p.id);
-          return (
-            <span key={p.id} className={`browser-tab pinned${p.id === active?.id ? " on" : ""}`}>
-              <button role="tab" aria-selected={p.id === active?.id} aria-busy={t?.loading} className="browser-tab-main" title={t?.url ?? p.url} onClick={() => onPinned(p.id)}>
-                {t?.loading ? <span className="spinner" aria-label="読み込み中" /> : <Icon name={p.icon} size={13} />}
-                <span className="ellipsis">{p.label}</span>
-              </button>
-            </span>
-          );
-        })}
-        <span className="browser-tabs-sep" />
-        {reviews.length > 0 && (
-          <>
-            {/* Folded, the reviews open in the strip itself (a menu would go under the page). */}
-            {folded.length > 0 && (
-              <span className={`browser-tab review-fold${!foldOpen && folded.some((t) => t.id === active?.id) ? " on" : ""}`}>
-                <button className="browser-tab-main" aria-expanded={foldOpen} title={folded.map((t) => `${t.review!.ref} ${t.review!.title}`).join("\n")} onClick={() => setFoldOpen((o) => !o)}>
-                  レビュー {folded.length}
-                  <Icon name={foldOpen ? "chevron" : "chevronRight"} size={10} />
-                </button>
+    <div className="browser-space">
+      <nav className="tab-list" aria-label="タブ" onMouseDown={(e) => !(e.target as HTMLElement).closest("button, input") && onStrip()}>
+        <div className="pins" role="group" aria-label="固定のページ">
+          {PINNED_PAGES.map((p) => (
+            <button key={p.id} className={`pin${p.id === active?.id ? " on" : ""}`} aria-pressed={p.id === active?.id} title={p.label} onClick={() => onPinned(p.id)}>
+              <span className="pin-mark" data-pin={p.id} aria-hidden="true">
+                {p.short}
               </span>
-            )}
-            {foldOpen && folded.map(reviewTab)}
-            {shownReviews.map(reviewTab)}
-            <span className="browser-tabs-sep" />
-          </>
-        )}
-        {tabs.filter((t) => !t.pinned && !t.focus).map((t) => (
-          <span
-            key={t.id}
-            data-tab={t.id}
-            className={`browser-tab${t.id === active?.id ? " on" : ""}${t.id === dragging ? " dragging" : ""}`}
-            onPointerDown={(e) => dragTab(e, t.id)}
-          >
-            <button role="tab" aria-selected={t.id === active?.id} aria-busy={t.loading} className="browser-tab-main" title={t.term?.command ?? t.url} onClick={() => onSelect(t.id)}>
-              {t.loading && <span className="spinner" aria-label="読み込み中" />}
-              {t.term && <span className="muted mono">$</span>}
-              <span className="ellipsis">{t.title || hostOf(t.url)}</span>
+              <span className="pin-label ellipsis">{p.label}</span>
             </button>
-            <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を閉じる`} onClick={() => onClose(t.id)}>
-              <Icon name="close" size={11} />
-            </button>
-          </span>
-        ))}
-        {!active && (
-          <span className="browser-tab on">
-            <button role="tab" aria-selected className="browser-tab-main">
-              <span className="ellipsis">新しいタブ</span>
-            </button>
-          </span>
-        )}
-        <button className="ghost icon browser-new-tab" aria-label="新しいタブ（⌘T）" title="新しいタブ（⌘T）" onClick={onNewTab}>
+          ))}
+        </div>
+        <button className={`tab-row new-tab-row${!active ? " on" : ""}`} onClick={onNewTab}>
           <Icon name="plus" size={13} />
+          <span className="grow">新しいタブ</span>
+          <span className="kbd">{keyLabel(keyOf("newTab"))}</span>
         </button>
-        <span className="grow" />
-        <button className="ghost icon browser-hide" aria-label="ブラウザを隠す" title="ブラウザを隠す（タブは残ります）" onClick={onHide}>
-          <Icon name="chevronRight" size={14} />
-        </button>
-      </div>
-      {active?.term ? (
-        <TerminalView key={active.id} id={active.id} run={active.term} report={report} />
-      ) : active ? (
-        <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} onToInput={active.pinned ? undefined : onToInput} />
-      ) : (
-        <NewTabPage onOpen={onOpen} />
-      )}
-    </section>
+        <ul className="tab-rows" role="tablist" aria-orientation="vertical" aria-label="開いているタブ">
+          {tabs.map((t) => (
+            <li key={t.id} data-tab={t.id} className={`tab-row${t.id === active?.id ? " on" : ""}${t.id === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragTab(e, t.id)}>
+              <button role="tab" aria-selected={t.id === active?.id} aria-busy={t.loading} className="tab-row-main" title={t.url} onClick={() => onSelect(t.id)}>
+                {t.loading ? <span className="spinner" aria-label="読み込み中" /> : <span className="favicon" aria-hidden="true">{hostOf(t.url).slice(0, 1).toUpperCase()}</span>}
+                <span className="ellipsis">{t.title || hostOf(t.url)}</span>
+              </button>
+              <button className="ghost icon tab-row-close" aria-label={`${t.title || hostOf(t.url)} を閉じる`} onClick={() => onClose(t.id)}>
+                <Icon name="close" size={11} />
+              </button>
+            </li>
+          ))}
+        </ul>
+        <span className="muted small-text tab-list-hint">
+          {keyLabel(keyOf("prevTab"))} {keyLabel(keyOf("nextTab"))} で移る · {keyLabel(keyOf("closeTab"))} で閉じる（固定のページは閉じない）
+        </span>
+        <Resizer label="タブの一覧の幅" cssVar="--tab-list-w" edge="right" width={width} min={TAB_LIST_MIN_W} max={() => TAB_LIST_MAX_W} onResize={onResize} />
+      </nav>
+      <section className="browser browser-main" aria-label="ページ">
+        {active ? (
+          <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} onBookmark={active.pinned ? undefined : onBookmark} />
+        ) : (
+          <NewTabPage onOpen={onOpen} />
+        )}
+      </section>
+    </div>
   );
 }
 
@@ -2151,301 +1986,6 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
   );
 }
 
-/// What the focus mode's left opens: a page, or a terminal the pane has.
-type FocusItem = { url: string } | { terminal: string };
-
-/// Picks a page for the study time's left: a URL, one of the theme's
-/// inputs, or a terminal the pane has open.
-function FocusPicker({ terminals, inputs, onPick, onClose }: {
-  terminals: BrowserTab[];
-  /// The theme's inputs, their pages to pick from.
-  inputs: Input[];
-  onPick: (item: FocusItem) => void;
-  onClose: () => void;
-}) {
-  const toUrl = (text: string) => {
-    const url = addressToUrl(text);
-    return url && !url.startsWith(SEARCH_URL) ? url : null;
-  };
-  const pages = inputs.flatMap((i) => i.links.map((l) => ({ label: l.title || i.title, url: l.url, done: i.done })));
-  return (
-    <Modal title="左に開くページ" onClose={onClose}>
-      <div className="focus-picker">
-        <input
-          autoFocus
-          className="mono"
-          placeholder="URL を入力して Enter"
-          aria-label="開く URL"
-          onKeyDown={(e) => {
-            const url = isEnter(e) ? toUrl(e.currentTarget.value) : null;
-            if (url) onPick({ url });
-          }}
-        />
-        {pages.length > 0 && <h3>このテーマで読むもの</h3>}
-        {pages.map((p) => (
-          <div key={p.url} className="start-page">
-            <button onClick={() => onPick({ url: p.url })}>
-              {p.label}
-              <span className="muted mono">
-                {hostOf(p.url)}
-                {p.done ? " · 読み終わった" : ""}
-              </span>
-            </button>
-          </div>
-        ))}
-        {terminals.length > 0 && (
-          <>
-            <h3>ターミナル</h3>
-            {terminals.map((t) => (
-              <div key={t.id} className="start-page">
-                <button onClick={() => onPick({ terminal: t.id })}>
-                  <span>
-                    <span className="muted mono">$ </span>
-                    {t.title}
-                  </span>
-                  <span className="muted mono ellipsis">{t.term?.cwd}</span>
-                </button>
-              </div>
-            ))}
-          </>
-        )}
-      </div>
-    </Modal>
-  );
-}
-
-/// The study time: the theme's pages on the left, an LLM to ask on the
-/// right (its conversation the theme's own), after the review (`overlay`,
-/// over both while it is up); 「読み終わった」 writes what was read into the
-/// theme's document.
-function FocusMode({ theme, urls, onCopyUrls, lefts, left, right, rightKind, overlay, finishing, onFinish, covered, report, width, onResize, onRight, onAddress, onSelectLeft, onCloseLeft, onAddLeft, onOpenLeft, onLeftStrip, onExit, typing }: {
-  theme: Theme | undefined;
-  /// The theme's pages, which NotebookLM's button copies (onCopyUrls).
-  urls: string[];
-  onCopyUrls: () => void;
-  /// Which side has the keyboard: the browser's keys (⌘[ ⌘] ⌘L) are that side's only.
-  typing: "left" | "right" | null;
-  /// A click on the left's tab strip: its page shown (the tab picked) takes the keyboard.
-  onLeftStrip: () => void;
-  /// The left side's tabs (its own pages, and terminals), and the one shown
-  /// (none for a new tab).
-  lefts: BrowserTab[];
-  left: BrowserTab | null;
-  right: BrowserTab | undefined;
-  /// Which right page is picked (a FOCUS_PAGES id).
-  rightKind: string;
-  /// The review, over the pages until it is done or skipped.
-  overlay: React.ReactNode;
-  /// While what was read goes into the theme's document.
-  finishing: boolean;
-  /// 「読み終わった」.
-  onFinish: () => void;
-  covered: boolean;
-  report: (e: unknown) => void;
-  width: number;
-  onResize: (w: number) => void;
-  /// A pinned page's id.
-  onRight: (id: string) => void;
-  onAddress: (tab: string, url: string) => void;
-  onSelectLeft: (id: string) => void;
-  onCloseLeft: (id: string) => void;
-  /// Picks another page (or terminal) for the left.
-  onAddLeft: () => void;
-  /// A page from the left's new tab.
-  onOpenLeft: (url: string) => void;
-  onExit: () => void;
-}) {
-  const leftWeb = left && !left.term ? left.id : undefined;
-  const hidden = covered || !!overlay;
-  return (
-    <div className="focus-mode">
-      <section className="browser focus-left" aria-label="学ぶ時間の左側">
-        <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && onLeftStrip()}>
-          {lefts.map((t) => (
-            <span key={t.id} className={`browser-tab${t.id === left?.id ? " on" : ""}`}>
-              <button role="tab" aria-selected={t.id === left?.id} className="browser-tab-main" title={t.term?.command ?? t.url} onClick={() => onSelectLeft(t.id)}>
-                {t.loading && <span className="spinner" aria-label="読み込み中" />}
-                {t.term && <span className="muted mono">$</span>}
-                <span className="ellipsis">{t.title || hostOf(t.url)}</span>
-              </button>
-              <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を左から外す`} onClick={() => onCloseLeft(t.id)}>
-                <Icon name="close" size={11} />
-              </button>
-            </span>
-          ))}
-          {!left && (
-            <span className="browser-tab on">
-              <button role="tab" aria-selected className="browser-tab-main">
-                <span className="ellipsis">新しいタブ</span>
-              </button>
-            </span>
-          )}
-          <button className="ghost icon browser-new-tab" aria-label="左に開くページを選ぶ" title="左に開くページを選ぶ（⌘T で新しいタブ）" onClick={onAddLeft}>
-            <Icon name="plus" size={13} />
-          </button>
-        </div>
-        {left?.term ? (
-          <TerminalView key={left.id} id={left.id} run={left.term} report={report} />
-        ) : left ? (
-          <TabView tab={left} covered={hidden} report={report} onAddress={(url) => onAddress(left.id, url)} keep={right?.id} keysOn={typing === "left"} />
-        ) : (
-          <NewTabPage onOpen={onOpenLeft} />
-        )}
-      </section>
-      <aside className="browser-dock focus-right">
-        <Resizer label="右側の幅" cssVar="--focus-right-w" width={width} min={DOCK_MIN_W} max={() => window.innerWidth - FOCUS_LEFT_MIN_W} onResize={onResize} />
-        <section className="browser">
-          <div className="browser-tabs focus-head">
-            {theme && <b className="ellipsis study-theme">{theme.name}</b>}
-            <div className="segmented" role="group" aria-label="右側で聞く LLM">
-              {FOCUS_PAGES.map((p) => (
-                <button key={p.id} className={rightKind === p.id ? "on" : ""} aria-pressed={rightKind === p.id} onClick={() => onRight(p.id)}>
-                  <Icon name={p.icon} size={12} /> {p.label}
-                </button>
-              ))}
-            </div>
-            {rightKind === NOTEBOOK_PAGE.id && urls.length > 0 && (
-              <button className="ghost small" title="NotebookLM のソースの追加（ウェブサイト）に貼れるよう、このテーマの読むものの URL を1行ずつコピーします" onClick={onCopyUrls}>
-                URL をコピー（{urls.length}）
-              </button>
-            )}
-            <span className="grow" />
-            <span className="muted small-text" title="学ぶ時間のあいだは macOS の通知を出しません。終えたときに、増えたあなた待ちを知らせます">
-              通知は止めています
-            </span>
-            <button className="small primary" disabled={finishing || !theme} title="左のページと右の会話から、要点とつまずいたところをテーマのノートに書き足します（Mac の Claude。少しかかります）" onClick={onFinish}>
-              {finishing ? "書き足しています…" : "読み終わった"}
-            </button>
-            <button className="ghost small" title="学ぶ時間を終える（Esc）" onClick={onExit}>
-              終える <span className="kbd">Esc</span>
-            </button>
-          </div>
-          {right?.term ? (
-            <TerminalView key={right.id} id={right.id} run={right.term} report={report} />
-          ) : (
-            right && <TabView key={right.id} tab={right} covered={hidden} report={report} onAddress={(url) => onAddress(right.id, url)} keep={leftWeb} keysOn={typing === "right"} />
-          )}
-        </section>
-      </aside>
-      {overlay && <div className="study-overlay">{overlay}</div>}
-    </div>
-  );
-}
-
-/// A study time's review: the questions Claude asks from the theme's
-/// document, answered in one's own words (by voice too: macOS's dictation),
-/// graded; skipping it takes one step more.
-function ReviewPanel({ theme, report, onDone, onExit }: { theme: Theme; report: (e: unknown) => void; onDone: () => void; onExit: () => void }) {
-  const [questions, setQuestions] = useState<ReviewQuestion[] | null>(null);
-  const [failed, setFailed] = useState<string | null>(null);
-  const [answers, setAnswers] = useState<string[]>([]);
-  const [grading, setGrading] = useState(false);
-  const [result, setResult] = useState<FeynmanAttempt | null>(null);
-  const [skipping, setSkipping] = useState(false);
-  useEffect(() => {
-    api.reviewQuestions(theme.id).then(
-      (qs) => (qs.length === 0 ? onDone() : (setQuestions(qs), setAnswers(qs.map(() => "")))),
-      (e) => setFailed(String(e)),
-    );
-  }, [theme.id]); // eslint-disable-line react-hooks/exhaustive-deps
-  const grade = () => {
-    if (!questions || grading) return;
-    setGrading(true);
-    api
-      .reviewGrade(theme.id, questions, answers)
-      .then(setResult, report)
-      .finally(() => setGrading(false));
-  };
-  const gradeRef = useRef(grade);
-  gradeRef.current = grade;
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!matches(e, "start") || e.isComposing) return;
-      e.preventDefault();
-      gradeRef.current();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-  return (
-    <div className="review-panel">
-      <header>
-        <div className="actions">
-          <span className="study-steps grow">
-            <b>1 復習</b> · 2 読む · 3 残す　<span className="muted">通知は止めています</span>
-          </span>
-          <button className="ghost small" onClick={onExit}>
-            学ぶ時間を終える
-          </button>
-        </div>
-        <h2>前回までの「{theme.name}」から</h2>
-        <p className="muted">ノートは見ずに、自分の言葉で。話して答えるときは、fn キーを2回押すと音声入力になります。答えは採点されて、テーマのノートに残ります。</p>
-      </header>
-      {failed && (
-        <div className="notice danger-notice">
-          <span className="grow">質問を作れませんでした：{failed}</span>
-          <button onClick={onDone}>読みに進む</button>
-        </div>
-      )}
-      {!questions && !failed && (
-        <p className="muted">
-          <span className="spinner" /> テーマのノートを読んで、質問を作っています…
-        </p>
-      )}
-      {questions?.map((q, i) => {
-        const verdict = result?.grade.verdicts.find((v) => v.point === i);
-        return (
-          <section key={i} className="review-question">
-            <h3>
-              {i + 1} / {questions.length}　{q.question}
-            </h3>
-            <textarea rows={4} value={answers[i] ?? ""} disabled={!!result} aria-label={`問${i + 1}の答え`} placeholder="自分の言葉で" onChange={(e) => setAnswers((a) => a.map((x, j) => (j === i ? e.target.value : x)))} />
-            {verdict && (
-              <p className={`verdict verdict-${verdict.verdict}`}>
-                {VERDICT_MARK[verdict.verdict]} {VERDICT_LABEL[verdict.verdict]}：{verdict.note}
-              </p>
-            )}
-          </section>
-        );
-      })}
-      {questions && (
-        <footer>
-          {result ? (
-            <>
-              <span className="grow">
-                理解度 <b>{result.score}%</b>（次の復習は {reviewAfterDays(result.score)} 日後）
-              </span>
-              <button className="primary" onClick={onDone}>
-                読みに進む
-              </button>
-            </>
-          ) : skipping ? (
-            <>
-              <span className="grow">復習を飛ばしますか？ 復習どきは変わりません。</span>
-              <button className="ghost" onClick={() => setSkipping(false)}>
-                戻る
-              </button>
-              <button className="danger" onClick={onDone}>
-                飛ばす
-              </button>
-            </>
-          ) : (
-            <>
-              <button className="ghost small" onClick={() => setSkipping(true)}>
-                復習を飛ばす…
-              </button>
-              <span className="grow" />
-              <button className="primary" disabled={grading || answers.every((a) => !a.trim())} onClick={grade}>
-                {grading ? "採点しています…" : "採点する"} {!grading && <span className="kbd">⌘↵</span>}
-              </button>
-            </>
-          )}
-        </footer>
-      )}
-    </div>
-  );
-}
-
 /// One tab's page: its webview laid over a placeholder that follows the
 /// layout. `covered` hides it while a dialog is up, since a native webview
 /// draws above everything in the page.
@@ -2472,19 +2012,19 @@ function keysToTab(next: BrowserTab | null, shown: string | undefined, report: (
 /// with the same one leaves its page where the user moved it.
 const sentNav = new Map<string, number>();
 
-function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onToInput, keep, keysOn = true }: {
-  /// Whether the browser's keys (⌘[ ⌘] ⌘L, zoom) are this tab's: in the Input
-  /// mode, only the side that has the keyboard's.
+function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onBookmark, keep, keysOn = true }: {
+  /// Whether the browser's keys (⌘[ ⌘] ⌘L, zoom) are this tab's: in a split
+  /// view, only the side that has the keyboard's.
   keysOn?: boolean;
-  /// Set in the 作業スペース: puts the page in an input.
-  onToInput?: () => void;
+  /// Keeps the page to read (⌘⇧D).
+  onBookmark?: () => void;
   tab: BrowserTab;
   covered: boolean;
   report: (e: unknown) => void;
   onAddress: (url: string) => void;
   /// Set on a cloud session's page.
   onArchive?: () => void;
-  /// The tab shown beside this one (the focus mode's other side), left shown.
+  /// The tab shown beside this one (a split view's other side), left shown.
   keep?: string;
 }) {
   const slot = useRef<HTMLDivElement>(null);
@@ -2597,7 +2137,7 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
         e.preventDefault();
         focusAddress();
       } else if (document.activeElement === address.current) {
-        // Only from its own address: the Input mode shows two of these.
+        // Only from its own address: a split view shows two of these.
         const zoom = matches(e, "zoomIn") ? "in" : matches(e, "zoomOut") ? "out" : matches(e, "zoomReset") ? "reset" : null;
         if (!zoom) return;
         e.preventDefault();
@@ -2659,9 +2199,9 @@ function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive,
               {Math.round(active.zoom * 100)}%
             </button>
           )}
-          {onToInput && (
-            <button className="ghost small" title={`このページを学びに入れる（${keyLabel(keyOf("toInput"))}。テーマか、まだテーマにないものに）`} onClick={onToInput}>
-              学びに入れる
+          {onBookmark && (
+            <button className="ghost small" title={`このページを読みものに入れる（${keyLabel(keyOf("bookmark"))}。O'Reilly の本のページなら本として目次ごと）`} onClick={onBookmark}>
+              <Icon name="bookmark" size={12} /> ブックマーク
             </button>
           )}
           {onArchive && (
@@ -2722,7 +2262,7 @@ function StartDialog({ todo, allTodos, run, onClose }: { todo: Todo; allTodos: T
   );
 }
 
-function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, report, setStatus, onOpenTodo, onStart, onClose }: {
+function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
   todo: Todo;
   /// Every artifact: the todo's (and its subtasks') are listed.
   artifacts: Artifact[];
@@ -2737,6 +2277,8 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
   onOpenTodo: (id: number) => void;
   /// The launch sheet.
   onStart: () => void;
+  /// Its sessions (and its subtasks') in 作業.
+  onWork: () => void;
   onClose: () => void;
 }) {
   const browse = useOpenLink(report);
@@ -2774,10 +2316,15 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
   }, [todo.id]);
   const gh = githubTarget(todo);
   const addChild = (title: string) => run(() => createSubtask(todo, title));
-  // A parent: its orchestrator (its own session), its plan, what waits under it, and what happened (経過).
+  // A parent: its plan, what waits under it, and what happened (経過).
   const isParent = children.length > 0 || !!todo.plan;
-  const orchestrator = isParent ? liveSessions(todo).sort((a, b) => b.state_at - a.state_at)[0] : undefined;
   const under = waiting.filter((w) => w.todo && (w.todo.id === todo.id || w.todo.parent_id === todo.id));
+  // Its sessions (and its subtasks'), only as how many stand how: their talk is 作業's.
+  const sessions = [...todo.sessions, ...children.flatMap((c) => c.sessions)];
+  const live = sessions.filter((s) => s.state !== "ended");
+  const byState = STATE_ORDER.filter((st) => st !== "ended")
+    .map((st) => [st, live.filter((s) => s.state === st).length] as const)
+    .filter(([, n]) => n > 0);
   const [events, setEvents] = useState<TodoEvent[]>([]);
   useEffect(() => {
     if (!isParent) return setEvents([]);
@@ -2910,45 +2457,24 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
           </dd>
         </dl>
 
-        {isParent && (
-          <section className="parent-head">
-            <h3>指揮役</h3>
-            {orchestrator ? (
-              <div className="session-row">
-                <StateBadge state={orchestrator.state} unread={orchestrator.unread} />
-                <span className="session-main">
-                  <span className="ellipsis">{sessionLabel(orchestrator)}</span>
-                  <span className="muted">{placeOf(orchestrator)} · {ago(orchestrator.state_at)}</span>
-                </span>
-                <OpenMenu session={orchestrator} report={report} primary={orchestrator.state === "needs_input"} />
-              </div>
-            ) : (
-              <p className="muted hint">動いていません。「計画させる」で始めると、指揮役がサブタスクを始めて見守ります。</p>
-            )}
-            {under.length > 0 && (
-              <>
-                <h3>
-                  <span className="pill waiting">あなた待ち {under.length}</span>
-                </h3>
-                <ul className="rows compact">
-                  {under.map((w) => (
-                    <li key={w.key} className="row" onClick={() => w.todo && onOpenTodo(w.todo.id)}>
-                      <span className="state state-needs_input">
-                        <i />
-                        {w.reasons.map((r) => WAIT_WORD[r]).join("・")}
-                      </span>
-                      <span className="mono muted">#{w.todo?.id}</span>
-                      <span className="row-title ellipsis" title={w.line}>
-                        {w.line}
-                      </span>
-                      {w.session && <OpenMenu session={w.session} report={report} primary />}
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </section>
-        )}
+        <section className="sessions-summary">
+          <h3>セッション</h3>
+          {sessions.length === 0 ? (
+            <p className="muted hint">まだありません。{keyLabel(keyOf("start"))} で始めます。</p>
+          ) : (
+            <div className="summary-line">
+              <span>
+                {live.length > 0 ? `${live.length} 件` : `${sessions.length} 件（終了）`}
+                {byState.length > 0 && `（${byState.map(([st, n]) => `${STATE_LABEL[st]} ${n}`).join("・")}）`}
+              </span>
+              {under.length > 0 && <span className="pill waiting">あなた待ち {under.length}</span>}
+              <span className="grow" />
+              <button className="primary small" onClick={onWork} title="会話は作業で見ます">
+                作業で開く <span className="kbd">{keyLabel(keyOf("session"))}</span>
+              </button>
+            </div>
+          )}
+        </section>
 
         {!parent && (
           <section>
@@ -2977,35 +2503,13 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
           </section>
         )}
 
-        <section>
-          <h3>セッション {liveSessions(todo).length > 0 && <span className="muted">{liveSessions(todo).length}</span>}</h3>
-          {todo.sessions.length === 0 && <p className="muted hint">まだありません。⌘Enter で始めます。</p>}
-          <ul className="sessions">
-            {todo.sessions.map((s) => (
-              <li key={s.session_id} className={`session-row state-bg-${s.state}`}>
-                <StateBadge state={s.state} unread={s.unread} />
-                <span className="session-main">
-                  <span className="ellipsis">{sessionLabel(s)}</span>
-                  <span className="muted">
-                    {placeOf(s)} · {ago(s.state_at)}
-                  </span>
-                </span>
-                <OpenMenu session={s} report={report} primary={s.state === "needs_input"} />
-                <button className="ghost small" onClick={() => run(() => api.unlinkSession(s.session_id))}>
-                  解除
-                </button>
-              </li>
-            ))}
-          </ul>
-        </section>
-
         <div className="sheet-start">
           <button className="primary" onClick={onStart}>
             セッションを始める <span className="kbd">{keyLabel(keyOf("start"))}</span>
           </button>
           <span className="muted hint">
             {keyLabel(keyOf("editTitle"))} タイトル · {keyLabel(keyOf("editMemo"))} メモ · {keyLabel(keyOf("addSubtask"))} サブタスク · {keyLabel(keyOf("status"))} ステータス ·{" "}
-            {keyLabel(keyOf("session"))} セッション · {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} 前後の todo · Esc 閉じる
+            {keyLabel(keyOf("session"))} 作業で開く · {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} 前後の todo · Esc 閉じる
           </span>
         </div>
 
@@ -3049,45 +2553,11 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
   );
 }
 
-type SessionItem = import("./sessionTree").SessionItem;
-
-/// The status as the kanban names it.
-const statusLabel = (status: Status) => COLUMNS.find((c) => c.status === status)?.label ?? status;
-
-/// A todo in the sessions table: its status, number and title.
-function TodoCell({ todo, onOpen }: { todo: Todo; onOpen: (id: number) => void }) {
-  return (
-    <button className="link-button todo-cell" title={`${statusLabel(todo.status)} · #${todo.id} ${todo.title}`} onClick={(e) => (e.stopPropagation(), onOpen(todo.id))}>
-      <StatusIcon status={todo.status} />
-      <span className="mono">#{todo.id}</span>
-      <span className="ellipsis">{todo.title}</span>
-    </button>
-  );
+/// A session, with the todo it belongs to.
+interface SessionItem {
+  session: Session;
+  todo?: Todo;
 }
-/// Repositories as tags, the first few and how many more.
-const REPO_TAGS_MAX = 3;
-function RepoTags({ repos }: { repos: string[] }) {
-  if (repos.length === 0) return <span className="muted">—</span>;
-  return (
-    <span className="repos" title={repos.join("\n")}>
-      {repos.slice(0, REPO_TAGS_MAX).map((repo) => (
-        <span key={repo} className="tag ellipsis">
-          {repoName(repo)}
-        </span>
-      ))}
-      {repos.length > REPO_TAGS_MAX && <span className="muted">+{repos.length - REPO_TAGS_MAX}</span>}
-    </span>
-  );
-}
-/// A session row's colour backs its state's word: waiting for a reply, else
-/// 新着, else running (idle and ended have none).
-const rowState = (s: Session) => (s.state === "needs_input" ? " needs-input" : s.unread ? " unread" : s.state === "running" ? " running" : "");
-
-/// What a subtask row without a session says.
-const TODO_ROW: Record<"none" | "ended", [string, string]> = {
-  none: ["未起動", "まだ始めていません"],
-  ended: ["終了", "セッションは終わりました"],
-};
 
 /// Why something waits on the user, as its row's word.
 const WAIT_WORD: Record<WaitItem["reasons"][number], string> = {
@@ -4399,302 +3869,8 @@ function sessionItemsOf(board: Board): SessionItem[] {
   return [...board.todos.flatMap((todo) => todo.sessions.map((session) => ({ session, todo }))), ...board.inbox.map((session) => ({ session }))];
 }
 
-export type SessionFilter = "all" | "waiting" | "running" | "unread" | "routine";
-const SESSION_FILTERS: { key: SessionFilter; label: string }[] = [
-  { key: "all", label: "すべて" },
-  { key: "waiting", label: "あなた待ち" },
-  { key: "running", label: "作業中" },
-  { key: "unread", label: "新着" },
-  { key: "routine", label: "ルーティン" },
-];
-
 /// Where a session runs and what runs it: "Cloud · Claude", "Desktop · Claude", "herdr · Codex".
 const placeOf = (s: Session) => `${isCloud(s) ? "Cloud" : s.desktop ? "Desktop" : "herdr"} · ${s.agent === "codex" ? "Codex" : "Claude"}`;
-
-/// The sessions page, the place to keep up with what runs: あなた待ち pinned
-/// on top, then the sessions as they changed last (a parent's under it).
-function SessionsPage({ board, waiting, filter, onFilter, run, report, onOpenTodo, onQuick, onShowPrs }: {
-  board: Board;
-  waiting: WaitItem[];
-  filter: SessionFilter;
-  onFilter: (f: SessionFilter) => void;
-  run: (f: () => Promise<unknown>) => void;
-  report: (e: unknown) => void;
-  onOpenTodo: (id: number) => void;
-  onQuick: () => void;
-  onShowPrs: () => void;
-}) {
-  const [showEnded, setShowEnded] = useState(false);
-  const [repoFilter, setRepoFilter] = useState<string | null>(null);
-  const openInBrowser = useContext(BrowserContext);
-  const openCloud = useContext(OpenCloudContext);
-  const terminal = useContext(TerminalContext);
-  const fix = useContext(FixContext);
-  // A row opens its session as 開く does (⌥Enter: the ways to open it).
-  const open = (s: Session) => (isCloud(s) && openCloud ? openCloud(s.session_id) : openLocal(terminal, s.session_id, report, true));
-  const inRepo = (repos: string[] | undefined) => repoFilter === null || laneKey(repos) === repoFilter;
-  const waits = waiting.filter((w) => inRepo(w.todo?.repos ?? w.session?.repos ?? (w.review ? [w.review.repo] : undefined)));
-  const waitingIds = new Set(waits.flatMap((w) => (w.session ? [w.session.session_id] : [])));
-  // Todos set aside (pending), and the subtasks of one, are out with their
-  // sessions (one asking is in あなた待ち). Reviews show only there too.
-  const aside = new Set(board.todos.filter((t) => t.status === "pending" || board.todos.find((p) => p.id === t.parent_id)?.status === "pending").map((t) => t.id));
-  const all = sessionItemsOf(board).filter(
-    (i) => inRepo(i.todo?.repos ?? i.session.repos) && !(i.todo && aside.has(i.todo.id)) && listedSession(i.session) && !waitingIds.has(i.session.session_id),
-  );
-  // Routines run on their own: they are listed under their filter alone.
-  const routines = sessionItemsOf(board).filter((i) => i.session.routine && !i.session.hidden && inRepo(i.session.repos));
-  const live = all.filter((i) => i.session.state !== "ended");
-  const liveRoutines = routines.filter((i) => i.session.state !== "ended");
-  const counts: Record<SessionFilter, number> = {
-    all: live.length + waits.length,
-    waiting: waits.length,
-    running: live.filter((i) => i.session.state === "running").length,
-    unread: live.filter((i) => i.session.unread).length,
-    routine: liveRoutines.length,
-  };
-  const pass = (i: SessionItem) => filter === "all" || (filter === "unread" ? i.session.unread : filter === "running" && i.session.state === "running");
-  // Todos with subtasks head groups (sessionTree.ts); a folded group shows its head only.
-  // Whether a subtask ever had a session goes by all of them (one asking is above, in あなた待ち).
-  const listed = filter === "waiting" ? [] : filter === "routine" ? (showEnded ? routines : liveRoutines) : (showEnded ? all : live).filter(pass);
-  const { ordered } = sessionTree(listed, sessionItemsOf(board), board.todos, showEnded, filter === "all");
-  const [folded, setFolded] = useState<Set<number>>(new Set());
-  const fold = (id: number, on?: boolean) =>
-    setFolded((prev) => {
-      const next = new Set(prev);
-      if (on ?? !next.has(id)) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  const rows: TreeRow[] = ordered.flatMap((g) => g.filter((r) => r.kind === "group" || !folded.has(r.group ?? -1)));
-  const waitsShown = filter === "all" || filter === "waiting" ? waits : [];
-  // Review requests are no sessions: one line for them, which opens the PR page.
-  const asks = waitsShown.filter(isReviewAsk).length;
-  const shownWaits = waitsShown.filter((w) => !isReviewAsk(w));
-  const ended = filter === "routine" ? routines.length - liveRoutines.length : all.length - live.length;
-  // Cloud sessions done with their turn, which the bulk archive takes.
-  const archivable = live.filter((i) => isCloud(i.session) && i.session.state === "idle").map((i) => i.session.session_id);
-  const [confirmArchive, setConfirmArchive] = useState(false);
-  const startable = (r: TreeRow) => r.kind === "todo" && r.state !== "ended" && r.todo.status !== "done";
-  // A subtask row with no session: its PR when it has one, else its sheet.
-  const openTodoRow = (todo: Todo) => (todo.pr_url && openInBrowser ? openInBrowser(todo.pr_url) : onOpenTodo(todo.id));
-  /// あなた待ち's row: its session, else its todo's sheet, else the PR asking for a review.
-  const openWait = (w: WaitItem) => (w.session ? open(w.session) : w.todo ? onOpenTodo(w.todo.id) : w.review && openInBrowser?.(w.review.url));
-  // ↑↓ or j k pick a row, Enter opens it (a group's head its todo, a
-  // subtask not started its launch sheet), ⌥Enter the ways to open it; h
-  // folds the group the row is in, l opens it.
-  const ids = [...shownWaits.map((w) => `w:${w.key}`), ...(asks > 0 ? [ASKS_ROW] : []), ...rows.map((r) => r.id)];
-  const { cursorId, setCursor, list: listRef } = useRowCursor(
-    ids,
-    (id, alt, row) => {
-      if (alt) return row.querySelector<HTMLButtonElement>(".open-caret")?.click();
-      if (id === ASKS_ROW) return onShowPrs();
-      const w = shownWaits.find((x) => `w:${x.key}` === id);
-      if (w) return openWait(w);
-      const r = rows.find((x) => x.id === id);
-      if (r?.kind === "group") return onOpenTodo(r.todo.id);
-      if (r?.kind === "todo") return openTodoRow(r.todo);
-      if (r?.kind === "session") open(r.session);
-    },
-    (e, id) => {
-      const r = rows.find((x) => x.id === id);
-      const w = shownWaits.find((x) => `w:${x.key}` === id);
-      // ⌘⇧A puts the session away: a Cloud one archived, a Local one off the list.
-      if (matches(e, "archive")) {
-        const s = r?.kind === "session" ? r.session : w?.session;
-        if (!s) return false;
-        run(() => (isCloud(s) ? api.archiveSessions([s.session_id]) : api.hideSession(s.session_id)));
-        return true;
-      }
-      const group = r?.kind === "group" ? r.todo.id : r?.group;
-      if (group === undefined || !(matches(e, "left") || matches(e, "right"))) return false;
-      fold(group, matches(e, "left"));
-      if (matches(e, "left")) setCursor(groupRowId(group));
-      return true;
-    },
-  );
-  return (
-    <>
-      <header className="toolbar">
-        <h1>セッション</h1>
-        <div className="segmented" role="group" aria-label="絞り込み">
-          {SESSION_FILTERS.map((f) => (
-            <button
-              key={f.key}
-              className={`${filter === f.key ? "on" : ""}${f.key === "waiting" && counts.waiting > 0 ? " warn" : ""}`}
-              aria-pressed={filter === f.key}
-              onClick={() => onFilter(f.key)}
-            >
-              {f.label} {counts[f.key]}
-            </button>
-          ))}
-        </div>
-        <PlaceFilter places={[...new Set(sessionItemsOf(board).map((i) => laneKey(i.todo?.repos ?? i.session.repos)))]} value={repoFilter} onChange={setRepoFilter} />
-        <span className="grow" />
-        {confirmArchive ? (
-          <span className="inline-confirm">
-            ひと区切りの Cloud {archivable.length} 件をアーカイブしますか？
-            <button className="primary small" onClick={() => (setConfirmArchive(false), run(() => api.archiveSessions(archivable)))}>
-              アーカイブ
-            </button>
-            <button className="ghost small" onClick={() => setConfirmArchive(false)}>
-              やめる
-            </button>
-          </span>
-        ) : (
-          archivable.length > 0 && (
-            <button onClick={() => setConfirmArchive(true)} title="ひと区切り（返事待ち・作業中でない）の Cloud セッションをまとめてアーカイブ">
-              ひと区切りの Cloud をアーカイブ {archivable.length}
-            </button>
-          )
-        )}
-        <button onClick={onQuick} title="todo に紐づけずにホームフォルダの claude を開く">
-          <Icon name="spark" size={13} /> ちょっと Claude
-        </button>
-      </header>
-      <div className="content" ref={listRef}>
-        {waitsShown.length > 0 && (
-          <section className="waiting-section">
-            <div className="section-head">
-              <span className="pill waiting">
-                <i />
-                あなた待ち {waitsShown.length}
-              </span>
-              <span className="muted">返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼</span>
-            </div>
-            <ul className="rows">
-              {shownWaits.map((w) => {
-                const s = w.session;
-                const todo = w.todo;
-                return (
-                  <li key={w.key} data-row={`w:${w.key}`} className={`row wait-row${`w:${w.key}` === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(`w:${w.key}`), openWait(w))}>
-                    <span className="state state-needs_input">
-                      <i />
-                      {w.reasons.map((r) => WAIT_WORD[r]).join("・")}
-                    </span>
-                    <span className="wait-main">
-                      <span className="row-title ellipsis">
-                        {todo && <span className="mono muted">#{todo.id} </span>}
-                        {s ? sessionLabel(s) : (todo?.title ?? w.review?.title)}
-                      </span>
-                      <span className="wait-line ellipsis" title={w.line}>
-                        {w.line}
-                      </span>
-                    </span>
-                    <span className="muted ellipsis wait-meta">
-                      {[todo?.parent_id ? `親 #${todo.parent_id}` : null, s ? placeOf(s) : null, s ? ago(s.state_at) : null].filter(Boolean).join(" · ")}
-                    </span>
-                    <span className="row-actions">
-                      {todo && w.reasons.includes("escalated") && (
-                        <button className="small" title="指揮役から回されたことに対応しました（あなた待ちから外します）" onClick={(e) => (e.stopPropagation(), run(() => api.clearEscalation(todo.id)))}>
-                          対応した
-                        </button>
-                      )}
-                      {s && todo && fix && (w.reasons.includes("ci") || w.reasons.includes("changes")) && (
-                        <button className="small" title="元のセッションに、直すところを送ります（画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), fix(s, todo))}>
-                          再開して直させる
-                        </button>
-                      )}
-                      {s && <OpenMenu session={s} report={report} primary={w.reasons.includes("needs_input")} />}
-                    </span>
-                  </li>
-                );
-              })}
-              {asks > 0 && (
-                <li data-row={ASKS_ROW} className={`row wait-row${ASKS_ROW === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(ASKS_ROW), onShowPrs())}>
-                  <span className="state state-needs_input">
-                    <i />
-                    {WAIT_WORD.review}
-                  </span>
-                  <span className="row-title">新着のレビュー依頼が {asks} 件あります</span>
-                  <span className="muted wait-meta">PR の画面で始めます</span>
-                  <span className="row-actions">
-                    <Icon name="pr" size={13} />
-                  </span>
-                </li>
-              )}
-            </ul>
-          </section>
-        )}
-
-        {filter !== "waiting" && (
-          <section>
-            {rows.length === 0 && waitsShown.length === 0 && <p className="muted empty">該当するセッションはありません。</p>}
-            <ul className="rows">
-              {rows.map((r) => {
-                const cursor = r.id === cursorId ? " cursor" : "";
-                if (r.kind === "group") {
-                  const open = !folded.has(r.todo.id);
-                  const under = waiting.filter((w) => w.todo && (w.todo.id === r.todo.id || w.todo.parent_id === r.todo.id)).length;
-                  return (
-                    <li key={r.id} data-row={r.id} className={`row session-group${cursor}`} onClick={() => (setCursor(r.id), onOpenTodo(r.todo.id))}>
-                      <button className="ghost icon" aria-label={open ? "畳む" : "開く"} aria-expanded={open} onClick={(e) => (e.stopPropagation(), fold(r.todo.id))}>
-                        <Icon name={open ? "chevron" : "chevronRight"} size={12} />
-                      </button>
-                      <StatusIcon status={r.todo.status} />
-                      <span className="mono muted">#{r.todo.id}</span>
-                      <span className="row-title ellipsis">{r.todo.title}</span>
-                      {r.todo.repos.length > 0 && <RepoTags repos={r.todo.repos} />}
-                      <span className="muted">{statusLabel(r.todo.status)}</span>
-                      <span className="tag" title="サブタスクのうち Done になったもの">
-                        サブタスク {r.done}/{r.total}
-                      </span>
-                      {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
-                    </li>
-                  );
-                }
-                // In a group: its parent's own sessions one step in, its subtasks' two.
-                // Outside any group: a block of its own, at a group's level.
-                const tree = r.group !== undefined ? ` in-group${r.child ? " child" : ""}${r.last ? " last" : ""}` : " lone";
-                if (r.kind === "todo") {
-                  const [state, says] = TODO_ROW[r.state];
-                  return (
-                    <li
-                      key={r.id}
-                      data-row={r.id}
-                      className={`row sessions-grid${tree}${cursor}${r.todo.status === "done" ? " done" : ""}`}
-                      title={r.todo.pr_url ? "PR を開く" : undefined}
-                      onClick={() => (setCursor(r.id), openTodoRow(r.todo))}
-                    >
-                      <span className="muted ellipsis" title={says}>
-                        {state}
-                      </span>
-                      <TodoCell todo={r.todo} onOpen={onOpenTodo} />
-                      <span className="muted ellipsis">{r.todo.pr_state ? `PR ${PR_STAGE[r.todo.pr_state][1]}` : ""}</span>
-                      <span className="muted">{r.todo.pr_url ? "Enter で PR" : startable(r) ? "Enter で開始" : "—"}</span>
-                      <span />
-                    </li>
-                  );
-                }
-                const { session: s, todo } = r;
-                return (
-                  <li
-                    key={r.id}
-                    data-row={r.id}
-                    className={`row sessions-grid${tree}${cursor}${s.state === "ended" ? " done" : ""}${rowState(s)}`}
-                    onClick={() => (setCursor(r.id), open(s))}
-                  >
-                    <StateBadge state={s.state} unread={s.unread} />
-                    <span className="ellipsis">{sessionLabel(s)}</span>
-                    {todo ? <TodoCell todo={todo} onOpen={onOpenTodo} /> : <span className="muted">Todo なし</span>}
-                    <span className="muted ellipsis">
-                      {placeOf(s)} · {ago(s.state_at)}
-                    </span>
-                    <OpenMenu session={s} report={report} />
-                  </li>
-                );
-              })}
-            </ul>
-            {ended > 0 && (
-              <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
-                {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件`}
-              </button>
-            )}
-          </section>
-        )}
-      </div>
-    </>
-  );
-}
 
 /// How reviews start, kept as last picked: who reviews, whether it submits
 /// on its own, where it runs. Codex runs in herdr only.
@@ -4731,7 +3907,6 @@ const REVIEW_VERDICT: Record<string, string> = { APPROVED: "Approve", CHANGES_RE
 /// Starts reviews as the PR page's choices say, behind (nothing comes
 /// forward), and tells which PRs' reviews are starting.
 function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) => void) {
-  const beginWeb = useContext(BeginWebContext);
   const [starting, setStarting] = useState<Set<string>>(new Set());
   const mark = (url: string, on: boolean) =>
     setStarting((prev) => {
@@ -4745,11 +3920,10 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
     mark(p.url, true);
     const prefs = loadReviewPrefs();
     const picked = loadReviewOptions()[prefs.agent];
+    // Its session shows in 作業's list (its レビュー); nothing comes forward.
     run(async () => {
-      // A review asking before it submits on Cloud gets its tab, made behind; one submitting on its own none.
-      const finish = prefs.runner === "cloud" && !prefs.auto ? beginWeb?.({ url: p.url, ref: `${repoName(p.repo)}#${p.number}`, title: p.title }) : undefined;
       try {
-        const id = await api.startReview({
+        await api.startReview({
           url: p.url,
           repo: p.repo,
           // A review is its own session, not a todo; the PR page is where it is followed.
@@ -4760,10 +3934,6 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
           cwd: local.find((r) => r.key === p.repo)?.path,
           options: { model: picked.model || undefined, effort: picked.effort || undefined },
         });
-        finish?.(id);
-      } catch (e) {
-        finish?.(null);
-        throw e;
       } finally {
         mark(p.url, false);
       }
@@ -5033,515 +4203,6 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   );
 }
 
-/// A theme's understanding (its last review's score) and whether it is time to review.
-function ReviewTags({ summary }: { summary: FeynmanSummary | undefined }) {
-  if (!summary) return null;
-  return (
-    <>
-      <span className="tag" title={`最後の復習 ${ago(summary.attempted_at)}`}>
-        理解度 {summary.score}%
-      </span>
-      {summary.due_at * 1000 <= Date.now() && (
-        <span className="tag due" title="前回の理解度から決めた、復習するとよい時期です">
-          復習どき
-        </span>
-      )}
-    </>
-  );
-}
-
-/// The categories folded in the learning page's list (their ids).
-const FOLDED_CATEGORIES_KEY = "foldedCategories";
-
-/// A menu of choices under the element `at` (a selector), the current one marked:
-/// ↑↓ or j k move, Enter picks, Esc closes.
-function PickMenu({ label, at, choices, current, onPick, onClose }: {
-  label: string;
-  at: string;
-  choices: { value: number | null; label: string }[];
-  current: number | null;
-  onPick: (value: number | null) => void;
-  onClose: () => void;
-}) {
-  const menuKeys = useMenuKeys(true, onClose, Math.max(0, choices.findIndex((c) => c.value === current)));
-  const root = useRef<HTMLSpanElement>(null);
-  useOutsideClose(root, true, onClose);
-  const box = document.querySelector(at)?.getBoundingClientRect();
-  // Under the element, opening toward the middle of the window.
-  const side = box && box.left > window.innerWidth / 2 ? { right: window.innerWidth - box.right } : { left: box?.left ?? 240 };
-  return (
-    <span ref={root} className="status-menu" style={{ top: (box?.bottom ?? 120) + 4, ...side }}>
-      <span className="menu pick-menu" role="menu" aria-label={label} {...menuKeys}>
-        {choices.map((c) => (
-          <button key={c.value ?? "none"} role="menuitem" onClick={() => (onPick(c.value), onClose())}>
-            {c.label}
-            {c.value === current && <span className="muted">（今）</span>}
-          </button>
-        ))}
-      </span>
-    </span>
-  );
-}
-
-/// The learning page: the themes by category, and what waits unsorted (an
-/// article put in with ⌥-click, a URL pasted here). Claude proposes where the
-/// unsorted go, and what of a theme to read next; a study time starts from a
-/// theme. Every action has its key (keymap.ts, "学びの画面").
-function ThemesPage({ themes, categories, inputs, feynman, run, report, onStudy }: {
-  themes: Theme[];
-  categories: Category[];
-  inputs: Input[];
-  /// Each theme's last review, by subjectKey.
-  feynman: Map<string, FeynmanSummary>;
-  run: (f: () => Promise<unknown>) => void;
-  report: (e: unknown) => void;
-  /// A study time for the theme, with these inputs' pages on the left (or what it had).
-  onStudy: (theme: Theme, inputs: Input[]) => void;
-}) {
-  const openInBrowser = useContext(BrowserContext);
-  const [picked, setPicked] = useState<number | "unsorted">(() => (inputs.some((i) => i.theme_id === null && !i.done) || themes.length === 0 ? "unsorted" : themes[0].id));
-  const theme = picked === "unsorted" ? undefined : themes.find((t) => t.id === picked);
-  const unsorted = inputs.filter((i) => i.theme_id === null && !i.done);
-  const [showRead, setShowRead] = useState(false);
-  const mine = theme ? inputs.filter((i) => i.theme_id === theme.id && (showRead || !i.done)) : unsorted;
-  const read = theme ? inputs.filter((i) => i.theme_id === theme.id && i.done).length : 0;
-  const [proposals, setProposals] = useState<Placement[] | null>(null);
-  const [nexts, setNexts] = useState<{ input_id: number; why: string }[] | null>(null);
-  const [thinking, setThinking] = useState(false);
-  const [naming, setNaming] = useState<"theme" | "category" | null>(null);
-  /// The menu open: an input's theme, or the theme's category.
-  const [menu, setMenu] = useState<{ input: number } | "category" | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [folded, setFolded] = useState(() => new Set(loadJson<number[]>(FOLDED_CATEGORIES_KEY, [])));
-  const fold = (id: number) =>
-    setFolded((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      remember(FOLDED_CATEGORIES_KEY, JSON.stringify([...next]));
-      return next;
-    });
-  const isDue = (t: Theme) => {
-    const summary = feynman.get(subjectKey({ kind: "theme", id: t.id }));
-    return !!summary && summary.due_at * 1000 <= Date.now();
-  };
-  const rowOf = (p: number | "unsorted") => (p === "unsorted" ? p : `t:${p}`);
-  // j k go over the list (the theme under the cursor is shown), Enter starts
-  // its study time or folds the category; h l fold and open a category.
-  const { cursorId, setCursor, list } = useRowCursor(
-    themeRows(themes, categories, folded),
-    (row) => {
-      const t = themes.find((t) => `t:${t.id}` === row);
-      if (confirmDelete) return;
-      if (row.startsWith("c:")) fold(Number(row.slice(2)));
-      else if (t) study(t);
-    },
-    (e, row) => {
-      if (!row.startsWith("c:") || !(matches(e, "left") || matches(e, "right"))) return false;
-      const id = Number(row.slice(2));
-      if (folded.has(id) === matches(e, "right")) fold(id);
-      return true;
-    },
-  );
-  const settled = useRef(false);
-  useEffect(() => {
-    // The first render's cursor is the list's top, not the theme shown.
-    if (!settled.current) {
-      settled.current = true;
-      setCursor(rowOf(picked));
-      return;
-    }
-    if (cursorId === "unsorted") setPicked("unsorted");
-    else if (cursorId?.startsWith("t:")) setPicked(Number(cursorId.slice(2)));
-  }, [cursorId]); // eslint-disable-line react-hooks/exhaustive-deps
-  const show = (p: number | "unsorted") => {
-    setPicked(p);
-    setCursor(rowOf(p));
-  };
-  // The inputs' own cursor (⇧J ⇧K), which their keys act on.
-  const [inputCursor, setInputCursor] = useState<number | null>(null);
-  const atInput = mine.find((i) => i.id === inputCursor) ?? mine[0];
-  const moveInput = (step: number) => {
-    const next = mine[Math.min(Math.max(mine.indexOf(atInput) + step, 0), mine.length - 1)];
-    if (!next) return;
-    setInputCursor(next.id);
-    document.querySelector(`[data-input="${next.id}"]`)?.scrollIntoView({ block: "nearest" });
-  };
-  useEffect(() => {
-    setNexts(null);
-    setConfirmDelete(false);
-    setInputCursor(null);
-  }, [picked]);
-  const ask = <T,>(f: () => Promise<T>, then: (v: T) => void) => {
-    setThinking(true);
-    f().then(then, report).finally(() => setThinking(false));
-  };
-  const askClaude = () => {
-    if (thinking) return;
-    if (theme) {
-      if (mine.some((i) => !i.done)) ask(() => api.nextReads(theme.id), setNexts);
-    } else if (unsorted.length > 0) ask(api.sortUnsorted, setProposals);
-  };
-  const study = (t: Theme) => onStudy(t, inputs.filter((i) => i.theme_id === t.id && !i.done && (t.id !== theme?.id || !nexts || nexts.some((n) => n.input_id === i.id))));
-  const openInput = (i: Input) => {
-    setInputCursor(i.id);
-    if (i.links[0]) openInBrowser?.(i.links[0].url);
-  };
-  const deleteTheme = (t: Theme) => {
-    setConfirmDelete(false);
-    show("unsorted");
-    run(() => api.deleteTheme(t.id));
-  };
-  /// The category a new theme goes in: the one under the cursor, or the theme's.
-  const newIn = categoryAt(cursorId, themes);
-  const newInName = categories.find((c) => c.id === newIn)?.name;
-  /// One input for all the URLs typed, in the theme shown (or unsorted).
-  const add = (text: string) => {
-    const input = parseInput(text);
-    if (input) run(async () => {
-      const made = await addInput(input.urls, await inputTitle(input.urls, input.title));
-      if (theme) await api.setInputTheme(made.id, theme.id);
-    });
-    return input !== null;
-  };
-  /// Claude's placements, as proposed: new themes and categories made once each.
-  const apply = (list: Placement[]) =>
-    run(async () => {
-      const madeThemes = new Map<string, number>();
-      const madeCategories = new Map<string, number>();
-      for (const p of list) {
-        let id: number;
-        if ("theme" in p.place) id = p.place.theme;
-        else {
-          const { name, category, new_category } = p.place.new_theme;
-          let categoryId = category;
-          if (new_category) {
-            categoryId = madeCategories.get(new_category) ?? (await api.createCategory(new_category)).id;
-            madeCategories.set(new_category, categoryId);
-          }
-          id = madeThemes.get(name) ?? (await api.createTheme(name, undefined, categoryId)).id;
-          madeThemes.set(name, id);
-        }
-        await api.setInputTheme(p.input, id);
-      }
-      setProposals(null);
-    });
-  const titleOf = (id: number) => inputs.find((i) => i.id === id)?.title ?? `#${id}`;
-  const themeName = (p: Placement) => {
-    if ("theme" in p.place) {
-      const id = p.place.theme;
-      const t = themes.find((t) => t.id === id);
-      return t ? themeLabel(t, categories) : "";
-    }
-    const { name, category, new_category } = p.place.new_theme;
-    const within = new_category ? `新しいカテゴリ「${new_category}」 › ` : category !== null ? `${categories.find((c) => c.id === category)?.name ?? ""} › ` : "";
-    return `${within}新しいテーマ「${name}」`;
-  };
-  const kbd = (action: Action) => <span className="kbd">{keyLabel(keyOf(action))}</span>;
-  const focusField = (selector: string) => document.querySelector<HTMLInputElement>(selector)?.focus();
-  // The page's keys (keymap.ts, "学びの画面"); j k, h l and Enter are the list's.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app.focus, .app[data-zone=sidebar], .sheet-backdrop, [role=dialog]")) return;
-      if (confirmDelete && theme) {
-        if (e.key === "Enter" && !e.metaKey) deleteTheme(theme);
-        else if (e.key === "Escape") setConfirmDelete(false);
-        else return;
-      } else if (proposals && matches(e, "learnApply")) apply(proposals);
-      else if ((proposals || nexts) && e.key === "Escape") (setProposals(null), setNexts(null));
-      else if (matches(e, "learnAdd")) focusField(".input-add");
-      else if (matches(e, "learnNewTheme")) setNaming("theme");
-      else if (matches(e, "learnNewCategory")) setNaming("category");
-      else if (matches(e, "learnAsk")) askClaude();
-      else if (matches(e, "learnNextInput")) moveInput(1);
-      else if (matches(e, "learnPrevInput")) moveInput(-1);
-      else if (atInput && matches(e, "learnOpen")) openInput(atInput);
-      else if (atInput && matches(e, "learnRead")) run(() => api.updateInput(atInput.id, { done: !atInput.done }));
-      else if (atInput && matches(e, "learnForget")) run(() => api.deleteInput(atInput.id));
-      else if (atInput && matches(e, "learnMove")) setMenu({ input: atInput.id });
-      else if (!theme) return;
-      else if (matches(e, "learnRename")) focusField(".theme-title");
-      else if (matches(e, "learnGoal")) focusField(".theme-goal");
-      else if (matches(e, "learnCategory")) setMenu("category");
-      else if (matches(e, "learnShowRead") && read > 0) setShowRead((v) => !v);
-      else if (matches(e, "learnNote") && theme.doc_url) openInBrowser?.(theme.doc_url);
-      else if (matches(e, "learnDeleteTheme")) setConfirmDelete(true);
-      else return;
-      e.preventDefault();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-  const menuInput = menu !== null && menu !== "category" ? inputs.find((i) => i.id === menu.input) : undefined;
-  return (
-    <>
-      <header className="toolbar">
-        <h1>学び</h1>
-        <input
-          className="filter-search input-add"
-          placeholder={`URL を貼って Enter（${theme ? `「${theme.name}」` : "まだテーマにないもの"}に入れる）`}
-          aria-label="学びたいページの URL"
-          onKeyDown={(e) => {
-            if (isEnter(e) && add(e.currentTarget.value)) e.currentTarget.value = "";
-            if (e.key === "Escape") e.currentTarget.blur();
-          }}
-        />
-        <span className="grow" />
-        {naming === "theme" ? (
-          <SubmitInput
-            autoFocus
-            placeholder={`テーマの名前を入れて Enter（OIDC のように狭く。${newInName ? `「${newInName}」に作る` : "カテゴリなし"}）`}
-            onSubmit={(name) => {
-              setNaming(null);
-              // A folded category opens, for its new theme to be shown.
-              if (newIn !== null && folded.has(newIn)) fold(newIn);
-              run(async () => show((await api.createTheme(name, undefined, newIn)).id));
-            }}
-            onClose={() => setNaming(null)}
-          />
-        ) : naming === "category" ? (
-          <SubmitInput autoFocus placeholder="カテゴリの名前を入れて Enter（セキュリティのように広く）" onSubmit={(name) => (setNaming(null), run(() => api.createCategory(name)))} onClose={() => setNaming(null)} />
-        ) : (
-          <>
-            <button onClick={() => setNaming("category")}>
-              <Icon name="plus" size={13} /> 新しいカテゴリ {kbd("learnNewCategory")}
-            </button>
-            <button className="primary" onClick={() => setNaming("theme")}>
-              <Icon name="plus" size={13} /> 新しいテーマ {kbd("learnNewTheme")}
-            </button>
-          </>
-        )}
-      </header>
-      <div className="content learn">
-        <nav className="theme-list" aria-label="テーマ" ref={list}>
-          <button data-row="unsorted" className={`theme-item${picked === "unsorted" ? " on" : ""}${cursorId === "unsorted" ? " cursor" : ""}`} onClick={() => show("unsorted")}>
-            <span className="grow">まだテーマにないもの</span>
-            <span className="muted">{unsorted.length}</span>
-          </button>
-          {themeGroups(themes, categories).map(({ category, themes: list }) => {
-            const isFolded = category !== null && folded.has(category.id);
-            const dues = list.filter(isDue).length;
-            return (
-              <Fragment key={category?.id ?? "none"}>
-                {category ? (
-                  <button
-                    data-row={`c:${category.id}`}
-                    className={`theme-category${cursorId === `c:${category.id}` ? " cursor" : ""}`}
-                    aria-expanded={!isFolded}
-                    onClick={() => (fold(category.id), setCursor(`c:${category.id}`))}
-                  >
-                    <Icon name={isFolded ? "chevronRight" : "chevron"} size={12} />
-                    <span className="grow ellipsis">{category.name}</span>
-                    {dues > 0 && <span className="tag due">復習 {dues}</span>}
-                    <span className="muted" title="テーマの数">
-                      {list.length}
-                    </span>
-                  </button>
-                ) : (
-                  categories.length > 0 && list.length > 0 && <div className="theme-category muted">カテゴリなし</div>
-                )}
-                {!isFolded &&
-                  list.map((t) => (
-                    <button key={t.id} data-row={`t:${t.id}`} className={`theme-item${picked === t.id ? " on" : ""}${cursorId === `t:${t.id}` ? " cursor" : ""}`} onClick={() => show(t.id)}>
-                      <span className="grow ellipsis">{t.name}</span>
-                      {isDue(t) && <span className="tag due">復習</span>}
-                      <span className="muted">{inputs.filter((i) => i.theme_id === t.id && !i.done).length}</span>
-                    </button>
-                  ))}
-              </Fragment>
-            );
-          })}
-          <p className="learn-hints">
-            {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で学ぶ時間 · {keyLabel(keyOf("left"))} {keyLabel(keyOf("right"))} でカテゴリを畳む
-          </p>
-        </nav>
-        <section className="theme-detail" onKeyDown={(e) => e.key === "Escape" && (e.target as HTMLElement).matches("input") && (e.target as HTMLElement).blur()}>
-          {theme ? (
-            <>
-              <div className="theme-top">
-                <button className="theme-crumb" aria-label={`${theme.name} のカテゴリ`} onClick={() => setMenu("category")}>
-                  {categories.find((c) => c.id === theme.category_id)?.name ?? "カテゴリなし"}
-                  <Icon name="chevron" size={10} />
-                  {kbd("learnCategory")}
-                </button>
-                <span className="grow" />
-                <ReviewTags summary={feynman.get(subjectKey({ kind: "theme", id: theme.id }))} />
-              </div>
-              <InlineInput key={`n${theme.id}`} className="theme-title" value={theme.name} label="テーマの名前" placeholder="テーマの名前" required onSave={(name) => run(() => api.updateTheme(theme.id, { name }))} />
-              <InlineInput key={`g${theme.id}`} className="theme-goal" value={theme.goal ?? ""} label="目標" placeholder="目標（何ができるようになりたいか）" onSave={(goal) => run(() => api.updateTheme(theme.id, { goal }))} />
-              <div className="theme-actions">
-                <button className="primary" onClick={() => study(theme)}>
-                  学ぶ時間を始める <span className="kbd">Enter</span>
-                </button>
-                <button disabled={thinking || mine.every((i) => i.done)} onClick={askClaude}>
-                  {thinking ? "考えています…" : "次に読むものを Claude に聞く"} {kbd("learnAsk")}
-                </button>
-                <span className="grow" />
-                {theme.doc_url ? (
-                  <button className="link-button" onClick={() => openInBrowser?.(theme.doc_url!)}>
-                    テーマのノートを開く {kbd("learnNote")}
-                  </button>
-                ) : (
-                  <span className="muted small-text">ノートは学ぶ時間の「読み終わった」で作られます</span>
-                )}
-              </div>
-              {nexts && (
-                <div className="proposals">
-                  {nexts.length === 0 && <p className="muted">提案はありませんでした。</p>}
-                  {nexts.map((n) => (
-                    <p key={n.input_id}>
-                      <b>{titleOf(n.input_id)}</b> <span className="muted">— {n.why}</span>
-                    </p>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : (
-            <>
-              <h2 className="theme-title static">まだテーマにないもの</h2>
-              <p className="muted small-text">⌥ + クリックしたリンクや、上に貼った URL がここに入ります。Claude がテーマに振り分けます。</p>
-              <div className="theme-actions">
-                <button className="primary" disabled={thinking || unsorted.length === 0} onClick={askClaude}>
-                  {thinking ? "考えています…" : "Claude に振り分けてもらう"} {kbd("learnAsk")}
-                </button>
-              </div>
-              {proposals && (
-                <div className="proposals">
-                  {proposals.length === 0 && <p className="muted">提案はありませんでした。</p>}
-                  {proposals.map((p) => (
-                    <p key={p.input}>
-                      <b>{titleOf(p.input)}</b> → {themeName(p)} <span className="muted">— {p.why}</span>
-                    </p>
-                  ))}
-                  {proposals.length > 0 && (
-                    <div className="actions">
-                      <button className="primary small" onClick={() => apply(proposals)}>
-                        この通りにする {kbd("learnApply")}
-                      </button>
-                      <button className="ghost small" onClick={() => setProposals(null)}>
-                        やめる <span className="kbd">Esc</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-          <div className="learn-section">
-            <span>読むもの</span>
-            <span className="muted">{mine.filter((i) => !i.done).length}</span>
-            <span className="grow" />
-            {theme && read > 0 && (
-              <button className="ghost small" onClick={() => setShowRead((v) => !v)}>
-                {showRead ? "読み終わったものを隠す" : `読み終わったもの ${read} 件`} {kbd("learnShowRead")}
-              </button>
-            )}
-          </div>
-          {mine.length > 0 ? (
-            <>
-              <ul className="rows">
-                {mine.map((i) => (
-                  <li key={i.id} data-input={i.id} className={`row${i.done ? " done" : ""}${atInput?.id === i.id ? " cursor" : ""}`} onClick={() => openInput(i)}>
-                    <button
-                      className="ghost icon"
-                      aria-label={i.done ? `${i.title} を読み終わっていないことにする` : `${i.title} を読み終わったことにする`}
-                      title={i.done ? "読み終わっていないことにする" : "読み終わった"}
-                      onClick={(e) => (e.stopPropagation(), run(() => api.updateInput(i.id, { done: !i.done })))}
-                    >
-                      <StatusIcon status={i.done ? "done" : "todo"} />
-                    </button>
-                    <span className="row-title ellipsis">{i.title}</span>
-                    {nexts?.some((n) => n.input_id === i.id) && <span className="tag due">次に読む</span>}
-                    {i.links[0] && <span className="muted mono ellipsis host">{hostOf(i.links[0].url)}</span>}
-                    <button className="ghost small move" aria-label={`${i.title} のテーマを変える`} onClick={(e) => (e.stopPropagation(), setInputCursor(i.id), setMenu({ input: i.id }))}>
-                      {theme ? "移す" : "テーマへ"}
-                      <Icon name="chevron" size={10} />
-                    </button>
-                    <button className="ghost icon" aria-label={`${i.title} を消す`} title="消す" onClick={(e) => (e.stopPropagation(), run(() => api.deleteInput(i.id)))}>
-                      <Icon name="close" size={12} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-              <p className="learn-hints">
-                {keyLabel(keyOf("learnNextInput"))} {keyLabel(keyOf("learnPrevInput"))} で選ぶ · {keyLabel(keyOf("learnOpen"))} 開く · {keyLabel(keyOf("learnRead"))} 読み終わった · {keyLabel(keyOf("learnMove"))} {theme ? "移す" : "テーマへ"} ·{" "}
-                {keyLabel(keyOf("learnForget"))} 消す · {keyLabel(keyOf("learnAdd"))} URL を足す
-              </p>
-            </>
-          ) : (
-            <p className="muted empty">{theme ? `このテーマで読むものは、まだありません。${keyLabel(keyOf("learnAdd"))} で URL の欄へ。` : "まだテーマにないものはありません。"}</p>
-          )}
-          {theme &&
-            (confirmDelete ? (
-              <span className="inline-confirm">
-                「{theme.name}」を消しますか？読むものは「まだテーマにないもの」に戻ります。
-                <button className="danger small" onClick={() => deleteTheme(theme)}>
-                  消す <span className="kbd">Enter</span>
-                </button>
-                <button className="ghost small" onClick={() => setConfirmDelete(false)}>
-                  やめる <span className="kbd">Esc</span>
-                </button>
-              </span>
-            ) : (
-              <button className="ghost small danger-text" onClick={() => setConfirmDelete(true)}>
-                このテーマを消す {kbd("learnDeleteTheme")}
-              </button>
-            ))}
-        </section>
-      </div>
-      {menu === "category" && theme && (
-        <PickMenu
-          label={`${theme.name} のカテゴリ`}
-          at=".theme-crumb"
-          choices={[{ value: null, label: "カテゴリなし" }, ...categories.map((c) => ({ value: c.id, label: c.name }))]}
-          current={theme.category_id}
-          onPick={(id) => run(() => api.setThemeCategory(theme.id, id))}
-          onClose={() => setMenu(null)}
-        />
-      )}
-      {menuInput && (
-        <PickMenu
-          label={`${menuInput.title} のテーマ`}
-          at={`[data-input="${menuInput.id}"] .move`}
-          choices={[{ value: null, label: "まだテーマにない" }, ...themeGroups(themes, categories).flatMap(({ themes: list }) => list.map((t) => ({ value: t.id, label: themeLabel(t, categories) })))]}
-          current={menuInput.theme_id}
-          onPick={(id) => run(() => api.setInputTheme(menuInput.id, id))}
-          onClose={() => setMenu(null)}
-        />
-      )}
-    </>
-  );
-}
-
-/// An input from what was typed in the Input page: its URLs (or one bare
-/// address, `example.com`), the other words its title (empty when there are
-/// none; see inputTitle). Null when there is no page in it.
-function parseInput(text: string): { title: string; urls: string[] } | null {
-  const words = text.trim().split(/\s+/).filter(Boolean);
-  const urls = [...new Set(words.filter((w) => /^https?:\/\//i.test(w)))];
-  if (urls.length === 0) {
-    const url = addressToUrl(text);
-    return url && !url.startsWith(SEARCH_URL) ? { title: "", urls: [url] } : null;
-  }
-  return { title: words.filter((w) => !/^https?:\/\//i.test(w)).join(" "), urls };
-}
-
-/// What an input is called: the words given with it, else its first page's
-/// own title (OGP), else that page's host.
-async function inputTitle(urls: string[], given: string) {
-  if (given.trim()) return given.trim();
-  const title = await api.pageTitle(urls[0]).catch(() => null);
-  return title || hostOf(urls[0]);
-}
-
-/// Adds an input with `urls` as its pages, in that order; it comes back with
-/// them (to open it before the board catches up).
-async function addInput(urls: string[], title: string): Promise<Input> {
-  const input = await api.createInput(title);
-  const links = [];
-  for (const url of urls) links.push(await api.addInputLink(input.id, url));
-  return { ...input, links };
-}
-
 function Modal({ title, onClose, children, footer, wide }: {
   title: string;
   onClose: () => void;
@@ -5685,65 +4346,6 @@ function AddTodoDialog({ local, groups, initialRepo, initialMemo, run, onClose, 
   );
 }
 
-/// ⌘⇧D: the page shown goes into a theme (or among the unsorted) to read.
-function AddToThemeDialog({ page, themes, categories, run, onDone, onClose }: {
-  page: { url: string; title: string | null };
-  themes: Theme[];
-  categories: Category[];
-  run: (f: () => Promise<unknown>) => void;
-  /// Told where the page went.
-  onDone: (where: string) => void;
-  onClose: () => void;
-}) {
-  const [query, setQuery] = useState("");
-  const [active, setActive] = useState(0);
-  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const shown = themes.filter((t) => words.every((w) => themeLabel(t, categories).toLowerCase().includes(w)));
-  // The unsorted come last, as one more choice.
-  const count = shown.length + 1;
-  const put = (t: Theme | undefined) =>
-    run(async () => {
-      const input = await addInput([page.url], page.title || (await inputTitle([page.url], "")));
-      if (t) await api.setInputTheme(input.id, t.id);
-      onDone(t ? `「${t.name}」` : "まだテーマにないもの");
-      onClose();
-    });
-  return (
-    <Modal title="このページを学びに入れる" onClose={onClose}>
-      <p className="muted ellipsis">{page.title || page.url}</p>
-      <input
-        autoFocus
-        className="filter-search"
-        value={query}
-        placeholder="テーマを絞り込む"
-        aria-label="入れるテーマを絞り込む"
-        onChange={(e) => {
-          setQuery(e.target.value);
-          setActive(0);
-        }}
-        onKeyDown={(e) => {
-          const d = e.key === "ArrowDown" || matches(e.nativeEvent, "paletteDown") ? 1 : e.key === "ArrowUp" || matches(e.nativeEvent, "paletteUp") ? -1 : 0;
-          if (d) {
-            e.preventDefault();
-            return setActive((i) => (i + d + count) % count);
-          }
-          if (isEnter(e)) put(shown[active]);
-        }}
-      />
-      <ul className="rows compact to-input" role="listbox">
-        {shown.map((t, i) => (
-          <li key={t.id} role="option" aria-selected={i === active} className={`row${i === active ? " cursor" : ""}`} onMouseEnter={() => setActive(i)} onClick={() => put(t)}>
-            <span className="row-title">{themeLabel(t, categories)}</span>
-          </li>
-        ))}
-        <li role="option" aria-selected={active === shown.length} className={`row${active === shown.length ? " cursor" : ""}`} onMouseEnter={() => setActive(shown.length)} onClick={() => put(undefined)}>
-          <span className="row-title muted">まだテーマにないもの（あとで振り分ける）</span>
-        </li>
-      </ul>
-    </Modal>
-  );
-}
-
 function ImportDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
   const [issues, setIssues] = useState<Issue[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -5874,19 +4476,21 @@ const SEARCH_ALIASES: Record<string, string[]> = {
   pr: ["pull request", "プルリク", "プルリクエスト", "レビュー", "review"],
   セッション: ["session", "claude"],
   todo: ["タスク", "task"],
-  input: ["インプット", "読む", "reading", "学習"],
+  読みもの: ["読む", "reading", "学習", "ブックマーク", "bookmark", "本", "book"],
   カンバン: ["kanban", "board", "ボード"],
-  モード: ["focus", "フォーカス", "集中", "mode"],
+  管理: ["manage", "todo", "kanban"],
+  作業: ["work", "session", "セッション", "ターミナル", "terminal"],
+  学習: ["study", "learn", "読む", "notebooklm"],
   リスト: ["list"],
   フィルター: ["filter", "絞り込み", "view", "ビュー"],
   キー: ["shortcut", "ショートカット", "key", "keys", "keymap"],
   ブラウザ: ["browser", "web", "タブ", "tab"],
-  作業スペース: ["ブラウザ", "browser", "web", "タブ", "tab", "ターミナル", "terminal", "pane", "ペイン", "workspace"],
   タブ: ["tab"],
   同期: ["sync", "更新", "refresh", "reload"],
   issue: ["イシュー", "課題", "import", "取り込み"],
   chatgpt: ["gpt", "openai", "チャット", "chat"],
-  "claude code": ["クロード", "cloud", "web"],
+  claude: ["クロード", "cloud", "web"],
+  onelogin: ["login", "ログイン", "sso", "portal"],
   ちょっと: ["quick", "claude"],
   新しい: ["new", "add", "作成", "追加"],
   リンク: ["link"],
@@ -5899,17 +4503,17 @@ function commandMatches(label: string, query: string) {
   return query.split(/\s+/).every((w) => hay.includes(w));
 }
 
-/// ⌘K: the actions that used to crowd the sidebar, the screens, and a jump to any todo.
-function CommandPalette({ commands, todos, themes, categories, start, onOpenTodo, onStudy, onClose }: {
+/// ⌘K: the actions, the spaces and their pages, and a jump to any todo or
+/// reading (each in its own space).
+function CommandPalette({ commands, todos, readings, start, onOpenTodo, onRead, onClose }: {
   commands: Command[];
   /// A list to open on (a terminal's links), which Esc closes from.
   start?: Command;
   todos: Todo[];
-  themes: Theme[];
-  categories: Category[];
+  readings: Reading[];
   onOpenTodo: (id: number) => void;
-  /// A study time for the theme.
-  onStudy: (theme: Theme) => void;
+  /// Opens a reading in 学習.
+  onRead: (id: number) => void;
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
@@ -5928,12 +4532,11 @@ function CommandPalette({ commands, todos, themes, categories, start, onOpenTodo
           .slice(0, 20)
           .map((t) => ({ key: `todo:${t.id}`, label: `#${t.id} ${t.title}`, hint: t.status, run: () => onOpenTodo(t.id) }))
       : []),
-    // A theme starts its study time.
     ...(q
-      ? themes
-          .filter((t) => themeLabel(t, categories).toLowerCase().includes(q))
+      ? readings
+          .filter((r) => r.title.toLowerCase().includes(q) || r.tags?.some((t) => t.toLowerCase().includes(q)))
           .slice(0, 20)
-          .map((t) => ({ key: `theme:${t.id}`, label: `学ぶ時間：${themeLabel(t, categories)}`, run: () => onStudy(t) }))
+          .map((r) => ({ key: `reading:${r.id}`, label: r.title, hint: `学習 · ${READING_KIND[r.kind]}`, run: () => onRead(r.id) }))
       : []),
   ];
   useEffect(() => setActive(0), [query, stack.length]);
@@ -5971,8 +4574,8 @@ function CommandPalette({ commands, todos, themes, categories, start, onOpenTodo
           key={page?.key ?? "root"}
           autoFocus
           value={query}
-          placeholder={page ? `${page.label}を絞り込む` : "操作を選ぶ、または todo や input を検索"}
-          aria-label={page ? `${page.label}を絞り込む` : "操作を選ぶ、または todo や input を検索"}
+          placeholder={page ? `${page.label}を絞り込む` : "操作を選ぶ、または todo や読みものを検索"}
+          aria-label={page ? `${page.label}を絞り込む` : "操作を選ぶ、または todo や読みものを検索"}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={(e) => {
             // ⌃J ⌃K (as set) move too, as in fzf.
@@ -6059,12 +4662,8 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
 }
 
 type Selection = { kind: "todo"; id: number } | null;
-type DialogKind = "add" | "toInput" | "import" | "quick" | "palette" | "keys" | "exitFocus" | "focusPick" | "start" | "settings" | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "start" | "settings" | null;
 
-/// Keys the focus mode still lets through with ⌘: editing text (copy, paste, …).
-const FOCUS_EDIT_KEYS = ["c", "v", "x", "a", "z"];
-
-/// Asked on Esc in the focus mode: Esc again leaves, Enter stays.
 /// A page's alert, confirm or prompt, as the app's dialog (the page waits for the answer).
 function PageDialog({ ask, onAnswer }: { ask: PageDialogAsk; onAnswer: (ok: boolean, text?: string) => void }) {
   const input = useRef<HTMLInputElement>(null);
@@ -6095,45 +4694,12 @@ function PageDialog({ ask, onAnswer }: { ask: PageDialogAsk; onAnswer: (ok: bool
   );
 }
 
-function ExitFocusDialog({ onExit, onStay }: { onExit: () => void; onStay: () => void }) {
-  useEffect(() => {
-    // Ahead of the dialog's own Esc (which would only close it).
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" && e.key !== "Enter") return;
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      (e.key === "Escape" ? onExit : onStay)();
-    };
-    window.addEventListener("keydown", onKey, true);
-    return () => window.removeEventListener("keydown", onKey, true);
-  }, [onExit, onStay]);
-  return (
-    <Modal
-      title="学ぶ時間を終えますか？"
-      onClose={onStay}
-      footer={
-        <>
-          <span className="grow" />
-          <button className="ghost" onClick={onStay}>
-            続ける <span className="kbd">Enter</span>
-          </button>
-          <button className="primary" onClick={onExit}>
-            終える <span className="kbd">Esc</span>
-          </button>
-        </>
-      }
-    >
-      <p className="muted">もう一度 Esc で終わります。</p>
-    </Modal>
-  );
-}
-
 /// Keys that stay as they are, shown under the ones that can change.
 const FIXED_KEYS: [string, string][] = [
   ["↑↓←→", "一覧・カンバンの移動（変えたキーと一緒に使えます）"],
   ["Enter", "開く（todo のシート、セッション、メニューの項目）"],
   ["⌥Enter", "開き方を選ぶ（セッション）/ PR を開く（PR）"],
-  ["Esc", "シートやパネル、メニューを閉じる（学ぶ時間では終えるか聞く）"],
+  ["Esc", "シートやパネル、メニューを閉じる（学習で読んでいるときは一覧へ）"],
 ];
 
 /// Every shortcut, and changing one: its key's button, then the new key
@@ -6141,7 +4707,7 @@ const FIXED_KEYS: [string, string][] = [
 /// Where things open and run, and what the browser keeps for sites: the
 /// logins (their sites and users), the sites not asked about, and the
 /// microphone and camera answers.
-function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, report, onClose }: {
+function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasOpenaiKey, run, report, onClose }: {
   cloudTarget: CloudTarget;
   onCloudTarget: (t: CloudTarget) => void;
   terminalTarget: TerminalTarget;
@@ -6149,9 +4715,13 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
   herdr: HerdrSessions | null;
   onLoadHerdr: () => void;
   onPickHerdr: (name: string) => void;
+  /// An OpenAI API key is kept (for the readings' tags).
+  hasOpenaiKey: boolean;
+  run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   onClose: () => void;
 }) {
+  const keyRef = useRef<HTMLInputElement>(null);
   const [logins, setLogins] = useState<{ site: string; user: string }[] | null>(null);
   const [never, setNever] = useState<string[]>([]);
   const [permissions, setPermissions] = useState<Record<string, boolean>>({});
@@ -6203,6 +4773,42 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
                 停止中（探し直す）
               </button>
             )}
+          </div>
+        </section>
+        <section>
+          <h3>学習</h3>
+          <div className="setting-row">
+            <span className="grow">
+              OpenAI の API キー（読みものにタグを付ける Decisions API 用。Keychain に置きます）
+              <span className="muted">{hasOpenaiKey ? " · 保存済み" : " · まだありません"}</span>
+            </span>
+          </div>
+          <div className="setting-row">
+            <input ref={keyRef} className="grow mono" type="password" placeholder={hasOpenaiKey ? "新しいキーで置き換える" : "sk-…"} aria-label="OpenAI の API キー" onKeyDown={(e) => isEnter(e) && run(() => api.setOpenaiKey(e.currentTarget.value).then(() => keyRef.current && (keyRef.current.value = "")))} />
+            <button className="small" onClick={() => run(() => api.setOpenaiKey(keyRef.current?.value ?? "").then(() => keyRef.current && (keyRef.current.value = "")))}>
+              保存
+            </button>
+            {hasOpenaiKey && (
+              <button className="ghost small" onClick={() => run(() => api.setOpenaiKey(""))}>
+                消す
+              </button>
+            )}
+          </div>
+        </section>
+        <section>
+          <h3>ブラウザ</h3>
+          <div className="setting-row">
+            <span className="grow">固定の OneLogin が開くポータル</span>
+            <input
+              className="mono"
+              defaultValue={loadText(ONELOGIN_URL_KEY)}
+              placeholder={ONELOGIN_DEFAULT_URL}
+              aria-label="OneLogin のポータルの URL"
+              onBlur={(e) => {
+                const url = addressToUrl(e.currentTarget.value);
+                remember(ONELOGIN_URL_KEY, url && !url.startsWith(SEARCH_URL) ? url : "");
+              }}
+            />
           </div>
         </section>
         <SlackSettings report={report} />
@@ -6282,39 +4888,660 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/// The spaces in the bar at the top, with their keys (⌘1–⌘4).
+const SPACES: { key: Space; label: string; icon: IconName; action: Action }[] = [
+  { key: "manage", label: "管理", icon: "board", action: "spaceManage" },
+  { key: "work", label: "作業", icon: "terminal", action: "spaceWork" },
+  { key: "study", label: "学習", icon: "book", action: "spaceStudy" },
+  { key: "browser", label: "ブラウザ", icon: "globe", action: "spaceBrowser" },
+];
+const SPACE_ACTIONS: [Action, Space][] = SPACES.map((s) => [s.action, s.key]);
+
+/// The bar at the window's top: the spaces (あなた待ち's count on 作業's,
+/// as what waits is answered there), ⌘K, and the settings.
+function SpaceBar({ space, waiting, onSpace, onSearch, onSettings }: { space: Space; waiting: number; onSpace: (s: Space) => void; onSearch: () => void; onSettings: () => void }) {
+  return (
+    <header className="space-bar">
+      <span className="brand">
+        <img className="brand-mark" src={logoUrl} alt="" aria-hidden="true" />
+        <span>Shosai</span>
+      </span>
+      <nav className="spaces" aria-label="場">
+        {SPACES.map((s) => (
+          <button key={s.key} className={`space-tab${space === s.key ? " on" : ""}`} aria-current={space === s.key ? "page" : undefined} onClick={() => onSpace(s.key)}>
+            <Icon name={s.icon} size={14} />
+            {s.label}
+            {s.key === "work" && waiting > 0 && (
+              <span className="pill waiting" title="あなたが動かないと進まないもの：返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼">
+                <i />
+                あなた待ち {waiting}
+              </span>
+            )}
+            <span className="kbd">{keyLabel(keyOf(s.action))}</span>
+          </button>
+        ))}
+      </nav>
+      <span className="grow" />
+      <button className="search" onClick={onSearch}>
+        <Icon name="search" size={13} />
+        <span className="grow ellipsis">検索・操作</span>
+        <span className="kbd">{keyLabel(keyOf("palette"))}</span>
+      </button>
+      <button className="ghost small" onClick={onSettings}>
+        設定
+      </button>
+    </header>
+  );
+}
+
+/// What 学習 keeps across restarts: the readings open (their pages on the
+/// left), the left's tab shown, whether the list or the reading is up, and
+/// the pinned page on the right.
+interface StudyState {
+  open: number[];
+  active: string | null;
+  view: "list" | "read";
+  right: string;
+}
+const STUDY_KEY = "study";
+const NO_STUDY: StudyState = { open: [], active: null, view: "list", right: "pinchatgpt" };
+/// A reading's tab (ids are letters and digits only).
+const readingTabId = (id: number) => `r${id}`;
+/// Where a reading opens: a book at its first chapter not read yet.
+const readingUrl = (r: Reading) => (r.kind === "book" ? (r.chapters.find((c) => !c.read)?.url ?? r.url) : r.url);
+const READING_KIND: Record<ReadingKind, string> = { article: "記事", post: "X の投稿", book: "本" };
+type KindFilter = "all" | ReadingKind;
+const KIND_FILTERS: KindFilter[] = ["all", "article", "post", "book"];
+const KIND_FILTER_LABEL: Record<KindFilter, string> = { all: "すべて", ...READING_KIND };
+/// The tag filter's choices besides the tags: every reading, and those not sorted yet.
+const ALL_TAGS = "";
+const UNSORTED = "\n";
+
+/// A reading's row as the lists show it: what it is, its title, where from, its tags.
+function ReadingMeta({ r }: { r: Reading }) {
+  const read = r.chapters.filter((c) => c.read).length;
+  return (
+    <span className="reading-meta">
+      <span className="muted">{r.kind === "post" ? "X" : hostOf(r.url)}</span>
+      <span className="muted">· {ago(r.created_at)}</span>
+      {r.tags === null ? <span className="tag pending">分類待ち</span> : r.tags.map((t) => <span key={t} className="tag">{t}</span>)}
+      {r.kind === "book" && r.chapters.length > 0 && (
+        <span className="book-progress" title={`${r.chapters.length} 章のうち ${read} 章を読んだ`}>
+          <span className="meter-mini" aria-hidden="true">
+            <i style={{ width: `${(read / r.chapters.length) * 100}%` }} />
+          </span>
+          章 {read}/{r.chapters.length}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/// 学習's list: every reading, the newest first, narrowed by kind, tag and
+/// words. Picked ones (x) read together, or have their URLs copied for
+/// NotebookLM; every action has its key (keymap.ts, "学習の一覧").
+function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, onBrowser, onSettings, onToast }: {
+  readings: Reading[];
+  sort: ReadingSort | undefined;
+  /// How many readings are open to read (to go back to them).
+  opened: number;
+  run: (f: () => Promise<unknown>) => void;
+  report: (e: unknown) => void;
+  onRead: (ids: number[]) => void;
+  onResume: () => void;
+  onBrowser: (url: string) => void;
+  onSettings: () => void;
+  onToast: (text: string) => void;
+}) {
+  const [kind, setKind] = useState<KindFilter>("all");
+  const [tag, setTag] = useState(ALL_TAGS);
+  const [query, setQuery] = useState("");
+  const [picked, setPicked] = useState<number[]>([]);
+  const [forgetting, setForgetting] = useState<number | null>(null);
+  const [tagsFor, setTagsFor] = useState<number | null>(null);
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const ofKind = readings.filter((r) => kind === "all" || r.kind === kind);
+  const shown = ofKind.filter(
+    (r) =>
+      (tag === ALL_TAGS || (tag === UNSORTED ? r.tags === null : !!r.tags?.includes(tag))) &&
+      words.every((w) => `${r.title} ${r.text ?? ""} ${r.url}`.toLowerCase().includes(w)),
+  );
+  const tags = sort?.tags ?? [];
+  const count = (t: string) => ofKind.filter((r) => (t === UNSORTED ? r.tags === null : r.tags?.includes(t))).length;
+  const togglePick = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  const copyUrls = (ids: number[]) => {
+    const urls = ids.map((id) => readings.find((r) => r.id === id)?.url).filter((u): u is string => !!u);
+    api.copyText(urls.join("\n")).then(() => onToast(`${urls.length} 件の URL をコピーしました。NotebookLM のソースの追加（ウェブサイト）に貼ってください`), report);
+  };
+  const byRow = (id: string) => readings.find((r) => `r:${r.id}` === id);
+  const { cursorId, list } = useRowCursor(
+    shown.map((r) => `r:${r.id}`),
+    (id) => {
+      const r = byRow(id);
+      if (r) onRead([r.id]);
+    },
+    (e, id) => {
+      const r = byRow(id);
+      if (!r) return false;
+      if (forgetting !== null && e.key === "Escape") return (setForgetting(null), true);
+      const acts: [boolean, () => void][] = [
+        [matches(e, "studyPick"), () => togglePick(r.id)],
+        [matches(e, "studyRead"), () => onRead(picked.length > 0 ? picked : [r.id])],
+        [matches(e, "studyBrowser"), () => onBrowser(r.url)],
+        [matches(e, "studyForget"), () => (forgetting === r.id ? (setForgetting(null), run(() => api.deleteReading(r.id))) : setForgetting(r.id))],
+        [matches(e, "studyTags"), () => setTagsFor(r.id)],
+        [matches(e, "studyKind"), () => setKind((k) => KIND_FILTERS[(KIND_FILTERS.indexOf(k) + 1) % KIND_FILTERS.length])],
+        [matches(e, "studyCopy"), () => copyUrls(picked.length > 0 ? picked : [r.id])],
+        [matches(e, "search"), () => document.querySelector<HTMLInputElement>(".readings-search")?.focus()],
+      ];
+      const hit = acts.find(([yes]) => yes);
+      hit?.[1]();
+      return !!hit;
+    },
+  );
+  return (
+    <div className="readings-page">
+      <nav className="readings-filters" aria-label="絞り込み">
+        <div className="section-title">種類 <span className="kbd">{keyLabel(keyOf("studyKind"))}</span></div>
+        {KIND_FILTERS.map((k) => (
+          <button key={k} className={`filter-row${kind === k ? " on" : ""}`} aria-pressed={kind === k} onClick={() => setKind(k)}>
+            <span className="grow">{KIND_FILTER_LABEL[k]}</span>
+            <span className="muted">{k === "all" ? readings.length : readings.filter((r) => r.kind === k).length}</span>
+          </button>
+        ))}
+        <div className="section-title">タグ</div>
+        <button className={`filter-row${tag === ALL_TAGS ? " on" : ""}`} aria-pressed={tag === ALL_TAGS} onClick={() => setTag(ALL_TAGS)}>
+          <span className="grow">すべて</span>
+          <span className="muted">{ofKind.length}</span>
+        </button>
+        {count(UNSORTED) > 0 && (
+          <button className={`filter-row${tag === UNSORTED ? " on" : ""}`} aria-pressed={tag === UNSORTED} onClick={() => setTag(UNSORTED)}>
+            <span className="grow">分類待ち</span>
+            <span className="muted">{count(UNSORTED)}</span>
+          </button>
+        )}
+        {tags
+          .filter((t) => count(t) > 0)
+          .map((t) => (
+            <button key={t} className={`filter-row${tag === t ? " on" : ""}`} aria-pressed={tag === t} onClick={() => setTag(t)}>
+              <span className="grow ellipsis">{t}</span>
+              <span className="muted">{count(t)}</span>
+            </button>
+          ))}
+      </nav>
+      <main className="main readings-main">
+        <header className="toolbar">
+          <h1>読みもの</h1>
+          <span className="muted">{shown.length} 件</span>
+          {opened > 0 && (
+            <button className="small" onClick={onResume}>
+              読んでいる {opened} 件に戻る
+            </button>
+          )}
+          <span className="grow" />
+          <input className="filter-search readings-search" value={query} placeholder="タイトル・本文で探す（/）" aria-label="読みものを探す" onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Escape" && e.currentTarget.blur()} />
+        </header>
+        {sort && !sort.has_key && readings.some((r) => r.tags === null) && (
+          <div className="notice">
+            <span className="grow">OpenAI の API キーを設定すると、タグを自動で付けます（Decisions API）。</span>
+            <button className="small" onClick={onSettings}>
+              設定を開く
+            </button>
+          </div>
+        )}
+        {sort?.error && (
+          <div className="notice danger-notice">
+            <span className="grow">タグを付けられませんでした：{sort.error}（次に入れたときか、キーを設定し直したときにやり直します）</span>
+          </div>
+        )}
+        {picked.length > 0 ? (
+          <div className="notice picked-bar">
+            <b className="grow">{picked.length} 件を選んでいます</b>
+            <button className="primary small" onClick={() => onRead(picked)}>
+              まとめて読む <span className="kbd">{keyLabel(keyOf("studyRead"))}</span>
+            </button>
+            <button className="small" onClick={() => copyUrls(picked)}>
+              URL をコピー（NotebookLM 用） <span className="kbd">{keyLabel(keyOf("studyCopy"))}</span>
+            </button>
+            <button className="ghost small" onClick={() => setPicked([])}>
+              選ぶのをやめる
+            </button>
+          </div>
+        ) : (
+          <p className="muted hint readings-hint">
+            入れ方：ページで {keyLabel(keyOf("bookmark"))}、リンクを ⌥ クリック、X ではブックマークのボタン。O'Reilly の本のページなら本として目次ごと入ります。{keyLabel(keyOf("studyPick"))} で選ぶと、まとめて読めます。
+          </p>
+        )}
+        <div className="content" ref={list}>
+          {readings.length === 0 && <p className="muted empty">まだありません。ブラウザでページを開いて {keyLabel(keyOf("bookmark"))} を押すと、ここに並びます。</p>}
+          {readings.length > 0 && shown.length === 0 && <p className="muted empty">合う読みものはありません。</p>}
+          <ul className="rows">
+            {shown.map((r) => {
+              const row = `r:${r.id}`;
+              const isPicked = picked.includes(r.id);
+              return (
+                <li key={r.id} data-row={row} className={`row reading-row${row === cursorId ? " cursor" : ""}${isPicked ? " picked" : ""}`} onClick={() => onRead([r.id])}>
+                  <input type="checkbox" checked={isPicked} aria-label={`${r.title} を選ぶ`} onClick={stop} onChange={() => togglePick(r.id)} />
+                  <span className={`reading-kind kind-${r.kind}`} aria-hidden="true">
+                    {READING_KIND[r.kind]}
+                  </span>
+                  <span className="reading-main">
+                    <span className="row-title ellipsis">{r.title}</span>
+                    <ReadingMeta r={r} />
+                  </span>
+                  <span className="row-actions" onClick={stop}>
+                    <button className="small" title="読む（Enter）" onClick={() => onRead([r.id])}>
+                      {r.kind === "book" ? (r.chapters.some((c) => c.read) ? "続きを読む" : "読み始める") : "読む"}
+                    </button>
+                    <button className="ghost small" title={`ブラウザで開く（${keyLabel(keyOf("studyBrowser"))}）`} onClick={() => onBrowser(r.url)}>
+                      ブラウザで
+                    </button>
+                    <span className="menu-anchor">
+                      <button className="ghost small" title={`タグを直す（${keyLabel(keyOf("studyTags"))}）`} aria-expanded={tagsFor === r.id} onClick={() => setTagsFor(tagsFor === r.id ? null : r.id)}>
+                        タグ
+                      </button>
+                      {tagsFor === r.id && <TagMenu reading={r} tags={tags} run={run} onClose={() => setTagsFor(null)} />}
+                    </span>
+                    {forgetting === r.id ? (
+                      <span className="inline-confirm">
+                        <button className="danger small" onClick={() => (setForgetting(null), run(() => api.deleteReading(r.id)))}>
+                          消す
+                        </button>
+                        <button className="ghost small" onClick={() => setForgetting(null)}>
+                          やめる
+                        </button>
+                      </span>
+                    ) : (
+                      <button className="ghost icon" aria-label={`${r.title} を消す`} title={`消す（${keyLabel(keyOf("studyForget"))}）`} onClick={() => setForgetting(r.id)}>
+                        <Icon name="close" size={12} />
+                      </button>
+                    )}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      </main>
+    </div>
+  );
+}
+
+/// A reading's tags put right by hand: each a checkbox in a menu (↑↓ or j k
+/// move, Enter puts it on or off, Esc closes).
+function TagMenu({ reading, tags, run, onClose }: { reading: Reading; tags: string[]; run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
+  const root = useRef<HTMLSpanElement>(null);
+  useOutsideClose(root, true, onClose);
+  const menuKeys = useMenuKeys(true, onClose);
+  const has = reading.tags ?? [];
+  const toggle = (t: string) => run(() => api.setReadingTags(reading.id, has.includes(t) ? has.filter((x) => x !== t) : tags.filter((x) => x === t || has.includes(x))));
+  return (
+    <span ref={root} className="tag-menu-anchor">
+      <span className="menu tag-menu" role="menu" aria-label={`${reading.title} のタグ`} {...menuKeys}>
+        {tags.map((t) => (
+          <button key={t} role="menuitem" aria-checked={has.includes(t)} onClick={() => toggle(t)}>
+            <span className="check">{has.includes(t) ? <Icon name="check" size={12} /> : null}</span>
+            {t}
+          </button>
+        ))}
+      </span>
+    </span>
+  );
+}
+
+/// 学習's left while reading: a book's contents (its chapters, read or not:
+/// m marks the one under the cursor), or the readings to open beside.
+function StudyRail({ reading, readings, opened, run, onRead, onList }: {
+  /// The reading shown on the left.
+  reading: Reading | undefined;
+  readings: Reading[];
+  opened: number[];
+  run: (f: () => Promise<unknown>) => void;
+  onRead: (ids: number[]) => void;
+  onList: () => void;
+}) {
+  const book = reading?.kind === "book" && reading.chapters.length > 0 ? reading : undefined;
+  const rows = book ? book.chapters.map((c) => `c:${c.position}`) : readings.map((r) => `r:${r.id}`);
+  const toggle = (position: number, read: boolean) => book && run(() => api.setChapterRead(book.id, position, read));
+  const { cursorId, list } = useRowCursor(
+    rows,
+    (id) => {
+      if (id.startsWith("r:")) onRead([Number(id.slice(2))]);
+      else {
+        const c = book?.chapters.find((x) => `c:${x.position}` === id);
+        if (c) toggle(c.position, !c.read);
+      }
+    },
+    (e, id) => {
+      if (matches(e, "studyList")) return (onList(), true);
+      if (!matches(e, "studyChapter") || !id.startsWith("c:")) return false;
+      const c = book?.chapters.find((x) => `c:${x.position}` === id);
+      if (c) toggle(c.position, !c.read);
+      return true;
+    },
+  );
+  const read = book?.chapters.filter((c) => c.read).length ?? 0;
+  return (
+    <nav className="split-rail study-rail" aria-label={book ? "目次" : "読みもの"} ref={list}>
+      <div className="rail-head">
+        <button className="ghost small" onClick={onList} title={`一覧へ（${keyLabel(keyOf("studyList"))}）`}>
+          <Icon name="back" size={12} /> 一覧
+        </button>
+        <span className="muted small-text">{book ? "目次" : "読みもの"}</span>
+      </div>
+      {book ? (
+        <>
+          <div className="book-head">
+            <b>{book.title}</b>
+            <span className="book-progress">
+              <span className="meter-mini" aria-hidden="true">
+                <i style={{ width: `${(read / book.chapters.length) * 100}%` }} />
+              </span>
+              章 {read}/{book.chapters.length} 読んだ
+            </span>
+          </div>
+          <ul className="rows compact">
+            {book.chapters.map((c) => (
+              <li key={c.position} data-row={`c:${c.position}`} className={`row chapter-row${`c:${c.position}` === cursorId ? " cursor" : ""}${c.read ? " read" : ""}`}>
+                <input type="checkbox" checked={c.read} aria-label={`第${c.position}章を読んだ`} onChange={() => toggle(c.position, !c.read)} />
+                <span className="mono muted">{c.position}</span>
+                <span className="row-title ellipsis" title={c.title}>
+                  {c.title}
+                </span>
+              </li>
+            ))}
+          </ul>
+          <span className="muted small-text rail-hint">章を最後までスクロールすると印が付きます。{keyLabel(keyOf("studyChapter"))} でも付け外しできます</span>
+        </>
+      ) : (
+        <ul className="rows compact">
+          {readings.map((r) => (
+            <li key={r.id} data-row={`r:${r.id}`} className={`row${`r:${r.id}` === cursorId ? " cursor" : ""}${r.id === reading?.id ? " selected" : ""}`} onClick={() => onRead([r.id])}>
+              <span className="reading-main">
+                <span className="row-title ellipsis">{r.title}</span>
+                <span className="muted small-text">
+                  {READING_KIND[r.kind]} · {r.kind === "post" ? "X" : hostOf(r.url)}
+                  {opened.includes(r.id) ? " · 開いている" : ""}
+                </span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </nav>
+  );
+}
+
+/// What 作業 keeps across restarts: what is picked in its list (`t<todo id>`
+/// or `s<session id>`) and the subtask shown on the right.
+interface WorkState {
+  pick: string | null;
+  child: number | null;
+}
+const WORK_KEY = "work";
+/// A session's page or terminal in 作業 (ids are letters and digits only).
+const workTabId = (sessionId: string) => `w${sessionId.replace(/[^A-Za-z0-9]/g, "")}`;
+/// The session a todo is worked in: the latest live one, else the latest.
+function mainSession(todo: Todo): Session | undefined {
+  const byLatest = [...todo.sessions].sort((a, b) => b.state_at - a.state_at);
+  return byLatest.find((s) => s.state !== "ended") ?? byLatest[0];
+}
+/// What 作業 shows for its pick: a parent todo's planning session (left) and
+/// a subtask's (right, with the subtasks as tabs), or one session alone.
+interface WorkView {
+  title: string | null;
+  todo?: Todo;
+  children: Todo[];
+  child?: Todo;
+  left?: Session;
+  right?: Session;
+}
+function workViewOf(board: Board | null, work: WorkState): WorkView {
+  const none: WorkView = { title: null, children: [] };
+  if (!board || !work.pick) return none;
+  if (work.pick.startsWith("s")) {
+    const id = work.pick.slice(1);
+    const session = [...board.inbox, ...board.todos.flatMap((t) => t.sessions)].find((s) => s.session_id === id);
+    return session ? { title: sessionLabel(session), children: [], left: session } : none;
+  }
+  const todo = board.todos.find((t) => `t${t.id}` === work.pick);
+  if (!todo) return none;
+  const children = board.todos.filter((t) => t.parent_id === todo.id);
+  if (children.length === 0 && !todo.plan) return { title: todo.title, todo, children, left: mainSession(todo) };
+  // The subtask asked for, else one that asks, else one at work, else the first.
+  const asks = (t: Todo) => t.sessions.some((s) => s.state === "needs_input");
+  const runs = (t: Todo) => t.sessions.some((s) => s.state === "running");
+  const child = children.find((c) => c.id === work.child) ?? children.find(asks) ?? children.find(runs) ?? children[0];
+  return { title: todo.title, todo, children, child, left: mainSession(todo), right: child && mainSession(child) };
+}
+
+/// A row of 作業's list: a todo at work (a parent with its subtasks' state)
+/// or a session of no todo.
+interface WorkRow {
+  key: string;
+  todo?: Todo;
+  session?: Session;
+}
+
+/// 作業's list on the left: あなた待ち first (what is asked, in one line),
+/// then the todos at work, the reviews and the sessions of no todo. j k move,
+/// Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
+function WorkRail({ board, waiting, pick, width, onResize, onPick, onShowPrs, onQuick, run }: {
+  board: Board;
+  waiting: WaitItem[];
+  pick: string | null;
+  width: number;
+  onResize: (w: number) => void;
+  /// Shows a row's work: a todo (a subtask's at its parent) or a session.
+  onPick: (at: { todo: number } | { session: string }) => void;
+  onShowPrs: () => void;
+  onQuick: () => void;
+  run: (f: () => Promise<unknown>) => void;
+}) {
+  const fix = useContext(FixContext);
+  const [showEnded, setShowEnded] = useState(false);
+  const live = (s: Session) => s.state !== "ended";
+  const todos = board.todos.filter((t) => t.status !== "done");
+  // A todo is at work while it or (for a parent) one of its subtasks has a live session.
+  const atWork = todos.filter((t) => t.parent_id === null && (t.sessions.some(live) || todos.some((c) => c.parent_id === t.id && c.sessions.some(live))));
+  const waitingSessions = new Set(waiting.flatMap((w) => (w.session ? [w.session.session_id] : [])));
+  const shownWaits = waiting.filter((w) => !isReviewAsk(w));
+  const asks = waiting.length - shownWaits.length;
+  // Sessions put away (⌘⇧A) and routines' runs are out, but for one asking.
+  const listed = (s: Session) => (!s.hidden && !s.routine) || s.state === "needs_input";
+  const loose = board.inbox.filter((s) => (showEnded || live(s)) && listed(s) && !waitingSessions.has(s.session_id));
+  const reviews = loose.filter((s) => s.review_url);
+  const others = loose.filter((s) => !s.review_url);
+  const ended = board.inbox.filter((s) => !live(s) && listed(s)).length;
+  const rows: WorkRow[] = [
+    ...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })),
+    ...atWork.map((t) => ({ key: `t${t.id}`, todo: t })),
+    ...reviews.map((s) => ({ key: `s${s.session_id}`, session: s })),
+    ...others.map((s) => ({ key: `s${s.session_id}`, session: s })),
+  ];
+  const open = (r: WorkRow) => (r.todo ? onPick({ todo: r.todo.id }) : r.session ? onPick({ session: r.session.session_id }) : undefined);
+  const { cursorId, list } = useRowCursor(
+    [...rows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : [])],
+    (id) => {
+      if (id === ASKS_ROW) return onShowPrs();
+      const r = rows.find((x) => x.key === id);
+      if (r) open(r);
+    },
+    (e, id) => {
+      const s = rows.find((x) => x.key === id)?.session;
+      if (!matches(e, "archive") || !s) return false;
+      run(() => (isCloud(s) ? api.archiveSessions([s.session_id]) : api.hideSession(s.session_id)));
+      return true;
+    },
+  );
+  const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
+  const sessionRow = (r: WorkRow, s: Session) => (
+    <li key={r.key} data-row={r.key} className={`row work-row${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}`} onClick={() => open(r)}>
+      <span className="work-line">
+        <StateBadge state={s.state} unread={s.unread} />
+        <span className="row-title ellipsis">{sessionLabel(s)}</span>
+      </span>
+      <span className="muted small-text ellipsis">
+        {s.review_url ? `${prRef(s.review_url)} · ` : ""}
+        {placeOf(s)} · {ago(s.state_at)}
+      </span>
+    </li>
+  );
+  return (
+    <nav className="split-rail work-rail" aria-label="作業の一覧" ref={list}>
+      <div className="rail-head">
+        <h1>作業</h1>
+        <span className="grow" />
+        <button className="ghost small" onClick={onQuick} title="todo に紐づけずに claude を開く">
+          <Icon name="spark" size={12} /> ちょっと Claude
+        </button>
+      </div>
+      <div className="rail-body">
+        {(shownWaits.length > 0 || asks > 0) && (
+          <section>
+            <div className="section-title waiting-title">あなた待ち {waiting.length}</div>
+            <ul className="rows compact">
+              {shownWaits.map((w) => {
+                const key = `w:${w.key}`;
+                const r: WorkRow = { key, todo: w.todo, session: w.session };
+                return (
+                  <li key={key} data-row={key} className={`row work-row wait-row${key === cursorId ? " cursor" : ""}`} onClick={() => open(r)}>
+                    <span className="work-line">
+                      <span className="state state-needs_input">
+                        <i />
+                        {w.reasons.map((x) => WAIT_WORD[x]).join("・")}
+                      </span>
+                      {w.todo && <span className="mono muted">#{w.todo.id}</span>}
+                      <span className="row-title ellipsis">{w.session ? sessionLabel(w.session) : (w.todo?.title ?? w.review?.title)}</span>
+                    </span>
+                    <span className="ask-line" title={w.line}>
+                      {w.line}
+                    </span>
+                    <span className="work-line muted small-text">
+                      <span className="ellipsis">{[w.todo?.parent_id ? `親 #${w.todo.parent_id}` : null, w.session ? placeOf(w.session) : null, w.session ? ago(w.session.state_at) : null].filter(Boolean).join(" · ")}</span>
+                      <span className="grow" />
+                      {w.todo && w.reasons.includes("escalated") && (
+                        <button className="small" title="指揮役から回されたことに対応しました（あなた待ちから外します）" onClick={(e) => (e.stopPropagation(), run(() => api.clearEscalation(w.todo!.id)))}>
+                          対応した
+                        </button>
+                      )}
+                      {w.session && w.todo && fix && (w.reasons.includes("ci") || w.reasons.includes("changes")) && (
+                        <button className="small" title="元のセッションに、直すところを送ります（画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), fix(w.session!, w.todo!))}>
+                          直させる
+                        </button>
+                      )}
+                    </span>
+                  </li>
+                );
+              })}
+              {asks > 0 && (
+                <li data-row={ASKS_ROW} className={`row work-row wait-row${ASKS_ROW === cursorId ? " cursor" : ""}`} onClick={onShowPrs}>
+                  <span className="work-line">
+                    <span className="state state-needs_input">
+                      <i />
+                      {WAIT_WORD.review}
+                    </span>
+                    <span className="row-title">まだ始めていないレビュー依頼 {asks} 件</span>
+                  </span>
+                  <span className="muted small-text">管理の PR で始めます</span>
+                </li>
+              )}
+            </ul>
+          </section>
+        )}
+        <section>
+          <div className="section-title">作業中</div>
+          {atWork.length === 0 && <p className="muted hint">動いている todo はありません。管理で todo を任せると、ここに並びます。</p>}
+          <ul className="rows compact">
+            {atWork.map((t) => {
+              const children = todos.filter((c) => c.parent_id === t.id);
+              const key = `t${t.id}`;
+              const s = mainSession(t);
+              const under = waiting.filter((w) => w.todo && (w.todo.id === t.id || w.todo.parent_id === t.id)).length;
+              return (
+                <li key={key} data-row={key} className={`row work-row${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}`} onClick={() => onPick({ todo: t.id })}>
+                  <span className="work-line">
+                    {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={t.status} />}
+                    <span className="mono muted">#{t.id}</span>
+                    <span className="row-title ellipsis">{t.title}</span>
+                  </span>
+                  <span className="work-line muted small-text">
+                    {children.length > 0 && (
+                      <span>
+                        サブタスク {board.todos.filter((c) => c.parent_id === t.id && c.status === "done").length}/{board.todos.filter((c) => c.parent_id === t.id).length}
+                      </span>
+                    )}
+                    {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
+                    {s && <span className="ellipsis">{placeOf(s)} · {ago(s.state_at)}</span>}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+        {reviews.length > 0 && (
+          <section>
+            <div className="section-title">レビュー</div>
+            <ul className="rows compact">{reviews.map((s) => sessionRow({ key: `s${s.session_id}`, session: s }, s))}</ul>
+          </section>
+        )}
+        {others.length > 0 && (
+          <section>
+            <div className="section-title">todo のないセッション</div>
+            <ul className="rows compact">{others.map((s) => sessionRow({ key: `s${s.session_id}`, session: s }, s))}</ul>
+          </section>
+        )}
+        {ended > 0 && (
+          <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
+            {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件`}
+          </button>
+        )}
+        <span className="muted small-text rail-hint">
+          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける
+        </span>
+      </div>
+      <Resizer label="作業の一覧の幅" cssVar="--rail-w" edge="right" width={width} min={RAIL_MIN_W} max={() => RAIL_MAX_W} onResize={onResize} />
+    </nav>
+  );
+}
+
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
-  // Pages in the browser pane. The pane stays across screens, shown or
-  // hidden from the sidebar; hiding it keeps the tabs.
-  // Kept across restarts (see `restoreTabs`).
+  // The space shown (⌘1–⌘4), kept across restarts.
+  const [space, setSpaceState] = useState<Space>(() => load(SPACE_KEY, ["manage", "work", "study", "browser"] as const, "manage"));
+  const spaceRef = useRef(space);
+  spaceRef.current = space;
+  const setSpace = (s: Space) => {
+    remember(SPACE_KEY, s);
+    spaceRef.current = s;
+    setSpaceState(s);
+  };
+  useEffect(() => void api.setSpace(space).catch((e) => setError(String(e))), [space]);
+  // Every page the app shows: the browser space's tabs (and pinned pages),
+  // the readings' pages (学習) and the sessions' pages and terminals (作業).
+  // The browser space's are kept across restarts (see `restoreTabs`).
   const restored = useRef<ReturnType<typeof restoreTabs> | null>(null);
   restored.current ??= restoreTabs();
   const [tabs, setTabs] = useState<BrowserTab[]>(() => restored.current!.tabs);
   const [activeTabId, setActiveTabIdState] = useState<string | null>(() => restored.current!.active);
   const [newTab, setNewTab] = useState(false);
-  const [browserShown, setBrowserShownState] = useState(() => load(BROWSER_SHOWN_KEY, ["1", "0"] as const, "0") === "1");
-  const setBrowserShown = (v: boolean) => {
-    remember(BROWSER_SHOWN_KEY, v ? "1" : "0");
-    setBrowserShownState(v);
-  };
   const setActiveTabId = (id: string | null) => {
     setActiveTabIdState(id);
     setNewTab(false);
   };
   const nextTab = useRef(tabs.filter((t) => !t.pinned).length + 1);
-  // The pane's tabs: the focus mode's own pages are apart from them.
-  const paneTabs = tabs.filter((t) => !t.focus);
-  // The strip: the pinned pages, the reviews, then the others.
-  const reviewTabs = paneTabs.filter((t) => t.review);
-  const normalTabs = paneTabs.filter((t) => !t.pinned && !t.review);
-  const activeTab = newTab ? null : (paneTabs.find((t) => t.id === activeTabId) ?? paneTabs[paneTabs.length - 1] ?? null);
+  // The browser space's tabs: the pinned pages, then the others.
+  const paneTabs = tabs.filter((t) => !t.area);
+  const normalTabs = paneTabs.filter((t) => !t.pinned);
+  const activeTab = newTab ? null : (paneTabs.find((t) => t.id === activeTabId) ?? normalTabs[normalTabs.length - 1] ?? null);
+  const browserShown = space === "browser";
   const browserUrl = browserShown ? (activeTab?.url ?? null) : null;
   /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]), in the order
-  /// of the strip: the pinned pages (a page not opened yet opens), then the others.
+  /// of the tab list: the pinned pages (a page not opened yet opens), then the others.
   const switchTab = (delta: number) => {
-    const shown = [...PINNED_PAGES.map((p) => p.id), ...reviewTabs.map((t) => t.id), ...normalTabs.map((t) => t.id)];
-    if (!browserShown || shown.length === 0) return;
+    const shown = [...PINNED_PAGES.map((p) => p.id), ...normalTabs.map((t) => t.id)];
+    if (!browserShown) return;
     const i = activeTab ? shown.indexOf(activeTab.id) : delta > 0 ? -1 : shown.length;
     const nextId = shown[(i + delta + shown.length) % shown.length];
     if (PINNED_PAGES.some((p) => p.id === nextId)) return showPinned(nextId);
@@ -6324,26 +5551,21 @@ export default function App() {
   };
   const switchRef = useRef(switchTab);
   switchRef.current = switchTab;
-  /// Shows the pane on a new tab page (⌘T).
+  /// The browser space on a new tab page (⌘T).
   const openNewTab = () => {
-    setBrowserShown(true);
+    setSpace("browser");
     setNewTab(true);
-  };
-  const toggleBrowser = () => {
-    if (browserShown) return setBrowserShown(false);
-    setBrowserShown(true);
-    if (tabs.length === 0) setNewTab(true);
   };
   const [cloudTarget, setCloudTargetState] = useState<CloudTarget>(() => load(CLOUD_TARGET_KEY, ["web", "desktop"] as const, "web"));
   const setCloudTarget = (t: CloudTarget) => {
     remember(CLOUD_TARGET_KEY, t);
     setCloudTargetState(t);
   };
-  /// Opens a page of the app's own (a session, a PR) in the pane: the tab
-  /// opened for it comes to the front, else a new tab next to the one shown.
-  /// Opening is the user's action, so
-  /// the page takes the keyboard (`keys` false leaves it), its text box with
-  /// `text` typed in; `behind` leaves the tab shown as it is.
+  /// Opens a page (a PR, an issue, an artifact) in the browser space, which
+  /// comes up with it: the tab opened for it, else a new tab next to the one
+  /// shown. Opening is the user's action, so the page takes the keyboard
+  /// (`keys` false leaves it), its text box with `text` typed in; `behind`
+  /// makes the tab without moving to it.
   /// With ctrl held (see outside.ts): a page in the default browser, a file
   /// with its app. A Slack permalink always (open_link opens it in Slack).
   const openOutside = (url: string) => {
@@ -6352,18 +5574,18 @@ export default function App() {
   };
   const openInBrowser = (url: string, keys = true, behind = false, text?: string) => {
     if (opensOutside() || SLACK_PERMALINK.test(url)) return openOutside(url);
-    const open = findTabFor(paneTabs.filter((t) => !t.pinned && !t.term), url);
+    const open = findTabFor(normalTabs.filter((t) => !t.term), url);
     if (open) {
       if (behind) return;
-      setBrowserShown(true);
-      if (keys) keysToTab(open, activeTab?.id, report, text);
+      setSpace("browser");
+      if (keys) keysToTab(open, browserShown ? activeTab?.id : undefined, report, text);
       return setActiveTabId(open.id);
     }
     const id = `t${nextTab.current++}`;
     if (keys && !behind) focusSoon(id, !!text, text);
     setTabs((prev) => insertAfter(prev, { id, url, openedFor: url, title: null, loading: true, nav: 0 }, activeTab?.id ?? null));
     if (!behind) {
-      setBrowserShown(true);
+      setSpace("browser");
       setActiveTabId(id);
     }
   };
@@ -6372,229 +5594,223 @@ export default function App() {
   const openFromPage = (url: string, from: string, behind: boolean) => {
     const id = `t${nextTab.current++}`;
     if (!behind) focusSoon(id);
-    setTabs((prev) => insertAfter(prev, { id, url, title: null, loading: true, nav: 0 }, prev.some((t) => t.id === from && !t.pinned) ? from : (activeTab?.id ?? null)));
+    setTabs((prev) => insertAfter(prev, { id, url, title: null, loading: true, nav: 0 }, prev.some((t) => t.id === from && !t.pinned && !t.area) ? from : (activeTab?.id ?? null)));
     if (!behind) {
-      setBrowserShown(true);
+      setSpace("browser");
       setActiveTabId(id);
     }
-  };
-  /// Starting a Cloud session to be watched on the web: its tab is made
-  /// behind the one shown (starting does not change what is seen or where the
-  /// keyboard is), marked while the session is made, and then goes to it.
-  const beginWeb: BeginWeb = (review) => {
-    const id = `t${nextTab.current++}`;
-    setTabs((prev) => insertAfter(prev, { id, url: CLOUD_HOME, title: "セッションを作成中…", loading: true, nav: 0, creating: true, review }, activeTab?.id ?? null));
-    return (sessionId) => {
-      if (sessionId) {
-        const url = cloudWebUrl(sessionId);
-        setTabs((prev) =>
-          prev.map((t) => (t.id === id ? { ...t, url, openedFor: url, title: null, loading: false, nav: t.nav + 1, creating: undefined, review: t.review && { ...t.review, session: sessionId } } : t)),
-        );
-      } else {
-        api.browserClose(id).catch(report);
-        setTabs((prev) => prev.filter((t) => t.id !== id));
-      }
-    };
   };
   const [terminalTarget, setTerminalTargetState] = useState<TerminalTarget>(() => load(TERMINAL_TARGET_KEY, ["ghostty", "app"] as const, "ghostty"));
   const setTerminalTarget = (t: TerminalTarget) => {
     remember(TERMINAL_TARGET_KEY, t);
     setTerminalTargetState(t);
   };
-  // The Input mode (FocusMode): a space per subject (an input, or a todo's
-  // pages; FREE_SPACE for pages picked without one), each with its own pages
-  // on the left and right. A subject's space stays (hidden) when the mode
-  // ends and comes back when it is opened again; it is saved to come back
-  // after a restart too.
-  const [focusMode, setFocusMode] = useState(false);
-  /// The right page a new space shows, the one picked last.
-  const [focusRightPref, setFocusRightPref] = useState<string>(() => load(FOCUS_RIGHT_KEY, RIGHT_KINDS, "pinchatgpt"));
-  // What the Input mode is open for (its space), null for FREE_SPACE.
-  const [focusSubject, setFocusSubject] = useState<Subject | null>(null);
-  const [spaces, setSpaces] = useState<Record<string, InputSpace>>({});
-  const spaceKey = subjectKey(focusSubject);
-  const space = spaces[spaceKey] ?? newSpace(focusRightPref);
-  const patchSpace = (key: string, f: (s: InputSpace) => InputSpace) =>
-    setSpaces((prev) => ({ ...prev, [key]: f(prev[key] ?? newSpace(focusRightPref)) }));
-  const focusRight = space.right;
-  const focusRightId = rightTabId(spaceKey, focusRight);
-  /// A space's right page, opened (not shown) if it is not yet; the note's
-  /// tab comes from its address (below).
-  const ensureRight = (key: string, kind: string, url?: string) => {
-    const page = FOCUS_PAGES.find((p) => p.id === kind);
-    const id = rightTabId(key, kind);
-    if (page && !tabs.some((t) => t.id === id)) {
-      setTabs((prev) => [...prev, { id, url: url ?? page.url, title: page.label, loading: true, nav: 0, focus: true, space: key, kind }]);
-    }
-  };
-  /// Picks the right page; it takes the typing (its text box, with `text` typed in).
-  const setFocusRight = (kind: string, text?: string) => {
-    remember(FOCUS_RIGHT_KEY, kind);
-    setFocusRightPref(kind);
-    patchSpace(spaceKey, (s) => ({ ...s, right: kind }));
-    ensureRight(spaceKey, kind, space.rightUrls[kind]);
-    focusSoon(rightTabId(spaceKey, kind), true, text);
-  };
   // The pages take the keys as they are set (their script reads them).
   useEffect(() => void api.setPageKeys(JSON.stringify(allKeys())).catch((e) => setError(String(e))), []);
-  const focusModeRef = useRef(focusMode);
-  focusModeRef.current = focusMode;
-  useEffect(() => void api.setFocusMode(focusMode).catch((e) => setError(String(e))), [focusMode]);
-  // Notifications wait while the focus mode is on (the backend posts none);
-  // on leaving, the page tells how much more waits on the user.
-  const waitingAtFocus = useRef<Set<string>>(new Set());
-  const waitingKeys = useRef<string[]>([]);
-  const [heldWaiting, setHeldWaiting] = useState(0);
-  const exitFocus = () => {
-    setDialog(null);
-    setFocusMode(false);
-    // A todo's space stays to be resumed; pages picked without one go (the
-    // terminals were the pane's all along).
-    if (focusSubject === null) {
-      const free = tabs.filter((t) => t.focus && t.space === FREE_SPACE);
-      for (const t of free) api.browserClose(t.id).catch(report);
-      setTabs((prev) => prev.filter((t) => !(t.focus && t.space === FREE_SPACE)));
-      setSpaces(({ [FREE_SPACE]: _, ...rest }) => rest);
-    }
-    setFocusSubject(null);
-    setHeldWaiting(waitingKeys.current.filter((k) => !waitingAtFocus.current.has(k)).length);
-  };
-  // The space's left: its own tabs (apart from the pane's) and terminals the
-  // pane has, and the one shown.
-  const focusLefts = space.lefts.map((id) => tabs.find((t) => t.id === id)).filter((t): t is BrowserTab => t !== undefined);
-  const focusLeft = space.newTab ? null : (focusLefts.find((t) => t.id === space.active) ?? focusLefts[0] ?? null);
-  /// Puts items on the left of space `key` (the one shown, by default), the
-  /// first of them shown unless `behind`; gives their tab ids.
-  const addToFocus = (items: FocusItem[], key = spaceKey, behind = false) => {
-    const ids = items.map((item) => {
-      if ("terminal" in item) return item.terminal;
-      const id = `f${nextTab.current++}`;
-      setTabs((prev) => [...prev, { id, url: item.url, title: null, loading: true, nav: 0, focus: true, space: key }]);
-      return id;
-    });
-    patchSpace(key, (s) => ({
-      ...s,
-      pages: [...s.pages, ...items.flatMap((item) => ("url" in item ? [item.url] : []))],
-      lefts: [...s.lefts, ...ids.filter((id) => !s.lefts.includes(id))],
-      active: behind ? s.active : (ids[0] ?? s.active),
-      newTab: (behind || ids.length === 0) && s.newTab,
-    }));
-    return ids;
-  };
-  /// Takes a tab off the left (its own page closes; a terminal stays the pane's).
-  const removeFromFocus = (id: string) => {
-    patchSpace(spaceKey, (s) => ({ ...s, lefts: s.lefts.filter((x) => x !== id) }));
-    if (tabs.find((t) => t.id === id)?.focus) {
-      api.browserClose(id).catch(report);
-      setTabs((prev) => prev.filter((t) => t.id !== id));
-    }
-  };
-  /// ⌘T on the Input mode's left: a new tab in front of its tabs.
-  const newFocusTab = () => patchSpace(spaceKey, (s) => ({ ...s, newTab: true }));
-  /// ⌘W on the left: its tab shown goes, as a new tab does (back to the one shown before).
-  const closeFocusTab = () => {
-    const rest = focusLefts.filter((t) => t.id !== focusLeft?.id);
-    // The one shown instead takes the keyboard.
-    if (space.newTab) {
-      patchSpace(spaceKey, (s) => ({ ...s, newTab: false }));
-      keysToTab(focusLefts.find((t) => t.id === space.active) ?? focusLefts[0] ?? null, undefined, report);
-    } else if (focusLeft) {
-      removeFromFocus(focusLeft.id);
-      keysToTab(rest[0] ?? null, undefined, report);
-    }
-  };
-  // A theme's space is saved as it changes, to be resumed after a restart.
-  const savedSpace: SavedSpace | null =
-    focusMode && focusSubject !== null
-      ? (() => {
-          const pages = focusLefts.filter((t) => !t.term);
-          const rights = tabs.filter((t) => t.space === spaceKey && t.kind);
-          return {
-            lefts: pages.map((t) => ({ url: t.url, title: t.title })),
-            active: Math.max(0, pages.findIndex((t) => t.id === focusLeft?.id)),
-            right: space.right,
-            rightUrls: Object.fromEntries(rights.map((t) => [t.kind!, t.url])),
-            pages: space.pages,
-          };
-        })()
-      : null;
-  const savedSpaceJson = savedSpace && JSON.stringify(savedSpace);
-  useEffect(() => {
-    if (focusSubject === null || !savedSpaceJson) return;
-    remember(INPUT_SPACES_KEY, JSON.stringify({ ...savedSpaces(), [spaceKey]: JSON.parse(savedSpaceJson) }));
-  }, [savedSpaceJson]); // eslint-disable-line react-hooks/exhaustive-deps
-  /// The theme the study time is open for, and the right side's tab (its LLM).
-  const focusTheme = focusSubject ? board?.themes.find((t) => t.id === focusSubject.id) : undefined;
-  const focusUrls = focusTheme ? themeUrls(board?.inputs ?? [], focusTheme.id) : [];
-  const focusRightTab = tabs.find((t) => t.id === focusRightId);
-  // The review a study time starts with, over the pages until done or skipped.
-  const [reviewing, setReviewing] = useState(false);
-  // 「読み終わった」: the left's pages and the right's conversation go into the
-  // theme's document (THEME_DOC_EVENT says when it is written).
-  const [finishing, setFinishing] = useState<Set<number>>(new Set());
-  const finishReading = () =>
-    run(async () => {
-      if (!focusTheme) return;
-      const pages: PageText[] = [];
-      for (const t of focusLefts.filter((t) => !t.term && /^https?:/.test(t.url))) {
-        const text = (await api.browserText(t.id).catch(() => null)) ?? (await api.pageText(t.url).catch(() => ""));
-        pages.push({ url: t.url, title: t.title, text });
-      }
-      const conversation = focusRightTab ? await api.browserText(focusRightTab.id).catch(() => null) : null;
-      const shown = new Set(focusLefts.flatMap((t) => [t.url, t.openedFor].filter((u): u is string => !!u)));
-      const read = (board?.inputs ?? []).filter((i) => i.theme_id === focusTheme.id && i.links.some((l) => shown.has(l.url))).map((i) => i.id);
-      await api.finishReading(focusTheme.id, pages, conversation, read);
-      setFinishing((prev) => new Set(prev).add(focusTheme.id));
-      showToast(`「${focusTheme.name}」のノートに書き足しています（少しかかります）`);
-    });
-  // A short note at the bottom of what was done in the background (an input
-  // added, a session sent what to fix).
+  // A short note at the bottom of what was done in the background (a reading
+  // kept, a session sent what to fix).
   const [toast, setToastState] = useState<string | null>(null);
   const showToast = (text: string) => {
     setToastState(text);
     setTimeout(() => setToastState((now) => (now === text ? null : now)), TOAST_MS);
   };
-  // A link ⌥-clicked in a page waits unsorted in the learning page; the page
-  // says so (and where a page went, from AddToThemeDialog).
-  const setAddedInput = (where: string) => showToast(`学びに入れました：${where}`);
-  const addInputFrom = (url: string, title: string) =>
-    run(async () => {
-      await addInput([url], title);
-      setAddedInput(title);
-    });
-  /// The page AddToThemeDialog puts in a theme: the 作業スペース's shown one.
-  const [toInputPage, setToInputPage] = useState<{ url: string; title: string | null } | null>(null);
-  const toInputRef = useRef(() => {});
-  const toInput = () => {
-    if (!activeTab || activeTab.term || !/^https?:\/\//.test(activeTab.url)) return;
-    setToInputPage({ url: activeTab.url, title: activeTab.title });
-    setDialog("toInput");
-  };
-  toInputRef.current = toInput;
 
-  const addInputRef = useRef(addInputFrom);
-  addInputRef.current = addInputFrom;
-  const addToFocusRef = useRef(addToFocus);
-  addToFocusRef.current = addToFocus;
-  const newFocusTabRef = useRef(newFocusTab);
-  newFocusTabRef.current = newFocusTab;
-  const closeFocusTabRef = useRef(closeFocusTab);
-  closeFocusTabRef.current = closeFocusTab;
-  const pickFocus = () => setDialog("focusPick");
-  /// A study time for the theme: its space as it was left (or saved), with
-  /// the pages of `inputs` it lacks added; it starts with a review when the
-  /// theme has its document.
-  const studyTheme = (theme: Theme, inputs: Input[]) => {
-    setView("inputs");
-    enterFocus(inputs.flatMap((i) => i.links.slice(0, 1).map((l) => ({ url: l.url }))), { kind: "theme", id: theme.id });
-    setReviewing(!!theme.doc_url);
+  // 学習: the readings in one list, and the ones open to read, their pages on
+  // the left as tabs, the pinned NotebookLM, ChatGPT or Claude on the right.
+  const readings = board?.readings ?? [];
+  const [study, setStudyState] = useState<StudyState>(() => ({ ...NO_STUDY, ...loadJson<Partial<StudyState>>(STUDY_KEY, {}) }));
+  const setStudy = (f: (s: StudyState) => StudyState) =>
+    setStudyState((prev) => {
+      const next = f(prev);
+      remember(STUDY_KEY, JSON.stringify(next));
+      return next;
+    });
+  const studyReading = space === "study" && study.view === "read";
+  // The left's tabs: the open readings' pages, and pages they opened.
+  const studyLefts = tabs.filter((t) => t.area === "study");
+  const studyLeft = studyLefts.find((t) => t.id === study.active) ?? studyLefts[0] ?? null;
+  const studyRightTab = tabs.find((t) => t.id === study.right);
+  /// A pinned page, made (not shown) when it is not yet.
+  const ensurePinned = (id: string) =>
+    setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [{ id, url: pinnedUrl(id), title: PINNED_PAGES.find((p) => p.id === id)?.label ?? null, loading: true, nav: 0, pinned: true }, ...prev]));
+  /// Readings' tabs, made where missing (a book's at its first chapter not read).
+  const readingTabs = (list: Reading[]) =>
+    setTabs((prev) => [
+      ...prev,
+      ...list.filter((r) => !prev.some((t) => t.id === readingTabId(r.id))).map((r): BrowserTab => ({ id: readingTabId(r.id), url: readingUrl(r), openedFor: r.url, title: r.title, loading: true, nav: 0, area: "study", reading: r.id })),
+    ]);
+  /// Opens readings to read, the first shown with the keyboard (as tabs on the left).
+  const readReadings = (ids: number[]) => {
+    const list = ids.map((id) => readings.find((r) => r.id === id)).filter((r): r is Reading => !!r);
+    if (list.length === 0) return;
+    readingTabs(list);
+    ensurePinned(study.right);
+    const first = readingTabId(list[0].id);
+    focusSoon(first);
+    setStudy((s) => ({ ...s, open: [...new Set([...s.open, ...list.map((r) => r.id)])], active: first, view: "read" }));
+    setSpace("study");
   };
-  /// Themes whose review is due (by their last score).
-  const reviewsDue = (board?.feynman ?? []).filter((f) => f.due_at * 1000 <= Date.now()).length;
-  /// A theme's inputs not read yet, the pages a study time opens with.
-  const unreadOf = (t: Theme) => (board?.inputs ?? []).filter((i) => i.theme_id === t.id && !i.done);
-  /// By subjectKey: each theme's latest review.
-  const feynmanOf = new Map((board?.feynman ?? []).map((s) => [subjectKey(s.subject), s]));
+  // The readings open before a restart come back once the board has them.
+  const boardLoaded = board !== null;
+  useEffect(() => {
+    if (!boardLoaded) return;
+    const kept = study.open.filter((id) => readings.some((r) => r.id === id));
+    readingTabs(kept.map((id) => readings.find((r) => r.id === id)!));
+    if (kept.length !== study.open.length) setStudy((s) => ({ ...s, open: kept, view: kept.length > 0 ? s.view : "list" }));
+  }, [boardLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+  /// A tab of 学習's left closed (⌘W, ×): the next one shows; with none, the list.
+  const closeStudyTab = (id: string) => {
+    const tab = tabs.find((t) => t.id === id);
+    const next = nextAfterClose(studyLefts, id);
+    api.browserClose(id).catch(report);
+    setTabs((prev) => prev.filter((t) => t.id !== id));
+    setStudy((s) => ({ ...s, open: s.open.filter((r) => r !== tab?.reading), active: s.active === id ? (next?.id ?? null) : s.active, view: next ? s.view : "list" }));
+    if (id === studyLeft?.id && next) keysToTab(next, undefined, report);
+  };
+  /// Picks the page on 学習's right; it takes the typing (its text box, with `text` typed in).
+  const setStudyRight = (id: string, text?: string) => {
+    ensurePinned(id);
+    setStudy((s) => ({ ...s, right: id }));
+    focusSoon(id, true, text);
+    setFocusTyping("right");
+  };
+  /// A page a reading's page opened (a link to a new window): a tab among 学習's left.
+  const addStudyPage = (url: string, behind: boolean) => {
+    const id = `f${nextTab.current++}`;
+    setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0, area: "study" }]);
+    if (behind) return;
+    focusSoon(id);
+    setStudy((s) => ({ ...s, active: id }));
+  };
+  // Notifications wait while in 学習 (the backend posts none); on leaving it,
+  // the page tells how much more waits on the user.
+  const waitingAtStudy = useRef<Set<string>>(new Set());
+  const waitingKeys = useRef<string[]>([]);
+  const [heldWaiting, setHeldWaiting] = useState(0);
+  const lastSpace = useRef(space);
+  useEffect(() => {
+    if (space === "study" && lastSpace.current !== "study") waitingAtStudy.current = new Set(waitingKeys.current);
+    if (space !== "study" && lastSpace.current === "study") setHeldWaiting(waitingKeys.current.filter((k) => !waitingAtStudy.current.has(k)).length);
+    lastSpace.current = space;
+  }, [space]);
+
+  // 作業: what runs (a todo with its sessions, or a session of no todo),
+  // picked in the list on the left; a parent's planning session on the left
+  // and its subtasks' on the right, or one session alone.
+  const [work, setWorkState] = useState<WorkState>(() => loadJson<WorkState>(WORK_KEY, { pick: null, child: null }));
+  const setWork = (w: WorkState) => {
+    remember(WORK_KEY, JSON.stringify(w));
+    setWorkState(w);
+  };
+  const workView = workViewOf(board, work);
+  // Which terminal shows each local session in 作業: the herdr session it
+  // runs in, attached once and shared by its sessions (showing one focuses
+  // its pane), else its own `claude --resume`. Local sessions found running
+  // outside herdr are not started twice: they are only marked.
+  const [workTerms, setWorkTerms] = useState<Record<string, string>>({});
+  const [outsideHerdr, setOutsideHerdr] = useState<Set<string>>(new Set());
+  const workTab = (session: Session | undefined) => (session ? tabs.find((t) => t.id === (isCloud(session) ? workTabId(session.session_id) : workTerms[session.session_id])) : undefined);
+  const resuming = useRef(new Set<string>());
+  /// Shows a session in 作業: a Cloud session's claude.ai page (made once), a
+  /// local one's herdr pane (focused, its herdr session attached). An ended
+  /// one waits for `resume` (a press), as resuming starts it again.
+  const ensureWorkTab = (session: Session, resume = false) => {
+    const sid = session.session_id;
+    if (isCloud(session)) {
+      const id = workTabId(sid);
+      const url = cloudWebUrl(sid);
+      return setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, url, openedFor: url, title: sessionLabel(session), loading: true, nav: 0, area: "work", session: sid }]));
+    }
+    if (resuming.current.has(sid) || (session.state === "ended" && !resume)) return;
+    resuming.current.add(sid);
+    terminalApi
+      .resume(sid, false, !resume)
+      .then((run) => {
+        setOutsideHerdr((prev) => {
+          const next = new Set(prev);
+          if (run) next.delete(sid);
+          else next.add(sid);
+          return next;
+        });
+        if (!run) return;
+        const id = run.herdr ? `wh${run.herdr.replace(/[^A-Za-z0-9]/g, "")}` : workTabId(sid);
+        setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, url: "", title: run.title, loading: false, nav: 0, term: run, area: "work", session: run.herdr ? undefined : sid }]));
+        setWorkTerms((m) => (m[sid] === id ? m : { ...m, [sid]: id }));
+      }, report)
+      .finally(() => resuming.current.delete(sid));
+  };
+  // Each session as it comes up (a herdr pane is focused again for it).
+  useEffect(() => {
+    if (space !== "work") return;
+    for (const s of [workView.left, workView.right]) if (s) ensureWorkTab(s);
+  }, [space, workView.left?.session_id, workView.right?.session_id]); // eslint-disable-line react-hooks/exhaustive-deps
+  /// Opens 作業 at a todo (a subtask: at its parent, on it) or a session
+  /// (the todo it is of, when it has one); the left takes the keyboard.
+  const openWork: OpenWork = (at) => {
+    const todos = board?.todos ?? [];
+    const todo = "todo" in at ? todos.find((t) => t.id === at.todo) : todos.find((t) => t.sessions.some((s) => s.session_id === at.session));
+    const parent = todo?.parent_id != null ? todos.find((t) => t.id === todo.parent_id) : undefined;
+    const next: WorkState = parent ? { pick: `t${parent.id}`, child: todo!.id } : todo ? { pick: `t${todo.id}`, child: work.child } : "session" in at ? { pick: `s${at.session}`, child: null } : work;
+    setWork(next);
+    setSpace("work");
+    const view = workViewOf(board, next);
+    const side = parent ? view.right : view.left;
+    const tab = workTab(side);
+    if (tab) keysToTab(tab, undefined, report);
+    else if (side) focusSoon(workTabId(side.session_id));
+    setFocusTyping(parent ? "right" : "left");
+  };
+  const openWorkRef = useRef(openWork);
+  openWorkRef.current = openWork;
+  /// Picks a subtask on 作業's right; its session takes the keyboard.
+  const pickChild = (id: number) => {
+    setWork({ ...work, child: id });
+    const child = (board?.todos ?? []).find((t) => t.id === id);
+    const session = child && mainSession(child);
+    const tab = workTab(session);
+    if (tab) keysToTab(tab, workView.right && workTabId(workView.right.session_id), report);
+    else if (session) focusSoon(workTabId(session.session_id));
+    setFocusTyping("right");
+  };
+
+  // A split view (作業, or 学習 while reading): its left and right, and which
+  // of them has the keyboard (null: the list on its left, or another app).
+  const split = space === "work" || studyReading;
+  const splitRef = useRef(split);
+  splitRef.current = split;
+  const splitLeft = space === "work" ? workTab(workView.left) : studyReading ? studyLeft : undefined;
+  const splitRight = space === "work" ? workTab(workView.right) : studyReading ? studyRightTab : undefined;
+  const [focusTyping, setFocusTyping] = useState<"left" | "right" | null>(null);
+  /// ⌘⇧[ ⌘⇧] in a split view: the previous or next tab of the side that has
+  /// the keyboard: 学習's readings or LLMs, 作業's subtasks.
+  const switchSplitTab = (right: boolean, delta: number) => {
+    setFocusTyping(right ? "right" : "left");
+    const step = <T,>(list: T[], at: number) => list[(at + delta + list.length) % list.length];
+    if (space === "study") {
+      if (right) return setStudyRight(step(STUDY_RIGHT, STUDY_RIGHT.indexOf(study.right)));
+      if (studyLefts.length === 0) return;
+      const next = step(studyLefts, studyLeft ? studyLefts.indexOf(studyLeft) : -1);
+      setStudy((s) => ({ ...s, active: next.id }));
+      return keysToTab(next, studyLeft?.id, report);
+    }
+    if (right && workView.children.length > 0) pickChild(step(workView.children, workView.child ? workView.children.indexOf(workView.child) : -1).id);
+  };
+  const switchSplitTabRef = useRef(switchSplitTab);
+  switchSplitTabRef.current = switchSplitTab;
+  /// Whether tab `id` is a split view's right side.
+  const onSplitRight = (id: string) => STUDY_RIGHT.includes(id) || tabs.find((t) => t.id === id)?.session === workView.right?.session_id;
+  const onSplitRightRef = useRef(onSplitRight);
+  onSplitRightRef.current = onSplitRight;
+
+  /// ⌘⇧D: the page shown keeps itself to read (a book's with its contents).
+  const bookmarkShown = () => {
+    const tab = browserShown ? activeTab : studyReading ? studyLeft : undefined;
+    if (!tab || tab.term || tab.pinned || !/^https?:\/\//.test(tab.url)) return false;
+    api.browserBookmark(tab.id).catch(report);
+    return true;
+  };
+  const bookmarkShownRef = useRef(bookmarkShown);
+  bookmarkShownRef.current = bookmarkShown;
   // A login a page sent, asked about before the app keeps it.
   const [loginAsk, setLoginAsk] = useState<{ host: string; user: string } | null>(null);
   useEffect(() => {
@@ -6605,36 +5821,14 @@ export default function App() {
     setLoginAsk(null);
     api.answerLogin(answer).catch(report);
   };
-  /// ⌘K: the login kept for the site the pane shows, taken out.
+  /// ⌘K: the login kept for the site the browser space shows, taken out.
   const forgetShownLogin = () => {
     const site = activeTab && !activeTab.term ? hostOf(activeTab.url) : null;
     if (site) api.forgetLogin(site).catch(report);
   };
-  const savedSpaces = () => loadJson<Record<string, SavedSpace>>(INPUT_SPACES_KEY, {});
-  /// ⌘⇧[ ⌘⇧] in the Input mode: the previous or next tab of the side that has
-  /// the keyboard, the left's own or the right's pages (which take the typing).
-  const switchFocusTab = (right: boolean, delta: number) => {
-    setFocusTyping(right ? "right" : "left");
-    if (right) return setFocusRight(RIGHT_KINDS[(RIGHT_KINDS.indexOf(focusRight) + delta + RIGHT_KINDS.length) % RIGHT_KINDS.length]);
-    if (focusLefts.length === 0) return;
-    // From a new tab, the first or the last.
-    const i = focusLeft ? focusLefts.findIndex((t) => t.id === focusLeft.id) : delta > 0 ? -1 : focusLefts.length;
-    const next = focusLefts[(i + delta + focusLefts.length) % focusLefts.length];
-    patchSpace(spaceKey, (s) => ({ ...s, active: next.id, newTab: false }));
-    keysToTab(next, focusLeft?.id, report);
-  };
-  // Which side of the Input mode has the keyboard (see `typingSide`), or
-  // neither while the app's other parts or another app have it.
-  const [focusTyping, setFocusTyping] = useState<"left" | "right" | null>("right");
-  /// ⌘K: the commands, leaving the Input mode (a todo's pages stay) on the way.
-  // A terminal's links open in a new tab, in front (with the keyboard) or
-  // behind; in the Input mode, on its left.
-  const openTerminalLink = (url: string, front: boolean) => {
-    if (opensOutside()) return openOutside(url);
-    if (!focusModeRef.current) return openInBrowser(url, front, !front);
-    const [id] = addToFocus([{ url }], spaceKey, !front);
-    if (front && id) focusSoon(id);
-  };
+  // A terminal's links open in a new tab of the browser space, in front
+  // (with the keyboard) or behind.
+  const openTerminalLink = (url: string, front: boolean) => (opensOutside() ? openOutside(url) : openInBrowser(url, front, !front));
   const openTerminalLinkRef = useRef(openTerminalLink);
   openTerminalLinkRef.current = openTerminalLink;
   useEffect(() => {
@@ -6654,92 +5848,36 @@ export default function App() {
   };
   const pickTerminalLinkRef = useRef(pickTerminalLink);
   pickTerminalLinkRef.current = pickTerminalLink;
-  const togglePalette = () => {
-    if (focusModeRef.current) {
-      exitFocus();
-      return setDialog("palette");
-    }
-    setDialog((d) => (d === "palette" ? null : "palette"));
-  };
+  const togglePalette = () => setDialog((d) => (d === "palette" ? null : "palette"));
   const paletteRef = useRef(togglePalette);
   paletteRef.current = togglePalette;
-  const switchFocusTabRef = useRef(switchFocusTab);
-  switchFocusTabRef.current = switchFocusTab;
-  /// Whether tab `id` is on the Input mode's right (a right page, or the terminal making the note).
-  const onFocusRight = (id: string) => tabs.find((t) => t.id === id)?.kind !== undefined || focusRightTab?.id === id;
-  const onFocusRightRef = useRef(onFocusRight);
-  onFocusRightRef.current = onFocusRight;
-  /// Shows the subject's space: the one open still, else the saved one
-  /// opened again (either with what of `items` it lacks), else a new one with
-  /// `items` on the left.
-  const enterFocus = (items: FocusItem[], subject = focusSubject) => {
-    const key = subjectKey(subject);
-    waitingAtFocus.current = new Set(waitingKeys.current);
-    setFocusSubject(subject);
-    const saved = subject === null ? undefined : savedSpaces()[key];
-    let right = spaces[key]?.right ?? focusRightPref;
-    let rightUrls = spaces[key]?.rightUrls ?? {};
-    // Pages added to the subject since its space was left.
-    const known = spaces[key]?.pages ?? saved?.pages ?? [];
-    const lacking = items.filter((item) => "url" in item && !known.includes(item.url));
-    if (!spaces[key] && saved) {
-      const ids = saved.lefts.map(({ url, title }) => {
-        const id = `f${nextTab.current++}`;
-        setTabs((prev) => [...prev, { id, url, title, loading: true, nav: 0, focus: true, space: key }]);
-        return id;
-      });
-      ({ right, rightUrls } = saved);
-      setSpaces((prev) => ({ ...prev, [key]: { lefts: ids, active: ids[saved.active] ?? ids[0] ?? null, right, pages: saved.pages, rightUrls } }));
-      if (lacking.length > 0) addToFocus(lacking, key);
-    } else if (!spaces[key]) {
-      setSpaces((prev) => ({ ...prev, [key]: newSpace(right) }));
-      addToFocus(items, key);
-    } else if (lacking.length > 0) addToFocus(lacking, key);
-    ensureRight(key, right, rightUrls[right]);
-    focusSoon(rightTabId(key, right), true);
-    setFocusTyping("right");
-    setFocusMode(true);
-  };
-  /// Brings up a pinned page, opening its tab the first time, with its text
-  /// box ready for typing.
+  /// Brings up a pinned page in the browser space, opening its tab the first
+  /// time, with its text box ready for typing.
   const showPinned = (id: string) => {
-    const page = PINNED_PAGES.find((p) => p.id === id);
-    if (!page) return;
+    if (!PINNED_PAGES.some((p) => p.id === id)) return;
     focusSoon(id, true);
-    if (!tabs.some((t) => t.id === id)) setTabs((prev) => [{ id, url: page.url, title: page.label, loading: true, nav: 0, pinned: true }, ...prev]);
-    setBrowserShown(true);
+    ensurePinned(id);
+    setSpace("browser");
     setActiveTabId(id);
   };
-  const terminalTab = (sessionId: string) => tabs.find((t) => !t.focus && t.term?.session === sessionId);
-  const showTab = (id: string) => {
-    setBrowserShown(true);
-    setActiveTabId(id);
-  };
+  // With the in-app terminal chosen, local sessions open in 作業; a run that
+  // is no herdr session's runs in its own terminal there (made now, started
+  // when first shown).
   const inAppTerminal: InAppTerminal | null =
     terminalTarget === "app"
       ? {
           open: (run, focus = false) => {
-            // herdr is attached once per herdr session; its pane is already focused.
-            const attached = run.herdr ? tabs.find((t) => t.term?.herdr === run.herdr) : undefined;
-            if (attached) {
-              if (!focus) return;
-              showTab(attached.id);
-              focusSoon(attached.id);
-              return void requestAnimationFrame(() => focusTerminal(attached.id));
+            const session = run.session;
+            if (!session) return;
+            if (!run.herdr) {
+              const id = workTabId(session);
+              setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [...prev, { id, url: "", title: run.title, loading: false, nav: 0, term: run, area: "work", session }]));
+              setWorkTerms((m) => ({ ...m, [session]: id }));
             }
-            // Started (not opened): the tab is made behind, as a page's is.
-            const id = `t${nextTab.current++}`;
-            if (focus) focusSoon(id);
-            setTabs((prev) => insertAfter(prev, { id, url: "", title: run.title, loading: false, nav: 0, term: run }, activeTab?.id ?? null));
-            if (focus) showTab(id);
+            if (focus) openWorkRef.current({ session });
           },
           focus: (sessionId) => {
-            const tab = terminalTab(sessionId);
-            if (!tab) return false;
-            showTab(tab.id);
-            // After the tab is shown, so its terminal is in the page.
-            focusSoon(tab.id);
-            requestAnimationFrame(() => focusTerminal(tab.id));
+            openWorkRef.current({ session: sessionId });
             return true;
           },
         }
@@ -6751,13 +5889,13 @@ export default function App() {
     const off = listen<{ session_id: string }>(OPEN_LOCAL_EVENT, ({ payload }) => openLocalRef.current(payload.session_id));
     return () => void off.then((f) => f());
   }, []);
+  /// Closes a tab of the browser space.
   const closeTab = (id: string) => {
-    if (tabs.find((t) => t.id === id)?.term) closeTerminal(id);
-    else api.browserClose(id).catch(report);
-    // The tab shown next is its right neighbour (else its left one) on the
-    // strip, among the pane's own tabs; with none left, a new tab page. It
-    // takes the keyboard only if the pane had it.
-    const next = nextAfterClose(tabs.find((t) => t.id === id)?.review ? [...reviewTabs, ...normalTabs] : normalTabs, id);
+    api.browserClose(id).catch(report);
+    // The tab shown next is the one under it in the list (else the one
+    // above); with none left, a new tab page. It takes the keyboard only if
+    // the page had it.
+    const next = nextAfterClose(normalTabs, id);
     setTabs((prev) => prev.filter((t) => t.id !== id));
     if (id !== activeTab?.id) return;
     const typing = typingSideRef.current === "pane";
@@ -6770,15 +5908,17 @@ export default function App() {
     }
   };
   /// ⌘W: closes the tab shown (a pinned page stays), or leaves the new tab
-  /// page for the last tab. False when the pane is hidden and ⌘W is not ours.
+  /// page for the last tab; in 学習, the reading shown. False when ⌘W is not ours.
   const closeShown = () => {
+    if (studyReading) {
+      if (focusTyping !== "right" && studyLeft) closeStudyTab(studyLeft.id);
+      return true;
+    }
     if (!browserShown) return false;
     if (activeTab && !activeTab.pinned) closeTab(activeTab.id);
-    else if (!activeTab && tabs.length > 0) setNewTab(false);
+    else if (!activeTab && normalTabs.length > 0) setNewTab(false);
     return true;
   };
-  /// ⌃l gives the typing to the pane's page or terminal, ⌃h back to this
-  /// side (from a page, ⌃h comes back through FOCUS_APP_EVENT).
   // The sidebar as a place for the keyboard (⌃h from the Todo side): j k
   // move over its entries, Enter picks one (and goes to it), ⌃l or Esc go back.
   const [sideZone, setSideZoneState] = useState(false);
@@ -6797,42 +5937,56 @@ export default function App() {
   useEffect(() => {
     sideItems().forEach((el, i) => el.toggleAttribute("data-cursor", sideZone && i === sideCursor));
   });
-  /// `text` (selected on the focus mode's left) is typed into the right's box.
+  /// ⌃l gives the typing one side to the right, ⌃h one to the left (from a
+  /// page, ⌃h comes back through FOCUS_APP_EVENT). In a split view: its list,
+  /// its left page, its right one; `text` (selected on the left) is typed
+  /// into the right's box. Elsewhere: the sidebar, the list, the page.
   const focusSide = (pane: boolean, text?: string) => {
-    // The focus mode's two sides: its left tab and the pinned page on the right,
-    // whose text box (ChatGPT's) takes the typing, in a chat going on too.
-    if (focusMode) {
-      const side = pane ? focusRightTab : focusLeft;
-      if (side || !pane) setFocusTyping(pane ? "right" : "left");
-      // The left's new tab: its address field.
-      if (!side && !pane) document.querySelector<HTMLInputElement>(".focus-left .browser-bar input")?.focus();
-      if (side?.term) focusTerminal(side.id);
-      else if (side) {
-        const chat = pane && CHAT_PAGES.includes(side.kind ?? side.id);
-        giveKeys(side.id, report, chat, chat ? text : undefined);
+    const give = (tab: BrowserTab | undefined | null, chat: boolean) => {
+      if (!tab) return;
+      if (tab.term) focusTerminal(tab.id);
+      else giveKeys(tab.id, report, chat, chat ? text : undefined);
+    };
+    if (splitRef.current) {
+      const from = focusTyping;
+      if (pane) {
+        const to = from === null ? (splitLeft ? "left" : "right") : "right";
+        const tab = to === "left" ? splitLeft : splitRight;
+        if (!tab) return;
+        setFocusTyping(to);
+        setTypingSide("pane");
+        return give(tab, to === "right" && CHAT_PAGES.includes(tab.id));
       }
-      return;
+      if (from === "right" && splitLeft) {
+        setFocusTyping("left");
+        return give(splitLeft, false);
+      }
+      // To the list on the left.
+      setFocusTyping(null);
+      setTypingSide("app");
+      noteFocusRequest();
+      api.focusAppPage().catch(report);
+      return void document.querySelector<HTMLElement>(".split-rail [data-row], .split-rail button")?.focus();
     }
-    // Left from the Todo side is the sidebar; right from the sidebar, the Todo side.
+    // Left from the list is the sidebar (管理's); right from the sidebar, the list.
     if (!pane) {
-      if (typingSideRef.current === "app" && !sideZoneRef.current) setSideZone(true);
+      if (typingSideRef.current === "app" && !sideZoneRef.current && spaceRef.current === "manage") setSideZone(true);
       setTypingSide("app");
       return void (document.activeElement as HTMLElement | null)?.blur();
     }
     if (sideZoneRef.current) return setSideZone(false);
     if (!browserShown || !activeTab) return;
     setTypingSide("pane");
-    if (activeTab.term) focusTerminal(activeTab.id);
-    else giveKeys(activeTab.id, report, CHAT_PAGES.includes(activeTab.id));
+    give(activeTab, CHAT_PAGES.includes(activeTab.id));
   };
-  const focusLeftRef = useRef(focusLeft);
-  focusLeftRef.current = focusLeft;
+  const focusLeftRef = useRef(splitLeft);
+  focusLeftRef.current = splitLeft;
   const focusSideRef = useRef(focusSide);
   focusSideRef.current = focusSide;
-  // Which side has the typing, marked on the page: this one, the pane (its
-  // terminal, a page), or neither while another app is in front; in the Input
-  // mode, its left or right. The keys moving the typing (⌃h ⌃l, ⌘⇧[ ⌘⇧]) mark
-  // it as they move it; a click, or a page taking it, as that happens.
+  // Which side has the typing, marked on the page: this one, a page (or a
+  // terminal), or neither while another app is in front; in a split view,
+  // its left or right. The keys moving the typing (⌃h ⌃l, ⌘⇧[ ⌘⇧]) mark it
+  // as they move it; a click, or a page taking it, as that happens.
   const [typingSide, setTypingSide] = useState<"app" | "pane" | null>("app");
   /// What had the keyboard in this window when the user last pressed a key or
   /// clicked (before a dialog's own field takes it): a dialog gives it back.
@@ -6843,21 +5997,21 @@ export default function App() {
   typingSideRef.current = typingSide;
   useEffect(() => {
     let timer = 0;
-    // This page has it: its fields and terminals by where they are (the
-    // pane's address bar is the pane's). Nothing focused in it leaves the
-    // Input mode's side to the key that is moving the typing.
-    // A press on the pane's own parts (its tab strip) gives this page the
+    // This page has it: its fields and terminals by where they are (a page's
+    // address bar is the page's side). Nothing focused in it leaves the split
+    // view's side to the key that is moving the typing.
+    // A press on a page's own parts (its tab strip) gives this page the
     // keyboard for a moment, which goes on to the page or terminal shown: the
-    // pane keeps the mark meanwhile.
+    // page keeps the mark meanwhile.
     let pressedInPane = false;
     const press = (e: PointerEvent) => {
       const t = e.target as HTMLElement;
-      pressedInPane = !!t.closest(".browser-tabs") && !t.closest("input");
+      pressedInPane = !!t.closest(".browser-tabs, .tab-list") && !t.closest("input");
     };
     const here = () => {
       const el = document.activeElement;
       if (pressedInPane && (!el || el === document.body)) return;
-      setTypingSide(el?.closest(".xterm, .browser-dock") ? "pane" : "app");
+      setTypingSide(el?.closest(".xterm, .browser-main, .focus-left, .focus-right") ? "pane" : "app");
       if (!el || el === document.body) return;
       const side = el.closest(".focus-left, .focus-right");
       setFocusTyping(side ? (side.classList.contains("focus-right") ? "right" : "left") : null);
@@ -6869,7 +6023,7 @@ export default function App() {
       setTypingSide("pane");
       if (!document.hasFocus()) (document.activeElement as HTMLElement | null)?.blur();
     };
-    // This page lost it, to a page (which says so in the Input mode) or to
+    // This page lost it, to a page (which says so in a split view) or to
     // another app (asked once the focus events stop).
     const lost = () => {
       clearTimeout(timer);
@@ -6892,7 +6046,7 @@ export default function App() {
       listen(WINDOW_FOCUS_EVENT, lost),
       listen<{ tab: string }>(PAGE_FOCUSED_EVENT, ({ payload }) => {
         toPage();
-        setFocusTyping(onFocusRightRef.current(payload.tab) ? "right" : "left");
+        setFocusTyping(onSplitRightRef.current(payload.tab) ? "right" : "left");
       }),
     ];
     return () => {
@@ -6921,24 +6075,17 @@ export default function App() {
       window.removeEventListener("blur", acted);
     };
   }, []);
-  // The pane's tabs are kept across restarts: their pages (not the pages'
-  // state), the pinned pages' too, and terminals attached to herdr sessions.
+  // The browser space's tabs are kept across restarts: their pages (not the
+  // pages' state), the pinned pages' too.
   const savedTabsJson = JSON.stringify({
-    tabs: paneTabs
-      .filter((t) => !t.creating && !t.review && (!t.term || t.term.herdr))
-      .map((t): SavedTabs["tabs"][number] => ({ url: t.url, openedFor: t.openedFor, title: t.title, pinned: t.pinned ? t.id : undefined, term: t.term })),
-    active: paneTabs.filter((t) => !t.creating && !t.review && (!t.term || t.term.herdr)).findIndex((t) => t.id === activeTab?.id),
+    tabs: paneTabs.map((t): SavedTabs["tabs"][number] => ({ url: t.url, openedFor: t.openedFor, title: t.title, pinned: t.pinned ? t.id : undefined })),
+    active: paneTabs.findIndex((t) => t.id === activeTab?.id),
   });
   useEffect(() => remember(PANE_TABS_KEY, savedTabsJson), [savedTabsJson]);
-  // A kept terminal comes back only while its herdr session still runs.
-  useEffect(() => {
-    if (!tabs.some((t) => t.term?.herdr)) return;
-    api.herdrSessions().then(({ running }) => setTabs((prev) => prev.filter((t) => !t.term?.herdr || running.includes(t.term.herdr))), report);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const closeShownRef = useRef(closeShown);
   closeShownRef.current = closeShown;
-  /// ⌘⇧A: archives the cloud session the shown tab is on and closes the tab.
-  /// False when the tab shows no cloud session.
+  /// ⌘⇧A: archives the cloud session the browser's tab is on and closes the
+  /// tab. False when the tab shows no cloud session.
   const archiveShown = () => {
     const id = browserShown && activeTab ? cloudIdOfPage(activeTab.url) : null;
     if (!id || !activeTab) return false;
@@ -6948,9 +6095,10 @@ export default function App() {
   };
   const archiveShownRef = useRef(archiveShown);
   archiveShownRef.current = archiveShown;
-  /// ⌘R while the pane has the typing (its address bar, its tab strip): the page shown is reloaded.
+  /// ⌘R while a page has the typing (its address bar, the tab list): the page shown is reloaded.
   const reloadShown = () => {
-    if (browserShown && activeTab && !activeTab.term) api.browserGo(activeTab.id, "reload").catch(report);
+    const tab = browserShown ? activeTab : focusTyping === "right" ? splitRight : splitLeft;
+    if (tab && !tab.term) api.browserGo(tab.id, "reload").catch(report);
   };
   const reloadShownRef = useRef(reloadShown);
   reloadShownRef.current = reloadShown;
@@ -6960,21 +6108,22 @@ export default function App() {
   const setTabUrl = (id: string, url: string) => setTabs((prev) => prev.map((t) => (t.id === id && t.url !== url ? { ...t, url } : t)));
   const openRef = useRef(openInBrowser);
   openRef.current = openInBrowser;
+  const studyReadingRef = useRef(studyReading);
+  studyReadingRef.current = studyReading;
   /// Web pages macOS asked the app to open (a Raycast quicklink set to open
-  /// with Shosai): a tab in the pane (the one with the page, if any), or in
-  /// the study time a new tab on the left, as a page's new window is.
+  /// with Shosai): a tab in ブラウザ (the one with the page, if any), or while
+  /// reading in 学習 a new tab on the left, as a page's new window is.
   const takeOpened = () =>
     api.takeOpened().then((urls) => {
       for (const url of urls) {
-        if (!focusModeRef.current) openRef.current(url, true);
-        else {
-          const [id] = addToFocusRef.current([{ url }]);
-          if (id) focusSoon(id);
-        }
+        if (studyReadingRef.current) addStudyPageRef.current(url, false);
+        else openRef.current(url, true);
       }
     }, report);
   const openFromPageRef = useRef(openFromPage);
   openFromPageRef.current = openFromPage;
+  const addStudyPageRef = useRef(addStudyPage);
+  addStudyPageRef.current = addStudyPage;
   // A page's download, dialog (alert, confirm, prompt) and ask for the microphone or camera.
   const [downloaded, setDownloadedState] = useState<{ path: string; name: string } | null>(null);
   const setDownloaded = (d: { path: string; name: string }) => {
@@ -6993,35 +6142,30 @@ export default function App() {
     api.answerSitePermission(siteAsk.id, siteAsk.site, allow).catch(report);
     setSiteAsk(null);
   };
+  /// "開く" on a Cloud session: its page in 作業, or Claude Desktop (as set).
   const openCloud = (sessionId: string) => {
     api.markSessionSeen(sessionId).catch(report);
-    return cloudTarget === "desktop" ? api.openSession(sessionId, "desktop").catch(report) : openInBrowser(cloudWebUrl(sessionId));
+    return cloudTarget === "desktop" ? api.openSession(sessionId, "desktop").catch(report) : openWork({ session: sessionId });
   };
-  /// Starts a todo's session behind (StartTodo): a Cloud one's page is made
-  /// behind when Cloud sessions open on the web, an in-app terminal's tab too.
+  /// Starts a todo's session behind (StartTodo): nothing moves; it shows in 作業.
   const startTodo: StartTodo = async (todoId, plan, launch) => {
     const e = effectiveLaunch(launch, plan);
     const options: StartOptions = { plan, agent: e.agent, ...(e.agent === "claude" ? { model: e.model || undefined, effort: e.effort || undefined } : {}) };
-    if (e.runner === "cloud") {
-      const finish = cloudTarget === "web" ? beginWeb() : undefined;
-      try {
-        finish?.(await api.startCloud(todoId, options));
-      } catch (err) {
-        finish?.(null);
-        throw err;
-      }
-    } else if (inAppTerminal) inAppTerminal.open(await terminalApi.start(todoId, options));
+    if (e.runner === "cloud") await api.startCloud(todoId, options);
+    else if (inAppTerminal) inAppTerminal.open(await terminalApi.start(todoId, options));
     else await api.startTerminal(todoId, options);
   };
   /// 「再開して直させる」: the todo's session is sent what to fix in its PR,
   /// without the keyboard or the screen moving. A Cloud session cannot be
-  /// sent anything from here yet: its page opens with the request typed in.
+  /// sent anything from here yet: its page opens in 作業 with the request typed in.
   const fixInSession: FixInSession = (s, todo) =>
     run(async () => {
       const r = await api.fixInSession(s.session_id, todo.id);
       if (r.sent) return showToast(`#${todo.id} のセッションに、直すように送りました`);
       api.markSessionSeen(s.session_id).catch(report);
-      openInBrowser(cloudWebUrl(s.session_id), true, false, r.prompt);
+      ensureWorkTab(s);
+      openWork({ session: s.session_id });
+      focusSoon(workTabId(s.session_id), true, r.prompt);
     });
   // Reviews that went in (REVIEW_SUBMITTED_EVENT), for the PR page until the
   // PRs are taken again; each is told in a toast.
@@ -7066,12 +6210,10 @@ export default function App() {
         if (url) recordVisit(url, payload.title, false);
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)));
       }),
-      // In the Input mode a page's new window is a new tab on the left.
-      listen<{ url: string; tab: string; behind: boolean }>(BROWSER_NEW_TAB_EVENT, ({ payload }) => {
-        if (!focusModeRef.current) return openFromPageRef.current(payload.url, payload.tab, payload.behind);
-        const [id] = addToFocusRef.current([{ url: payload.url }], undefined, payload.behind);
-        if (id && !payload.behind) focusSoon(id);
-      }),
+      // A reading's page's new window is a tab among 学習's left; any other page's, the browser space's.
+      listen<{ url: string; tab: string; behind: boolean }>(BROWSER_NEW_TAB_EVENT, ({ payload }) =>
+        spaceRef.current === "study" && payload.tab.match(/^[rf]\d/) ? addStudyPageRef.current(payload.url, payload.behind) : openFromPageRef.current(payload.url, payload.tab, payload.behind),
+      ),
       // A notification's PR: opened by the user, so it takes the keyboard.
       listen<{ url: string }>(OPEN_URL_EVENT, ({ payload }) => openRef.current(payload.url, true)),
       listen(OPENED_EVENT, () => takeOpened()),
@@ -7082,21 +6224,17 @@ export default function App() {
       listen<{ path: string; name: string }>(BROWSER_DOWNLOADED_EVENT, ({ payload }) => setDownloaded(payload)),
       listen<PageDialogAsk>(PAGE_DIALOG_EVENT, ({ payload }) => setPageDialog(payload)),
       listen<SiteAsk>(SITE_PERMISSION_EVENT, ({ payload }) => setSiteAsk(payload)),
-      listen<{ url: string; title: string }>(ADD_INPUT_EVENT, ({ payload }) => addInputRef.current(payload.url, payload.title)),
-      // The Input mode's left takes the browser's keys; it lets the app's other shortcuts through.
-      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => (focusModeRef.current ? newFocusTabRef.current() : openNewTab())),
+      // A page kept itself to read: said at the bottom.
+      listen<{ title: string; kind: ReadingKind; chapters: number }>(READING_ADDED_EVENT, ({ payload }) =>
+        showToastRef.current(payload.kind === "book" ? `本として読みものに入れました（目次 ${payload.chapters} 章）：${payload.title}` : `読みものに入れました：${payload.title}`),
+      ),
+      listen<{ space: Space }>(SPACE_EVENT, ({ payload }) => goSpaceRef.current(payload.space)),
+      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
       listen<{ tab: string; delta: number }>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) =>
-        focusModeRef.current ? switchFocusTabRef.current(onFocusRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
+        splitRef.current ? switchSplitTabRef.current(onSplitRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
       ),
-      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, ({ payload }) =>
-        focusModeRef.current ? !onFocusRightRef.current(payload.tab) && closeFocusTabRef.current() : closeShownRef.current(),
-      ),
-      listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => !focusModeRef.current && archiveShownRef.current()),
-      listen<{ tab: string }>(BROWSER_TO_INPUT_EVENT, () => {
-        if (focusModeRef.current) return;
-        dialogFromPage.current = true;
-        toInputRef.current();
-      }),
+      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, ({ payload }) => !(splitRef.current && onSplitRightRef.current(payload.tab)) && closeShownRef.current()),
+      listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => archiveShownRef.current()),
       listen(OPEN_PALETTE_EVENT, () => {
         dialogFromPage.current = true;
         paletteRef.current();
@@ -7105,23 +6243,14 @@ export default function App() {
         dialogFromPage.current = true;
         openSessionsRef.current();
       }),
-      listen<{ theme_id: number; error: string | null }>(THEME_DOC_EVENT, ({ payload }) => {
-        setFinishing((prev) => {
-          const next = new Set(prev);
-          next.delete(payload.theme_id);
-          return next;
-        });
-        showToastRef.current(payload.error ? `ノートに書き足せませんでした：${payload.error}` : "テーマのノートに書き足しました");
-      }),
       listen<{ id: number }>(OPEN_TODO_EVENT, ({ payload }) => goTodoRef.current(payload.id)),
       listen<{ channel: string; ts: string }>(OPEN_SLACK_EVENT, ({ payload }) => {
         setSlackPick(mentionKey(payload));
         setViewRef.current("slack");
       }),
-      listen(FOCUS_EXIT_EVENT, () => setDialog("exitFocus")),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
-      // Back from the pane: nothing on this side keeps the typing, so j k work.
-      listen(FOCUS_APP_EVENT, () => (focusModeRef.current ? focusSideRef.current(false) : (document.activeElement as HTMLElement | null)?.blur())),
+      // Back from a page: nothing on this side keeps the typing, so j k work.
+      listen(FOCUS_APP_EVENT, () => (splitRef.current ? focusSideRef.current(false) : (document.activeElement as HTMLElement | null)?.blur())),
       // Notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -7169,7 +6298,7 @@ export default function App() {
     beforeDialog.current = null;
     dialogFromPage.current = false;
     if (!before || before.requests !== focusRequestCount()) return;
-    if (before.side === "pane" && before.tab && browserShown && !focusMode) {
+    if (before.side === "pane" && before.tab && browserShown) {
       if (before.tab.term) focusTerminal(before.tab.id);
       else giveKeys(before.tab.id, report);
     } else if (before.side === "app") {
@@ -7177,8 +6306,7 @@ export default function App() {
       else (document.activeElement as HTMLElement | null)?.blur();
     }
   }, [dialogUp]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [sessionFilter, setSessionFilter] = useState<SessionFilter>("all");
-  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "doing", "inputs", "sessions", "prs", "artifacts", "slack"] as const, "todos"));
+  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "doing", "prs", "artifacts", "slack"] as const, "todos"));
   const viewRef = useRef(view);
   viewRef.current = view;
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
@@ -7233,9 +6361,11 @@ export default function App() {
   const [prError, setPrError] = useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: DRAG_DISTANCE_PX } }));
 
+  /// 管理's page `v` (管理 comes up with it).
   const setView = (v: View) => {
     remember(VIEW_KEY, v);
     setViewState(v);
+    setSpace("manage");
   };
   const setLayout = (v: Layout) => {
     remember(LAYOUT_KEY, v);
@@ -7299,15 +6429,20 @@ export default function App() {
   }, [report]);
   // The todo's sheet keeps the width it was given before the side panels went.
   const [panelW] = useState(() => loadJson<number>(PANEL_W_KEY, PANEL_DEFAULT_W));
-  const [dockW, setDockWState] = useState(() => loadJson<number>(DOCK_W_KEY, Math.max(DOCK_MIN_W, Math.round(window.innerWidth * DOCK_DEFAULT_SHARE))));
-  const setDockW = (w: number) => {
-    remember(DOCK_W_KEY, String(w));
-    setDockWState(w);
-  };
   const [focusRightW, setFocusRightWState] = useState(() => loadJson<number>(FOCUS_RIGHT_W_KEY, Math.max(DOCK_MIN_W, Math.round(window.innerWidth * FOCUS_RIGHT_SHARE))));
   const setFocusRightW = (w: number) => {
     remember(FOCUS_RIGHT_W_KEY, String(w));
     setFocusRightWState(w);
+  };
+  const [tabListW, setTabListWState] = useState(() => loadJson<number>(TAB_LIST_W_KEY, TAB_LIST_DEFAULT_W));
+  const setTabListW = (w: number) => {
+    remember(TAB_LIST_W_KEY, String(w));
+    setTabListWState(w);
+  };
+  const [railW, setRailWState] = useState(() => loadJson<number>(WORK_RAIL_W_KEY, WORK_RAIL_DEFAULT_W));
+  const setRailW = (w: number) => {
+    remember(WORK_RAIL_W_KEY, String(w));
+    setRailWState(w);
   };
   const [prsLoading, setPrsLoading] = useState(false);
   const loadPrs = useCallback(() => {
@@ -7391,7 +6526,7 @@ export default function App() {
       }
       if (matches(e, "sideApp") || matches(e, "sidePane")) {
         e.preventDefault();
-        // A selection in the focus mode's terminal goes along to the right.
+        // A selection in a split view's terminal goes along to the right.
         const inTerminal = (e.target as HTMLElement).closest(".xterm");
         focusSideRef.current(matches(e, "sidePane"), inTerminal && focusLeftRef.current ? terminalSelection(focusLeftRef.current.id) : undefined);
         return;
@@ -7412,47 +6547,36 @@ export default function App() {
         } else if (e.key === "Escape") setSideZone(false);
         return;
       }
-      // The focus mode: Esc asks about leaving (a terminal keeps its Esc, and
-      // the address bar its own), the left takes ⌘T ⌘W as a browser, and ⌘
-      // otherwise only edits text.
-      if (focusModeRef.current) {
-        const t = e.target as HTMLElement;
-        if (matches(e, "newTab")) {
-          e.preventDefault();
-          newFocusTabRef.current();
-        } else if (matches(e, "closeTab")) {
-          e.preventDefault();
-          if (!t.closest(".focus-right")) closeFocusTabRef.current();
-        } else if (matches(e, "prevTab") || matches(e, "nextTab")) {
-          e.preventDefault();
-          switchFocusTabRef.current(!!t.closest(".focus-right"), matches(e, "prevTab") ? -1 : 1);
-        } else if (matches(e, "palette")) {
-          e.preventDefault();
-          paletteRef.current();
-        } else if (e.key === "Escape" && !t.closest(".xterm, input, textarea") && !document.querySelector("[role=dialog]")) {
-          e.preventDefault();
-          setDialog("exitFocus");
-        } else if (e.metaKey && !FOCUS_EDIT_KEYS.includes(e.key.toLowerCase())) e.preventDefault();
-        return;
+      // ⌘1–⌘4: the spaces.
+      const toSpace = SPACE_ACTIONS.find(([action]) => matches(e, action));
+      if (toSpace) {
+        e.preventDefault();
+        return goSpaceRef.current(toSpace[1]);
       }
-      // The tabs move only while the pane has the typing (as marked); on the
-      // Todo side these keys go through the lanes (todoKeys.ts).
-      if ((matches(e, "prevTab") || matches(e, "nextTab")) && typingSideRef.current !== "pane" && !(e.target as HTMLElement).closest(".browser-dock")) return;
+      const t = e.target as HTMLElement;
+      // A split view: ⌘⇧[ ⌘⇧] go through the tabs of the side that has the
+      // typing; ⌘T opens a tab of the browser space.
+      if (splitRef.current && (matches(e, "prevTab") || matches(e, "nextTab"))) {
+        e.preventDefault();
+        return switchSplitTabRef.current(!!t.closest(".focus-right"), matches(e, "prevTab") ? -1 : 1);
+      }
+      // The browser space's tabs move only while a page has the typing (as
+      // marked); on 管理's Todo page these keys go through the lanes (todoKeys.ts).
+      if ((matches(e, "prevTab") || matches(e, "nextTab")) && typingSideRef.current !== "pane" && !t.closest(".tab-list, .browser-main")) return;
       const run: [Action, () => unknown][] = [
-        // The pane's page, while the pane has the typing (on the sessions page ⌘⇧A puts its row away).
+        // The browser's page, while it has the typing (in 作業's list ⌘⇧A puts its row away).
         ["archive", () => typingSideRef.current === "pane" && archiveShownRef.current()],
-        ["toInput", () => toInputRef.current()],
+        ["bookmark", () => bookmarkShownRef.current()],
         ["prevTab", () => switchRef.current(-1)],
         ["nextTab", () => switchRef.current(1)],
-        // On the Input page it adds an input.
         ["newTodo", () => setDialog("add")],
         // Again closes the commands.
         ["palette", () => setDialog((d) => (d === "palette" ? null : "palette"))],
         ["newTab", () => openNewTab()],
         ["closeTab", () => closeShownRef.current()],
-        // The side with the typing: this one takes its data again, the pane
-        // reloads its page (a page with the keyboard reloads itself).
-        ["reload", () => (typingSideRef.current === "pane" || (e.target as HTMLElement).closest(".browser-dock") ? reloadShownRef.current() : reloadRef.current())],
+        // The side with the typing: this one takes its data again, a page
+        // reloads (a page with the keyboard reloads itself).
+        ["reload", () => (typingSideRef.current === "pane" || t.closest(".tab-list, .browser-main") ? reloadShownRef.current() : reloadRef.current())],
       ];
       const hit = run.find(([action]) => matches(e, action));
       if (hit) {
@@ -7477,7 +6601,6 @@ export default function App() {
   };
 
   const allTodos = board?.todos ?? [];
-  const allInputs = board?.inputs ?? [];
   const selectedTodo = selection?.kind === "todo" ? allTodos.find((t) => t.id === selection.id) ?? null : null;
 
   // "+ 新規" in a lane: a todo there with that status, a subtask when the lane is a parent's.
@@ -7519,56 +6642,27 @@ export default function App() {
   const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? []).filter((s) => s.state !== "ended")];
   /// A terminal's title: the session it shows, as the session list names it.
   const sessionTitle = (id: string) => (board ? (sessionItemsOf(board).find((i) => i.session.session_id === id)?.session.title ?? null) : null);
-  // A session whose page or terminal the pane shows (the app in front) is looked at.
-  const watchedSession = browserShown && typingSide !== null && activeTab ? (activeTab.term?.session ?? cloudIdOfPage(activeTab.url)) : null;
+  // A session shown in 作業 (the app in front) is looked at.
+  const watchedSession = space === "work" && typingSide !== null ? ((focusTyping === "right" ? workView.right : workView.left)?.session_id ?? null) : null;
   const watchedUnread = !!watchedSession && allSessions.some((s) => s.session_id === watchedSession && s.unread);
   useEffect(() => {
     if (watchedSession && watchedUnread && pageVisible()) api.markSessionSeen(watchedSession).then(refresh, report);
   }, [watchedSession, watchedUnread]); // eslint-disable-line react-hooks/exhaustive-deps
-  // The review group follows the reviews asking before they submit on Cloud:
-  // one put away (submitted, stopped) loses its tab, and one without a tab
-  // (after a restart) gets it again, behind.
+  // A session gone from the board (archived, put away) takes its page or terminal in 作業 with it.
   useEffect(() => {
     if (!board) return;
-    const known = new Map(board.inbox.map((s) => [s.session_id, s]));
-    const live = (s: Session | undefined) => !!s && !s.hidden && s.state !== "ended";
-    const gone = tabs.filter((t) => t.review?.session && (t.review.seen || known.has(t.review.session)) && !live(known.get(t.review.session)));
-    for (const t of gone) api.browserClose(t.id).catch(report);
-    const wanted = board.inbox.filter((s) => s.review_url && isCloud(s) && !s.review_auto && live(s) && !tabs.some((t) => t.review?.session === s.session_id || (t.creating && t.review?.url === s.review_url)));
-    if (gone.length === 0 && wanted.length === 0 && !tabs.some((t) => t.review?.session && !t.review.seen && known.has(t.review.session))) return;
-    setTabs((prev) => [
-      ...prev
-        .filter((t) => !gone.some((g) => g.id === t.id))
-        .map((t) => (t.review?.session && !t.review.seen && known.has(t.review.session) ? { ...t, review: { ...t.review, seen: true } } : t)),
-      ...wanted.map((s): BrowserTab => {
-        const url = cloudWebUrl(s.session_id);
-        const pr = s.review_url!;
-        return { id: `t${nextTab.current++}`, url, openedFor: url, title: null, loading: false, nav: 0, review: { url: pr, ref: prRef(pr).split("/").pop() ?? pr, title: (s.title ?? "").replace(REVIEW_TITLE_PREFIX, ""), session: s.session_id, seen: true } };
-      }),
-    ]);
-    // The tab shown went: the first of the others comes up, else a new tab page.
-    if (gone.some((t) => t.id === activeTab?.id)) {
-      const rest = normalTabs.filter((t) => !gone.includes(t));
-      if (rest.length > 0) setActiveTabId(rest[0].id);
-      else setNewTab(true);
-    }
+    const known = new Set(sessionItemsOf(board).map((i) => i.session.session_id));
+    const gone = tabs.filter((t) => t.area === "work" && t.session && !known.has(t.session));
+    if (gone.length === 0) return;
+    for (const t of gone) (t.term ? closeTerminal(t.id) : api.browserClose(t.id).catch(report));
+    setTabs((prev) => prev.filter((t) => !gone.includes(t)));
   }, [board]); // eslint-disable-line react-hooks/exhaustive-deps
-  /// ×  on a review's tab: the review stops (its session archived or closed) and the tab goes.
-  const stopReview = (id: string) => {
-    const session = tabs.find((t) => t.id === id)?.review?.session;
-    if (session) run(() => api.stopReview(session));
-    closeTab(id);
-  };
   const waiting = waitingOnYou({ todos: allTodos, inbox: board?.inbox ?? [], reviews: prs?.review ?? [], now: Date.now() / 1000 });
   waitingKeys.current = waiting.map((w) => w.key);
-  /// The sessions page on あなた待ち (the strip over the kanban, the banner after the focus mode).
-  const showWaiting = () => {
-    setSessionFilter("waiting");
-    setView("sessions");
-  };
+  /// あなた待ち: 作業, whose list has it at the top.
+  const showWaiting = () => goSpace("work");
   const openTodoCount = allTodos.filter((t) => t.status !== "done").length;
   const colCounts = Object.fromEntries(COLUMNS.map((c) => [c.status, visibleTodos.filter((t) => t.status === c.status).length])) as Record<Status, number>;
-
 
   const openTodo = (id: number) => {
     setSelection({ kind: "todo", id });
@@ -7576,7 +6670,7 @@ export default function App() {
     api.syncNow(id).catch(() => {});
   };
   const goTodo = (id: number) => {
-    setView("todos");
+    setView(view === "doing" ? "doing" : "todos");
     openTodo(id);
   };
   const goTodoRef = useRef(goTodo);
@@ -7592,17 +6686,33 @@ export default function App() {
     setTimeout(() => setSyncing(false), REFRESH_MS);
   };
   /// ⌘R: the PR page takes the PRs again (its ↻), other pages sync everything.
-  const reload = () => (view === "prs" ? loadPrs() : syncAll());
+  const reload = () => (space === "manage" && view === "prs" ? loadPrs() : syncAll());
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
-
+  /// ⌘1–⌘4 and the bar: a space, the keyboard on what it shows (its page,
+  /// its session, its list).
+  const goSpace = (s: Space) => {
+    setSpace(s);
+    setSideZone(false);
+    const tab = s === "browser" ? (activeTab ?? null) : s === "work" ? workTab(workView.left) : s === "study" && study.view === "read" ? studyLeft : undefined;
+    if (tab !== undefined) {
+      setFocusTyping(tab ? "left" : null);
+      return keysToTab(tab, undefined, report);
+    }
+    setFocusTyping(null);
+    noteFocusRequest();
+    api.focusAppPage().catch(report);
+    (document.activeElement as HTMLElement | null)?.blur();
+  };
+  const goSpaceRef = useRef(goSpace);
+  goSpaceRef.current = goSpace;
 
   const covered = dialog !== null || pageDialog !== null;
   // j k / h l and the other keys of the Todo pages (todoKeys.ts).
   const todoPage = useRef<HTMLDivElement>(null);
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
   const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
-  const { setCursor: setTodoCursor } = useTodoKeys(todoPage, pageLayout, todoView && !covered && !focusMode && !sideZone, selectedTodo !== null, {
+  const { setCursor: setTodoCursor } = useTodoKeys(todoPage, pageLayout, space === "manage" && todoView && !covered && !sideZone, selectedTodo !== null, {
     open: (id) => openTodo(id),
     select: openTodo,
     status: setStatusMenuFor,
@@ -7621,7 +6731,14 @@ export default function App() {
       const next = todo && COLUMNS[COLUMNS.findIndex((c) => c.status === todo.status) + delta];
       if (todo && next) setStatus(todo, next.status);
     },
-    // Over the todo's sheet, which shows the session once it starts.
+    // A todo with sessions: 作業 at it; without, the launch sheet.
+    work: (id) => {
+      const todo = allTodos.find((t) => t.id === id);
+      if (todo && (todo.sessions.length > 0 || allTodos.some((c) => c.parent_id === id && c.sessions.length > 0))) return openWork({ todo: id });
+      openTodo(id);
+      setDialog("start");
+    },
+    // Over the todo's sheet.
     start: (id) => {
       openTodo(id);
       setDialog("start");
@@ -7630,20 +6747,6 @@ export default function App() {
     toggleLane,
     isCollapsed: (lane) => collapsed.has(lane),
   });
-  // The sheet over the sessions page, where the Todo pages' keys are not: Esc closes it, ⌘Enter the launch sheet.
-  const sessionsSheet = view === "sessions" && selectedTodo !== null && !covered;
-  useEffect(() => {
-    if (!sessionsSheet) return;
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest(TYPING)) return;
-      if (e.key === "Escape") setSelection(null);
-      else if (matches(e, "start")) setDialog("start");
-      else return;
-      e.preventDefault();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [sessionsSheet]);
   // The keys act on the todo the sheet shows, however it was opened.
   useEffect(() => {
     if (selection?.kind === "todo") setTodoCursor(`todo:${selection.id}`);
@@ -7654,27 +6757,10 @@ export default function App() {
   // One per thread, as the Slack page's rows.
   const slackUnread = board?.slack.connected ? slackItems(board.slack.messages, board.slack.threads).filter((i) => !i.read).length : 0;
 
-  // The sidebar lists the objects only, each with what of it waits on the
+  // 管理's sidebar lists the objects only, each with what of it waits on the
   // user (or how many there are); how a list shows is chosen on its page.
   const nav: { key: string; group: NavGroup; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
-    { key: "todos", group: "仕事", label: "Todo", icon: "board", count: openTodoCount, on: view === "todos", go: () => setView("todos") },
-    { key: "doing", group: "仕事", label: "Doing", icon: "list", count: doingTodos.length, on: doingView, go: () => setView("doing") },
-    {
-      group: "仕事",
-      key: "sessions",
-      label: "セッション",
-      icon: "spark",
-      // Its badge is what waits on the user; the count only without it.
-      count: waiting.length > 0 ? undefined : allSessions.length,
-      on: view === "sessions",
-      go: () => setView("sessions"),
-      badge: waiting.length > 0 && (
-        <span className="pill waiting" title="あなたが動かないと進まないもの：返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼">
-          <i />
-          あなた待ち {waiting.length}
-        </span>
-      ),
-    },
+    { key: "todos", group: "仕事", label: "Todo", icon: "board", count: openTodoCount, on: todoView, go: () => setView(todoView ? view : "todos") },
     { key: "prs", group: "仕事", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent" title="まだレビューを始めていないレビュー依頼">レビュー {reviewCount}</span> },
     { key: "artifacts", group: "仕事", label: "成果物", icon: "open", count: board?.artifacts.length, on: view === "artifacts", go: () => setView("artifacts") },
     {
@@ -7686,19 +6772,10 @@ export default function App() {
       go: () => setView("slack"),
       badge: slackUnread > 0 && <span className="pill accent" title="未読のスレッド（メンションか新しい返信があるもの）">{slackUnread}</span>,
     },
-    {
-      key: "inputs",
-      group: "学び",
-      label: "テーマ",
-      icon: "import",
-      on: view === "inputs",
-      go: () => setView("inputs"),
-      badge: reviewsDue > 0 && <span className="pill accent" title="理解度から決めた復習どきのテーマ">復習 {reviewsDue}</span>,
-    },
   ];
 
-  // ⌘K lists the sidebar's entries first, in its order, then the actions.
-  // The live sessions, the one that changed last first, each opened as its "開く" does.
+  // ⌘K lists the spaces and 管理's pages first, then the actions.
+  // The live sessions, the one that changed last first, each opened in 作業.
   const sessionCommands = (): Command[] =>
     (board ? sessionItemsOf(board) : [])
       .filter(({ session: s }) => s.state !== "ended" && listedSession(s))
@@ -7709,12 +6786,11 @@ export default function App() {
         label: todo ? `${sessionLabel(s)} · #${todo.id} ${todo.title}` : sessionLabel(s),
         hint: [prStageLabel(todo), s.agent === "codex" ? "Codex" : isCloud(s) ? "Cloud" : "Local", ago(s.state_at)].filter(Boolean).join(" · "),
         keywords: [STATE_LABEL[s.state], s.unread ? "新着" : ""].join(" "),
-        run: () => (isCloud(s) ? openCloud(s.session_id) : openLocal(inAppTerminal, s.session_id, report, true)),
+        run: () => openWork({ session: s.session_id }),
       }));
   const sessionsCommand: Command = { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands };
-  /// ⌘⇧K: ⌘K's list of sessions straight away (leaving the Input mode, as ⌘K does).
+  /// ⌘⇧K: ⌘K's list of sessions straight away.
   const openSessions = () => {
-    if (focusModeRef.current) exitFocus();
     setPaletteStart({ command: sessionsCommand });
     setDialog("palette");
   };
@@ -7722,375 +6798,483 @@ export default function App() {
   openSessionsRef.current = openSessions;
   const commands: Command[] = [
     sessionsCommand,
-    ...nav.map((n) => ({ key: `nav:${n.key}`, label: n.label, run: n.go })),
-    { key: "browser", label: browserShown ? "ペインを隠す" : "ペインを出す", run: toggleBrowser },
-    ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, run: () => showPinned(p.id) })),
+    ...SPACES.map((sp) => ({ key: `space:${sp.key}`, label: sp.label, hint: keyLabel(keyOf(sp.action)), run: () => goSpace(sp.key) })),
+    ...nav.map((n) => ({ key: `nav:${n.key}`, label: `管理：${n.label}`, run: n.go })),
+    { key: "nav:doing", label: "管理：Doing", run: () => setView("doing") },
+    ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, hint: "ブラウザ", run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
-    {
-      key: "study",
-      label: "学ぶ時間を始める（テーマを選ぶ）",
-      run: () => {},
-      items: () => (board?.themes ?? []).map((t) => ({ key: `theme:${t.id}`, label: t.name, hint: t.goal ?? undefined, run: () => studyTheme(t, unreadOf(t)) })),
-    },
     { key: "shortcuts", label: "キーの一覧", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
-    { key: "settings", label: "設定（開く場所・ターミナル・herdr・ログイン・サイトの許可）", run: () => setDialog("settings") },
+    { key: "settings", label: "設定（開く場所・ターミナル・herdr・OpenAI・ログイン・サイトの許可）", run: () => setDialog("settings") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
-    { key: "add", label: "新しい Todo", hint: "⌘N", run: () => setDialog("add") },
-    ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned
-      ? [{ key: "toInput", label: "表示中のページを学びに入れる", run: toInput }]
-      : []),
+    { key: "add", label: "新しい Todo", hint: keyLabel(keyOf("newTodo")), run: () => setDialog("add") },
+    ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: bookmarkShown }] : []),
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
     { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
     ...(filterCount(todoFilter) > 0 ? [{ key: "clearFilter", label: "フィルターを外す", run: () => setTodoFilter(NO_FILTER, true) }] : []),
-    { key: "newTab", label: "ブラウザで新しいタブを開く", hint: "⌘T", run: openNewTab },
+    { key: "newTab", label: "ブラウザで新しいタブを開く", hint: keyLabel(keyOf("newTab")), run: openNewTab },
   ];
 
-  // A todo picked on the sessions page opens in the same sheet, over the sessions.
-  const panel = (todoView || view === "sessions") && selectedTodo ? "todo" : null;
+  /// A side of a split view: its page or terminal, or what stands for one
+  /// not made yet (a session ended or in Desktop, one not started).
+  const pane = (tab: BrowserTab | undefined, session: Session | undefined, side: "left" | "right", other: BrowserTab | undefined, todo?: Todo) => {
+    if (tab?.term) return <TerminalView key={tab.id} id={tab.id} run={tab.term} report={report} />;
+    if (tab) return <TabView key={tab.id} tab={tab} covered={covered} report={report} onAddress={(url) => setTabUrl(tab.id, url)} keep={other?.term ? undefined : other?.id} keysOn={focusTyping === side} onArchive={cloudIdOfPage(tab.url) ? () => run(() => api.archiveSessions([cloudIdOfPage(tab.url)!])) : undefined} />;
+    if (session && session.state !== "ended" && outsideHerdr.has(session.session_id))
+      return (
+        <div className="pane-empty">
+          <b>{session.desktop ? "Claude Desktop のセッションです" : "herdr の外で動いているセッションです"}</b>
+          <p className="muted">動いているところで開きます（ここで再開すると、同じセッションが二つ動きます）。</p>
+          <button onClick={() => api.openSession(session.session_id, session.desktop ? "desktop" : undefined).catch(report)}>{session.desktop ? "Desktop で開く" : "開く"}</button>
+        </div>
+      );
+    if (session?.state === "ended")
+      return (
+        <div className="pane-empty">
+          <b>終了したセッションです</b>
+          <p className="muted">{sessionLabel(session)}</p>
+          <button onClick={() => ensureWorkTab(session, true)}>再開する（claude --resume）</button>
+        </div>
+      );
+    if (session)
+      return (
+        <div className="pane-empty">
+          <span className="spinner" /> 開いています…
+        </div>
+      );
+    return (
+      <div className="pane-empty">
+        <b>まだ始めていません</b>
+        {todo && (
+          <button
+            className="primary"
+            onClick={() => {
+              openTodo(todo.id);
+              setDialog("start");
+            }}
+          >
+            セッションを始める
+          </button>
+        )}
+      </div>
+    );
+  };
+  const workLeftTab = workTab(workView.left);
+  const workRightTab = workTab(workView.right);
+  const studyReadingShown = studyLeft?.reading !== undefined ? readings.find((r) => r.id === studyLeft.reading) : undefined;
+
+  // A todo picked on the Todo pages opens in the same sheet.
+  const panel = todoView && selectedTodo ? "todo" : null;
 
   return (
     <BrowserContext.Provider value={openInBrowser}>
-    <BeginWebContext.Provider value={beginWeb}>
+    <WorkContext.Provider value={openWork}>
     <OpenCloudContext.Provider value={openCloud}>
     <FixContext.Provider value={fixInSession}>
     <StartTodoContext.Provider value={startTodo}>
     <TerminalContext.Provider value={inAppTerminal}>
     <SessionTitleContext.Provider value={sessionTitle}>
       <div
-        className={`app${browserShown ? " with-browser" : ""}${browserShown && !focusMode && typingSide ? ` typing-${typingSide}` : ""}${focusMode ? ` focus${focusTyping ? ` typing-${focusTyping}` : ""}` : ""}`}
+        className={`app space-${space}${split ? " split-shown" : ""}${typingSide ? ` typing-${typingSide}` : ""}${split && focusTyping ? ` typing-${focusTyping}` : ""}`}
         data-zone={sideZone ? "sidebar" : undefined}
-        style={{ "--panel-w": `${panelW}px`, "--dock-w": `${dockW}px`, "--focus-right-w": `${focusRightW}px` } as React.CSSProperties}
+        style={{ "--panel-w": `${panelW}px`, "--focus-right-w": `${focusRightW}px`, "--tab-list-w": `${tabListW}px`, "--rail-w": `${railW}px` } as React.CSSProperties}
       >
-        <aside className="sidebar" onPointerDown={() => sideZoneRef.current && setSideZone(false)}>
-          <div className="brand">
-            <img className="brand-mark" src={logoUrl} alt="" aria-hidden="true" />
-            <span>Shosai</span>
-          </div>
-          <button className="search" onClick={() => setDialog("palette")}>
-            <Icon name="search" size={13} />
-            <span className="grow ellipsis">検索・操作</span>
-            <span className="kbd">⌘K</span>
-          </button>
-          {NAV_GROUPS.map((group) => (
-            <nav key={group} className="nav" aria-label={group}>
-              <div className="section-title">{group}</div>
-              {nav
-                .filter((n) => n.group === group)
-                .map((n) => (
-                  <button key={n.key} className={n.on ? "on" : ""} aria-current={n.on ? "page" : undefined} onClick={n.go}>
-                    <Icon name={n.icon} />
-                    <span className="grow">{n.label}</span>
-                    {n.badge}
-                    {n.count !== undefined && <span className="muted">{n.count}</span>}
-                  </button>
-                ))}
-            </nav>
-          ))}
-          <div className="sidebar-foot">
-            <div className="foot-row">
-              <button className={`ghost small${browserShown ? " on" : ""}`} aria-pressed={browserShown} title="右のペイン（開いたページとターミナル）を出す・隠す。⌘T で新しいタブ" onClick={toggleBrowser}>
-                <Icon name="globe" size={13} /> ペイン
-              </button>
-              <span className="grow" />
-              <button className="ghost small" onClick={() => setDialog("settings")}>
-                設定
-              </button>
-            </div>
-            <UsageBox limits={limits} error={usageError} />
-            <div className="sync-line">
-              <span className="dot state-running" />
-              <span className="grow ellipsis muted" title={board?.sync_status}>
-                {board?.sync_status}
-              </span>
-              <button className="ghost icon" onClick={syncAll} disabled={syncing} aria-label="GitHub とクラウドを今すぐ同期" title="今すぐ同期">
-                <Icon name="sync" size={12} />
-              </button>
-            </div>
-          </div>
-        </aside>
-
-        <main className="main">
-          {(closePrompt || error || heldWaiting > 0) && (
-            <div className="banners">
-              {heldWaiting > 0 && (
-                <div className="notice" role="status">
-                  <span className="grow">学ぶ時間のあいだに、あなた待ちが {heldWaiting} 件増えました。</span>
-                  <button className="primary small" onClick={() => (setHeldWaiting(0), showWaiting())}>
-                    あなた待ちを見る
-                  </button>
-                  <button className="ghost icon" onClick={() => setHeldWaiting(0)} aria-label="閉じる">
-                    <Icon name="close" size={12} />
-                  </button>
-                </div>
-              )}
-              {closePrompt && (
-                <div className="notice" role="status">
-                  <span>
-                    #{closePrompt.id} を Done にしました。{issueRef(closePrompt.issue_url) ?? "issue"} も close しますか？
-                  </span>
-                  <button
-                    className="primary small"
-                    onClick={() => {
-                      const id = closePrompt.id;
-                      setClosePrompt(null);
-                      run(() => api.closeIssue(id));
-                    }}
-                  >
-                    close する
-                  </button>
-                  <button className="ghost small" onClick={() => setClosePrompt(null)}>
-                    そのまま
-                  </button>
-                </div>
-              )}
-              {error && (
-                <div className="error" role="alert">
-                  <span className="grow">{error}</span>
-                  <button className="ghost icon" onClick={() => setError(null)} aria-label="閉じる">
-                    <Icon name="close" size={12} />
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {todoView && (
-            <>
-              <header className="toolbar">
-                <h1>{doingView ? "Doing" : "Todo"}</h1>
-                {doingView && <span className="muted">今日やるもの（Doing の todo）だけ</span>}
-                {!doingView && (
-                <div className="segmented" role="group" aria-label="見え方">
-                  {(["board", "list"] as const).map((l) => (
-                    <button key={l} className={layout === l ? "on" : ""} aria-pressed={layout === l} onClick={() => showTodos(l)}>
-                      {l === "board" ? "カンバン" : "リスト"}
-                    </button>
-                  ))}
-                </div>
-                )}
-                <div className="segmented" role="group" aria-label="まとめ方">
-                  {GROUPINGS.map((g) => (
-                    <button key={g.key} className={groupBy === g.key ? "on" : ""} aria-pressed={groupBy === g.key} onClick={() => setGroupBy(g.key)}>
-                      {g.label}
-                    </button>
-                  ))}
-                </div>
-                {!doingView && (
-                  <TodoFilterBar
-                  filter={todoFilter}
-                  version={`${layout}:${filterVersion}`}
-                  places={repoLanes.map((l) => l.key)}
-                  onChange={(f) => setTodoFilter(f, f === NO_FILTER)}
-                  onSave={saveFilter}
-                />
-                )}
-                {!doingView && savedFilters.length > 0 && (
-                  <select
-                    className="select compact"
-                    value={savedFilters.find((f) => f.layout === layout && sameFilter(todoFilter, f.filter))?.id ?? ""}
-                    aria-label="保存したビュー"
-                    title="保存したビュー（絞り込みとフィルター）"
-                    onChange={(e) => {
-                      const f = savedFilters.find((x) => x.id === e.target.value);
-                      if (f) applyFilter(f);
-                    }}
-                  >
-                    <option value="">ビュー</option>
-                    {savedFilters.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name}（{f.layout === "board" ? "カンバン" : "リスト"}）
-                      </option>
-                    ))}
-                  </select>
-                )}
-                {!doingView && savedFilters.some((f) => f.layout === layout && sameFilter(todoFilter, f.filter)) && (
-                  <button
-                    className="ghost icon"
-                    aria-label="このビューを消す"
-                    title="このビューを消す（絞り込みはそのまま）"
-                    onClick={() => setSavedFilters(savedFilters.filter((f) => !(f.layout === layout && sameFilter(todoFilter, f.filter))))}
-                  >
-                    <Icon name="close" size={11} />
-                  </button>
-                )}
-                <span className="grow" />
-                <button className="primary" onClick={() => setDialog("add")}>
-                  <Icon name="plus" size={13} /> 新しい Todo <span className="kbd">⌘N</span>
+        <SpaceBar space={space} waiting={waiting.length} onSpace={goSpace} onSearch={() => setDialog("palette")} onSettings={() => setDialog("settings")} />
+        {(closePrompt || error || heldWaiting > 0) && (
+          <div className="banners">
+            {heldWaiting > 0 && (
+              <div className="notice" role="status">
+                <span className="grow">学習のあいだに、あなた待ちが {heldWaiting} 件増えました。</span>
+                <button className="primary small" onClick={() => (setHeldWaiting(0), showWaiting())}>
+                  作業で見る
                 </button>
-              </header>
-              <WaitingStrip items={waiting} onShow={showWaiting} onShowPrs={() => setView("prs")} />
-              <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
-                <div className="content" ref={todoPage}>
-                  {pageLayout === "board" && lanes.length > 0 && (
-                    <div className="col-heads" style={{ gridTemplateColumns: columnsTemplate(foldedCols) }}>
-                      {COLUMNS.map((c) => (
-                        <h2 key={c.status} className={foldedCols.has(c.status) ? "folded" : undefined}>
-                          <button className="col-toggle" title={foldedCols.has(c.status) ? `${c.label} を開く` : `${c.label} を畳む（カードはここへ動かせます）`} onClick={() => toggleColumn(c.status)}>
-                            <StatusIcon status={c.status} />
-                            {!foldedCols.has(c.status) && c.label} <span className="muted">{colCounts[c.status]}</span>
-                          </button>
-                        </h2>
+                <button className="ghost icon" onClick={() => setHeldWaiting(0)} aria-label="閉じる">
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+            )}
+            {closePrompt && (
+              <div className="notice" role="status">
+                <span>
+                  #{closePrompt.id} を Done にしました。{issueRef(closePrompt.issue_url) ?? "issue"} も close しますか？
+                </span>
+                <button
+                  className="primary small"
+                  onClick={() => {
+                    const id = closePrompt.id;
+                    setClosePrompt(null);
+                    run(() => api.closeIssue(id));
+                  }}
+                >
+                  close する
+                </button>
+                <button className="ghost small" onClick={() => setClosePrompt(null)}>
+                  そのまま
+                </button>
+              </div>
+            )}
+            {error && (
+              <div className="error" role="alert">
+                <span className="grow">{error}</span>
+                <button className="ghost icon" onClick={() => setError(null)} aria-label="閉じる">
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="space-body">
+          {space === "manage" && (
+            <>
+              <aside className="sidebar" onPointerDown={() => sideZoneRef.current && setSideZone(false)}>
+                {NAV_GROUPS.map((group) => (
+                  <nav key={group} className="nav" aria-label={group}>
+                    <div className="section-title">{group}</div>
+                    {nav
+                      .filter((n) => n.group === group)
+                      .map((n) => (
+                        <button key={n.key} className={n.on ? "on" : ""} aria-current={n.on ? "page" : undefined} onClick={n.go}>
+                          <Icon name={n.icon} />
+                          <span className="grow">{n.label}</span>
+                          {n.badge}
+                          {n.count !== undefined && <span className="muted">{n.count}</span>}
+                        </button>
                       ))}
-                    </div>
-                  )}
-                  {lanes.map((lane) =>
-                    pageLayout === "board" ? (
-                      <BoardLane
-                        key={lane.key}
-                        lane={lane}
-                        collapsed={collapsed.has(lane.key)}
-                        onToggle={() => toggleLane(lane.key)}
-                        selectedId={selectedTodo?.id ?? null}
-                        onSelectTodo={openTodo}
-                        report={report}
-                        allTodos={allTodos}
-                        folded={foldedCols}
-                        onAdd={(status, title) => addTodoIn(lane, status, title)}
-                      />
-                    ) : (
-                      <ListLane
-                        key={lane.key}
-                        lane={lane}
-                        collapsed={collapsed.has(lane.key)}
-                        onToggle={() => toggleLane(lane.key)}
-                        selectedId={selectedTodo?.id ?? null}
-                        onSelectTodo={openTodo}
-                        report={report}
-                        run={run}
-                        setStatus={setStatus}
-                        allTodos={allTodos}
-                        folded={pageFolded}
-                        onUnfold={toggleColumn}
-                        onAdd={(title) => addTodoIn(lane, doingView ? "doing" : "todo", title)}
-                      />
-                    ),
-                  )}
-                  {board && lanes.length === 0 && (
-                    <p className="muted empty">
-                      {doingView
-                        ? "Doing の todo はありません。今日やるものを Doing にすると、ここに並びます。"
-                        : filterCount(todoFilter) > 0
-                          ? "フィルターに合う todo はありません。"
-                          : "表示できる todo がありません。⌘N で追加するか、⌘K から issue を取り込めます。"}
-                    </p>
-                  )}
+                  </nav>
+                ))}
+                <div className="sidebar-foot">
+                  <UsageBox limits={limits} error={usageError} />
+                  <div className="sync-line">
+                    <span className="dot state-running" />
+                    <span className="grow ellipsis muted" title={board?.sync_status}>
+                      {board?.sync_status}
+                    </span>
+                    <button className="ghost icon" onClick={syncAll} disabled={syncing} aria-label="GitHub とクラウドを今すぐ同期" title="今すぐ同期">
+                      <Icon name="sync" size={12} />
+                    </button>
+                  </div>
                 </div>
-                {statusMenuTodo && <StatusMenu todo={statusMenuTodo} onPick={(st) => setStatus(statusMenuTodo, st)} onClose={() => setStatusMenuFor(null)} />}
-                <DragOverlay dropAnimation={null}>{draggedTodo && <div className="card overlay">{draggedTodo.title}</div>}</DragOverlay>
-              </DndContext>
+              </aside>
+
+              <main className="main">
+                {todoView && (
+                  <>
+                    <header className="toolbar">
+                      <h1>Todo</h1>
+                      <div className="segmented" role="group" aria-label="見え方">
+                        {(["board", "list"] as const).map((l) => (
+                          <button key={l} className={!doingView && layout === l ? "on" : ""} aria-pressed={!doingView && layout === l} onClick={() => showTodos(l)}>
+                            {l === "board" ? "カンバン" : "リスト"}
+                          </button>
+                        ))}
+                        <button className={doingView ? "on" : ""} aria-pressed={doingView} title="今日やるもの（Doing の todo）だけ" onClick={() => setView("doing")}>
+                          Doing {doingTodos.length}
+                        </button>
+                      </div>
+                      <div className="segmented" role="group" aria-label="まとめ方">
+                        {GROUPINGS.map((g) => (
+                          <button key={g.key} className={groupBy === g.key ? "on" : ""} aria-pressed={groupBy === g.key} onClick={() => setGroupBy(g.key)}>
+                            {g.label}
+                          </button>
+                        ))}
+                      </div>
+                      {!doingView && (
+                        <TodoFilterBar filter={todoFilter} version={`${layout}:${filterVersion}`} places={repoLanes.map((l) => l.key)} onChange={(f) => setTodoFilter(f, f === NO_FILTER)} onSave={saveFilter} />
+                      )}
+                      {!doingView && savedFilters.length > 0 && (
+                        <select
+                          className="select compact"
+                          value={savedFilters.find((f) => f.layout === layout && sameFilter(todoFilter, f.filter))?.id ?? ""}
+                          aria-label="保存したビュー"
+                          title="保存したビュー（絞り込みとフィルター）"
+                          onChange={(e) => {
+                            const f = savedFilters.find((x) => x.id === e.target.value);
+                            if (f) applyFilter(f);
+                          }}
+                        >
+                          <option value="">ビュー</option>
+                          {savedFilters.map((f) => (
+                            <option key={f.id} value={f.id}>
+                              {f.name}（{f.layout === "board" ? "カンバン" : "リスト"}）
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      {!doingView && savedFilters.some((f) => f.layout === layout && sameFilter(todoFilter, f.filter)) && (
+                        <button
+                          className="ghost icon"
+                          aria-label="このビューを消す"
+                          title="このビューを消す（絞り込みはそのまま）"
+                          onClick={() => setSavedFilters(savedFilters.filter((f) => !(f.layout === layout && sameFilter(todoFilter, f.filter))))}
+                        >
+                          <Icon name="close" size={11} />
+                        </button>
+                      )}
+                      <span className="grow" />
+                      <button className="primary" onClick={() => setDialog("add")}>
+                        <Icon name="plus" size={13} /> 新しい Todo <span className="kbd">{keyLabel(keyOf("newTodo"))}</span>
+                      </button>
+                    </header>
+                    <DndContext sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragEnd={onDragEnd} onDragCancel={() => setDragging(null)}>
+                      <div className="content" ref={todoPage}>
+                        {pageLayout === "board" && lanes.length > 0 && (
+                          <div className="col-heads" style={{ gridTemplateColumns: columnsTemplate(foldedCols) }}>
+                            {COLUMNS.map((c) => (
+                              <h2 key={c.status} className={foldedCols.has(c.status) ? "folded" : undefined}>
+                                <button className="col-toggle" title={foldedCols.has(c.status) ? `${c.label} を開く` : `${c.label} を畳む（カードはここへ動かせます）`} onClick={() => toggleColumn(c.status)}>
+                                  <StatusIcon status={c.status} />
+                                  {!foldedCols.has(c.status) && c.label} <span className="muted">{colCounts[c.status]}</span>
+                                </button>
+                              </h2>
+                            ))}
+                          </div>
+                        )}
+                        {lanes.map((lane) =>
+                          pageLayout === "board" ? (
+                            <BoardLane
+                              key={lane.key}
+                              lane={lane}
+                              collapsed={collapsed.has(lane.key)}
+                              onToggle={() => toggleLane(lane.key)}
+                              selectedId={selectedTodo?.id ?? null}
+                              onSelectTodo={openTodo}
+                              report={report}
+                              allTodos={allTodos}
+                              folded={foldedCols}
+                              onAdd={(status, title) => addTodoIn(lane, status, title)}
+                            />
+                          ) : (
+                            <ListLane
+                              key={lane.key}
+                              lane={lane}
+                              collapsed={collapsed.has(lane.key)}
+                              onToggle={() => toggleLane(lane.key)}
+                              selectedId={selectedTodo?.id ?? null}
+                              onSelectTodo={openTodo}
+                              report={report}
+                              run={run}
+                              setStatus={setStatus}
+                              allTodos={allTodos}
+                              folded={pageFolded}
+                              onUnfold={toggleColumn}
+                              onAdd={(title) => addTodoIn(lane, doingView ? "doing" : "todo", title)}
+                            />
+                          ),
+                        )}
+                        {board && lanes.length === 0 && (
+                          <p className="muted empty">
+                            {doingView
+                              ? "Doing の todo はありません。今日やるものを Doing にすると、ここに並びます。"
+                              : filterCount(todoFilter) > 0
+                                ? "フィルターに合う todo はありません。"
+                                : `表示できる todo がありません。${keyLabel(keyOf("newTodo"))} で追加するか、${keyLabel(keyOf("palette"))} から issue を取り込めます。`}
+                          </p>
+                        )}
+                      </div>
+                      {statusMenuTodo && <StatusMenu todo={statusMenuTodo} onPick={(st) => setStatus(statusMenuTodo, st)} onClose={() => setStatusMenuFor(null)} />}
+                      <DragOverlay dropAnimation={null}>{draggedTodo && <div className="card overlay">{draggedTodo.title}</div>}</DragOverlay>
+                    </DndContext>
+                  </>
+                )}
+                {view === "prs" && (
+                  <PrsPage
+                    prs={prs}
+                    prsLoading={prsLoading}
+                    prError={prError}
+                    todos={allTodos}
+                    sessions={board?.inbox ?? []}
+                    submitted={submittedReviews}
+                    local={local}
+                    browserUrl={browserUrl}
+                    run={run}
+                    report={report}
+                    onRefresh={loadPrs}
+                    onOpenTodo={goTodo}
+                  />
+                )}
+                {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />}
+                {view === "slack" && board && (
+                  <SlackPage
+                    slack={board.slack}
+                    pick={slackPick}
+                    run={run}
+                    report={report}
+                    onSettings={() => setDialog("settings")}
+                    onTodo={(memo) => {
+                      setDialog("add");
+                      setAddMemo(memo);
+                    }}
+                  />
+                )}
+                {panel === "todo" && selectedTodo && (
+                  // A sheet over the Todo page, not a dialog: j k go on to the next todo.
+                  <div className="sheet-backdrop" onClick={() => setSelection(null)}>
+                    <TodoPanel
+                      todo={selectedTodo}
+                      allTodos={allTodos}
+                      waiting={waiting}
+                      artifacts={board?.artifacts ?? []}
+                      local={local}
+                      groups={groups}
+                      run={run}
+                      report={report}
+                      setStatus={setStatus}
+                      onOpenTodo={openTodo}
+                      onStart={() => setDialog("start")}
+                      onWork={() => openWork({ todo: selectedTodo.id })}
+                      onClose={() => setSelection(null)}
+                    />
+                  </div>
+                )}
+              </main>
             </>
           )}
-          {view === "sessions" && board && (
-            <SessionsPage
-              board={board}
-              waiting={waiting}
-              filter={sessionFilter}
-              onFilter={setSessionFilter}
-              run={run}
-              report={report}
-              onOpenTodo={openTodo}
-              onQuick={() => setDialog("quick")}
-              onShowPrs={() => setView("prs")}
-            />
-          )}
-          {view === "inputs" && board && <ThemesPage themes={board.themes} categories={board.categories} inputs={allInputs} feynman={feynmanOf} run={run} report={report} onStudy={studyTheme} />}
-          {view === "prs" && (
-            <PrsPage
-              prs={prs}
-              prsLoading={prsLoading}
-              prError={prError}
-              todos={allTodos}
-              sessions={board?.inbox ?? []}
-              submitted={submittedReviews}
-              local={local}
-              browserUrl={browserUrl}
-              run={run}
-              report={report}
-              onRefresh={loadPrs}
-              onOpenTodo={goTodo}
-            />
-          )}
-          {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />}
-          {view === "slack" && board && (
-            <SlackPage
-              slack={board.slack}
-              pick={slackPick}
-              run={run}
-              report={report}
-              onSettings={() => setDialog("settings")}
-              onTodo={(memo) => {
-                setDialog("add");
-                setAddMemo(memo);
-              }}
-            />
-          )}
-          {panel === "todo" && selectedTodo && (
-            // A sheet over the Todo page, not a dialog: the pane stays, and j k go on to the next todo.
-            <div className="sheet-backdrop" onClick={() => setSelection(null)}>
-              <TodoPanel
-                todo={selectedTodo}
-                allTodos={allTodos}
-                waiting={waiting}
-                artifacts={board?.artifacts ?? []}
-                local={local}
-                groups={groups}
-                run={run}
-                report={report}
-                setStatus={setStatus}
-                onOpenTodo={openTodo}
-                onStart={() => setDialog("start")}
-                onClose={() => setSelection(null)}
-              />
+
+          {space === "work" && board && (
+            <div className="split">
+              <WorkRail board={board} waiting={waiting} pick={work.pick} width={railW} onResize={setRailW} onPick={openWork} onShowPrs={() => setView("prs")} onQuick={() => setDialog("quick")} run={run} />
+              {workView.left || workView.todo ? (
+                <>
+                  <section className="focus-left browser" aria-label={workView.right || workView.children.length > 0 ? "指揮役のセッション" : "セッション"}>
+                    <div className="browser-tabs work-head">
+                      {workView.todo && <span className="mono muted">#{workView.todo.id}</span>}
+                      <b className="ellipsis">{workView.title}</b>
+                      {workView.children.length > 0 && <span className="muted small-text">指揮役</span>}
+                      {workView.left && <StateBadge state={workView.left.state} unread={workView.left.unread} />}
+                      <span className="grow" />
+                      {workView.left && <span className="muted small-text">{placeOf(workView.left)}</span>}
+                      {workView.todo && (
+                        <button className="ghost small" onClick={() => goTodo(workView.todo!.id)}>
+                          管理で見る
+                        </button>
+                      )}
+                    </div>
+                    {pane(workLeftTab, workView.left, "left", workRightTab, workView.todo)}
+                  </section>
+                  {workView.children.length > 0 && (
+                    <aside className="browser-dock focus-right">
+                      <Resizer label="右側の幅" cssVar="--focus-right-w" width={focusRightW} min={DOCK_MIN_W} max={() => window.innerWidth - FOCUS_LEFT_MIN_W} onResize={setFocusRightW} />
+                      <section className="browser" aria-label="サブタスクのセッション">
+                        <div className="browser-tabs focus-head" role="tablist" aria-label="サブタスク">
+                          {workView.children.map((c) => {
+                            const s = mainSession(c);
+                            return (
+                              <span key={c.id} className={`browser-tab${c.id === workView.child?.id ? " on" : ""}`}>
+                                <button role="tab" aria-selected={c.id === workView.child?.id} className="browser-tab-main" title={c.title} onClick={() => pickChild(c.id)}>
+                                  {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={c.status} />}
+                                  <span className="mono">#{c.id}</span>
+                                  <span className="ellipsis">{c.title}</span>
+                                </button>
+                              </span>
+                            );
+                          })}
+                          <span className="grow" />
+                          <span className="kbd">{keyLabel(keyOf("nextTab"))}</span>
+                        </div>
+                        {pane(workRightTab, workView.right, "right", workLeftTab, workView.child)}
+                      </section>
+                    </aside>
+                  )}
+                </>
+              ) : (
+                <div className="pane-empty">
+                  <b>左の一覧から選ぶと、そのセッションが開きます</b>
+                  <p className="muted">
+                    {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選んで Enter。親の todo なら、指揮役が左、サブタスクが右に並びます。
+                  </p>
+                </div>
+              )}
             </div>
           )}
-        </main>
 
-        {focusMode && (
-          <FocusMode
-            theme={focusTheme}
-            urls={focusUrls}
-            onCopyUrls={() => api.copyText(focusUrls.join("\n")).then(() => showToast(`${focusUrls.length} 件の URL をコピーしました。NotebookLM のソースの追加に貼ってください`), report)}
-            overlay={reviewing && focusTheme ? <ReviewPanel theme={focusTheme} report={report} onDone={() => setReviewing(false)} onExit={exitFocus} /> : null}
-            finishing={!!focusTheme && finishing.has(focusTheme.id)}
-            onFinish={finishReading}
-            lefts={focusLefts}
-            left={focusLeft}
-            onSelectLeft={(id) => {
-              keysToTab(tabs.find((t) => t.id === id) ?? null, focusLeft?.id, report);
-              patchSpace(spaceKey, (s) => ({ ...s, active: id, newTab: false }));
-            }}
-            onLeftStrip={() => focusLeft && keysToTab(focusLeft, focusLeft.id, report)}
-            onCloseLeft={removeFromFocus}
-            onAddLeft={pickFocus}
-            onOpenLeft={(url) => {
-              const [id] = addToFocus([{ url }]);
-              if (id) focusSoon(id);
-            }}
-            right={focusRightTab}
-            rightKind={focusRight}
-            covered={covered}
-            report={report}
-            width={focusRightW}
-            onResize={setFocusRightW}
-            onRight={setFocusRight}
-            onAddress={setTabUrl}
-            onExit={exitFocus}
-            typing={focusTyping}
-          />
-        )}
-        {browserShown && !focusMode && (
-          <aside className="browser-dock">
-            <Resizer label="ブラウザの幅" cssVar="--dock-w" width={dockW} min={DOCK_MIN_W} max={() => maxPaneWidth(0)} onResize={setDockW} />
-            <BrowserDock
-              tabs={paneTabs.filter((t) => !t.review)}
-              reviews={reviewTabs}
-              narrow={dockW < REVIEW_FOLD_W}
-              sessionOf={(id) => (id ? board?.inbox.find((s) => s.session_id === id) : undefined)}
-              onStopReview={stopReview}
+          {space === "study" && board && !studyReading && (
+            <ReadingsPage
+              readings={readings}
+              sort={board.reading_sort}
+              opened={study.open.length}
+              run={run}
+              report={report}
+              onRead={readReadings}
+              onResume={() => setStudy((st) => ({ ...st, view: "read" }))}
+              onBrowser={(url) => openInBrowser(url)}
+              onSettings={() => setDialog("settings")}
+              onToast={showToast}
+            />
+          )}
+          {studyReading && (
+            <div className="split">
+              <StudyRail reading={studyReadingShown} readings={readings} opened={study.open} run={run} onRead={readReadings} onList={() => setStudy((st) => ({ ...st, view: "list" }))} />
+              <section className="focus-left browser" aria-label="読んでいるページ">
+                <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && studyLeft && keysToTab(studyLeft, studyLeft.id, report)}>
+                  {studyLefts.map((t) => (
+                    <span key={t.id} className={`browser-tab${t.id === studyLeft?.id ? " on" : ""}`}>
+                      <button
+                        role="tab"
+                        aria-selected={t.id === studyLeft?.id}
+                        className="browser-tab-main"
+                        title={t.url}
+                        onClick={() => {
+                          keysToTab(t, studyLeft?.id, report);
+                          setStudy((st) => ({ ...st, active: t.id }));
+                        }}
+                      >
+                        {t.loading && <span className="spinner" aria-label="読み込み中" />}
+                        <span className="ellipsis">{t.title || hostOf(t.url)}</span>
+                      </button>
+                      <button className="ghost icon browser-tab-close" aria-label={`${t.title || hostOf(t.url)} を閉じる`} onClick={() => closeStudyTab(t.id)}>
+                        <Icon name="close" size={11} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                {studyLeft ? (
+                  <TabView key={studyLeft.id} tab={studyLeft} covered={covered} report={report} onAddress={(url) => setTabUrl(studyLeft.id, url)} keep={studyRightTab?.id} keysOn={focusTyping === "left"} onBookmark={studyLeft.reading === undefined ? bookmarkShown : undefined} />
+                ) : (
+                  <div className="pane-empty">読みものを左の一覧から選んでください。</div>
+                )}
+              </section>
+              <aside className="browser-dock focus-right">
+                <Resizer label="右側の幅" cssVar="--focus-right-w" width={focusRightW} min={DOCK_MIN_W} max={() => window.innerWidth - FOCUS_LEFT_MIN_W} onResize={setFocusRightW} />
+                <section className="browser">
+                  <div className="browser-tabs focus-head">
+                    <div className="segmented" role="group" aria-label="右側で聞く相手">
+                      {STUDY_RIGHT.map((id) => (
+                        <button key={id} className={study.right === id ? "on" : ""} aria-pressed={study.right === id} onClick={() => setStudyRight(id)}>
+                          {PINNED_PAGES.find((p) => p.id === id)?.label}
+                        </button>
+                      ))}
+                    </div>
+                    {study.right === "pinnotebooklm" && study.open.length > 0 && (
+                      <button
+                        className="ghost small"
+                        title="NotebookLM のソースの追加（ウェブサイト）に貼れるよう、開いている読みものの URL を1行ずつコピーします"
+                        onClick={() => {
+                          const urls = study.open.map((id) => readings.find((r) => r.id === id)?.url).filter((u): u is string => !!u);
+                          api.copyText(urls.join("\n")).then(() => showToast(`${urls.length} 件の URL をコピーしました。NotebookLM のソースの追加に貼ってください`), report);
+                        }}
+                      >
+                        開いている {study.open.length} 件の URL をコピー
+                      </button>
+                    )}
+                    <span className="grow" />
+                    <span className="muted small-text" title="学習のあいだは macOS の通知を出しません。離れたときに、増えたあなた待ちを知らせます">
+                      通知は止めています
+                    </span>
+                  </div>
+                  {studyRightTab && <TabView key={studyRightTab.id} tab={studyRightTab} covered={covered} report={report} onAddress={(url) => setTabUrl(studyRightTab.id, url)} keep={studyLeft?.id} keysOn={focusTyping === "right"} />}
+                </section>
+              </aside>
+            </div>
+          )}
+
+          {space === "browser" && (
+            <BrowserSpace
+              tabs={normalTabs}
               active={activeTab}
               covered={covered}
+              width={tabListW}
               report={report}
+              onResize={setTabListW}
               onSelect={(id) => {
                 keysToTab(tabs.find((t) => t.id === id) ?? null, activeTab?.id, report);
                 setActiveTabId(id);
@@ -8098,13 +7282,12 @@ export default function App() {
               onStrip={() => activeTab && keysToTab(activeTab, activeTab.id, report)}
               onPinned={showPinned}
               onArchive={() => archiveShownRef.current()}
+              onBookmark={bookmarkShown}
               onClose={closeTab}
               onNewTab={openNewTab}
-              onHide={() => setBrowserShown(false)}
               // What is typed on a new tab page opens in a new tab, as a page's link does.
               onOpen={(url) => openFromPage(url, activeTab?.id ?? "", false)}
               onAddress={setTabUrl}
-              onToInput={toInput}
               onMove={(id, to) =>
                 setTabs((prev) => {
                   const from = prev.findIndex((t) => t.id === id);
@@ -8116,12 +7299,9 @@ export default function App() {
                 })
               }
             />
-          </aside>
-        )}
+          )}
+        </div>
 
-        {dialog === "toInput" && toInputPage && (
-          <AddToThemeDialog page={toInputPage} themes={board?.themes ?? []} categories={board?.categories ?? []} run={run} onDone={setAddedInput} onClose={() => setDialog(null)} />
-        )}
         {dialog === "add" && (
           <AddTodoDialog
             local={local}
@@ -8142,16 +7322,6 @@ export default function App() {
         )}
         {dialog === "import" && <ImportDialog run={run} onClose={() => setDialog(null)} />}
         {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
-        {dialog === "exitFocus" && (
-          <ExitFocusDialog
-            onExit={exitFocus}
-            onStay={() => {
-              setDialog(null);
-              // Back to typing on the right once its page is up again.
-              focusSoon(focusRightId, true);
-            }}
-          />
-        )}
         {toast && (
           <div className="toast" role="status">
             {toast}
@@ -8207,33 +7377,21 @@ export default function App() {
             herdr={herdr}
             onLoadHerdr={loadHerdr}
             onPickHerdr={pickHerdr}
+            hasOpenaiKey={!!board?.reading_sort.has_key}
+            run={run}
             report={report}
             onClose={() => setDialog(null)}
           />
         )}
-        {dialog === "start" && selectedTodo && (
-          <StartDialog todo={selectedTodo} allTodos={allTodos} run={run} onClose={() => setDialog(null)} />
-        )}
-        {dialog === "focusPick" && (
-          <FocusPicker
-            terminals={paneTabs.filter((t) => t.term)}
-            inputs={focusTheme ? allInputs.filter((i) => i.theme_id === focusTheme.id) : []}
-            onClose={() => setDialog(null)}
-            onPick={(item) => {
-              setDialog(null);
-              addToFocus([item]);
-            }}
-          />
-        )}
+        {dialog === "start" && selectedTodo && <StartDialog todo={selectedTodo} allTodos={allTodos} run={run} onClose={() => setDialog(null)} />}
         {dialog === "palette" && (
           <CommandPalette
             commands={commands}
             todos={allTodos}
-            themes={board?.themes ?? []}
-            categories={board?.categories ?? []}
+            readings={readings}
             start={paletteStart?.command}
             onOpenTodo={goTodo}
-            onStudy={(t) => studyTheme(t, unreadOf(t))}
+            onRead={(id) => readReadings([id])}
             onClose={() => {
               setDialog(null);
               // Back to the terminal the links were picked from (a link picked takes the keyboard after).
@@ -8248,7 +7406,7 @@ export default function App() {
     </StartTodoContext.Provider>
     </FixContext.Provider>
     </OpenCloudContext.Provider>
-    </BeginWebContext.Provider>
+    </WorkContext.Provider>
     </BrowserContext.Provider>
   );
 }
