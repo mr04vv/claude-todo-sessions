@@ -7,7 +7,7 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 const API: &str = "https://slack.com/api";
@@ -452,6 +452,53 @@ pub fn events_quiet(connected_at: i64, last_event: i64, now: i64) -> bool {
     now - connected_at.max(last_event) >= EVENTS_QUIET_SECS
 }
 
+/// The events the app needs, on behalf of the user: every message of their
+/// channels (a bot event comes only from channels the bot is in).
+pub const USER_EVENTS: [&str; 2] = ["message.channels", "message.groups"];
+
+/// The app's id, which its own token carries (`xapp-1-A…-…`).
+pub fn app_id_of(app_token: &str) -> Option<&str> {
+    app_token.split('-').nth(2).filter(|id| id.starts_with('A'))
+}
+
+/// `manifest` (as apps.manifest.export gives it) with USER_EVENTS
+/// subscribed through Socket Mode, or taken out (and what they leave empty).
+pub fn with_events(mut manifest: Value, on: bool) -> Value {
+    let settings = &mut manifest["settings"];
+    let mut events: Vec<Value> = settings["event_subscriptions"]["user_events"].as_array().cloned().unwrap_or_default();
+    events.retain(|e| !e.as_str().is_some_and(|e| USER_EVENTS.contains(&e)));
+    if on {
+        events.extend(USER_EVENTS.map(Value::from));
+        settings["socket_mode_enabled"] = true.into();
+    }
+    let subscriptions = &mut settings["event_subscriptions"];
+    if !events.is_empty() {
+        subscriptions["user_events"] = events.into();
+    } else if let Some(s) = subscriptions.as_object_mut() {
+        s.remove("user_events");
+    }
+    if subscriptions.as_object().is_none_or(|s| s.is_empty()) {
+        if let Some(s) = settings.as_object_mut() {
+            s.remove("event_subscriptions");
+        }
+    }
+    manifest
+}
+
+/// An app configuration token (for apps.manifest.*), good until `exp` (unix
+/// seconds), and the refresh token that gets the next one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigToken {
+    pub token: String,
+    pub refresh: String,
+    pub exp: i64,
+}
+
+pub fn parse_rotated(v: &Value) -> Result<ConfigToken, String> {
+    let field = |k: &str| v[k].as_str().map(String::from).ok_or_else(|| format!("Slack: tooling.tokens.rotate に {k} がありません"));
+    Ok(ConfigToken { token: field("token")?, refresh: field("refresh_token")?, exp: v["exp"].as_i64().ok_or("Slack: tooling.tokens.rotate に exp がありません")? })
+}
+
 /// What tells Slack an envelope came.
 pub fn ack(envelope_id: &str) -> String {
     serde_json::json!({ "envelope_id": envelope_id }).to_string()
@@ -534,6 +581,32 @@ pub fn socket_url(app_token: &str) -> Result<String, String> {
         .read_json()
         .map_err(|e| format!("Slack apps.connections.open: {e}"))?;
     parse_socket_url(&answer(v)?)
+}
+
+/// Calls a method about the app itself (tooling.*, apps.manifest.*) with a
+/// form, as their pages show (the configuration token among its fields).
+fn configure(method: &str, form: &[(&str, &str)]) -> Result<Value, String> {
+    let v: Value = AGENT.post(format!("{API}/{method}")).send_form(form.iter().copied()).map_err(|e| failed(method, e))?.body_mut().read_json().map_err(|e| failed(method, e))?;
+    answer(v)
+}
+
+/// The next configuration token, for the refresh token of the last (each
+/// lasts 12 hours).
+pub fn rotate(refresh: &str) -> Result<ConfigToken, String> {
+    parse_rotated(&configure("tooling.tokens.rotate", &[("refresh_token", refresh)])?)
+}
+
+/// Subscribes the app `app_id` to USER_EVENTS, or takes them out: Slack
+/// sends none while they are out. Written back, they also turn on again the
+/// events Slack turned off (that switch is not in the manifest).
+pub fn set_events(config_token: &str, app_id: &str, on: bool) -> Result<(), String> {
+    let mut v = configure("apps.manifest.export", &[("token", config_token), ("app_id", app_id)])?;
+    let manifest = match v["manifest"].take() {
+        m @ Value::Object(_) => m,
+        _ => return Err("Slack: apps.manifest.export に manifest がありません".into()),
+    };
+    let manifest = with_events(manifest, on).to_string();
+    configure("apps.manifest.update", &[("token", config_token), ("app_id", app_id), ("manifest", &manifest)]).map(|_| ())
 }
 
 /// A channel's name (needs `channels:read` / `groups:read`).
@@ -660,6 +733,49 @@ mod tests {
         assert!(!events_quiet(now - 7200, now - 60, now), "an event a minute ago");
         assert!(events_quiet(now - EVENTS_QUIET_SECS, 0, now), "nothing since it connected");
         assert!(events_quiet(now - 7200, now - EVENTS_QUIET_SECS, now), "nothing since the last one");
+    }
+
+    #[test]
+    fn the_app_id_is_in_the_apps_token() {
+        assert_eq!(app_id_of("xapp-1-A0C7ZNXMNBB-9876543210123-abcdef0123"), Some("A0C7ZNXMNBB"));
+        assert_eq!(app_id_of("xoxp-1-2-3"), None);
+        assert_eq!(app_id_of("xapp-1"), None);
+    }
+
+    // The settings apps.manifest.export gave for Shosai's app.
+    fn manifest(event_subscriptions: Value) -> Value {
+        json!({
+            "display_information": {"name": "Shosai"},
+            "settings": {"event_subscriptions": event_subscriptions, "interactivity": {"is_enabled": true}, "socket_mode_enabled": true}
+        })
+    }
+
+    #[test]
+    fn the_messages_are_subscribed_through_socket_mode_with_the_rest_kept() {
+        let none = json!({"display_information": {"name": "Shosai"}, "settings": {"interactivity": {"is_enabled": true}}});
+        assert_eq!(with_events(none, true), manifest(json!({"user_events": ["message.channels", "message.groups"]})));
+        assert_eq!(
+            with_events(manifest(json!({"user_events": ["reaction_added", "message.channels"], "bot_events": ["app_mention"]})), true),
+            manifest(json!({"user_events": ["reaction_added", "message.channels", "message.groups"], "bot_events": ["app_mention"]})),
+            "once each, the others kept"
+        );
+    }
+
+    #[test]
+    fn the_messages_are_taken_out_leaving_nothing_empty() {
+        let mut bare = manifest(json!(null));
+        bare["settings"].as_object_mut().unwrap().remove("event_subscriptions");
+        assert_eq!(with_events(manifest(json!({"user_events": ["message.channels", "message.groups"]})), false), bare);
+        assert_eq!(with_events(manifest(json!({"user_events": ["message.groups", "reaction_added"]})), false), manifest(json!({"user_events": ["reaction_added"]})));
+        assert_eq!(with_events(manifest(json!({"user_events": ["message.channels"], "bot_events": ["app_mention"]})), false), manifest(json!({"bot_events": ["app_mention"]})));
+        assert_eq!(with_events(bare.clone(), false), bare, "none to take out");
+    }
+
+    #[test]
+    fn a_rotated_configuration_token_is_read() {
+        let v = json!({"ok": true, "token": "xoxe.xoxp-1-new", "refresh_token": "xoxe-1-next", "team_id": "T1", "user_id": "U1", "iat": 1633095660, "exp": 1633138860});
+        assert_eq!(parse_rotated(&v), Ok(ConfigToken { token: "xoxe.xoxp-1-new".into(), refresh: "xoxe-1-next".into(), exp: 1633138860 }));
+        assert!(parse_rotated(&json!({"ok": true, "token": "xoxe.xoxp-1-new"})).is_err());
     }
 
     #[test]
