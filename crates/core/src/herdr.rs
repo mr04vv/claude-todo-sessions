@@ -1,5 +1,9 @@
 //! Reading herdr's CLI output: which named sessions run, and which pane
-//! hosts a given Claude Code session.
+//! hosts a given Claude Code session; and the subtasks' herdr session.
+
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -20,14 +24,54 @@ pub fn running_sessions(table: &str) -> Vec<String> {
 pub const DEFAULT_SESSION: &str = "default";
 
 /// The running session new workspaces go to: the one picked, else the
-/// default one, else the first running one. None when herdr is not running.
+/// default one, else the first running one; never a subtasks' session. None
+/// when herdr is not running.
 pub fn pick_session(running: &[String], picked: Option<&str>) -> Option<String> {
-    let is_running = |name: &str| running.iter().any(|r| r == name);
+    let usable = |name: &str| !name.ends_with(SUBTASKS_SUFFIX) && running.iter().any(|r| r == name);
     picked
-        .filter(|p| is_running(p))
-        .or_else(|| is_running(DEFAULT_SESSION).then_some(DEFAULT_SESSION))
+        .filter(|p| usable(p))
+        .or_else(|| usable(DEFAULT_SESSION).then_some(DEFAULT_SESSION))
         .map(Into::into)
-        .or_else(|| running.first().cloned())
+        .or_else(|| running.iter().find(|r| usable(r)).cloned())
+}
+
+/// What a subtasks' session's name ends with.
+const SUBTASKS_SUFFIX: &str = "-sub";
+/// How long a herdr session started here may take to answer, and how often it is asked.
+const SESSION_START_WAIT: Duration = Duration::from_secs(10);
+const SESSION_START_POLL: Duration = Duration::from_millis(200);
+
+/// The herdr session a parent's subtasks run in, beside the parent's own
+/// `session` (`<session>-sub`): the app attaches each herdr session once, so
+/// the parent's pane and a subtask's show side by side.
+pub fn subtasks_session(session: &str) -> String {
+    if session.ends_with(SUBTASKS_SUFFIX) {
+        session.to_string()
+    } else {
+        format!("{session}{SUBTASKS_SUFFIX}")
+    }
+}
+
+/// Starts herdr session `name` headless unless it answers already, and waits
+/// until it does. `herdr` makes the command that runs the herdr CLI.
+pub fn ensure_session(name: &str, herdr: impl Fn() -> Command) -> Result<(), String> {
+    let answers = || herdr().args(["--session", name, "workspace", "list"]).output().is_ok_and(|o| o.status.success());
+    if answers() {
+        return Ok(());
+    }
+    let mut server = herdr();
+    server.args(["--session", name, "server"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+    let mut child = server.spawn().map_err(|e| format!("herdr のセッション {name} を起動できません: {e}"))?;
+    // Waited for when it ends, so it leaves no zombie behind.
+    std::thread::spawn(move || child.wait());
+    let until = Instant::now() + SESSION_START_WAIT;
+    while Instant::now() < until {
+        if answers() {
+            return Ok(());
+        }
+        std::thread::sleep(SESSION_START_POLL);
+    }
+    Err(format!("herdr のセッション {name} が起動しません"))
 }
 
 /// Opens a workspace in herdr session `session` (None: the one herdr talks
@@ -116,6 +160,20 @@ mod tests {
         let with_default: Vec<String> = ["implement", "default"].map(String::from).to_vec();
         assert_eq!(pick_session(&with_default, None).as_deref(), Some("default"));
         assert_eq!(pick_session(&[], Some("review")), None);
+    }
+
+    #[test]
+    fn subtasks_get_a_session_of_their_own_beside_their_parents() {
+        assert_eq!(subtasks_session("implement"), "implement-sub");
+        assert_eq!(subtasks_session("implement-sub"), "implement-sub", "already the subtasks'");
+    }
+
+    #[test]
+    fn new_work_never_falls_back_to_a_subtasks_session() {
+        let running: Vec<String> = ["implement-sub", "implement"].map(String::from).to_vec();
+        assert_eq!(pick_session(&running, None).as_deref(), Some("implement"));
+        assert_eq!(pick_session(&["implement-sub".to_string()], None), None);
+        assert_eq!(pick_session(&running, Some("implement-sub")).as_deref(), Some("implement"), "not even when picked");
     }
     use serde_json::json;
 
