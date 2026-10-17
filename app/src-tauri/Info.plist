@@ -6,6 +6,21 @@
 	<string>Shosai</string>
 	<key>CFBundleDisplayName</key>
 	<string>Shosai</string>
+	<!-- Web pages, so macOS and Raycast (a quicklink's Open With) can have the app open them in its pane. -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>Web site URL</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>http</string>
+				<string>https</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>学ぶ時間の右の ChatGPT で音声モードを使うときに、マイクを使います。</string>
 </dict>

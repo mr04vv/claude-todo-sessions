@@ -532,6 +532,7 @@ export const api = {
   /// A page's text fetched afresh (one behind a login comes back as its sign-in page).
   pageText: (url: string) => invoke<string>("page_text", { url }),
   copyText: (text: string) => invoke<void>("copy_text", { text }),
+  takeOpened: () => invoke<string[]>("take_opened"),
   createTheme: (name: string, goal?: string, categoryId?: number | null) => invoke<Theme>("create_theme", { name, goal: goal ?? null, categoryId: categoryId ?? null }),
   createCategory: (name: string) => invoke<Category>("create_category", { name }),
   /// Puts a theme in a category, or (null) in none.
@@ -651,6 +652,8 @@ export const OPEN_CLOUD_EVENT = "open-cloud";
 export const BROWSER_NEW_TAB_EVENT = "browser-new-tab";
 /** `{url}` for a page of the app's own (a PR from a notification), opened in its tab if it has one. */
 export const OPEN_URL_EVENT = "open-url";
+/** When macOS has asked the app to open web pages (a Raycast quicklink): they are taken with `takeOpened`. */
+export const OPENED_EVENT = "opened";
 /** When a page's ⌘N asks for a new todo. */
 export const OPEN_NEW_TODO_EVENT = "open-new-todo";
 /** `{path, name}` when a page's download has finished (in the Downloads folder). */

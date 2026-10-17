@@ -40,6 +40,7 @@ import {
   WINDOW_FOCUS_EVENT,
   BROWSER_NEW_TAB_EVENT,
   OPEN_URL_EVENT,
+  OPENED_EVENT,
   OPEN_NEW_TODO_EVENT,
   BROWSER_DOWNLOADED_EVENT,
   PAGE_DIALOG_EVENT,
@@ -6959,6 +6960,19 @@ export default function App() {
   const setTabUrl = (id: string, url: string) => setTabs((prev) => prev.map((t) => (t.id === id && t.url !== url ? { ...t, url } : t)));
   const openRef = useRef(openInBrowser);
   openRef.current = openInBrowser;
+  /// Web pages macOS asked the app to open (a Raycast quicklink set to open
+  /// with Shosai): a tab in the pane (the one with the page, if any), or in
+  /// the study time a new tab on the left, as a page's new window is.
+  const takeOpened = () =>
+    api.takeOpened().then((urls) => {
+      for (const url of urls) {
+        if (!focusModeRef.current) openRef.current(url, true);
+        else {
+          const [id] = addToFocusRef.current([{ url }]);
+          if (id) focusSoon(id);
+        }
+      }
+    }, report);
   const openFromPageRef = useRef(openFromPage);
   openFromPageRef.current = openFromPage;
   // A page's download, dialog (alert, confirm, prompt) and ask for the microphone or camera.
@@ -7060,6 +7074,7 @@ export default function App() {
       }),
       // A notification's PR: opened by the user, so it takes the keyboard.
       listen<{ url: string }>(OPEN_URL_EVENT, ({ payload }) => openRef.current(payload.url, true)),
+      listen(OPENED_EVENT, () => takeOpened()),
       listen(OPEN_NEW_TODO_EVENT, () => {
         dialogFromPage.current = true;
         setDialog("add");
@@ -7110,6 +7125,8 @@ export default function App() {
       // Notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
+    // What macOS asked to open before the page was up (the app launched for it).
+    void Promise.all(offs).then(takeOpened);
     return () => offs.forEach((off) => off.then((f) => f()));
   }, []);
   const [dragging, setDragging] = useState<number | null>(null);

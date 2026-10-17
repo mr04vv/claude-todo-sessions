@@ -83,6 +83,9 @@ struct AppState {
     /// CLI session ids archived in Desktop. Reading every Desktop record is
     /// slow, so the watch loop refreshes this and the board only reads it.
     archived: Mutex<HashSet<String>>,
+    /// Web pages macOS asked the app to open (a Raycast quicklink, `open -a
+    /// Shosai <url>`), until the page takes them (take_opened).
+    opened: Mutex<Vec<String>>,
     /// CLI session ids made in Desktop, and those of its routines' runs, kept the same way.
     desktop: Mutex<HashSet<String>>,
     routines: Mutex<HashSet<String>>,
@@ -612,6 +615,26 @@ fn sync_now(state: State<AppState>, todo_id: Option<i64>) {
 
 fn is_web_url(url: &str) -> bool {
     url.starts_with("https://") || url.starts_with("http://")
+}
+
+/// Web pages macOS asks the app to open: kept for the page, which may not be
+/// up yet (the app launched for them), and the window brought forward.
+fn open_asked(app: &AppHandle, urls: Vec<tauri::Url>) {
+    let pages: Vec<String> = urls.into_iter().map(String::from).filter(|u| is_web_url(u)).collect();
+    if pages.is_empty() {
+        return;
+    }
+    if let Ok(mut opened) = app.state::<AppState>().opened.lock() {
+        opened.extend(pages);
+    }
+    show_window(app);
+    let _ = app.emit(OPENED_EVENT, ());
+}
+
+/// The web pages macOS asked the app to open since the page last took them.
+#[tauri::command]
+fn take_opened(state: State<AppState>) -> Result<Vec<String>, String> {
+    Ok(std::mem::take(&mut *state.opened.lock().map_err(err)?))
 }
 
 /// Opens a page in the default browser; a Slack permalink in the Slack app.
@@ -1349,6 +1372,8 @@ const BROWSER_TITLE_EVENT: &str = "browser-title";
 const BROWSER_NEW_TAB_EVENT: &str = "browser-new-tab";
 /// `{url}` for a page of the app's own (a PR from a notification), opened in its tab if it has one.
 const OPEN_URL_EVENT: &str = "open-url";
+/// When macOS has asked the app to open web pages: the page takes them (take_opened).
+const OPENED_EVENT: &str = "opened";
 
 #[derive(Clone, Serialize)]
 struct OpenUrl {
@@ -2720,6 +2745,7 @@ fn main() {
             login_never: Mutex::new(load_kept(LOGIN_NEVER_FILE)),
             page_keys: Mutex::new("{}".into()),
             archived: Mutex::new(HashSet::new()),
+            opened: Mutex::new(Vec::new()),
             desktop: Mutex::new(HashSet::new()),
             routines: Mutex::new(HashSet::new()),
             zooms: Mutex::new(load_kept(ZOOMS_FILE)),
@@ -2810,6 +2836,7 @@ fn main() {
             open_link,
             link_session,
             unlink_session,
+            take_opened,
             copy_text,
             open_session,
             sync_now,
@@ -2900,6 +2927,7 @@ fn main() {
                 tauri::RunEvent::Exit => cef_browser::shutdown(app),
                 // The Dock icon brings back the window a close hid.
                 tauri::RunEvent::Reopen { .. } => show_window(app),
+                tauri::RunEvent::Opened { urls } => open_asked(app, urls),
                 _ => {}
             }
         });
