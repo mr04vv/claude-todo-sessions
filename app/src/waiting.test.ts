@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { Session, Todo } from "./api.ts";
-import { REVIEW_SETTLE_SECS, isFailedReview, isReviewAsk, waitingOnYou } from "./waiting.ts";
+import type { MyPr, Session, Todo } from "./api.ts";
+import { REVIEW_SETTLE_SECS, isFailedReview, isReviewAsk, nextStep, waitingOnYou } from "./waiting.ts";
 
 const NOW = 10_000;
 
@@ -155,4 +155,16 @@ test("a subtask's failed CI is its orchestrator's to fix, not yours", () => {
   // With the orchestrator gone (or on Cloud, which cannot be told), it is yours.
   const gone = todo(1, { sessions: [session("o", { todo_id: 1, state: "ended" })] });
   assert.equal(waitingOnYou({ todos: [gone, failing], inbox: [], reviews: [], now: NOW }).length, 1);
+});
+
+test("a PR of yours says what you do next: failed CI first, then changes, then GitHub's part", () => {
+  const mine = (patch: Partial<MyPr>): MyPr => ({ repo: "o/web", number: 5, title: "PR", url: "https://github.com/o/web/pull/5", is_draft: false, updated_at: "", stage: "review_requested", ci: null, checks: [], reviews: [], ...patch });
+  const failing = { state: "failure" as const, failed: ["e2e", "lint", "unit", "build"] };
+  assert.deepEqual(nextStep(mine({ stage: "changes_requested", ci: failing })), { title: "CI が失敗しています", note: "e2e・lint ほか が落ちています。", fix: true });
+  assert.deepEqual(nextStep(mine({ stage: "changes_requested", ci: { state: "pending", failed: [] } })), { title: "修正を頼まれています", note: "レビューの指摘を直します。", fix: true });
+  assert.equal(nextStep(mine({ stage: "draft", ci: { state: "pending", failed: [] } })).title, "下書きです");
+  assert.equal(nextStep(mine({ stage: "approved", ci: { state: "pending", failed: [] } })).title, "CI を待っています");
+  assert.equal(nextStep(mine({ stage: "open" })).title, "レビューを依頼していません");
+  assert.deepEqual(nextStep(mine({ stage: "approved", ci: { state: "success", failed: [] } }), 7), { title: "マージできます", note: "マージは GitHub で。マージされると #7 は Done になる。", fix: false });
+  assert.deepEqual(nextStep(mine({})), { title: "レビューを待っています", note: "あなたがすることはありません。", fix: false });
 });

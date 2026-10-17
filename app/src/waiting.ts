@@ -5,7 +5,7 @@
 // session that stopped without submitting; and what an orchestrator handed
 // over. A subtask's PR is its orchestrator's to have fixed while one runs on
 // the Mac. One session counts once, whatever its reasons.
-import type { Session, Todo } from "./api";
+import type { MyPr, Session, Todo } from "./api";
 
 export type WaitReason = "escalated" | "needs_input" | "changes" | "ci" | "review" | "review_failed";
 
@@ -61,6 +61,20 @@ export function ciFailureLine(todo: Todo) {
   const n = todo.ci_failed.length;
   if (n === 0) return `${on}CI が失敗`;
   return `${on}${todo.ci_failed.slice(0, CI_NAMES_SHOWN).join("・")}${n > CI_NAMES_SHOWN ? " ほか" : ""} が失敗（${n}件）`;
+}
+
+/// What the user does next about a PR of theirs, and whether its todo's
+/// session is to fix it (CI failed or changes asked); `todo` is its todo's id.
+export function nextStep(p: MyPr, todo?: number): { title: string; note: string; fix: boolean } {
+  const failed = p.ci?.failed ?? [];
+  if (p.ci?.state === "failure") return { title: "CI が失敗しています", note: `${failed.slice(0, CI_NAMES_SHOWN).join("・") || "チェック"}${failed.length > CI_NAMES_SHOWN ? " ほか" : ""} が落ちています。`, fix: true };
+  if (p.stage === "changes_requested") return { title: "修正を頼まれています", note: "レビューの指摘を直します。", fix: true };
+  const step = (title: string, note: string) => ({ title, note, fix: false });
+  if (p.stage === "draft") return step("下書きです", "準備ができたら GitHub で Ready for review にする。");
+  if (p.ci?.state === "pending") return step("CI を待っています", "あなたがすることはありません。");
+  if (p.stage === "open") return step("レビューを依頼していません", "GitHub でレビュアーを選ぶ。");
+  if (p.stage === "approved") return step("マージできます", `マージは GitHub で。${todo !== undefined ? `マージされると #${todo} は Done になる。` : ""}`);
+  return step("レビューを待っています", "あなたがすることはありません。");
 }
 
 const LINE: Record<WaitReason, (i: WaitItem) => string> = {

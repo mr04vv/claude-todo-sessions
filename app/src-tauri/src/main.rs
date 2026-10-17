@@ -1252,7 +1252,7 @@ fn set_parent(state: State<AppState>, todo_id: i64, parent_id: Option<i64>) -> R
 }
 
 const GH_PR_LIMIT: &str = "50";
-const GH_PR_FIELDS: &str = "number,title,url,repository,author,updatedAt,isDraft";
+const GH_PR_FIELDS: &str = "number,title,url,repository,author,updatedAt,isDraft,body";
 
 #[derive(Deserialize)]
 struct GhAuthor {
@@ -1270,6 +1270,8 @@ struct GhPr {
     updated_at: String,
     #[serde(rename = "isDraft")]
     is_draft: bool,
+    #[serde(default)]
+    body: String,
 }
 
 #[derive(Serialize)]
@@ -1281,13 +1283,14 @@ struct PrView {
     author: String,
     updated_at: String,
     is_draft: bool,
+    body: String,
 }
 
 #[derive(Serialize)]
 struct PrLists {
     /// Open PRs asking the user for a review.
     review: Vec<PrView>,
-    /// Open PRs the user opened: their stage, CI and reviewers.
+    /// Open PRs the user opened: their stage, CI and reviews.
     mine: Vec<cts_core::github::MyPr>,
 }
 
@@ -1305,6 +1308,7 @@ fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
             author: p.author.login,
             updated_at: p.updated_at,
             is_draft: p.is_draft,
+            body: p.body,
         })
         .collect())
 }

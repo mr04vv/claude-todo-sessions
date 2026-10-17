@@ -60,8 +60,10 @@ import {
   type HerdrSessions,
   type Limit,
   type LocalRepo,
+  type Check,
   type Pr,
   type PrLists,
+  type Review,
   type PrState,
   type CiState,
   type TodoEvent,
@@ -90,7 +92,7 @@ import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
 import { addressToUrl, fileUrl, findTabFor, insertAfter, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
-import { ciFailureLine, isFailedReview, isReviewAsk, prRef, waitingOnYou, type WaitItem } from "./waiting";
+import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
 import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
@@ -798,67 +800,6 @@ function StatusMenu({ todo, onPick, onClose }: { todo: Todo; onPick: (s: Status)
           </button>
         ))}
       </span>
-    </span>
-  );
-}
-
-/// "開く" jumps to the session where it runs (its herdr pane, else Desktop);
-/// the caret picks Desktop or herdr explicitly.
-function OpenMenu({ session, report, primary, label = "開く" }: { session: Session; report: (e: unknown) => void; primary?: boolean; label?: string }) {
-  const [open, setOpen] = useState(false);
-  const root = useRef<HTMLSpanElement>(null);
-  useOutsideClose(root, open, () => setOpen(false));
-  const openWork = useContext(WorkContext);
-  const openCloud = useContext(OpenCloudContext);
-  const terminal = useContext(TerminalContext);
-  const cloud = isCloud(session);
-  const go = (target?: "desktop" | "herdr" | "web") => {
-    setOpen(false);
-    api.markSessionSeen(session.session_id).catch(report);
-    if (target === "web" && openWork) openWork({ session: session.session_id });
-    else if (target === "herdr") openLocal(terminal, session.session_id, report);
-    else api.openSession(session.session_id, target === "web" ? "desktop" : target).catch(report);
-  };
-  const openMain = () => {
-    if (cloud && openCloud) {
-      setOpen(false);
-      openCloud(session.session_id);
-    } else {
-      setOpen(false);
-      openLocal(terminal, session.session_id, report, true);
-    }
-  };
-  const menuKeys = useMenuKeys(open, () => setOpen(false));
-  return (
-    <span ref={root} className={`open-menu${primary ? " primary" : ""}`} onPointerDown={stop} onClick={stop}>
-      <button className="open-main" title={`${sessionLabel(session)} を開く`} onClick={openMain}>
-        {label}
-      </button>
-      <button className="open-caret" aria-label="開く場所を選ぶ" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        <Icon name="chevron" size={10} />
-      </button>
-      {open && (
-        <span className="menu" role="menu" {...menuKeys}>
-          {cloud && openWork && (
-            <button role="menuitem" onClick={() => go("web")}>
-              作業で開く（アプリ内）
-            </button>
-          )}
-          <button role="menuitem" onClick={() => go("desktop")}>
-            Claude Desktop で開く
-          </button>
-          {cloud && (
-            <button role="menuitem" onClick={() => (setOpen(false), api.archiveSessions([session.session_id]).catch(report))}>
-              アーカイブ
-            </button>
-          )}
-          {!cloud && (
-            <button role="menuitem" onClick={() => go("herdr")}>
-              {terminal ? "ターミナルで開く" : "herdr で開く"}（閉じていれば再開）
-            </button>
-          )}
-        </span>
-      )}
     </span>
   );
 }
@@ -3942,7 +3883,8 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
   return { startReview, starting };
 }
 
-type PrFilter = "all" | "review" | "mine";
+const PR_FILTERS = ["all", "review", "mine"] as const;
+type PrFilter = (typeof PR_FILTERS)[number];
 
 /// Where a review asked of the user stands, by its session (`session`, to open).
 function reviewStanding(p: Pr, sessions: Session[], submitted: Map<string, string>, now: number): { word: string; cls: string; session?: Session; failed?: Session } {
@@ -3953,7 +3895,19 @@ function reviewStanding(p: Pr, sessions: Session[], submitted: Map<string, strin
   return { word: s.review_auto ? "レビュー中（自動で提出）" : "レビュー中", cls: "state-running", session: s };
 }
 
-function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, browserUrl, run, report, onRefresh, onOpenTodo }: {
+/// The steps a PR goes through, for the detail's stepper.
+const PR_STEPS = ["下書き", "レビュー待ち", "承認済み", "マージ済み"];
+/// Where a PR's stage is along PR_STEPS.
+const PR_STEP: Record<PrState, number> = { draft: 0, open: 0, review_requested: 1, changes_requested: 1, approved: 2, merged: 3, closed: 3 };
+const CHECK_WORD: Record<Check["state"], string> = { success: "成功", failure: "失敗", pending: "実行中", skipped: "スキップ" };
+const CHECK_CLS: Record<Check["state"], string> = { success: "ci-success", failure: "ci-failure", pending: "", skipped: "" };
+const REVIEW_WORD: Record<Review["state"], string> = { requested: "依頼中", approved: "承認", changes_requested: "修正を依頼", commented: "コメント", dismissed: "取り下げ", pending: "書いている途中" };
+const REVIEW_CLS: Partial<Record<Review["state"], string>> = { requested: "gh-pr-review_requested", approved: "gh-pr-approved", changes_requested: "gh-pr-changes_requested" };
+
+/// The PRs on the left (review requests, then the user's own), the picked
+/// one on the right: a request's description and how its review starts, or
+/// an own PR's stage, checks, reviews and what to do next.
+function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, run, report, onRefresh, onOpenTodo }: {
   prs: PrLists | null;
   /// While the PRs are being taken again, so ↻ turns.
   prsLoading: boolean;
@@ -3964,8 +3918,6 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   /// Reviews that went in since the PRs were taken: their verdicts by URL.
   submitted: Map<string, string>;
   local: LocalRepo[];
-  /// The page the browser pane shows, to mark its row.
-  browserUrl: string | null;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   onRefresh: () => void;
@@ -3975,6 +3927,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   const [filter, setFilter] = useState<PrFilter>("review");
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const openInBrowser = useContext(BrowserContext);
+  const openWork = useContext(WorkContext);
   const fix = useContext(FixContext);
   const [prefs, setPrefsState] = useState<ReviewPrefs>(loadReviewPrefs);
   const setPrefs = (patch: Partial<ReviewPrefs>) => {
@@ -4005,28 +3958,221 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   const rowId = (kind: string, url: string) => `${kind}:${url}`;
   const shownReview = filter !== "mine" ? review : [];
   const shownMine = filter !== "review" ? mine : [];
-  // ↑↓ or j k pick a PR, Enter starts reviewing a request not started yet
-  // (other rows it opens in the pane), ⌘Enter (and ⌥Enter) opens it in the
-  // pane; a, s and r switch how reviews start.
-  const { cursorId, setCursor, list } = useRowCursor([...shownReview.map((p) => rowId("review", p.url)), ...shownMine.map((p) => rowId("mine", p.url))], (id, alt, row) => {
-    const p = review.find((x) => rowId("review", x.url) === id);
-    if (p && !alt && !starting.has(p.url) && reviewStanding(p, sessions, submitted, now).word === "未着手") return startReview(p);
-    row.click();
-  });
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app.focus, .app[data-zone=sidebar], .sheet-backdrop")) return;
-      if (matches(e, "start") && cursorId) list.current?.querySelector<HTMLElement>(`[data-row="${CSS.escape(cursorId)}"]`)?.click();
-      else if (filter !== "mine" && matches(e, "reviewAgent")) setPrefs({ agent: prefs.agent === "claude" ? "codex" : "claude" });
-      else if (filter !== "mine" && matches(e, "reviewSubmit")) setPrefs({ auto: !prefs.auto });
-      else if (filter !== "mine" && matches(e, "reviewRunner") && prefs.agent !== "codex") setPrefs({ runner: prefs.runner === "cloud" ? "herdr" : "cloud" });
-      else return;
-      e.preventDefault();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  });
-  const reviewerLabel = (names: string[]) => (names.length === 0 ? "レビュー未依頼" : `${names.slice(0, 2).join("・")}${names.length > 2 ? ` ほか ${names.length - 2}` : ""}`);
+  const startable = (p: Pr) => !starting.has(p.url) && reviewStanding(p, sessions, submitted, now).word === "未着手";
+  // ↑↓ or j k pick a PR (shown on the right), Enter is the detail's primary
+  // button (start reviewing a request, have an own PR fixed); the other keys
+  // are its other buttons.
+  const { cursorId, setCursor, list } = useRowCursor(
+    [...shownReview.map((p) => rowId("review", p.url)), ...shownMine.map((p) => rowId("mine", p.url))],
+    (id) => {
+      const p = review.find((x) => rowId("review", x.url) === id);
+      if (!p) actions.fix();
+      else if (startable(p)) startReview(p);
+    },
+    (e) => {
+      if (matches(e, "prFilter")) return (setFilter(PR_FILTERS[(PR_FILTERS.indexOf(filter) + 1) % PR_FILTERS.length]), true);
+      const act = matches(e, "start") ? actions.github : matches(e, "session") ? actions.work : matches(e, "prTodo") ? actions.todo : undefined;
+      if (act) return (act(), true);
+      if (!pickedReview) return false;
+      if (matches(e, "reviewAgent")) setPrefs({ agent: prefs.agent === "claude" ? "codex" : "claude" });
+      else if (matches(e, "reviewSubmit")) setPrefs({ auto: !prefs.auto });
+      else if (matches(e, "reviewRunner") && prefs.agent !== "codex") setPrefs({ runner: prefs.runner === "cloud" ? "herdr" : "cloud" });
+      else return false;
+      return true;
+    },
+  );
+  const pickedReview = shownReview.find((p) => rowId("review", p.url) === cursorId);
+  const pickedMine = shownMine.find((p) => rowId("mine", p.url) === cursorId);
+  const pickedPr = pickedReview ?? pickedMine;
+  const standing = pickedReview && reviewStanding(pickedReview, sessions, submitted, now);
+  const todo = pickedMine && todoOf(pickedMine.url);
+  const latest = todo && [...todo.sessions].sort((a, b) => b.state_at - a.state_at)[0];
+  const next = pickedMine && nextStep(pickedMine, todo?.id);
+  const canFix = !!(fix && next?.fix && todo && latest && latest.state !== "running");
+  const workSession = standing?.session ?? (todo && todo.sessions.length > 0 ? latest : undefined);
+  // What the detail's buttons (and their keys) do; each does nothing when it is not there.
+  const actions = {
+    github: () => pickedPr && openInBrowser?.(pickedPr.url),
+    work: () => workSession && openWork?.(todo ? { todo: todo.id } : { session: workSession.session_id }),
+    fix: () => canFix && fix!(latest!, todo!),
+    todo: () => todo && onOpenTodo(todo.id),
+  };
+  const reviewerLabel = (reviews: Review[]) => (reviews.length === 0 ? "レビュー未依頼" : `${reviews.slice(0, 2).map((r) => r.who).join("・")}${reviews.length > 2 ? ` ほか ${reviews.length - 2}` : ""}`);
+  const kbd = (action: Action) => <span className="kbd">{keyLabel(keyOf(action))}</span>;
+  const githubButton = <button onClick={actions.github}>GitHub で見る {kbd("start")}</button>;
+  const workButton = workSession && openWork && <button onClick={actions.work}>作業で開く {kbd("session")}</button>;
+  let detail: React.ReactNode = <p className="muted pad">{prs ? "PR を選んでください。" : ""}</p>;
+  if (pickedReview && standing) {
+    const p = pickedReview;
+    const busy = starting.has(p.url);
+    detail = (
+      <>
+        <div className="pr-meta">
+          <span className="mono">
+            {p.repo}#{p.number}
+          </span>
+          <span>
+            {p.author} から · {isoAgo(p.updated_at)}
+          </span>
+          {p.is_draft && <span className="gh">{PR_LABEL.draft}</span>}
+        </div>
+        <h2 className="pr-title">{p.title}</h2>
+        <div className="pr-next">
+          <span className={`state ${standing.cls}`}>
+            <i />
+            {busy ? "始めています…" : standing.word}
+          </span>
+          <div className="pr-actions">
+            {standing.word === "未着手" && (
+              <button className="primary" disabled={busy} onClick={() => startReview(p)}>
+                レビューを始める <span className="kbd">↵</span>
+              </button>
+            )}
+            {standing.failed && (
+              <button
+                disabled={busy}
+                title="止まったレビューを片付けて、もう一度始めます"
+                onClick={() => {
+                  const failed = standing.failed!;
+                  run(() => api.hideSession(failed.session_id));
+                  startReview(p);
+                }}
+              >
+                もう一度
+              </button>
+            )}
+            {workButton}
+            {githubButton}
+          </div>
+          <p className="muted">始めても、この画面とキーボードは動きません。セッションは作業の「レビュー」に並びます。</p>
+        </div>
+        <section className="pr-block">
+          <h3>レビューを任せる</h3>
+          <div className="review-prefs">
+            <span className="muted">エージェント {kbd("reviewAgent")}</span>
+            <div className="segmented" role="group" aria-label="レビューするエージェント">
+              {(["claude", "codex"] as const).map((a) => (
+                <button key={a} className={prefs.agent === a ? "on" : ""} aria-pressed={prefs.agent === a} onClick={() => setPrefs({ agent: a })}>
+                  {a === "claude" ? "Claude" : "Codex"}
+                </button>
+              ))}
+            </div>
+            <span className="muted">提出 {kbd("reviewSubmit")}</span>
+            <div className="segmented" role="group" aria-label="レビューの提出">
+              <button className={!prefs.auto ? "on" : ""} aria-pressed={!prefs.auto} title="指摘がまとまると、Request changes・Comment・Approve のどれで出すかを聞いてきます（あなた待ちに入ります）" onClick={() => setPrefs({ auto: false })}>
+                提出前に確認する
+              </button>
+              <button className={prefs.auto ? "on" : ""} aria-pressed={prefs.auto} title="確かめずに提出し、提出したら片付けます" onClick={() => setPrefs({ auto: true })}>
+                自動で提出する
+              </button>
+            </div>
+            <span className="muted">動く場所 {kbd("reviewRunner")}</span>
+            <div className="segmented" role="group" aria-label="レビューが動く場所">
+              <button className={prefs.runner === "cloud" ? "on" : ""} aria-pressed={prefs.runner === "cloud"} disabled={prefs.agent === "codex"} title={prefs.agent === "codex" ? "Codex は herdr でだけ動きます" : undefined} onClick={() => setPrefs({ runner: "cloud" })}>
+                Cloud
+              </button>
+              <button className={prefs.runner === "herdr" ? "on" : ""} aria-pressed={prefs.runner === "herdr"} onClick={() => setPrefs({ runner: "herdr" })}>
+                herdr
+              </button>
+            </div>
+            <select className="select compact" value={picked.model} aria-label="レビューのモデル" title="レビューのモデル" onChange={(e) => setReviewOption({ model: e.target.value })}>
+              {modelChoices.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+            <select className="select compact" value={picked.effort} aria-label="レビューの effort" title="レビューの effort" onChange={(e) => setReviewOption({ effort: e.target.value })}>
+              {effortChoices.map((x) => (
+                <option key={x} value={x}>
+                  {x ? `effort: ${x}` : "既定の effort"}
+                </option>
+              ))}
+            </select>
+          </div>
+        </section>
+        <section className="pr-block">
+          <h3>説明</h3>
+          {p.body.trim() ? <p className="pr-body">{p.body.trim()}</p> : <p className="muted">説明はありません。</p>}
+        </section>
+      </>
+    );
+  } else if (pickedMine && next) {
+    const p = pickedMine;
+    const at = PR_STEP[p.stage];
+    const fixNote = !next.fix || !fix ? "" : !todo || !latest ? "この PR の todo にセッションがないので、直させられません。" : latest.state === "running" ? "元のセッションが動いています。止まったら直させられます。" : "元のセッションに渡して直させます。";
+    detail = (
+      <>
+        <div className="pr-meta">
+          <span className="mono">
+            {p.repo}#{p.number}
+          </span>
+          <span>{isoAgo(p.updated_at)}</span>
+          {todo && (
+            <button className="tag todo-chip" onClick={actions.todo} title={`${todo.title}（${keyLabel(keyOf("prTodo"))}）`}>
+              #{todo.id} {todo.title}
+            </button>
+          )}
+        </div>
+        <h2 className="pr-title">{p.title}</h2>
+        <ol className="pr-steps" aria-label={`今：${PR_LABEL[p.stage]}`}>
+          {PR_STEPS.map((label, i) => (
+            <li key={label} className={i < at ? "done" : i === at ? "at" : ""}>
+              {i === at ? PR_LABEL[p.stage] : label}
+            </li>
+          ))}
+        </ol>
+        <div className="pr-next">
+          <b>{next.title}</b>
+          <p>
+            {next.note}
+            {fixNote}
+          </p>
+          <div className="pr-actions">
+            {next.fix && fix && (
+              <button className="primary" disabled={!canFix} title="画面もフォーカスも動きません" onClick={actions.fix}>
+                元のセッションに直させる <span className="kbd">↵</span>
+              </button>
+            )}
+            {workButton}
+            {githubButton}
+          </div>
+        </div>
+        <section className="pr-block">
+          <h3>
+            CI {p.ci && <span className={`gh ci-${p.ci.state}`}>{CI_LABEL[p.ci.state]}</span>}
+          </h3>
+          {p.checks.length === 0 ? (
+            <p className="muted">チェックはありません。</p>
+          ) : (
+            <ul className="pr-list-items">
+              {p.checks.map((c, i) => (
+                <li key={i}>
+                  <span className={`gh ${CHECK_CLS[c.state]}`}>{CHECK_WORD[c.state]}</span>
+                  <span className="ellipsis">{c.name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+        <section className="pr-block">
+          <h3>レビュー</h3>
+          {p.reviews.length === 0 ? (
+            <p className="muted">まだ誰にも依頼していません。</p>
+          ) : (
+            <ul className="pr-list-items">
+              {p.reviews.map((r) => (
+                <li key={r.who}>
+                  <span className={`gh ${REVIEW_CLS[r.state] ?? ""}`}>{REVIEW_WORD[r.state] ?? r.state}</span>
+                  <span className="ellipsis">{r.who}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      </>
+    );
+  }
   return (
     <>
       <header className="toolbar">
@@ -4048,156 +4194,75 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
           <Icon name="sync" size={14} />
         </button>
       </header>
-      <div className="content flush" ref={list}>
-        {prError && <p className="error-text pad">{prError}</p>}
-        {!prs && !prError && <p className="muted pad">gh で取得しています…</p>}
-        {filter !== "mine" && (
-          <section>
-            <div className="section-head review-prefs">
-              <b>レビュー依頼</b>
-              <span className="muted">{review.length}</span>
-              <span className="grow" />
-              <span className="muted">
-                エージェント <span className="kbd">{keyLabel(keyOf("reviewAgent"))}</span>
-              </span>
-              <div className="segmented" role="group" aria-label="レビューするエージェント">
-                {(["claude", "codex"] as const).map((a) => (
-                  <button key={a} className={prefs.agent === a ? "on" : ""} aria-pressed={prefs.agent === a} onClick={() => setPrefs({ agent: a })}>
-                    {a === "claude" ? "Claude" : "Codex"}
-                  </button>
-                ))}
+      <div className="content flush pr-page">
+        <div className="pr-list" ref={list}>
+          {prError && <p className="error-text pad">{prError}</p>}
+          {!prs && !prError && <p className="muted pad">gh で取得しています…</p>}
+          {filter !== "mine" && (
+            <section>
+              <div className="section-head">
+                <b>レビュー依頼</b>
+                <span className="muted">{review.length}</span>
               </div>
-              <span className="muted">
-                提出 <span className="kbd">{keyLabel(keyOf("reviewSubmit"))}</span>
-              </span>
-              <div className="segmented" role="group" aria-label="レビューの提出">
-                <button className={!prefs.auto ? "on" : ""} aria-pressed={!prefs.auto} title="指摘がまとまると、Request changes・Comment・Approve のどれで出すかを聞いてきます（あなた待ちに入ります）" onClick={() => setPrefs({ auto: false })}>
-                  提出前に確認する
-                </button>
-                <button className={prefs.auto ? "on" : ""} aria-pressed={prefs.auto} title="確かめずに提出し、提出したら片付けます" onClick={() => setPrefs({ auto: true })}>
-                  自動で提出する
-                </button>
-              </div>
-              <span className="muted">
-                動く場所 <span className="kbd">{keyLabel(keyOf("reviewRunner"))}</span>
-              </span>
-              <div className="segmented" role="group" aria-label="レビューが動く場所">
-                <button className={prefs.runner === "cloud" ? "on" : ""} aria-pressed={prefs.runner === "cloud"} disabled={prefs.agent === "codex"} title={prefs.agent === "codex" ? "Codex は herdr でだけ動きます" : undefined} onClick={() => setPrefs({ runner: "cloud" })}>
-                  Cloud
-                </button>
-                <button className={prefs.runner === "herdr" ? "on" : ""} aria-pressed={prefs.runner === "herdr"} onClick={() => setPrefs({ runner: "herdr" })}>
-                  herdr
-                </button>
-              </div>
-              <select className="select compact" value={picked.model} aria-label="レビューのモデル" title="レビューのモデル" onChange={(e) => setReviewOption({ model: e.target.value })}>
-                {modelChoices.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-              <select className="select compact" value={picked.effort} aria-label="レビューの effort" title="レビューの effort" onChange={(e) => setReviewOption({ effort: e.target.value })}>
-                {effortChoices.map((x) => (
-                  <option key={x} value={x}>
-                    {x ? `effort: ${x}` : "既定の effort"}
-                  </option>
-                ))}
-              </select>
-            </div>
-            {prs && review.length === 0 && <p className="muted pad">ありません。</p>}
-            <ul className="rows">
-              {review.map((p) => {
-                const st = reviewStanding(p, sessions, submitted, now);
-                const id = rowId("review", p.url);
-                const busy = starting.has(p.url);
-                return (
-                  <li key={p.url} data-row={id} className={`row pr-row${browserUrl === p.url ? " selected" : ""}${id === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(id), openInBrowser?.(p.url))}>
-                    <span className={`state ${st.cls}`}>
-                      <i />
-                      {busy ? "始めています…" : st.word}
-                    </span>
-                    <span className="pr-main">
-                      <span className="ellipsis">{p.title}</span>
-                      <span className="pr-meta">
-                        <span className="mono">
-                          {repoName(p.repo)}#{p.number}
-                        </span>
-                        <span>
-                          {p.author} から · {isoAgo(p.updated_at)}
+              {prs && review.length === 0 && <p className="muted pad">ありません。</p>}
+              <ul className="rows">
+                {review.map((p) => {
+                  const st = reviewStanding(p, sessions, submitted, now);
+                  const id = rowId("review", p.url);
+                  return (
+                    <li key={p.url} data-row={id} className={`row pr-row${id === cursorId ? " selected" : ""}`} onClick={() => setCursor(id)}>
+                      <span className={`state ${st.cls}`}>
+                        <i />
+                        {starting.has(p.url) ? "始めています…" : st.word}
+                      </span>
+                      <span className="pr-main">
+                        <span className="ellipsis">{p.title}</span>
+                        <span className="pr-meta">
+                          <span className="mono">
+                            {repoName(p.repo)}#{p.number}
+                          </span>
+                          <span>
+                            {p.author} から · {isoAgo(p.updated_at)}
+                          </span>
                         </span>
                       </span>
-                    </span>
-                    {st.word === "未着手" && (
-                      <button className="small primary" disabled={busy} title="上の選び方でレビューを始めます（Enter。画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), startReview(p))}>
-                        レビューを始める <span className="kbd">↵</span>
-                      </button>
-                    )}
-                    {st.session && <OpenMenu session={st.session} report={report} label="セッションを開く" />}
-                    {st.failed && (
-                      <button
-                        className="small"
-                        disabled={busy}
-                        title="止まったレビューを片付けて、もう一度始めます"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          const failed = st.failed!;
-                          run(() => api.hideSession(failed.session_id));
-                          startReview(p);
-                        }}
-                      >
-                        もう一度
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        )}
-        {filter !== "review" && (
-          <section>
-            <div className="section-head">
-              <b>自分の PR</b>
-              <span className="muted">{mine.length}</span>
-              <span className="muted">自分が出している open の PR</span>
-            </div>
-            {prs && mine.length === 0 && <p className="muted pad">ありません。</p>}
-            <ul className="rows">
-              {mine.map((p) => {
-                const todo = todoOf(p.url);
-                const latest = todo && [...todo.sessions].sort((a, b) => b.state_at - a.state_at)[0];
-                const needsFix = p.ci?.state === "failure" || p.stage === "changes_requested";
-                const id = rowId("mine", p.url);
-                return (
-                  <li key={p.url} data-row={id} className={`row pr-row${browserUrl === p.url ? " selected" : ""}${id === cursorId ? " cursor" : ""}`} onClick={() => (setCursor(id), openInBrowser?.(p.url))}>
-                    <span className={`gh gh-pr-${p.stage}`}>{PR_LABEL[p.stage]}</span>
-                    <span className="pr-main">
-                      <span className="ellipsis">{p.title}</span>
-                      <span className="pr-meta">
-                        <span className="mono">
-                          {repoName(p.repo)}#{p.number}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
+          {filter !== "review" && (
+            <section>
+              <div className="section-head">
+                <b>自分の PR</b>
+                <span className="muted">{mine.length}</span>
+              </div>
+              {prs && mine.length === 0 && <p className="muted pad">ありません。</p>}
+              <ul className="rows">
+                {mine.map((p) => {
+                  const id = rowId("mine", p.url);
+                  return (
+                    <li key={p.url} data-row={id} className={`row pr-row${id === cursorId ? " selected" : ""}`} onClick={() => setCursor(id)}>
+                      <span className={`gh gh-pr-${p.stage}`}>{PR_LABEL[p.stage]}</span>
+                      <span className="pr-main">
+                        <span className="ellipsis">{p.title}</span>
+                        <span className="pr-meta">
+                          <span className="mono">
+                            {repoName(p.repo)}#{p.number}
+                          </span>
+                          {p.ci && <span className={`gh ci-${p.ci.state}`}>{CI_LABEL[p.ci.state]}{p.ci.failed.length > 0 && ` ${p.ci.failed.length}`}</span>}
+                          <span>{reviewerLabel(p.reviews)}</span>
                         </span>
-                        {p.ci && <span className={`gh ci-${p.ci.state}`} title={p.ci.failed.join("\n") || undefined}>{CI_LABEL[p.ci.state]}{p.ci.failed.length > 0 && ` ${p.ci.failed.length}`}</span>}
-                        <span>{reviewerLabel(p.reviewers)}</span>
-                        <span>{isoAgo(p.updated_at)}</span>
                       </span>
-                    </span>
-                    {todo && (
-                      <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
-                        #{todo.id} {todo.title}
-                      </button>
-                    )}
-                    {fix && todo && latest && needsFix && latest.state !== "running" && (
-                      <button className="small" title="元のセッションに、直すところを送ります（画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), fix(latest, todo))}>
-                        元のセッションに直させる
-                      </button>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
-          </section>
-        )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          )}
+        </div>
+        <div className="pr-detail">{detail}</div>
       </div>
     </>
   );
@@ -5536,7 +5601,6 @@ export default function App() {
   const normalTabs = paneTabs.filter((t) => !t.pinned);
   const activeTab = newTab ? null : (paneTabs.find((t) => t.id === activeTabId) ?? normalTabs[normalTabs.length - 1] ?? null);
   const browserShown = space === "browser";
-  const browserUrl = browserShown ? (activeTab?.url ?? null) : null;
   /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]), in the order
   /// of the tab list: the pinned pages (a page not opened yet opens), then the others.
   const switchTab = (delta: number) => {
@@ -7085,7 +7149,6 @@ export default function App() {
                     sessions={board?.inbox ?? []}
                     submitted={submittedReviews}
                     local={local}
-                    browserUrl={browserUrl}
                     run={run}
                     report={report}
                     onRefresh={loadPrs}

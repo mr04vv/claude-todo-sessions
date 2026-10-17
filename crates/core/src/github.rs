@@ -26,18 +26,38 @@ pub fn ci_of(pr: &Value) -> Option<Ci> {
         "FAILURE" | "ERROR" => "failure",
         _ => "pending",
     };
-    let failed = rollup["contexts"]["nodes"]
+    let failed = checks_of(pr).into_iter().filter(|c| c.state == "failure").map(|c| c.name).collect();
+    Some(Ci { state: state.into(), failed })
+}
+
+/// One check of a PR's last commit: "success", "failure", "pending" or "skipped".
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Check {
+    pub name: String,
+    pub state: String,
+}
+
+/// The checks of a PR node with CI_FIELDS.
+pub fn checks_of(pr: &Value) -> Vec<Check> {
+    pr["commits"]["nodes"][0]["commit"]["statusCheckRollup"]["contexts"]["nodes"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|c| match c["__typename"].as_str() {
-            Some("CheckRun") => c["conclusion"].as_str().filter(|x| FAILED.contains(x)).and(c["name"].as_str()),
-            Some("StatusContext") => c["state"].as_str().filter(|x| FAILED.contains(x)).and(c["context"].as_str()),
-            _ => None,
+        .filter_map(|c| {
+            let (name, result) = match c["__typename"].as_str()? {
+                "CheckRun" => (c["name"].as_str()?, c["conclusion"].as_str()),
+                "StatusContext" => (c["context"].as_str()?, c["state"].as_str()),
+                _ => return None,
+            };
+            let state = match result {
+                Some(x) if FAILED.contains(&x) => "failure",
+                Some("SUCCESS") => "success",
+                Some("NEUTRAL" | "SKIPPED" | "STALE") => "skipped",
+                _ => "pending",
+            };
+            Some(Check { name: name.into(), state: state.into() })
         })
-        .map(Into::into)
-        .collect();
-    Some(Ci { state: state.into(), failed })
+        .collect()
 }
 
 /// A `gh api graphql` query asking for the state of every URL, one alias each.
@@ -99,8 +119,17 @@ pub struct MyPr {
     /// Its review stage (see `launch::pr_state`).
     pub stage: String,
     pub ci: Option<Ci>,
-    /// Whom it asks for a review (a user's login or a team's slug), and who reviewed it.
-    pub reviewers: Vec<String>,
+    pub checks: Vec<Check>,
+    /// Whom it asks for a review, and who reviewed it.
+    pub reviews: Vec<Review>,
+}
+
+/// A user's login or a team's slug, and "requested" while asked, or how
+/// they last reviewed ("approved", "changes_requested", "commented", …).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Review {
+    pub who: String,
+    pub state: String,
 }
 
 /// The PRs of MY_PRS_QUERY's response.
@@ -110,12 +139,13 @@ pub fn parse_my_prs(response: &Value) -> Vec<MyPr> {
         .into_iter()
         .flatten()
         .filter_map(|n| {
-            let asked = n["reviewRequests"]["nodes"].as_array().into_iter().flatten().filter_map(|r| r["requestedReviewer"]["login"].as_str().or_else(|| r["requestedReviewer"]["slug"].as_str()));
-            let reviewed = n["latestReviews"]["nodes"].as_array().into_iter().flatten().filter_map(|r| r["author"]["login"].as_str());
-            let mut reviewers: Vec<String> = Vec::new();
-            for r in asked.chain(reviewed) {
-                if !reviewers.iter().any(|x| x == r) {
-                    reviewers.push(r.into());
+            // Asked again after reviewing, one is asked.
+            let asked = n["reviewRequests"]["nodes"].as_array().into_iter().flatten().filter_map(|r| r["requestedReviewer"]["login"].as_str().or_else(|| r["requestedReviewer"]["slug"].as_str()).map(|who| (who, "requested".to_string())));
+            let reviewed = n["latestReviews"]["nodes"].as_array().into_iter().flatten().filter_map(|r| Some((r["author"]["login"].as_str()?, r["state"].as_str()?.to_lowercase())));
+            let mut reviews: Vec<Review> = Vec::new();
+            for (who, state) in asked.chain(reviewed) {
+                if !reviews.iter().any(|x| x.who == who) {
+                    reviews.push(Review { who: who.into(), state });
                 }
             }
             Some(MyPr {
@@ -127,7 +157,8 @@ pub fn parse_my_prs(response: &Value) -> Vec<MyPr> {
                 updated_at: n["updatedAt"].as_str().unwrap_or_default().into(),
                 stage: crate::launch::pr_state(n).into(),
                 ci: ci_of(n),
-                reviewers,
+                checks: checks_of(n),
+                reviews,
             })
         })
         .collect()
@@ -239,24 +270,44 @@ mod tests {
     }
 
     #[test]
-    fn my_prs_have_their_stage_ci_and_reviewers() {
-        let mut pr = rollup("SUCCESS", json!([]));
+    fn checks_say_how_each_went() {
+        let pr = rollup(
+            "PENDING",
+            json!([
+                {"__typename": "CheckRun", "name": "lint", "conclusion": "SUCCESS", "status": "COMPLETED"},
+                {"__typename": "CheckRun", "name": "e2e", "conclusion": "TIMED_OUT", "status": "COMPLETED"},
+                {"__typename": "CheckRun", "name": "build", "conclusion": null, "status": "IN_PROGRESS"},
+                {"__typename": "CheckRun", "name": "deploy", "conclusion": "SKIPPED", "status": "COMPLETED"},
+                {"__typename": "StatusContext", "context": "ci/circleci", "state": "PENDING"},
+                {"__typename": "StatusContext", "context": "netlify", "state": "SUCCESS"}
+            ]),
+        );
+        let check = |name: &str, state: &str| Check { name: name.into(), state: state.into() };
+        assert_eq!(checks_of(&pr), vec![check("lint", "success"), check("e2e", "failure"), check("build", "pending"), check("deploy", "skipped"), check("ci/circleci", "pending"), check("netlify", "success")]);
+        assert_eq!(checks_of(&json!({})), vec![]);
+    }
+
+    #[test]
+    fn my_prs_have_their_stage_ci_and_reviews() {
+        let mut pr = rollup("SUCCESS", json!([{"__typename": "CheckRun", "name": "lint", "conclusion": "SUCCESS", "status": "COMPLETED"}]));
         for (k, v) in [
             ("number", json!(5)), ("title", json!("Fix")), ("url", json!("https://github.com/o/a/pull/5")), ("isDraft", json!(false)),
             ("updatedAt", json!("2026-10-08T10:00:00Z")), ("state", json!("OPEN")), ("reviewDecision", json!("REVIEW_REQUIRED")),
             ("repository", json!({"nameWithOwner": "o/a"})),
-            ("reviewRequests", json!({"totalCount": 1, "nodes": [{"requestedReviewer": {"login": "alice"}}]})),
-            ("latestReviews", json!({"nodes": [{"author": {"login": "bob"}, "state": "COMMENTED"}]})),
+            ("reviewRequests", json!({"totalCount": 2, "nodes": [{"requestedReviewer": {"login": "alice"}}, {"requestedReviewer": {"slug": "web"}}]})),
+            ("latestReviews", json!({"nodes": [{"author": {"login": "bob"}, "state": "COMMENTED"}, {"author": {"login": "alice"}, "state": "CHANGES_REQUESTED"}]})),
         ] {
             pr[k] = v;
         }
         let resp = json!({"data": {"search": {"nodes": [pr, {}]}}});
+        let review = |who: &str, state: &str| Review { who: who.into(), state: state.into() };
         assert_eq!(parse_my_prs(&resp), vec![MyPr {
             repo: "o/a".into(), number: 5, title: "Fix".into(), url: "https://github.com/o/a/pull/5".into(), is_draft: false,
             updated_at: "2026-10-08T10:00:00Z".into(), stage: "review_requested".into(),
             ci: Some(Ci { state: "success".into(), failed: vec![] }),
-            reviewers: vec!["alice".into(), "bob".into()],
-        }], "reviewers asked and the ones who reviewed; an empty node is skipped");
+            checks: vec![Check { name: "lint".into(), state: "success".into() }],
+            reviews: vec![review("alice", "requested"), review("web", "requested"), review("bob", "commented")],
+        }], "asked again after a review, alice is asked; an empty node is skipped");
         assert!(MY_PRS_QUERY.contains("author:@me") && MY_PRS_QUERY.contains("is:open") && MY_PRS_QUERY.contains("archived:false"));
     }
 }

@@ -45,6 +45,8 @@ export type Action =
   | "reviewAgent"
   | "reviewSubmit"
   | "reviewRunner"
+  | "prFilter"
+  | "prTodo"
   | "slackFilter"
   | "slackCompose"
   | "slackDone"
@@ -134,12 +136,14 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["editTitle", "タイトルを編集"],
       ["editMemo", "メモを編集"],
       ["addSubtask", "サブタスクを追加"],
-      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ。PR の画面では PR を開く）"],
+      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ。PR の画面では GitHub で見る）"],
     ],
   },
   {
-    group: "PR の画面（Enter でレビューを始める）",
+    group: "PR の画面（J K で選ぶ、Enter でレビューを始める・元のセッションに直させる、o で作業で開く）",
     items: [
+      ["prFilter", "すべて・レビュー依頼・自分の PR を切り替える"],
+      ["prTodo", "PR の todo を開く"],
       ["reviewAgent", "レビューのエージェントを切り替える（Claude / Codex）"],
       ["reviewSubmit", "レビューの提出を切り替える（提出前に確認する / 自動で提出する）"],
       ["reviewRunner", "レビューが動く場所を切り替える（Cloud / herdr）"],
@@ -235,6 +239,8 @@ const KEYS: Record<Action, string> = {
   reviewAgent: "a",
   reviewSubmit: "s",
   reviewRunner: "r",
+  prFilter: "f",
+  prTodo: "t",
   slackFilter: "f",
   slackDone: "e",
   slackForget: "d",

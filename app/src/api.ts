@@ -321,6 +321,8 @@ export interface Pr {
   author: string;
   updated_at: string;
   is_draft: boolean;
+  /** Its description, as written. */
+  body: string;
 }
 
 /** A PR's CI: its state and the checks that failed. */
@@ -339,8 +341,21 @@ export interface MyPr {
   updated_at: string;
   stage: PrState;
   ci: Ci | null;
-  /** Whom it asks for a review and who reviewed it (logins, team slugs). */
-  reviewers: string[];
+  checks: Check[];
+  /** Whom it asks for a review and who reviewed it. */
+  reviews: Review[];
+}
+
+/** One check of a PR's last commit. */
+export interface Check {
+  name: string;
+  state: "success" | "failure" | "pending" | "skipped";
+}
+
+/** A user's login or a team's slug, and "requested" while asked, or how they last reviewed. */
+export interface Review {
+  who: string;
+  state: "requested" | "approved" | "changes_requested" | "commented" | "dismissed" | "pending";
 }
 
 export interface PrLists {
