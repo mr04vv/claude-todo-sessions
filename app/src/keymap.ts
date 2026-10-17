@@ -46,7 +46,10 @@ export type Action =
   | "reviewSubmit"
   | "reviewRunner"
   | "prFilter"
-  | "prTodo"
+  | "showTodo"
+  | "workFix"
+  | "workHandled"
+  | "workEnded"
   | "slackFilter"
   | "slackCompose"
   | "slackDone"
@@ -113,7 +116,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     ],
   },
   {
-    group: "一覧（Todo・セッション・PR・メニュー）",
+    group: "一覧（Todo・PR・作業・学習・メニュー）",
     items: [
       ["down", "下へ（ブラウザのページではスクロール）"],
       ["up", "上へ（ブラウザのページではスクロール）"],
@@ -123,6 +126,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["moveRight", "カンバン：カードを右の列へ"],
       ["status", "ステータスを変える"],
       ["session", "作業で開く（セッションがなければ起動シート）"],
+      ["showTodo", "その todo を管理で開く（PR・作業の一覧）"],
       ["link", "PR / issue を開く"],
       ["parent", "親の todo を開く"],
       ["add", "その場所に todo を追加"],
@@ -136,17 +140,24 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["editTitle", "タイトルを編集"],
       ["editMemo", "メモを編集"],
       ["addSubtask", "サブタスクを追加"],
-      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ。PR の画面では GitHub で見る）"],
+      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ。PR の画面では GitHub で見る。作業では空いている側のボタン：始める・再開・開く）"],
     ],
   },
   {
     group: "PR の画面（J K で選ぶ、Enter でレビューを始める・元のセッションに直させる、o で作業で開く）",
     items: [
       ["prFilter", "すべて・レビュー依頼・自分の PR を切り替える"],
-      ["prTodo", "PR の todo を開く"],
       ["reviewAgent", "レビューのエージェントを切り替える（Claude / Codex）"],
       ["reviewSubmit", "レビューの提出を切り替える（提出前に確認する / 自動で提出する）"],
       ["reviewRunner", "レビューが動く場所を切り替える（Cloud / herdr）"],
+    ],
+  },
+  {
+    group: "作業の一覧（J K で選ぶ、Enter で開く）",
+    items: [
+      ["workFix", "あなた待ちの CI の失敗・修正の依頼を、元のセッションに直させる"],
+      ["workHandled", "指揮役から回されたものに対応した（あなた待ちから外す）"],
+      ["workEnded", "終了したセッションを出す・隠す"],
     ],
   },
   {
@@ -178,9 +189,9 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["studyForget", "消す（もう一度押すと消す、Esc でやめる）"],
       ["studyTags", "タグを直す"],
       ["studyKind", "種類を切り替える（すべて・記事・X の投稿・本）"],
-      ["studyCopy", "選んだもの（なければカーソルの行）の URL をコピー（NotebookLM 用）"],
-      ["studyChapter", "目次：章を読んだ・まだにする"],
-      ["studyList", "読んでいるところから一覧へ"],
+      ["studyCopy", "選んだもの（なければカーソルの行、読んでいるときは開いているもの）の URL をコピー（NotebookLM 用）"],
+      ["studyChapter", "目次：章を読んだ・まだにする（Enter でその章へ）"],
+      ["studyList", "読んでいるところと一覧を行き来する（一覧では、消すのや選ぶのをやめるのが先）"],
     ],
   },
   {
@@ -240,7 +251,10 @@ const KEYS: Record<Action, string> = {
   reviewSubmit: "s",
   reviewRunner: "r",
   prFilter: "f",
-  prTodo: "t",
+  showTodo: "t",
+  workFix: "f",
+  workHandled: "d",
+  workEnded: "e",
   slackFilter: "f",
   slackDone: "e",
   slackForget: "d",

@@ -741,12 +741,13 @@ function useMenuKeys(open: boolean, close: () => void, first = 0) {
 
 /// A keyboard cursor over a page's rows (elements with `data-row` inside
 /// `list`): ↑↓ or j k move it, Enter calls `onEnter` (⌥Enter with `alt`).
-/// Other keys go to `onKey`, which says whether it took the key.
+/// Other keys go to `onKey` (with no row when the list is empty, so a filter
+/// that emptied it can still be switched back), which says whether it took the key.
 /// Keys typed into fields, dialogs, menus and terminals are left alone.
 function useRowCursor(
   ids: string[],
   onEnter: (id: string, alt: boolean, row: HTMLElement) => void,
-  onKey?: (e: KeyboardEvent, id: string) => boolean,
+  onKey?: (e: KeyboardEvent, id: string | null) => boolean,
 ) {
   const [cursor, setCursor] = useState<string | null>(null);
   const cursorId = cursor !== null && ids.includes(cursor) ? cursor : (ids[0] ?? null);
@@ -772,7 +773,7 @@ function useRowCursor(
         if (!row) return;
         e.preventDefault();
         onEnter(cursorId, e.altKey, row);
-      } else if (cursorId && onKey?.(e, cursorId)) {
+      } else if (onKey?.(e, cursorId)) {
         e.preventDefault();
       }
     };
@@ -2232,7 +2233,7 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
   const root = useRef<HTMLElement>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .app.focus, .app[data-zone=sidebar]")) return;
+      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .app[data-zone=sidebar]")) return;
       const el = root.current;
       const title = matches(e, "editTitle") && el?.querySelector<HTMLInputElement>(".panel-title");
       const target = title || (matches(e, "editMemo") && el?.querySelector<HTMLElement>(".memo.editable")) || (matches(e, "addSubtask") && el?.querySelector<HTMLElement>(".add-inline"));
@@ -2585,7 +2586,7 @@ function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
       if (a) open(a);
     },
     (e, id) => {
-      const a = byRow(id);
+      const a = id && byRow(id);
       if (!a || !matches(e, "artifactForget")) return false;
       forget(a);
       return true;
@@ -2762,7 +2763,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   // The page's keys (keymap.ts, "Slack の画面"); j k and Enter are the list's.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app.focus, .app[data-zone=sidebar], .sheet-backdrop, [role=dialog]")) return;
+      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app[data-zone=sidebar], .sheet-backdrop, [role=dialog]")) return;
       if (matches(e, "slackFilter")) setFilter((f) => SLACK_FILTERS[(SLACK_FILTERS.indexOf(f) + 1) % SLACK_FILTERS.length]);
       else if (matches(e, "slackCompose")) setComposing(true);
       else if (composing && e.key === "Escape") setComposing(false);
@@ -3971,7 +3972,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
     },
     (e) => {
       if (matches(e, "prFilter")) return (setFilter(PR_FILTERS[(PR_FILTERS.indexOf(filter) + 1) % PR_FILTERS.length]), true);
-      const act = matches(e, "start") ? actions.github : matches(e, "session") ? actions.work : matches(e, "prTodo") ? actions.todo : undefined;
+      const act = matches(e, "start") ? actions.github : matches(e, "session") ? actions.work : matches(e, "showTodo") ? actions.todo : undefined;
       if (act) return (act(), true);
       if (!pickedReview) return false;
       if (matches(e, "reviewAgent")) setPrefs({ agent: prefs.agent === "claude" ? "codex" : "claude" });
@@ -4109,7 +4110,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
           </span>
           <span>{isoAgo(p.updated_at)}</span>
           {todo && (
-            <button className="tag todo-chip" onClick={actions.todo} title={`${todo.title}（${keyLabel(keyOf("prTodo"))}）`}>
+            <button className="tag todo-chip" onClick={actions.todo} title={`${todo.title}（${keyLabel(keyOf("showTodo"))}）`}>
               #{todo.id} {todo.title}
             </button>
           )}
@@ -5069,7 +5070,7 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
   const shown = ofKind.filter(
     (r) =>
       (tag === ALL_TAGS || (tag === UNSORTED ? r.tags === null : !!r.tags?.includes(tag))) &&
-      words.every((w) => `${r.title} ${r.text ?? ""} ${r.url}`.toLowerCase().includes(w)),
+      words.every((w) => `${r.title} ${r.text ?? ""} ${r.url} ${r.tags?.join(" ") ?? ""}`.toLowerCase().includes(w)),
   );
   const tags = sort?.tags ?? [];
   const count = (t: string) => ofKind.filter((r) => (t === UNSORTED ? r.tags === null : r.tags?.includes(t))).length;
@@ -5086,18 +5087,25 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
       if (r) onRead([r.id]);
     },
     (e, id) => {
-      const r = byRow(id);
+      if (matches(e, "studyKind")) return (setKind((k) => KIND_FILTERS[(KIND_FILTERS.indexOf(k) + 1) % KIND_FILTERS.length]), true);
+      if (matches(e, "search")) return (document.querySelector<HTMLInputElement>(".readings-search")?.focus(), true);
+      // Esc steps back: out of forgetting, out of picking, then to the readings open.
+      if (matches(e, "studyList")) {
+        if (forgetting !== null) setForgetting(null);
+        else if (picked.length > 0) setPicked([]);
+        else if (opened > 0) onResume();
+        else return false;
+        return true;
+      }
+      const r = id && byRow(id);
       if (!r) return false;
-      if (forgetting !== null && e.key === "Escape") return (setForgetting(null), true);
       const acts: [boolean, () => void][] = [
         [matches(e, "studyPick"), () => togglePick(r.id)],
         [matches(e, "studyRead"), () => onRead(picked.length > 0 ? picked : [r.id])],
         [matches(e, "studyBrowser"), () => onBrowser(r.url)],
         [matches(e, "studyForget"), () => (forgetting === r.id ? (setForgetting(null), run(() => api.deleteReading(r.id))) : setForgetting(r.id))],
         [matches(e, "studyTags"), () => setTagsFor(r.id)],
-        [matches(e, "studyKind"), () => setKind((k) => KIND_FILTERS[(KIND_FILTERS.indexOf(k) + 1) % KIND_FILTERS.length])],
         [matches(e, "studyCopy"), () => copyUrls(picked.length > 0 ? picked : [r.id])],
-        [matches(e, "search"), () => document.querySelector<HTMLInputElement>(".readings-search")?.focus()],
       ];
       const hit = acts.find(([yes]) => yes);
       hit?.[1]();
@@ -5140,11 +5148,11 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
           <span className="muted">{shown.length} 件</span>
           {opened > 0 && (
             <button className="small" onClick={onResume}>
-              読んでいる {opened} 件に戻る
+              読んでいる {opened} 件に戻る <span className="kbd">{keyLabel(keyOf("studyList"))}</span>
             </button>
           )}
           <span className="grow" />
-          <input className="filter-search readings-search" value={query} placeholder="タイトル・本文で探す（/）" aria-label="読みものを探す" onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Escape" && e.currentTarget.blur()} />
+          <input className="filter-search readings-search" value={query} placeholder="タイトル・本文・タグで探す（/）" aria-label="読みものを探す" onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === "Escape" && e.currentTarget.blur()} />
         </header>
         {sort && !sort.has_key && readings.some((r) => r.tags === null) && (
           <div className="notice">
@@ -5169,7 +5177,7 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
               URL をコピー（NotebookLM 用） <span className="kbd">{keyLabel(keyOf("studyCopy"))}</span>
             </button>
             <button className="ghost small" onClick={() => setPicked([])}>
-              選ぶのをやめる
+              選ぶのをやめる <span className="kbd">{keyLabel(keyOf("studyList"))}</span>
             </button>
           </div>
         ) : (
@@ -5256,13 +5264,17 @@ function TagMenu({ reading, tags, run, onClose }: { reading: Reading; tags: stri
 
 /// 学習's left while reading: a book's contents (its chapters, read or not:
 /// m marks the one under the cursor), or the readings to open beside.
-function StudyRail({ reading, readings, opened, run, onRead, onList }: {
+function StudyRail({ reading, readings, opened, run, onRead, onChapter, onCopy, onList }: {
   /// The reading shown on the left.
   reading: Reading | undefined;
   readings: Reading[];
   opened: number[];
   run: (f: () => Promise<unknown>) => void;
   onRead: (ids: number[]) => void;
+  /// Shows a chapter of the book on the left.
+  onChapter: (url: string) => void;
+  /// Copies the open readings' URLs.
+  onCopy: () => void;
   onList: () => void;
 }) {
   const book = reading?.kind === "book" && reading.chapters.length > 0 ? reading : undefined;
@@ -5274,12 +5286,13 @@ function StudyRail({ reading, readings, opened, run, onRead, onList }: {
       if (id.startsWith("r:")) onRead([Number(id.slice(2))]);
       else {
         const c = book?.chapters.find((x) => `c:${x.position}` === id);
-        if (c) toggle(c.position, !c.read);
+        if (c) onChapter(c.url);
       }
     },
     (e, id) => {
       if (matches(e, "studyList")) return (onList(), true);
-      if (!matches(e, "studyChapter") || !id.startsWith("c:")) return false;
+      if (matches(e, "studyCopy")) return (onCopy(), true);
+      if (!matches(e, "studyChapter") || !id?.startsWith("c:")) return false;
       const c = book?.chapters.find((x) => `c:${x.position}` === id);
       if (c) toggle(c.position, !c.read);
       return true;
@@ -5307,8 +5320,8 @@ function StudyRail({ reading, readings, opened, run, onRead, onList }: {
           </div>
           <ul className="rows compact">
             {book.chapters.map((c) => (
-              <li key={c.position} data-row={`c:${c.position}`} className={`row chapter-row${`c:${c.position}` === cursorId ? " cursor" : ""}${c.read ? " read" : ""}`}>
-                <input type="checkbox" checked={c.read} aria-label={`第${c.position}章を読んだ`} onChange={() => toggle(c.position, !c.read)} />
+              <li key={c.position} data-row={`c:${c.position}`} className={`row chapter-row${`c:${c.position}` === cursorId ? " cursor" : ""}${c.read ? " read" : ""}`} onClick={() => onChapter(c.url)}>
+                <input type="checkbox" checked={c.read} aria-label={`第${c.position}章を読んだ`} onClick={stop} onChange={() => toggle(c.position, !c.read)} />
                 <span className="mono muted">{c.position}</span>
                 <span className="row-title ellipsis" title={c.title}>
                   {c.title}
@@ -5316,7 +5329,7 @@ function StudyRail({ reading, readings, opened, run, onRead, onList }: {
               </li>
             ))}
           </ul>
-          <span className="muted small-text rail-hint">章を最後までスクロールすると印が付きます。{keyLabel(keyOf("studyChapter"))} でも付け外しできます</span>
+          <span className="muted small-text rail-hint">Enter でその章へ。章を最後までスクロールすると印が付きます。{keyLabel(keyOf("studyChapter"))} でも付け外しできます</span>
         </>
       ) : (
         <ul className="rows compact">
@@ -5391,7 +5404,7 @@ interface WorkRow {
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
 /// then the todos at work, the reviews and the sessions of no todo. j k move,
 /// Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
-function WorkRail({ board, waiting, pick, width, onResize, onPick, onShowPrs, onQuick, run }: {
+function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onShowPrs, onQuick, run }: {
   board: Board;
   waiting: WaitItem[];
   pick: string | null;
@@ -5399,6 +5412,8 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onShowPrs, on
   onResize: (w: number) => void;
   /// Shows a row's work: a todo (a subtask's at its parent) or a session.
   onPick: (at: { todo: number } | { session: string }) => void;
+  /// Shows a todo in 管理.
+  onTodo: (id: number) => void;
   onShowPrs: () => void;
   onQuick: () => void;
   run: (f: () => Promise<unknown>) => void;
@@ -5433,10 +5448,25 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onShowPrs, on
       if (r) open(r);
     },
     (e, id) => {
-      const s = rows.find((x) => x.key === id)?.session;
-      if (!matches(e, "archive") || !s) return false;
-      run(() => (isCloud(s) ? api.archiveSessions([s.session_id]) : api.hideSession(s.session_id)));
-      return true;
+      if (matches(e, "workEnded")) return (setShowEnded((v) => !v), true);
+      // The button of the side without its terminal: start, resume or open where it runs.
+      if (matches(e, "start")) {
+        const side = document.querySelector(".app.typing-right") ? "right" : "left";
+        document.querySelector<HTMLButtonElement>(`.focus-${side} .pane-empty button`)?.click();
+        return true;
+      }
+      const r = rows.find((x) => x.key === id);
+      const w = waiting.find((x) => `w:${x.key}` === id);
+      const s = r?.session;
+      const acts: [boolean, () => void][] = [
+        [matches(e, "archive") && !!s, () => run(() => (isCloud(s!) ? api.archiveSessions([s!.session_id]) : api.hideSession(s!.session_id)))],
+        [matches(e, "showTodo") && !!r?.todo, () => onTodo(r!.todo!.id)],
+        [matches(e, "workFix") && !!(fix && s && w?.todo && (w.reasons.includes("ci") || w.reasons.includes("changes"))), () => fix!(s!, w!.todo!)],
+        [matches(e, "workHandled") && !!(w?.todo && w.reasons.includes("escalated")), () => run(() => api.clearEscalation(w!.todo!.id))],
+      ];
+      const hit = acts.find(([yes]) => yes);
+      hit?.[1]();
+      return !!hit;
     },
   );
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
@@ -5487,12 +5517,12 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onShowPrs, on
                       <span className="grow" />
                       {w.todo && w.reasons.includes("escalated") && (
                         <button className="small" title="指揮役から回されたことに対応しました（あなた待ちから外します）" onClick={(e) => (e.stopPropagation(), run(() => api.clearEscalation(w.todo!.id)))}>
-                          対応した
+                          対応した <span className="kbd">{keyLabel(keyOf("workHandled"))}</span>
                         </button>
                       )}
                       {w.session && w.todo && fix && (w.reasons.includes("ci") || w.reasons.includes("changes")) && (
                         <button className="small" title="元のセッションに、直すところを送ります（画面もフォーカスも動きません）" onClick={(e) => (e.stopPropagation(), fix(w.session!, w.todo!))}>
-                          直させる
+                          直させる <span className="kbd">{keyLabel(keyOf("workFix"))}</span>
                         </button>
                       )}
                     </span>
@@ -5558,11 +5588,11 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onShowPrs, on
         )}
         {ended > 0 && (
           <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
-            {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件`}
+            {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件`} <span className="kbd">{keyLabel(keyOf("workEnded"))}</span>
           </button>
         )}
         <span className="muted small-text rail-hint">
-          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける
+          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける · {keyLabel(keyOf("help"))} でキーの一覧
         </span>
       </div>
       <Resizer label="作業の一覧の幅" cssVar="--rail-w" edge="right" width={width} min={RAIL_MIN_W} max={() => RAIL_MAX_W} onResize={onResize} />
@@ -6838,6 +6868,19 @@ export default function App() {
     },
   ];
 
+  /// Puts tab `id` where tab `to` is (dragged in the tab list, or ⌘K's "動かす").
+  const moveTab = (id: string, to: string) =>
+    setTabs((prev) => {
+      const from = prev.findIndex((t) => t.id === id);
+      const target = prev.findIndex((t) => t.id === to);
+      if (from < 0 || target < 0) return prev;
+      const next = [...prev];
+      next.splice(target, 0, ...next.splice(from, 1));
+      return next;
+    });
+  // The shown tab's neighbours in the tab list, for moving it from ⌘K.
+  const shownAt = activeTab && !activeTab.pinned ? normalTabs.indexOf(activeTab) : -1;
+  const neighbours = shownAt < 0 ? [] : ([["上", normalTabs[shownAt - 1]], ["下", normalTabs[shownAt + 1]]] as const).filter(([, t]) => t);
   // ⌘K lists the spaces and 管理's pages first, then the actions.
   // The live sessions, the one that changed last first, each opened in 作業.
   const sessionCommands = (): Command[] =>
@@ -6877,6 +6920,7 @@ export default function App() {
     { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
     ...(filterCount(todoFilter) > 0 ? [{ key: "clearFilter", label: "フィルターを外す", run: () => setTodoFilter(NO_FILTER, true) }] : []),
     { key: "newTab", label: "ブラウザで新しいタブを開く", hint: keyLabel(keyOf("newTab")), run: openNewTab },
+    ...(browserShown ? neighbours.map(([dir, t]) => ({ key: `moveTab:${dir}`, label: `表示中のタブを${dir}へ動かす`, run: () => moveTab(activeTab!.id, t!.id) })) : []),
   ];
 
   /// A side of a split view: its page or terminal, or what stands for one
@@ -6925,6 +6969,13 @@ export default function App() {
   };
   const workLeftTab = workTab(workView.left);
   const workRightTab = workTab(workView.right);
+  /// 学習's open readings' URLs, one a line, for NotebookLM's sources.
+  const copyOpenUrls = () => {
+    const urls = study.open.map((id) => readings.find((r) => r.id === id)?.url).filter((u): u is string => !!u);
+    api.copyText(urls.join("\n")).then(() => showToast(`${urls.length} 件の URL をコピーしました。NotebookLM のソースの追加に貼ってください`), report);
+  };
+  /// A book's chapter from 学習's contents, in the tab reading it.
+  const goChapter = (url: string) => studyLeft && setTabs((prev) => prev.map((t) => (t.id === studyLeft.id ? { ...t, url, loading: true, nav: t.nav + 1 } : t)));
   const studyReadingShown = studyLeft?.reading !== undefined ? readings.find((r) => r.id === studyLeft.reading) : undefined;
 
   // A todo picked on the Todo pages opens in the same sheet.
@@ -7195,7 +7246,7 @@ export default function App() {
 
           {space === "work" && board && (
             <div className="split">
-              <WorkRail board={board} waiting={waiting} pick={work.pick} width={railW} onResize={setRailW} onPick={openWork} onShowPrs={() => setView("prs")} onQuick={() => setDialog("quick")} run={run} />
+              <WorkRail board={board} waiting={waiting} pick={work.pick} width={railW} onResize={setRailW} onPick={openWork} onTodo={goTodo} onShowPrs={() => setView("prs")} onQuick={() => setDialog("quick")} run={run} />
               {workView.left || workView.todo ? (
                 <>
                   <section className="focus-left browser" aria-label={workView.right || workView.children.length > 0 ? "指揮役のセッション" : "セッション"}>
@@ -7208,7 +7259,7 @@ export default function App() {
                       {workView.left && <span className="muted small-text">{placeOf(workView.left)}</span>}
                       {workView.todo && (
                         <button className="ghost small" onClick={() => goTodo(workView.todo!.id)}>
-                          管理で見る
+                          管理で見る <span className="kbd">{keyLabel(keyOf("showTodo"))}</span>
                         </button>
                       )}
                     </div>
@@ -7266,7 +7317,7 @@ export default function App() {
           )}
           {studyReading && (
             <div className="split">
-              <StudyRail reading={studyReadingShown} readings={readings} opened={study.open} run={run} onRead={readReadings} onList={() => setStudy((st) => ({ ...st, view: "list" }))} />
+              <StudyRail reading={studyReadingShown} readings={readings} opened={study.open} run={run} onRead={readReadings} onChapter={goChapter} onCopy={copyOpenUrls} onList={() => setStudy((st) => ({ ...st, view: "list" }))} />
               <section className="focus-left browser" aria-label="読んでいるページ">
                 <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && studyLeft && keysToTab(studyLeft, studyLeft.id, report)}>
                   {studyLefts.map((t) => (
@@ -7308,15 +7359,8 @@ export default function App() {
                       ))}
                     </div>
                     {study.right === "pinnotebooklm" && study.open.length > 0 && (
-                      <button
-                        className="ghost small"
-                        title="NotebookLM のソースの追加（ウェブサイト）に貼れるよう、開いている読みものの URL を1行ずつコピーします"
-                        onClick={() => {
-                          const urls = study.open.map((id) => readings.find((r) => r.id === id)?.url).filter((u): u is string => !!u);
-                          api.copyText(urls.join("\n")).then(() => showToast(`${urls.length} 件の URL をコピーしました。NotebookLM のソースの追加に貼ってください`), report);
-                        }}
-                      >
-                        開いている {study.open.length} 件の URL をコピー
+                      <button className="ghost small" title="NotebookLM のソースの追加（ウェブサイト）に貼れるよう、開いている読みものの URL を1行ずつコピーします" onClick={copyOpenUrls}>
+                        開いている {study.open.length} 件の URL をコピー <span className="kbd">{keyLabel(keyOf("studyCopy"))}</span>
                       </button>
                     )}
                     <span className="grow" />
@@ -7351,16 +7395,7 @@ export default function App() {
               // What is typed on a new tab page opens in a new tab, as a page's link does.
               onOpen={(url) => openFromPage(url, activeTab?.id ?? "", false)}
               onAddress={setTabUrl}
-              onMove={(id, to) =>
-                setTabs((prev) => {
-                  const from = prev.findIndex((t) => t.id === id);
-                  const target = prev.findIndex((t) => t.id === to);
-                  if (from < 0 || target < 0) return prev;
-                  const next = [...prev];
-                  next.splice(target, 0, ...next.splice(from, 1));
-                  return next;
-                })
-              }
+              onMove={moveTab}
             />
           )}
         </div>
