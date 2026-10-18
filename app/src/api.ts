@@ -103,6 +103,21 @@ export interface ReadingSort {
   tags: string[];
 }
 
+/** The requests to Jev over a span, and their tokens. */
+export interface JevTally {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+/** What the requests to Jev took today and this month (by the local date), in US dollars too. */
+export interface JevSpend {
+  today: JevTally;
+  month: JevTally;
+  today_usd: number;
+  month_usd: number;
+}
+
 export type CiState = "pending" | "success" | "failure";
 
 /** Something that happened under a (parent) todo: its 経過. */
@@ -257,6 +272,7 @@ export interface Board {
   /** Newest first. */
   readings: Reading[];
   reading_sort: ReadingSort;
+  jev_spend: JevSpend;
   inbox: Session[];
   /** Newest first. */
   artifacts: Artifact[];

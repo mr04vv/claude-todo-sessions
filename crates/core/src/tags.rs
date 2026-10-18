@@ -56,9 +56,32 @@ pub fn tags_of(response: &Value) -> Result<Vec<String>, String> {
     Ok(TAGS.iter().enumerate().filter(|(i, _)| likely(&question_name(*i))).map(|(_, (tag, _))| tag.to_string()).collect())
 }
 
-/// Asks Jev which tags the reading has (none may fit).
-pub fn sort(api_key: &str, title: &str, url: &str, text: Option<&str>) -> Result<Vec<String>, String> {
-    tags_of(&ask(api_key, request(title, url, text))?)
+/// Asks Jev which tags the reading has (none may fit), and what that took.
+pub fn sort(api_key: &str, title: &str, url: &str, text: Option<&str>) -> Result<(Vec<String>, Usage), String> {
+    let response = ask(api_key, request(title, url, text))?;
+    Ok((tags_of(&response)?, usage_of(&response)))
+}
+
+/// The tokens a request to Jev took.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Usage {
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+/// What the answer says the request took (none, when it does not say).
+pub fn usage_of(response: &Value) -> Usage {
+    let tokens = |name: &str| response["usage"][name].as_i64().unwrap_or(0);
+    Usage { input_tokens: tokens("input_tokens"), output_tokens: tokens("output_tokens") }
+}
+
+/// Jev's price, as TypeSafe's page puts it: $42 a billion input tokens (it
+/// prices no output).
+const USD_PER_BILLION_INPUT_TOKENS: f64 = 42.0;
+
+/// What `input_tokens` cost, in US dollars.
+pub fn cost_usd(input_tokens: i64) -> f64 {
+    input_tokens as f64 * USD_PER_BILLION_INPUT_TOKENS / 1e9
 }
 
 /// The question's name for whether a post is about engineering.
@@ -87,9 +110,10 @@ pub fn engineering_of(response: &Value) -> Result<f64, String> {
     response["answers"][ENGINEERING]["noul"].as_f64().ok_or_else(|| format!("Jev の答えが読めません: {response}"))
 }
 
-/// Asks Jev how likely a post on X is about engineering.
-pub fn engineering(api_key: &str, text: &str) -> Result<f64, String> {
-    engineering_of(&ask(api_key, engineering_request(text))?)
+/// Asks Jev how likely a post on X is about engineering, and what that took.
+pub fn engineering(api_key: &str, text: &str) -> Result<(f64, Usage), String> {
+    let response = ask(api_key, engineering_request(text))?;
+    Ok((engineering_of(&response)?, usage_of(&response)))
 }
 
 /// Sends a request to Jev; an error says the status and what came back.
@@ -158,6 +182,15 @@ mod tests {
         assert_eq!(q["type"], "noul");
         assert!(q["criteria"]["true"].as_str().unwrap().contains("software development"));
         assert!(q["criteria"]["false"].as_str().unwrap().contains("daily life"));
+    }
+
+    #[test]
+    fn says_how_many_tokens_a_request_took_and_what_they_cost() {
+        let r = json!({ "answers": {}, "usage": { "input_tokens": 1200, "output_tokens": 21 } });
+        assert_eq!(usage_of(&r), Usage { input_tokens: 1200, output_tokens: 21 });
+        assert_eq!(usage_of(&json!({ "answers": {} })), Usage::default(), "none said: none counted");
+        assert!((cost_usd(1_000_000_000) - 42.0).abs() < 1e-9);
+        assert!((cost_usd(1_000_000) - 0.042).abs() < 1e-12);
     }
 
     #[test]

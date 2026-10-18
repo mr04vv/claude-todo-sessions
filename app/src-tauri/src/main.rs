@@ -160,6 +160,8 @@ struct Board {
     readings: Vec<cts_core::Reading>,
     /// How sorting the readings into tags stands, and the tags.
     reading_sort: readings::SortingView,
+    /// What the requests to Jev (tags, X's posts) took today and this month.
+    jev_spend: readings::SpendView,
     inbox: Vec<SessionView>,
     /// What sessions made besides PRs, newest first.
     artifacts: Vec<cts_core::Artifact>,
@@ -232,7 +234,7 @@ struct TodoUpdate {
 
 #[tauri::command(async)]
 fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: State<readings::Sorting>) -> Result<Board, String> {
-    let (todos, readings, inbox, artifacts, slack) = {
+    let (todos, readings, inbox, artifacts, slack, jev_spend) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
         let (desktop, routines) = (state.desktop.lock().map_err(err)?.clone(), state.routines.lock().map_err(err)?.clone());
@@ -255,7 +257,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .map(mark)
             .collect();
-        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?)
+        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, db.jev_spend().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -274,7 +276,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, inbox, artifacts, sync_status })
+    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend: readings::spend_view(jev_spend), inbox, artifacts, sync_status })
 }
 
 #[tauri::command(async)]

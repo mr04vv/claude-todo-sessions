@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cts_core::{NewReading, Reading, ReadingKind};
+use cts_core::{JevSpend, JevTally, NewReading, Reading, ReadingKind};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -47,6 +47,20 @@ pub fn view(sorting: &Sorting) -> Result<SortingView, String> {
         error: sorting.error.lock().map_err(err)?.clone(),
         tags: cts_core::tags::TAGS.iter().map(|(tag, _)| *tag).collect(),
     })
+}
+
+/// What the requests to Jev took today and this month, with what that cost.
+#[derive(Serialize)]
+pub struct SpendView {
+    today: JevTally,
+    month: JevTally,
+    today_usd: f64,
+    month_usd: f64,
+}
+
+pub fn spend_view(spend: JevSpend) -> SpendView {
+    let usd = |t: &JevTally| cts_core::tags::cost_usd(t.input_tokens);
+    SpendView { today_usd: usd(&spend.today), month_usd: usd(&spend.month), today: spend.today, month: spend.month }
 }
 
 fn api_key() -> Option<String> {
@@ -111,8 +125,11 @@ pub fn sort_all(app: &AppHandle) {
         let Some(key) = api_key() else { return Ok(()) };
         let unsorted = app.state::<AppState>().db.lock().map_err(err)?.unsorted_readings().map_err(err)?;
         for r in unsorted {
-            let tags = cts_core::tags::sort(&key, &r.title, &r.url, sort_text(&r).as_deref())?;
-            app.state::<AppState>().db.lock().map_err(err)?.set_reading_tags(r.id, &tags).map_err(err)?;
+            let (tags, usage) = cts_core::tags::sort(&key, &r.title, &r.url, sort_text(&r).as_deref())?;
+            let state = app.state::<AppState>();
+            let db = state.db.lock().map_err(err)?;
+            db.add_jev_usage(&usage).map_err(err)?;
+            db.set_reading_tags(r.id, &tags).map_err(err)?;
         }
         Ok(())
     })();
@@ -180,7 +197,8 @@ fn post_verdict(app: &AppHandle, id: &str, text: &str) -> Result<Option<f64>, St
         return Ok(Some(*p));
     }
     let Some(key) = api_key() else { return Ok(None) };
-    let p = cts_core::tags::engineering(&key, text)?;
+    let (p, usage) = cts_core::tags::engineering(&key, text)?;
+    app.state::<AppState>().db.lock().map_err(err)?.add_jev_usage(&usage).map_err(err)?;
     verdicts.0.lock().map_err(err)?.insert(id.to_string(), p);
     Ok(Some(p))
 }

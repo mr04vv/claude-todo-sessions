@@ -1,4 +1,5 @@
-use cts_core::{parse_todo_marker, Db, Error, NewReading, NewTodo, NoticeKind, ReadingKind, SessionState, Status, TodoPatch};
+use cts_core::tags::Usage;
+use cts_core::{parse_todo_marker, Db, Error, JevSpend, JevTally, NewReading, NewTodo, NoticeKind, ReadingKind, SessionState, Status, TodoPatch};
 
 fn open() -> (tempfile::TempDir, Db) {
     let dir = tempfile::tempdir().unwrap();
@@ -472,6 +473,26 @@ fn readings_are_sorted_again_once_a_tag_they_have_is_gone() {
     // A tag gone: every reading is sorted again (one with none fitting too, as one of the new may).
     assert_eq!(db.unsort_readings_if_tags_gone(&["QA"]).unwrap(), 2);
     assert_eq!(db.unsorted_readings().unwrap().len(), 2);
+}
+
+#[test]
+fn jev_requests_are_tallied_for_today_and_the_month() {
+    let (_d, db) = open();
+    assert_eq!(db.jev_spend().unwrap(), JevSpend::default());
+    db.add_jev_usage(&Usage { input_tokens: 1200, output_tokens: 21 }).unwrap();
+    db.add_jev_usage(&Usage { input_tokens: 800, output_tokens: 10 }).unwrap();
+    let tally = JevTally { calls: 2, input_tokens: 2000, output_tokens: 31 };
+    assert_eq!(db.jev_spend().unwrap(), JevSpend { today: tally, month: tally });
+}
+
+#[test]
+fn a_db_from_before_jev_was_tallied_tallies_it() {
+    let (dir, db) = open();
+    drop(db);
+    rusqlite::Connection::open(db_path(&dir)).unwrap().execute_batch("DROP TABLE jev_usage;").unwrap();
+    let db = Db::open(&db_path(&dir)).unwrap();
+    db.add_jev_usage(&Usage { input_tokens: 5, output_tokens: 1 }).unwrap();
+    assert_eq!(db.jev_spend().unwrap().month.calls, 1);
 }
 
 #[test]

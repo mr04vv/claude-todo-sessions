@@ -232,6 +232,21 @@ pub struct Chapter {
     pub read: bool,
 }
 
+/// The requests to Jev over a span, and their tokens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct JevTally {
+    pub calls: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+/// The requests to Jev today and this month (by the local date).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct JevSpend {
+    pub today: JevTally,
+    pub month: JevTally,
+}
+
 /// A reading to keep; a book comes with its chapters (title, page).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct NewReading {
@@ -670,6 +685,13 @@ CREATE TABLE IF NOT EXISTS reading_chapters (
     read INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (reading_id, position)
 );
+-- The requests to Jev (tags::ask) a day, by the local date, and their tokens.
+CREATE TABLE IF NOT EXISTS jev_usage (
+    day TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL
+);
 ";
 
 const READING_COLS: &str = "id, kind, url, title, text, image, tags, created_at";
@@ -1087,6 +1109,28 @@ impl Db {
             0 => Err(Error::ReadingNotFound(id)),
             _ => Ok(()),
         }
+    }
+
+    /// Counts a request to Jev, today's.
+    pub fn add_jev_usage(&self, usage: &tags::Usage) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO jev_usage (day, calls, input_tokens, output_tokens) VALUES (date('now', 'localtime'), 1, ?1, ?2)
+             ON CONFLICT(day) DO UPDATE SET calls = calls + 1, input_tokens = input_tokens + ?1, output_tokens = output_tokens + ?2",
+            params![usage.input_tokens, usage.output_tokens],
+        )?;
+        Ok(())
+    }
+
+    /// The requests to Jev today and this month.
+    pub fn jev_spend(&self) -> Result<JevSpend> {
+        let since = |start: &str| -> Result<JevTally> {
+            Ok(self.conn.query_row(
+                &format!("SELECT COALESCE(SUM(calls), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM jev_usage WHERE day >= {start}"),
+                [],
+                |r| Ok(JevTally { calls: r.get(0)?, input_tokens: r.get(1)?, output_tokens: r.get(2)? }),
+            )?)
+        };
+        Ok(JevSpend { today: since("date('now', 'localtime')")?, month: since("date('now', 'localtime', 'start of month')")? })
     }
 
     /// With a tag some reading has no longer among `known` (the tags were
