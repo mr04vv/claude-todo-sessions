@@ -8,28 +8,17 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 /// The tags a reading may get, each with what it covers (the model reads it).
-pub const TAGS: [(&str, &str); 21] = [
-    ("フロントエンド", "ブラウザで動く UI の実装（React・CSS・Web の API など）"),
-    ("バックエンド", "サーバー側の実装（API・サーバー・バッチ処理など）"),
-    ("モバイル", "iOS・Android のアプリ開発"),
-    ("インフラ", "クラウド・ネットワーク・コンテナ・Kubernetes・IaC"),
-    ("データベース", "データベース・SQL・データモデリング・ストレージ"),
-    ("パフォーマンス", "速さやメモリの計測と改善"),
-    ("セキュリティ", "脆弱性・攻撃と防御・暗号"),
-    ("認証・認可", "ログイン・OAuth・OIDC・セッション・権限"),
-    ("テスト", "テストの書き方・テストの道具・品質保証"),
-    ("設計・アーキテクチャ", "設計の原則・アーキテクチャ・ドメイン設計・リファクタリング"),
-    ("プログラミング言語", "言語の仕様・型・コンパイラ（Rust・TypeScript・Go など）"),
-    ("開発ツール", "エディタ・CLI・ビルドツール・Git など開発の道具"),
-    ("運用・CI/CD", "デプロイ・CI/CD・監視・障害対応・SRE"),
-    ("AI・LLM", "生成 AI や LLM の仕組みと使い方・プロンプト"),
-    ("AI エージェント", "Claude Code などのコーディングエージェント・エージェントの作り方"),
-    ("データ・分析", "データ分析・データ基盤・可視化・機械学習"),
-    ("デザイン", "UI / UX・ビジュアルデザイン・デザインシステム"),
-    ("プロダクト", "プロダクトマネジメント・企画・グロース"),
-    ("組織・マネジメント", "チームの運営・採用・評価・1on1"),
-    ("キャリア・働き方", "キャリア・学び方・生産性"),
-    ("ビジネス", "事業・経営・マーケティング・業界の動き"),
+pub const TAGS: [(&str, &str); 10] = [
+    ("フロントエンド", "ブラウザで動く UI の実装（React・CSS・Web の API・ビルドなど）"),
+    ("バックエンド", "サーバー側の実装（API・データベース・バッチ処理・インフラなど）"),
+    ("パフォーマンス", "速さやメモリの計測と改善（Core Web Vitals・プロファイリング・キャッシュなど）"),
+    ("アクセシビリティ", "障害のある人も含めて誰もが使えるようにすること（WCAG・WAI-ARIA・スクリーンリーダーなど）"),
+    ("Observability/Reliability", "監視・ログ・メトリクス・トレース・SLO・障害対応・SRE"),
+    ("セキュリティ", "脆弱性・攻撃と防御・認証と認可・暗号"),
+    ("設計", "ソフトウェアの設計・アーキテクチャ・ドメイン設計・リファクタリング"),
+    ("組織論・マインドセット", "チームや組織の運営・マネジメント・キャリア・仕事への考え方や姿勢"),
+    ("AI/LLM", "生成 AI・LLM・AI エージェントの仕組みと使い方・プロンプト"),
+    ("QA", "テスト・品質保証・テストの自動化"),
 ];
 
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
@@ -132,8 +121,8 @@ mod tests {
         assert_eq!(r["state"], json!({ "title": "Core Web Vitals を改善する", "url": "https://web.dev/vitals", "text": "LCP と INP の改善" }));
         let questions = r["questions"].as_object().unwrap();
         assert_eq!(questions.len(), TAGS.len());
-        assert_eq!(questions["t5"]["type"], "noul");
-        assert!(questions["t5"]["instructions"].as_str().unwrap().contains("パフォーマンス"));
+        assert_eq!(questions["t2"]["type"], "noul");
+        assert!(questions["t2"]["instructions"].as_str().unwrap().contains("パフォーマンス"));
         assert_eq!(request("t", "u", None)["state"], json!({ "title": "t", "url": "u" }), "no text: no text in the state");
     }
 
@@ -147,7 +136,7 @@ mod tests {
     #[test]
     fn keeps_the_tags_likely_enough_in_their_order() {
         let answers = json!({ "model": "jev-1.13.0", "answers": {
-            "t5": { "type": "noul", "noul": 0.91 },
+            "t2": { "type": "noul", "noul": 0.91 },
             "t0": { "type": "noul", "noul": 0.5 },
             "t1": { "type": "noul", "noul": 0.49 },
         }});
