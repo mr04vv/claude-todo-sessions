@@ -1,12 +1,11 @@
-//! A day's readings summed up (its 日報) in a Claude Docs document (in
-//! claude.ai): what was kept that day (articles, posts on X, books) and the
-//! pages they are or link to, read in full, for Claude to sum up as closely
-//! as it can, theme by theme.
+//! A day's readings summed up (its 日報) in an HTML artifact (in claude.ai):
+//! what was kept that day (articles, posts on X, books) and the pages they
+//! are or link to, read in full, are written into a brief for a Claude Code
+//! session, which sums them up as closely as it can, theme by theme, with
+//! pictures, and publishes the page (the Artifact tool is a session's alone).
 use crate::ogp::Page;
 use crate::{Reading, ReadingKind};
 
-/// The line Claude ends with, naming the document it made.
-const DOC_LINE: &str = "DOC_URL:";
 /// Enough of a page's text for a close summary.
 const PAGE_TEXT_MAX_CHARS: usize = 20_000;
 
@@ -17,7 +16,7 @@ pub struct Item<'a> {
     pub pages: Vec<Result<Page, String>>,
 }
 
-/// What a reading is, as the prompt names it.
+/// What a reading is, as the brief names it.
 fn kind_name(kind: ReadingKind) -> &'static str {
     match kind {
         ReadingKind::Article => "記事",
@@ -26,23 +25,24 @@ fn kind_name(kind: ReadingKind) -> &'static str {
     }
 }
 
-/// What Claude is asked: the day's readings and their pages, to make the document from.
-pub fn prompt(day: &str, items: &[Item]) -> String {
+/// The session's brief: what to make, then the day's readings and their pages.
+pub fn brief(day: &str, items: &[Item]) -> String {
     let mut out = format!(
-        "{day} に保存した読みもの {n} 件（記事、X の投稿、本）と、そのページ（記事そのもの、投稿のリンク先）の本文を下に渡します。\n\
-         これを読んで、Claude Docs のドキュメントを 1 つ新しく作ってください。\n\
+        "# 読みものの日報 {day}\n\
+         \n\
+         {day} に保存した読みもの {n} 件（記事、X の投稿、本）と、そのページ（記事そのもの、投稿のリンク先）の本文を下に渡します。\n\
+         これを読んで、HTML のアーティファクトを 1 つ作り、Artifact ツールで公開してください（書く前に artifact-design スキルを読む）。\n\
          \n\
          - タイトルは「読みものの日報 {day}」。\n\
-         - 最初に、その日に保存したもの全体の要点を 3〜5 行で。\n\
-         - 読みものをテーマごとに分けて（タグを手がかりに）、テーマの見出しの下に 1 件ずつ節を作る。\n\
-         - 節には、種類、タイトル（投稿なら投稿者）、元の URL を書く。ページの本文があれば、その内容をできるだけ詳しく要約する\
-         （背景、主張、具体的な手順・コード・数字、結論。大事な点を落とさない）。投稿はリンク先のページも同じように要約する。\
-         本は説明と目次から、何についての本かをまとめる。そこから得られることや、仕事にどう活かせるかも一言添える。\n\
+         - 一番上に、その日に保存したもの全体の要点（3〜5 行）と、テーマ（タグ）ごとの件数が一目で分かる小さなグラフ。\n\
+         - テーマごとのまとまりに分けて、1 件ずつカードにする。カードには種類（記事・X の投稿・本）の印、タイトル（投稿なら投稿者）、元の URL へのリンク、要約。\n\
+         - 要約はできるだけ詳しく（背景、主張、具体的な手順・コード・数字、結論。大事な点を落とさない）。投稿はリンク先のページも同じように。\
+         本は説明と目次から、何についての本か。手順や仕組み、比べている内容は、図（流れ図・比較表・関係図）にできるところは図にする。\
+         得られることや、仕事にどう活かせるかも一言添える。\n\
          - 本文を読めなかったページは、読めなかったと書く。中身を推測で書かない。\n\
-         - 中身の薄いもの（日常の話など）は、最後の「軽いもの」にまとめて短く。\n\
+         - 中身の薄いもの（日常の話など）は、最後の「軽いもの」に短くまとめる。\n\
          - 日本語で書く。\n\
-         \n\
-         作り終えたら、最後に作ったドキュメントの URL を 1 行で「{DOC_LINE} <URL>」と書いてください。\n",
+         - 公開したら終わり。ほかのことはしない。\n",
         n = items.len(),
     );
     for (i, item) in items.iter().enumerate() {
@@ -68,10 +68,9 @@ pub fn prompt(day: &str, items: &[Item]) -> String {
     out
 }
 
-/// The document Claude named on its last line (`DOC_URL: <url>`, maybe as a Markdown link).
-pub fn doc_url(said: &str) -> Option<String> {
-    let line = said.lines().rev().find_map(|l| l.find(DOC_LINE).map(|i| &l[i + DOC_LINE.len()..]))?;
-    crate::transcript::ARTIFACT_PAGES.iter().find_map(|page| line.find(page).and_then(|i| crate::transcript::artifact_at(&line[i..])))
+/// The session's first prompt: its brief (long; read in parts).
+pub fn first_prompt(brief_path: &str) -> String {
+    format!("{brief_path} を読んで（長いので何回かに分けて）、そこに書いてあるとおりに読みものの日報を HTML のアーティファクトにして公開してください。")
 }
 
 #[cfg(test)]
@@ -96,26 +95,23 @@ mod tests {
     }
 
     #[test]
-    fn asks_for_a_document_of_the_day_s_readings_and_their_pages() {
+    fn briefs_a_session_on_the_day_s_readings_and_their_pages() {
         let r = post("Void を触ってみた");
         let page = Page { url: "https://ashunar0.dev/posts/try-void".into(), title: Some("Void".into()), text: "ゑ".repeat(PAGE_TEXT_MAX_CHARS + 10) };
         let mut book = post("データ指向アプリケーション設計");
         book.kind = ReadingKind::Book;
         book.chapters = vec![crate::Chapter { position: 1, title: "Replication".into(), url: String::new(), read: false }];
-        let p = prompt("2026-10-18", &[Item { reading: &r, pages: vec![Ok(page), Err("timeout".into())] }, Item { reading: &book, pages: vec![] }]);
-        assert!(p.contains("「読みものの日報 2026-10-18」"));
-        assert!(p.contains("## 2 件目（本）") && p.contains("目次:\nReplication"));
-        assert!(p.contains("## 1 件目（X の投稿）\nURL: https://x.com/ashunar0/status/1") && p.contains("タグ: AI/LLM") && p.contains("Void を触ってみた"));
-        assert!(p.contains("### ページ 1: https://ashunar0.dev/posts/try-void\nタイトル: Void"));
-        assert_eq!(p.matches('ゑ').count(), PAGE_TEXT_MAX_CHARS, "a page's text is cut");
-        assert!(p.contains("### ページ 2: 読めませんでした（timeout）"));
-        assert!(p.contains("DOC_URL: <URL>"));
+        let b = brief("2026-10-18", &[Item { reading: &r, pages: vec![Ok(page), Err("timeout".into())] }, Item { reading: &book, pages: vec![] }]);
+        assert!(b.contains("「読みものの日報 2026-10-18」") && b.contains("HTML のアーティファクト") && b.contains("artifact-design"));
+        assert!(b.contains("## 2 件目（本）") && b.contains("目次:\nReplication"));
+        assert!(b.contains("## 1 件目（X の投稿）\nURL: https://x.com/ashunar0/status/1") && b.contains("タグ: AI/LLM") && b.contains("Void を触ってみた"));
+        assert!(b.contains("### ページ 1: https://ashunar0.dev/posts/try-void\nタイトル: Void"));
+        assert_eq!(b.matches('ゑ').count(), PAGE_TEXT_MAX_CHARS, "a page's text is cut");
+        assert!(b.contains("### ページ 2: 読めませんでした（timeout）"));
     }
 
     #[test]
-    fn finds_the_document_on_the_last_line() {
-        assert_eq!(doc_url("作りました。\nDOC_URL: https://claude.ai/artifact/abc123").as_deref(), Some("https://claude.ai/artifact/abc123"));
-        assert_eq!(doc_url("DOC_URL: [読みものの日報](https://claude.ai/artifact/def456)").as_deref(), Some("https://claude.ai/artifact/def456"));
-        assert_eq!(doc_url("作れませんでした"), None);
+    fn the_session_is_pointed_at_its_brief() {
+        assert!(first_prompt("/tmp/digests/2026-10-18.md").contains("/tmp/digests/2026-10-18.md"));
     }
 }

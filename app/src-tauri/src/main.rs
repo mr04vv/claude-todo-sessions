@@ -1233,6 +1233,10 @@ fn keep_artifacts(session: &Session) {
         Err(e) => return eprintln!("{e}"),
     };
     for f in found {
+        // A day's digest's session: what it publishes is the digest.
+        if let Err(e) = db.digest_made_by(&session.session_id, &f.url) {
+            eprintln!("{e}");
+        }
         let a = cts_core::NewArtifact { url: f.url, title: f.title, kind: f.kind, session_id: Some(session.session_id.clone()), todo_id: session.todo_id };
         if let Err(e) = db.add_artifact(a) {
             eprintln!("{e}");

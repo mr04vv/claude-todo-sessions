@@ -92,13 +92,15 @@ export interface Reading {
   links: string[];
 }
 
-/** A day's readings summed up (its 日報) in a Claude Docs document, or why it was not. */
+/** A day's readings summed up (its 日報) in an HTML artifact a session publishes, or why it was not. */
 export interface Digest {
   /** The local date, YYYY-MM-DD. */
   day: string;
   url: string | null;
   error: string | null;
   made_at: number;
+  /** The session making it (in 作業); the artifact it publishes is the digest. */
+  session_id: string | null;
 }
 
 /** The days summed up (the newest first), and the day being summed up. */
@@ -555,7 +557,7 @@ export const api = {
   setChapterRead: (readingId: number, position: number, read: boolean) => invoke<void>("set_chapter_read", { readingId, position, read }),
   /// Keeps a reading read (a good one), or puts it back to read.
   setReadingKept: (id: number, kept: boolean) => invoke<void>("set_reading_kept", { id, kept }),
-  /// Sums up `day`'s readings (YYYY-MM-DD, the local date) into its 日報 now, behind: the document's link comes on the board.
+  /// Has `day`'s readings (YYYY-MM-DD, the local date) summed up into its 日報 now, behind: a session (in 作業) publishes it, and its link comes on the board.
   makeDigest: (day: string) => invoke<void>("make_digest", { day }),
   /// Keeps the TypeSafe API key (blank takes it out); what waits is sorted then.
   setTypesafeKey: (key: string) => invoke<void>("set_typesafe_key", { key }),

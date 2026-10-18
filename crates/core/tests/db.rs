@@ -611,6 +611,21 @@ fn a_day_s_digest_is_kept_once_made_or_why_not() {
 }
 
 #[test]
+fn a_day_s_digest_made_in_a_session_takes_the_artifact_it_publishes() {
+    let (_d, db) = open();
+    db.start_digest("2026-10-18", "sess-1").unwrap();
+    let making = db.digest("2026-10-18").unwrap().unwrap();
+    assert_eq!((making.session_id.as_deref(), making.url, making.error), (Some("sess-1"), None, None), "being made");
+    assert!(!db.digest_made_by("other", "https://claude.ai/artifact/zzz").unwrap(), "another session's artifact is not it");
+    assert!(db.digest_made_by("sess-1", "https://claude.ai/artifact/abc").unwrap());
+    assert!(!db.digest_made_by("sess-1", "https://claude.ai/artifact/later").unwrap(), "the first one published stays");
+    assert_eq!(db.digest("2026-10-18").unwrap().unwrap().url.as_deref(), Some("https://claude.ai/artifact/abc"));
+    // Made again: a new session, from scratch.
+    db.start_digest("2026-10-18", "sess-2").unwrap();
+    assert_eq!(db.digest("2026-10-18").unwrap().unwrap().url, None);
+}
+
+#[test]
 fn the_x_digests_made_before_are_the_days_digests() {
     let (dir, db) = open();
     drop(db);

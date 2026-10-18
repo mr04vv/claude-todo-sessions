@@ -324,6 +324,8 @@ pub struct Digest {
     pub url: Option<String>,
     pub error: Option<String>,
     pub made_at: i64,
+    /// The session making it (the artifact it publishes is the digest).
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -778,7 +780,8 @@ CREATE TABLE IF NOT EXISTS digests (
     day TEXT PRIMARY KEY,
     url TEXT,
     error TEXT,
-    made_at INTEGER NOT NULL
+    made_at INTEGER NOT NULL,
+    session_id TEXT
 );
 -- Jev's credit as last read off TypeSafe's console (JevCredit); one row at most.
 CREATE TABLE IF NOT EXISTS jev_credit (
@@ -950,7 +953,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [now()],
         )?;
     }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone"), ("readings", "kept"), ("readings", "links")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone"), ("readings", "kept"), ("readings", "links"), ("digests", "session_id")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -1383,6 +1386,22 @@ impl Db {
         Ok(())
     }
 
+    /// `day`'s digest being made in session `session_id`, from scratch.
+    pub fn start_digest(&self, day: &str, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO digests (day, url, error, made_at, session_id) VALUES (?1, NULL, NULL, ?2, ?3)
+             ON CONFLICT(day) DO UPDATE SET url = NULL, error = NULL, made_at = ?2, session_id = ?3",
+            params![day, now(), session_id],
+        )?;
+        Ok(())
+    }
+
+    /// An artifact session `session_id` published: the digest it makes, if it
+    /// makes one (and has none yet); whether it was.
+    pub fn digest_made_by(&self, session_id: &str, url: &str) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])? > 0)
+    }
+
     pub fn digest(&self, day: &str) -> Result<Option<Digest>> {
         Ok(self.digests_where("day = ?1", [day])?.pop())
     }
@@ -1393,8 +1412,10 @@ impl Db {
     }
 
     fn digests_where<P: rusqlite::Params>(&self, filter: &str, p: P) -> Result<Vec<Digest>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT day, url, error, made_at FROM digests WHERE {filter} ORDER BY day DESC"))?;
-        let digests = stmt.query_map(p, |r| Ok(Digest { day: r.get(0)?, url: r.get(1)?, error: r.get(2)?, made_at: r.get(3)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt = self.conn.prepare(&format!("SELECT day, url, error, made_at, session_id FROM digests WHERE {filter} ORDER BY day DESC"))?;
+        let digests = stmt
+            .query_map(p, |r| Ok(Digest { day: r.get(0)?, url: r.get(1)?, error: r.get(2)?, made_at: r.get(3)?, session_id: r.get(4)? }))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(digests)
     }
 

@@ -1,6 +1,5 @@
-// Claude asked once through `claude -p`, without a session or the built-in
-// tools: the in-place translations (in a JSON schema), without MCP servers;
-// the day's X digest, with the Claude Docs connector to write it.
+// Claude asked once through `claude -p`, without a session, the built-in
+// tools or MCP servers: the in-place translations (in a JSON schema).
 use std::io::{Read, Write};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -11,34 +10,18 @@ use crate::err;
 
 /// How long one answer may take.
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
-/// The Claude Docs connector's tools (claude.ai's), allowed without asking.
-const DOCS_TOOLS: &str = "mcp__claude_ai_Claude_Docs";
 
 /// Asks Claude once, without a session or the built-in tools, for an answer
 /// in `schema` (its structured output), or without one for its text (a
 /// string). The prompt goes in on stdin (a long one would not fit in an
 /// argument).
 pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>) -> Result<Value, String> {
-    run(prompt, schema, model, effort, false, CLAUDE_TIMEOUT)
-}
-
-/// Asks Claude once with the Claude Docs connector (claude.ai's MCP server,
-/// its tools allowed) to write a document; its answer's text.
-pub fn claude_docs(prompt: &str, timeout: Duration) -> Result<String, String> {
-    Ok(run(prompt, None, None, None, true, timeout)?.as_str().unwrap_or_default().to_string())
-}
-
-fn run(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>, docs: bool, timeout: Duration) -> Result<Value, String> {
     let mut cmd = crate::cli("claude");
     cmd.args(["-p", "--output-format", "json", "--tools", "", "--no-session-persistence"]);
     if let Some(schema) = schema {
         cmd.args(["--json-schema", &schema.to_string()]);
     }
-    if docs {
-        cmd.args(["--allowedTools", DOCS_TOOLS]);
-    } else {
-        cmd.arg("--strict-mcp-config");
-    }
+    cmd.arg("--strict-mcp-config");
     if let Some(model) = model {
         cmd.args(["--model", model]);
     }
@@ -80,7 +63,7 @@ fn run(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option
                     _ => Err("claude が決まった形で答えませんでした".into()),
                 };
             }
-            None if started.elapsed() > timeout => {
+            None if started.elapsed() > CLAUDE_TIMEOUT => {
                 let _ = child.kill();
                 return Err("claude の答えを待ちきれませんでした".into());
             }

@@ -5342,7 +5342,7 @@ function ReadingMeta({ r }: { r: Reading }) {
 /// 学習's list: every reading, the newest first, narrowed by kind, tag and
 /// words. Picked ones (x) read together, or have their URLs copied for
 /// NotebookLM; every action has its key (keymap.ts, "学習の一覧").
-function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, onResume, onBrowser, onSettings, onToast }: {
+function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, onResume, onBrowser, onSession, onSettings, onToast }: {
   readings: Reading[];
   sort: ReadingSort | undefined;
   /// The days' readings summed up (日報), each opened in the browser.
@@ -5354,6 +5354,8 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
   onRead: (ids: number[]) => void;
   onResume: () => void;
   onBrowser: (url: string) => void;
+  /// A day's digest's session, being made: shown in 作業.
+  onSession: (id: string) => void;
   onSettings: () => void;
   onToast: (text: string) => void;
 }) {
@@ -5448,18 +5450,22 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
           </button>
         ))}
         <div className="section-title">日報</div>
-        {(digests?.digests.length ?? 0) === 0 && <span className="muted small-text digest-hint">毎朝、前の日に保存した読みものを Claude Docs にまとめます（{keyLabel(keyOf("palette"))} から今すぐも）</span>}
-        {digests?.digests.map((d) => (
-          <button
-            key={d.day}
-            className="filter-row"
-            title={d.url ? `${d.url} をブラウザで開く` : `まとめられませんでした：${d.error}（押すともう一度）`}
-            onClick={() => (d.url ? onBrowser(d.url) : run(() => api.makeDigest(d.day)))}
-          >
-            <span className="grow">{dayLabel(d.day)}</span>
-            <span className="muted">{digests.running === d.day ? "まとめています…" : d.url ? "開く" : "失敗・もう一度"}</span>
-          </button>
-        ))}
+        {(digests?.digests.length ?? 0) === 0 && <span className="muted small-text digest-hint">毎朝、前の日に保存した読みものを HTML のアーティファクトにまとめます（{keyLabel(keyOf("palette"))} から今すぐも）</span>}
+        {digests?.digests.map((d) => {
+          // Made (open it), being made in a session (show it), or failed (again).
+          const making = !d.url && !d.error && d.session_id;
+          return (
+            <button
+              key={d.day}
+              className="filter-row"
+              title={d.url ? `${d.url} をブラウザで開く` : making ? "作業のセッションがまとめています（押すとそのセッションを開く）" : `まとめられませんでした：${d.error}（押すともう一度）`}
+              onClick={() => (d.url ? onBrowser(d.url) : making ? onSession(making) : run(() => api.makeDigest(d.day)))}
+            >
+              <span className="grow">{dayLabel(d.day)}</span>
+              <span className="muted">{digests.running === d.day || making ? "まとめています…" : d.url ? "開く" : "失敗・もう一度"}</span>
+            </button>
+          );
+        })}
       </nav>
       <main className="main readings-main">
         <header className="toolbar">
@@ -5488,7 +5494,7 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
         )}
         {digests?.running && (
           <div className="notice" role="status">
-            <span className="grow">{dayLabel(digests.running)} に保存した読みものを、ページまで読んで日報にまとめています（数分かかります）。</span>
+            <span className="grow">{dayLabel(digests.running)} に保存した読みもののページを読んでいます。読み終えると、作業のセッションが HTML のアーティファクトにまとめます。</span>
           </div>
         )}
         {picked.length > 0 ? (
@@ -7945,6 +7951,7 @@ export default function App() {
               readings={readings}
               sort={board.reading_sort}
               digests={board.digests}
+              onSession={(id) => openWork({ session: id })}
               opened={study.open.length}
               run={run}
               report={report}

@@ -1,12 +1,13 @@
 // The day's readings summed up, its 日報 (cts_core::digest): every morning,
 // what was kept the day before (articles, posts on X, books) and the pages
-// they are or link to, read in full, go to Claude (with the Claude Docs
-// connector), which writes a document of them in claude.ai; its link is kept
-// with the day, and among the artifacts.
+// they are or link to, read in full, are written into a brief, and a Claude
+// Code session (in herdr, as ちょっと Claude's) makes an HTML artifact of them
+// in claude.ai. The artifact it publishes, found in its transcript as any
+// session's (main.rs's keep_artifacts), is the day's digest.
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cts_core::{digest, ogp, ArtifactKind, Digest, NewArtifact, Reading, ReadingKind};
+use cts_core::{digest, launch, ogp, Digest, Reading, ReadingKind};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -18,10 +19,14 @@ const DIGEST_HOUR: i64 = 6;
 const CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 /// How long a linked page may take to read.
 const PAGE_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long Claude may take to read it all and write the document.
-const CLAUDE_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+/// Where the briefs go, beside the database.
+const BRIEFS_DIR: &str = "digests";
+/// What the session may do without asking: read its brief, write the page,
+/// read the artifact skill and publish.
+const SESSION_TOOLS: &str = "Read,Write,Skill,ToolSearch,Artifact";
 
-/// The day being summed up, if one is.
+/// The day whose brief is being made (its pages read), if one is; the session
+/// making a page shows on the day's digest itself.
 #[derive(Default)]
 pub struct Digesting(Mutex<Option<String>>);
 
@@ -36,8 +41,8 @@ pub fn view(digesting: &Digesting, db: &cts_core::Db) -> Result<DigestView, Stri
     Ok(DigestView { digests: db.digests().map_err(err)?, running: digesting.0.lock().map_err(err)?.clone() })
 }
 
-/// Sums up `day`'s readings (the local date) into a document, and keeps what came
-/// of it: the document's link, or why it was not made. One day at a time.
+/// Has `day`'s readings (the local date) summed up by a session, and keeps
+/// which (or why none could start). One day at a time.
 fn make(app: &AppHandle, day: &str) -> Result<(), String> {
     let digesting = app.state::<Digesting>();
     {
@@ -47,18 +52,14 @@ fn make(app: &AppHandle, day: &str) -> Result<(), String> {
         }
         *running = Some(day.to_string());
     }
-    let made = write(app, day);
+    let started = start(app, day);
     if let Ok(mut running) = digesting.0.lock() {
         *running = None;
     }
-    let state = app.state::<AppState>();
-    let db = state.db.lock().map_err(err)?;
-    match &made {
-        Ok(url) => db.set_digest(day, Ok(url)),
-        Err(why) => db.set_digest(day, Err(why)),
+    if let Err(why) = &started {
+        app.state::<AppState>().db.lock().map_err(err)?.set_digest(day, Err(why)).map_err(err)?;
     }
-    .map_err(err)?;
-    made.map(|_| ())
+    started
 }
 
 /// A reading's pages to read: an article's own, a post's links'; a book's
@@ -71,15 +72,30 @@ fn pages_of(r: &Reading) -> Vec<&str> {
     }
 }
 
-/// Reads the day's readings' pages and has Claude write the document; its link.
-fn write(app: &AppHandle, day: &str) -> Result<String, String> {
-    let readings = app.state::<AppState>().db.lock().map_err(err)?.readings_on(day).map_err(err)?;
+/// Reads the day's readings' pages into a brief and starts the session that
+/// makes the page of it (in herdr, else Ghostty), behind.
+fn start(app: &AppHandle, day: &str) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let readings = state.db.lock().map_err(err)?.readings_on(day).map_err(err)?;
     let items: Vec<digest::Item> = readings.iter().map(|r| digest::Item { reading: r, pages: pages_of(r).into_iter().map(|u| ogp::page(u, PAGE_TIMEOUT)).collect() }).collect();
-    let said = crate::ask::claude_docs(&digest::prompt(day, &items), CLAUDE_TIMEOUT)?;
-    let url = digest::doc_url(&said).ok_or_else(|| format!("ドキュメントの URL が分かりませんでした：{}", said.chars().take(300).collect::<String>()))?;
-    let artifact = NewArtifact { url: url.clone(), title: Some(format!("読みものの日報 {day}")), kind: ArtifactKind::Doc, session_id: None, todo_id: None };
-    app.state::<AppState>().db.lock().map_err(err)?.add_artifact(artifact).map_err(err)?;
-    Ok(url)
+    let dir = crate::db_path().parent().map(|p| p.join(BRIEFS_DIR)).ok_or("データのフォルダが分かりません")?;
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    let brief = dir.join(format!("{day}.md"));
+    std::fs::write(&brief, digest::brief(day, &items)).map_err(err)?;
+    let session = uuid::Uuid::new_v4().to_string();
+    // At home, as ちょっと Claude (a folder of its own would be asked to be
+    // trusted first), with the briefs' folder added for its file tools.
+    let command = format!(
+        "claude --session-id {session} --add-dir {} --allowedTools {} {}",
+        launch::shell_quote(&dir.to_string_lossy()),
+        launch::shell_quote(SESSION_TOOLS),
+        launch::shell_quote(&digest::first_prompt(&brief.to_string_lossy()))
+    );
+    let (cwd, title) = (crate::home().to_string_lossy().to_string(), format!("読みものの日報 {day}"));
+    state.db.lock().map_err(err)?.register_session(&session, &cwd, &title, None).map_err(err)?;
+    crate::start_in_herdr(&state, &cwd, &title, &command, false, false).or_else(|herdr| crate::start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr} / {e}")))?;
+    let db = state.db.lock().map_err(err)?;
+    db.start_digest(day, &session).map_err(err)
 }
 
 /// Every morning (from DIGEST_HOUR), the day before, once: a day that failed
