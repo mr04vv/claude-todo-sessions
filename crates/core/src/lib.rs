@@ -260,6 +260,26 @@ fn name_taken(e: rusqlite::Error, name: &str) -> Error {
     }
 }
 
+/// Jev's credit as read off TypeSafe's console (its billing page has no API):
+/// the credit bought or given and what its usage page said was spent, at
+/// `at`, with the input tokens this app had used by then (in that Spend).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct JevCredit {
+    pub credit: f64,
+    pub spent: f64,
+    pub base_input_tokens: i64,
+    pub at: i64,
+}
+
+impl JevCredit {
+    /// What is left: what the console left, less what this app has used
+    /// since (`all_input_tokens` being all it used); others using the key
+    /// (the X extension) are not counted.
+    pub fn left(&self, all_input_tokens: i64) -> f64 {
+        self.credit - self.spent - tags::cost_usd((all_input_tokens - self.base_input_tokens).max(0))
+    }
+}
+
 /// The requests to Jev over a span, and their tokens.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct JevTally {
@@ -730,6 +750,14 @@ CREATE TABLE IF NOT EXISTS databases (
 CREATE TABLE IF NOT EXISTS database_todos (
     todo_id INTEGER PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
     database_id INTEGER NOT NULL REFERENCES databases(id) ON DELETE CASCADE
+);
+-- Jev's credit as last read off TypeSafe's console (JevCredit); one row at most.
+CREATE TABLE IF NOT EXISTS jev_credit (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    credit REAL NOT NULL,
+    spent REAL NOT NULL,
+    base_input_tokens INTEGER NOT NULL,
+    at INTEGER NOT NULL
 );
 ";
 
@@ -1231,6 +1259,31 @@ impl Db {
             month: since("date('now', 'localtime', 'start of month')")?,
             all: since("''")?,
         })
+    }
+
+    /// Keeps Jev's credit as just read off the console, against what this app has used so far.
+    pub fn set_jev_credit(&self, credit: f64, spent: f64) -> Result<JevCredit> {
+        let credit = JevCredit { credit, spent, base_input_tokens: self.jev_spend()?.all.input_tokens, at: now() };
+        self.conn.execute(
+            "INSERT INTO jev_credit (id, credit, spent, base_input_tokens, at) VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET credit = ?1, spent = ?2, base_input_tokens = ?3, at = ?4",
+            params![credit.credit, credit.spent, credit.base_input_tokens, credit.at],
+        )?;
+        Ok(credit)
+    }
+
+    pub fn clear_jev_credit(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM jev_credit", [])?;
+        Ok(())
+    }
+
+    pub fn jev_credit(&self) -> Result<Option<JevCredit>> {
+        Ok(self
+            .conn
+            .query_row("SELECT credit, spent, base_input_tokens, at FROM jev_credit", [], |r| {
+                Ok(JevCredit { credit: r.get(0)?, spent: r.get(1)?, base_input_tokens: r.get(2)?, at: r.get(3)? })
+            })
+            .optional()?)
     }
 
     /// With a tag some reading has no longer among `known` (the tags were

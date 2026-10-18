@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cts_core::{JevSpend, JevTally, NewReading, Reading, ReadingKind};
+use cts_core::{JevCredit, JevSpend, JevTally, NewReading, Reading, ReadingKind};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -49,7 +49,8 @@ pub fn view(sorting: &Sorting) -> Result<SortingView, String> {
     })
 }
 
-/// What the requests to Jev took today, this month and all along, with what that cost.
+/// What the requests to Jev took today, this month and all along, with what
+/// that cost, and the credit left when it was read off TypeSafe's console.
 #[derive(Serialize)]
 pub struct SpendView {
     today: JevTally,
@@ -58,11 +59,22 @@ pub struct SpendView {
     today_usd: f64,
     month_usd: f64,
     all_usd: f64,
+    credit: Option<CreditView>,
 }
 
-pub fn spend_view(spend: JevSpend) -> SpendView {
+/// The credit as read off the console, what this app has spent since, and what is left.
+#[derive(Serialize)]
+pub struct CreditView {
+    #[serde(flatten)]
+    read: JevCredit,
+    since_usd: f64,
+    left: f64,
+}
+
+pub fn spend_view(spend: JevSpend, credit: Option<JevCredit>) -> SpendView {
     let usd = |t: &JevTally| cts_core::tags::cost_usd(t.input_tokens);
-    SpendView { today_usd: usd(&spend.today), month_usd: usd(&spend.month), all_usd: usd(&spend.all), today: spend.today, month: spend.month, all: spend.all }
+    let credit = credit.map(|c| CreditView { since_usd: cts_core::tags::cost_usd((spend.all.input_tokens - c.base_input_tokens).max(0)), left: c.left(spend.all.input_tokens), read: c });
+    SpendView { today_usd: usd(&spend.today), month_usd: usd(&spend.month), all_usd: usd(&spend.all), today: spend.today, month: spend.month, all: spend.all, credit }
 }
 
 fn api_key() -> Option<String> {
@@ -203,6 +215,20 @@ fn post_verdict(app: &AppHandle, id: &str, text: &str) -> Result<Option<f64>, St
     app.state::<AppState>().db.lock().map_err(err)?.add_jev_usage(&usage).map_err(err)?;
     verdicts.0.lock().map_err(err)?.insert(id.to_string(), p);
     Ok(Some(p))
+}
+
+/// Keeps Jev's credit as just read off TypeSafe's console: the credit, and the Spend.
+#[tauri::command(async)]
+pub fn set_jev_credit(state: State<AppState>, credit: f64, spent: f64) -> Result<(), String> {
+    if !(credit >= 0.0 && spent >= 0.0) {
+        return Err("クレジットと Spend はドルの額（0 以上の数）で入れてください".into());
+    }
+    state.db.lock().map_err(err)?.set_jev_credit(credit, spent).map(|_| ()).map_err(err)
+}
+
+#[tauri::command(async)]
+pub fn clear_jev_credit(state: State<AppState>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.clear_jev_credit().map_err(err)
 }
 
 /// Keeps the TypeSafe API key (a blank one takes it out), then sorts what waits.

@@ -259,7 +259,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .map(mark)
             .collect();
-        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, db.jev_spend().map_err(err)?, db.databases().map_err(err)?)
+        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, readings::spend_view(db.jev_spend().map_err(err)?, db.jev_credit().map_err(err)?), db.databases().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -278,7 +278,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend: readings::spend_view(jev_spend), databases, inbox, artifacts, sync_status })
+    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend, databases, inbox, artifacts, sync_status })
 }
 
 #[tauri::command(async)]
@@ -2924,6 +2924,8 @@ fn main() {
             readings::set_reading_tags,
             readings::set_chapter_read,
             readings::set_typesafe_key,
+            readings::set_jev_credit,
+            readings::clear_jev_credit,
             browser_bookmark,
             terminal::term_open,
             terminal::term_write,

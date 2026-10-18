@@ -125,6 +125,18 @@ export interface JevSpend {
   today_usd: number;
   month_usd: number;
   all_usd: number;
+  /** The credit as last read off TypeSafe's console, and what is left of it. */
+  credit: JevCredit | null;
+}
+
+/** Jev's credit as read off TypeSafe's console (its billing page has no API) at `at` (unix seconds), what this app spent since, and what is left. */
+export interface JevCredit {
+  credit: number;
+  spent: number;
+  base_input_tokens: number;
+  at: number;
+  since_usd: number;
+  left: number;
 }
 
 export type CiState = "pending" | "success" | "failure";
@@ -522,6 +534,9 @@ export const api = {
   setChapterRead: (readingId: number, position: number, read: boolean) => invoke<void>("set_chapter_read", { readingId, position, read }),
   /// Keeps the TypeSafe API key (blank takes it out); what waits is sorted then.
   setTypesafeKey: (key: string) => invoke<void>("set_typesafe_key", { key }),
+  /// Keeps Jev's credit as just read off TypeSafe's console: the credit, and the Spend.
+  setJevCredit: (credit: number, spent: number) => invoke<void>("set_jev_credit", { credit, spent }),
+  clearJevCredit: () => invoke<void>("clear_jev_credit"),
   /// The tab's page keeps itself to read, as its own ⌘⇧D does.
   browserBookmark: (tab: string) => invoke<void>("browser_bookmark", { tab }),
   forgetArtifact: (id: number) => invoke<void>("forget_artifact", { id }),

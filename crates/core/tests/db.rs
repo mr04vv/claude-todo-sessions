@@ -489,10 +489,11 @@ fn jev_requests_are_tallied_for_today_the_month_and_all_along() {
 fn a_db_from_before_jev_was_tallied_tallies_it() {
     let (dir, db) = open();
     drop(db);
-    rusqlite::Connection::open(db_path(&dir)).unwrap().execute_batch("DROP TABLE jev_usage;").unwrap();
+    rusqlite::Connection::open(db_path(&dir)).unwrap().execute_batch("DROP TABLE jev_usage; DROP TABLE jev_credit;").unwrap();
     let db = Db::open(&db_path(&dir)).unwrap();
     db.add_jev_usage(&Usage { input_tokens: 5, output_tokens: 1 }).unwrap();
     assert_eq!(db.jev_spend().unwrap().month.calls, 1);
+    assert_eq!(db.set_jev_credit(5.0, 0.0).unwrap().base_input_tokens, 5);
 }
 
 #[test]
@@ -544,6 +545,25 @@ fn a_db_from_before_databases_has_them() {
     rusqlite::Connection::open(db_path(&dir)).unwrap().execute_batch("DROP TABLE database_todos; DROP TABLE databases;").unwrap();
     let db = Db::open(&db_path(&dir)).unwrap();
     assert_eq!(db.create_database("Frontend Backlog").unwrap().name, "Frontend Backlog");
+}
+
+#[test]
+fn jev_credit_left_is_what_the_console_left_less_what_the_app_used_since() {
+    let (_d, db) = open();
+    assert_eq!(db.jev_credit().unwrap(), None);
+    db.add_jev_usage(&Usage { input_tokens: 1_000_000, output_tokens: 0 }).unwrap();
+    // Read off the console after that request: it is in the console's Spend already.
+    let credit = db.set_jev_credit(5.0, 0.1727).unwrap();
+    assert_eq!((credit.credit, credit.spent, credit.base_input_tokens), (5.0, 0.1727, 1_000_000));
+    assert_eq!(db.jev_credit().unwrap(), Some(credit));
+    let all = |db: &Db| db.jev_spend().unwrap().all.input_tokens;
+    assert_eq!(format!("{:.4}", credit.left(all(&db))), "4.8273");
+    db.add_jev_usage(&Usage { input_tokens: 2_000_000, output_tokens: 50 }).unwrap();
+    assert_eq!(format!("{:.4}", credit.left(all(&db))), "4.7433", "2M input tokens since: $0.084 off");
+    // Read again: the app's use so far is in the new Spend.
+    assert_eq!(db.set_jev_credit(5.0, 0.26).unwrap().base_input_tokens, 3_000_000);
+    db.clear_jev_credit().unwrap();
+    assert_eq!(db.jev_credit().unwrap(), None);
 }
 
 #[test]
