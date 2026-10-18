@@ -28,6 +28,10 @@ pub enum Error {
     SessionNotFound(String),
     /// Subtasks go one level deep: why this parent cannot be set.
     InvalidParent(String),
+    DatabaseNotFound(i64),
+    /// Another database has the name.
+    DatabaseNameTaken(String),
+    DatabaseNameEmpty,
 }
 
 impl std::fmt::Display for Error {
@@ -38,6 +42,9 @@ impl std::fmt::Display for Error {
             Error::ReadingNotFound(id) => write!(f, "reading {id} not found"),
             Error::SessionNotFound(id) => write!(f, "session {id} not found"),
             Error::InvalidParent(why) => write!(f, "{why}"),
+            Error::DatabaseNotFound(id) => write!(f, "database {id} not found"),
+            Error::DatabaseNameTaken(name) => write!(f, "a database named {name} already exists"),
+            Error::DatabaseNameEmpty => write!(f, "a database needs a name"),
         }
     }
 }
@@ -230,6 +237,27 @@ pub struct Chapter {
     pub title: String,
     pub url: String,
     pub read: bool,
+}
+
+/// A list the user made to keep todos in (Frontend Backlog), with the todos in it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Database {
+    pub id: i64,
+    pub name: String,
+    pub todos: Vec<i64>,
+}
+
+/// A database's name as kept: trimmed, and not empty.
+fn database_name(name: &str) -> Result<String> {
+    Some(name.trim()).filter(|n| !n.is_empty()).map(Into::into).ok_or(Error::DatabaseNameEmpty)
+}
+
+/// The UNIQUE on databases' names failing is the name being taken.
+fn name_taken(e: rusqlite::Error, name: &str) -> Error {
+    match e {
+        rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => Error::DatabaseNameTaken(name.into()),
+        e => e.into(),
+    }
 }
 
 /// The requests to Jev over a span, and their tokens.
@@ -693,6 +721,16 @@ CREATE TABLE IF NOT EXISTS jev_usage (
     input_tokens INTEGER NOT NULL,
     output_tokens INTEGER NOT NULL
 );
+-- Lists the user makes to keep todos in (Frontend Backlog); a todo is in one at most.
+CREATE TABLE IF NOT EXISTS databases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS database_todos (
+    todo_id INTEGER PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
+    database_id INTEGER NOT NULL REFERENCES databases(id) ON DELETE CASCADE
+);
 ";
 
 const READING_COLS: &str = "id, kind, url, title, text, image, tags, created_at";
@@ -1110,6 +1148,63 @@ impl Db {
             0 => Err(Error::ReadingNotFound(id)),
             _ => Ok(()),
         }
+    }
+
+    /// A database named `name`, new.
+    pub fn create_database(&self, name: &str) -> Result<Database> {
+        let name = database_name(name)?;
+        self.conn.execute("INSERT INTO databases (name, created_at) VALUES (?1, ?2)", params![name, now()]).map_err(|e| name_taken(e, &name))?;
+        Ok(Database { id: self.conn.last_insert_rowid(), name, todos: vec![] })
+    }
+
+    pub fn rename_database(&self, id: i64, name: &str) -> Result<()> {
+        let name = database_name(name)?;
+        match self.conn.execute("UPDATE databases SET name = ?2 WHERE id = ?1", params![id, name]).map_err(|e| name_taken(e, &name))? {
+            0 => Err(Error::DatabaseNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Its todos stay, in no database.
+    pub fn delete_database(&self, id: i64) -> Result<()> {
+        match self.conn.execute("DELETE FROM databases WHERE id = ?1", [id])? {
+            0 => Err(Error::DatabaseNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Every database, in the order made, with the todos in it.
+    pub fn databases(&self) -> Result<Vec<Database>> {
+        let mut stmt = self.conn.prepare("SELECT id, name FROM databases ORDER BY id")?;
+        let mut databases = stmt.query_map([], |r| Ok(Database { id: r.get(0)?, name: r.get(1)?, todos: vec![] }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt = self.conn.prepare("SELECT database_id, todo_id FROM database_todos ORDER BY todo_id")?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (database, todo) = row?;
+            if let Some(d) = databases.iter_mut().find(|d| d.id == database) {
+                d.todos.push(todo);
+            }
+        }
+        Ok(databases)
+    }
+
+    /// Puts the todo in a database (out of the one it was in), or with None in none.
+    pub fn set_todo_database(&self, todo_id: i64, database_id: Option<i64>) -> Result<()> {
+        if self.get_todo(todo_id)?.is_none() {
+            return Err(Error::TodoNotFound(todo_id));
+        }
+        let Some(database_id) = database_id else {
+            self.conn.execute("DELETE FROM database_todos WHERE todo_id = ?1", [todo_id])?;
+            return Ok(());
+        };
+        let known: bool = self.conn.query_row("SELECT COUNT(*) > 0 FROM databases WHERE id = ?1", [database_id], |r| r.get(0))?;
+        if !known {
+            return Err(Error::DatabaseNotFound(database_id));
+        }
+        self.conn.execute(
+            "INSERT INTO database_todos (todo_id, database_id) VALUES (?1, ?2) ON CONFLICT(todo_id) DO UPDATE SET database_id = ?2",
+            params![todo_id, database_id],
+        )?;
+        Ok(())
     }
 
     /// Counts a request to Jev, today's.

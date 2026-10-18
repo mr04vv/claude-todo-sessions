@@ -162,6 +162,8 @@ struct Board {
     reading_sort: readings::SortingView,
     /// What the requests to Jev (tags, X's posts) took today and this month.
     jev_spend: readings::SpendView,
+    /// The lists the user made to keep todos in, in the order made.
+    databases: Vec<cts_core::Database>,
     inbox: Vec<SessionView>,
     /// What sessions made besides PRs, newest first.
     artifacts: Vec<cts_core::Artifact>,
@@ -234,7 +236,7 @@ struct TodoUpdate {
 
 #[tauri::command(async)]
 fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: State<readings::Sorting>) -> Result<Board, String> {
-    let (todos, readings, inbox, artifacts, slack, jev_spend) = {
+    let (todos, readings, inbox, artifacts, slack, jev_spend, databases) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
         let (desktop, routines) = (state.desktop.lock().map_err(err)?.clone(), state.routines.lock().map_err(err)?.clone());
@@ -257,7 +259,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .map(mark)
             .collect();
-        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, db.jev_spend().map_err(err)?)
+        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, db.jev_spend().map_err(err)?, db.databases().map_err(err)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -276,7 +278,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend: readings::spend_view(jev_spend), inbox, artifacts, sync_status })
+    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend: readings::spend_view(jev_spend), databases, inbox, artifacts, sync_status })
 }
 
 #[tauri::command(async)]
@@ -312,6 +314,27 @@ fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<To
 #[tauri::command(async)]
 fn delete_todo(state: State<AppState>, id: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.delete_todo(id).map_err(err)
+}
+
+#[tauri::command(async)]
+fn create_database(state: State<AppState>, name: String) -> Result<cts_core::Database, String> {
+    state.db.lock().map_err(err)?.create_database(&name).map_err(err)
+}
+
+#[tauri::command(async)]
+fn rename_database(state: State<AppState>, id: i64, name: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.rename_database(id, &name).map_err(err)
+}
+
+#[tauri::command(async)]
+fn delete_database(state: State<AppState>, id: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.delete_database(id).map_err(err)
+}
+
+/// Puts the todo in a database (out of the one it was in), or with none in none.
+#[tauri::command(async)]
+fn set_todo_database(state: State<AppState>, todo_id: i64, database_id: Option<i64>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_todo_database(todo_id, database_id).map_err(err)
 }
 
 #[tauri::command(async)]
@@ -2836,6 +2859,10 @@ fn main() {
             create_todo,
             update_todo,
             delete_todo,
+            create_database,
+            rename_database,
+            delete_database,
+            set_todo_database,
             open_link,
             link_session,
             unlink_session,

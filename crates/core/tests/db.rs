@@ -496,6 +496,57 @@ fn a_db_from_before_jev_was_tallied_tallies_it() {
 }
 
 #[test]
+fn databases_are_made_renamed_and_put_away() {
+    let (_d, db) = open();
+    let front = db.create_database("  Frontend Backlog ").unwrap();
+    let back = db.create_database("Backend Backlog").unwrap();
+    assert_eq!(front.name, "Frontend Backlog", "trimmed");
+    assert_eq!(db.databases().unwrap().iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Frontend Backlog", "Backend Backlog"], "in the order made");
+    assert!(matches!(db.create_database("Frontend Backlog"), Err(Error::DatabaseNameTaken(_))));
+    assert!(matches!(db.create_database("  "), Err(Error::DatabaseNameEmpty)));
+    db.rename_database(back.id, "API Backlog").unwrap();
+    assert!(matches!(db.rename_database(back.id, "Frontend Backlog"), Err(Error::DatabaseNameTaken(_))));
+    assert_eq!(db.databases().unwrap()[1].name, "API Backlog");
+    db.delete_database(front.id).unwrap();
+    assert_eq!(db.databases().unwrap().len(), 1);
+    assert!(matches!(db.delete_database(front.id), Err(Error::DatabaseNotFound(_))));
+    assert!(matches!(db.rename_database(front.id, "x"), Err(Error::DatabaseNotFound(_))));
+}
+
+#[test]
+fn a_todo_is_in_one_database_at_most() {
+    let (_d, db) = open();
+    let front = db.create_database("Frontend Backlog").unwrap();
+    let back = db.create_database("Backend Backlog").unwrap();
+    let a = db.create_todo(new_todo("a")).unwrap();
+    let b = db.create_todo(new_todo("b")).unwrap();
+    db.set_todo_database(a.id, Some(front.id)).unwrap();
+    db.set_todo_database(b.id, Some(front.id)).unwrap();
+    db.set_todo_database(b.id, Some(back.id)).unwrap();
+    let todos_of = |db: &Db| db.databases().unwrap().into_iter().map(|d| d.todos).collect::<Vec<_>>();
+    assert_eq!(todos_of(&db), [vec![a.id], vec![b.id]], "moved, not copied");
+    db.set_todo_database(a.id, None).unwrap();
+    assert_eq!(todos_of(&db), [vec![], vec![b.id]]);
+    assert!(matches!(db.set_todo_database(999, Some(back.id)), Err(Error::TodoNotFound(999))));
+    assert!(matches!(db.set_todo_database(a.id, Some(999)), Err(Error::DatabaseNotFound(999))));
+    // A todo deleted leaves its database; a database deleted leaves its todos.
+    db.delete_todo(b.id).unwrap();
+    assert_eq!(todos_of(&db), [Vec::<i64>::new(), vec![]]);
+    db.set_todo_database(a.id, Some(back.id)).unwrap();
+    db.delete_database(back.id).unwrap();
+    assert!(db.get_todo(a.id).unwrap().is_some());
+}
+
+#[test]
+fn a_db_from_before_databases_has_them() {
+    let (dir, db) = open();
+    drop(db);
+    rusqlite::Connection::open(db_path(&dir)).unwrap().execute_batch("DROP TABLE database_todos; DROP TABLE databases;").unwrap();
+    let db = Db::open(&db_path(&dir)).unwrap();
+    assert_eq!(db.create_database("Frontend Backlog").unwrap().name, "Frontend Backlog");
+}
+
+#[test]
 fn a_book_keeps_its_chapters_and_which_are_read() {
     let (_d, db) = open();
     let root = "https://learning.oreilly.com/library/view/ddia/9781491903063/";
