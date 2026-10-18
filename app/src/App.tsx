@@ -6077,7 +6077,9 @@ export default function App() {
       return void (document.activeElement as HTMLElement | null)?.blur();
     }
     if (sideZoneRef.current) return setSideZone(false);
-    if (!browserShown || !activeTab) return;
+    if (!browserShown) return;
+    // The new tab page: its address field.
+    if (!activeTab) return void document.querySelector<HTMLInputElement>(".browser-main input")?.focus();
     setTypingSide("pane");
     give(activeTab, CHAT_PAGES.includes(activeTab.id));
   };
