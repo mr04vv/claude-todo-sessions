@@ -316,9 +316,9 @@ pub struct NewReading {
     pub links: Vec<String>,
 }
 
-/// A day's X bookmarks summed up: the document's link, or why it was not made.
+/// A day's readings summed up (its 日報): the document's link, or why it was not made.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct XDigest {
+pub struct Digest {
     /// The local date, YYYY-MM-DD.
     pub day: String,
     pub url: Option<String>,
@@ -773,8 +773,8 @@ CREATE TABLE IF NOT EXISTS database_todos (
     todo_id INTEGER PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
     database_id INTEGER NOT NULL REFERENCES databases(id) ON DELETE CASCADE
 );
--- A day's X bookmarks summed up (in a Claude Docs document), or why that failed.
-CREATE TABLE IF NOT EXISTS x_digests (
+-- A day's readings summed up (its 日報, a Claude Docs document), or why that failed.
+CREATE TABLE IF NOT EXISTS digests (
     day TEXT PRIMARY KEY,
     url TEXT,
     error TEXT,
@@ -1020,6 +1020,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
          DROP TABLE IF EXISTS feynman_points;
          DROP TABLE IF EXISTS feynman_attempts;",
     )?;
+    // The days' digests were of X's bookmarks alone at first, in x_digests.
+    let x_digests: bool = conn.query_row("SELECT COUNT(*) > 0 FROM sqlite_master WHERE name = 'x_digests'", [], |r| r.get(0))?;
+    if x_digests {
+        conn.execute_batch(
+            "BEGIN;
+             INSERT OR IGNORE INTO digests (day, url, error, made_at) SELECT day, url, error, made_at FROM x_digests;
+             DROP TABLE x_digests;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -1352,37 +1362,37 @@ impl Db {
         Ok(self.conn.query_row("SELECT CAST(strftime('%H', 'now', 'localtime') AS INTEGER)", [], |r| r.get(0))?)
     }
 
-    /// The posts on X kept on `day` (the local date), in the order kept.
-    pub fn posts_on(&self, day: &str) -> Result<Vec<Reading>> {
-        self.query_readings("kind = 'post' AND date(created_at, 'unixepoch', 'localtime') = ?1 ORDER BY created_at, id", [day])
+    /// The readings kept on `day` (the local date), in the order kept.
+    pub fn readings_on(&self, day: &str) -> Result<Vec<Reading>> {
+        self.query_readings("date(created_at, 'unixepoch', 'localtime') = ?1 ORDER BY created_at, id", [day])
     }
 
     /// A day's digest made (its document's link), or why it was not.
-    pub fn set_x_digest(&self, day: &str, made: std::result::Result<&str, &str>) -> Result<()> {
+    pub fn set_digest(&self, day: &str, made: std::result::Result<&str, &str>) -> Result<()> {
         let (url, error) = match made {
             Ok(url) => (Some(url), None),
             Err(why) => (None, Some(why)),
         };
         self.conn.execute(
-            "INSERT INTO x_digests (day, url, error, made_at) VALUES (?1, ?2, ?3, ?4)
+            "INSERT INTO digests (day, url, error, made_at) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(day) DO UPDATE SET url = ?2, error = ?3, made_at = ?4",
             params![day, url, error, now()],
         )?;
         Ok(())
     }
 
-    pub fn x_digest(&self, day: &str) -> Result<Option<XDigest>> {
-        Ok(self.x_digests_where("day = ?1", [day])?.pop())
+    pub fn digest(&self, day: &str) -> Result<Option<Digest>> {
+        Ok(self.digests_where("day = ?1", [day])?.pop())
     }
 
     /// Every day's digest, the newest first.
-    pub fn x_digests(&self) -> Result<Vec<XDigest>> {
-        self.x_digests_where("1", [])
+    pub fn digests(&self) -> Result<Vec<Digest>> {
+        self.digests_where("1", [])
     }
 
-    fn x_digests_where<P: rusqlite::Params>(&self, filter: &str, p: P) -> Result<Vec<XDigest>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT day, url, error, made_at FROM x_digests WHERE {filter} ORDER BY day DESC"))?;
-        let digests = stmt.query_map(p, |r| Ok(XDigest { day: r.get(0)?, url: r.get(1)?, error: r.get(2)?, made_at: r.get(3)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    fn digests_where<P: rusqlite::Params>(&self, filter: &str, p: P) -> Result<Vec<Digest>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT day, url, error, made_at FROM digests WHERE {filter} ORDER BY day DESC"))?;
+        let digests = stmt.query_map(p, |r| Ok(Digest { day: r.get(0)?, url: r.get(1)?, error: r.get(2)?, made_at: r.get(3)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(digests)
     }
 

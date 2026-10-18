@@ -5338,7 +5338,7 @@ function ReadingMeta({ r }: { r: Reading }) {
 function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, onResume, onBrowser, onSettings, onToast }: {
   readings: Reading[];
   sort: ReadingSort | undefined;
-  /// The days' X bookmarks summed up, each opened in the browser.
+  /// The days' readings summed up (日報), each opened in the browser.
   digests: DigestView | undefined;
   /// How many readings are open to read (to go back to them).
   opened: number;
@@ -5440,14 +5440,14 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
             <span className="muted">{count(t)}</span>
           </button>
         ))}
-        <div className="section-title">X のまとめ</div>
-        {(digests?.digests.length ?? 0) === 0 && <span className="muted small-text digest-hint">毎朝、前の日の X のブックマークを Claude Docs にまとめます（{keyLabel(keyOf("palette"))} から今すぐも）</span>}
+        <div className="section-title">日報</div>
+        {(digests?.digests.length ?? 0) === 0 && <span className="muted small-text digest-hint">毎朝、前の日に保存した読みものを Claude Docs にまとめます（{keyLabel(keyOf("palette"))} から今すぐも）</span>}
         {digests?.digests.map((d) => (
           <button
             key={d.day}
             className="filter-row"
             title={d.url ? `${d.url} をブラウザで開く` : `まとめられませんでした：${d.error}（押すともう一度）`}
-            onClick={() => (d.url ? onBrowser(d.url) : run(() => api.makeXDigest(d.day)))}
+            onClick={() => (d.url ? onBrowser(d.url) : run(() => api.makeDigest(d.day)))}
           >
             <span className="grow">{dayLabel(d.day)}</span>
             <span className="muted">{digests.running === d.day ? "まとめています…" : d.url ? "開く" : "失敗・もう一度"}</span>
@@ -5481,7 +5481,7 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
         )}
         {digests?.running && (
           <div className="notice" role="status">
-            <span className="grow">{dayLabel(digests.running)} の X のブックマークを、リンク先まで読んでまとめています（数分かかります）。</span>
+            <span className="grow">{dayLabel(digests.running)} に保存した読みものを、ページまで読んで日報にまとめています（数分かかります）。</span>
           </div>
         )}
         {picked.length > 0 ? (
@@ -7413,9 +7413,9 @@ export default function App() {
     { key: "usage", label: "使用量（Claude・Jev）", run: () => setDialog("usage") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい Todo", hint: keyLabel(keyOf("newTodo")), run: () => setDialog("add") },
-    { key: "digestYesterday", label: `昨日（${dayLabel(localDay(-1))}）の X のブックマークをまとめる`, run: () => run(() => api.makeXDigest(localDay(-1))) },
-    { key: "digestToday", label: "今日の X のブックマークを今まとめる", run: () => run(() => api.makeXDigest(localDay(0))) },
-    ...(board?.x_digests.digests ?? []).flatMap((d) => (d.url ? [{ key: `digest:${d.day}`, label: `X のまとめ：${dayLabel(d.day)}`, run: () => openInBrowser(d.url!) }] : [])),
+    { key: "digestYesterday", label: `昨日（${dayLabel(localDay(-1))}）の日報を作る`, run: () => run(() => api.makeDigest(localDay(-1))) },
+    { key: "digestToday", label: "今日の日報を今作る（今日保存した読みもの）", run: () => run(() => api.makeDigest(localDay(0))) },
+    ...(board?.digests.digests ?? []).flatMap((d) => (d.url ? [{ key: `digest:${d.day}`, label: `日報：${dayLabel(d.day)}`, run: () => openInBrowser(d.url!) }] : [])),
     ...(studyReading && studyReadingShown
       ? [
           {
@@ -7890,7 +7890,7 @@ export default function App() {
             <ReadingsPage
               readings={readings}
               sort={board.reading_sort}
-              digests={board.x_digests}
+              digests={board.digests}
               opened={study.open.length}
               run={run}
               report={report}

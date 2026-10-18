@@ -576,25 +576,44 @@ fn a_post_keeps_the_links_in_it() {
 }
 
 #[test]
-fn the_posts_kept_on_a_day_are_found_by_the_local_date() {
+fn the_readings_kept_on_a_day_are_found_by_the_local_date() {
     let (_d, db) = open();
     let post = db.add_reading(&NewReading { kind: ReadingKind::Post, ..article("https://x.com/u/status/1", "@u: hi") }).unwrap();
-    db.add_reading(&article("https://a.example/", "A")).unwrap();
+    let a = db.add_reading(&article("https://a.example/", "A")).unwrap();
     let today = db.local_day(0).unwrap();
-    assert_eq!(db.posts_on(&today).unwrap().iter().map(|r| r.id).collect::<Vec<_>>(), [post.id], "posts alone");
-    assert!(db.posts_on(&db.local_day(-1).unwrap()).unwrap().is_empty());
+    assert_eq!(db.readings_on(&today).unwrap().iter().map(|r| r.id).collect::<Vec<_>>(), [post.id, a.id], "every kind, in the order kept");
+    assert!(db.readings_on(&db.local_day(-1).unwrap()).unwrap().is_empty());
 }
 
 #[test]
 fn a_day_s_digest_is_kept_once_made_or_why_not() {
     let (_d, db) = open();
-    assert_eq!(db.x_digest("2026-10-17").unwrap(), None);
-    db.set_x_digest("2026-10-17", Err("claude: busy")).unwrap();
-    assert_eq!(db.x_digest("2026-10-17").unwrap().map(|d| (d.url, d.error)), Some((None, Some("claude: busy".into()))));
-    db.set_x_digest("2026-10-17", Ok("https://claude.ai/artifact/abc")).unwrap();
-    db.set_x_digest("2026-10-18", Ok("https://claude.ai/artifact/def")).unwrap();
-    let all = db.x_digests().unwrap();
+    assert_eq!(db.digest("2026-10-17").unwrap(), None);
+    db.set_digest("2026-10-17", Err("claude: busy")).unwrap();
+    assert_eq!(db.digest("2026-10-17").unwrap().map(|d| (d.url, d.error)), Some((None, Some("claude: busy".into()))));
+    db.set_digest("2026-10-17", Ok("https://claude.ai/artifact/abc")).unwrap();
+    db.set_digest("2026-10-18", Ok("https://claude.ai/artifact/def")).unwrap();
+    let all = db.digests().unwrap();
     assert_eq!(all.iter().map(|d| (d.day.as_str(), d.url.as_deref(), d.error.as_deref())).collect::<Vec<_>>(), [("2026-10-18", Some("https://claude.ai/artifact/def"), None), ("2026-10-17", Some("https://claude.ai/artifact/abc"), None)], "newest first");
+}
+
+#[test]
+fn the_x_digests_made_before_are_the_days_digests() {
+    let (dir, db) = open();
+    drop(db);
+    rusqlite::Connection::open(db_path(&dir))
+        .unwrap()
+        .execute_batch(
+            "DROP TABLE digests;
+             CREATE TABLE x_digests (day TEXT PRIMARY KEY, url TEXT, error TEXT, made_at INTEGER NOT NULL);
+             INSERT INTO x_digests VALUES ('2026-10-18', 'https://claude.ai/artifact/abc', NULL, 1);",
+        )
+        .unwrap();
+    let db = Db::open(&db_path(&dir)).unwrap();
+    assert_eq!(db.digests().unwrap().iter().map(|d| d.day.as_str()).collect::<Vec<_>>(), ["2026-10-18"]);
+    drop(db);
+    let left: i64 = rusqlite::Connection::open(db_path(&dir)).unwrap().query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'x_digests'", [], |r| r.get(0)).unwrap();
+    assert_eq!(left, 0, "the old table goes");
 }
 
 #[test]

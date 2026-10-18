@@ -165,8 +165,8 @@ struct Board {
     jev_spend: readings::SpendView,
     /// The lists the user made to keep todos in, in the order made.
     databases: Vec<cts_core::Database>,
-    /// The days' X bookmarks summed up, and the day being summed up.
-    x_digests: digest::DigestView,
+    /// The days' readings summed up (日報), and the day being summed up.
+    digests: digest::DigestView,
     inbox: Vec<SessionView>,
     /// What sessions made besides PRs, newest first.
     artifacts: Vec<cts_core::Artifact>,
@@ -239,7 +239,7 @@ struct TodoUpdate {
 
 #[tauri::command(async)]
 fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: State<readings::Sorting>, digesting: State<digest::Digesting>) -> Result<Board, String> {
-    let (todos, readings, inbox, artifacts, slack, jev_spend, databases, x_digests) = {
+    let (todos, readings, inbox, artifacts, slack, jev_spend, databases, digests) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
         let (desktop, routines) = (state.desktop.lock().map_err(err)?.clone(), state.routines.lock().map_err(err)?.clone());
@@ -281,7 +281,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend, databases, x_digests, inbox, artifacts, sync_status })
+    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend, databases, digests, inbox, artifacts, sync_status })
 }
 
 #[tauri::command(async)]
@@ -2814,7 +2814,7 @@ fn main() {
             // What was kept while the app was closed (or before a key) is sorted now.
             let handle = app.handle().clone();
             std::thread::spawn(move || readings::sort_all(&handle));
-            // The day before's X bookmarks, summed up every morning.
+            // The day before's readings, summed up every morning (日報).
             let handle = app.handle().clone();
             std::thread::spawn(move || digest::digest_loop(handle));
             Ok(())
@@ -2932,7 +2932,7 @@ fn main() {
             readings::set_reading_tags,
             readings::set_chapter_read,
             readings::set_reading_kept,
-            digest::make_x_digest,
+            digest::make_digest,
             readings::set_typesafe_key,
             readings::set_jev_credit,
             readings::clear_jev_credit,

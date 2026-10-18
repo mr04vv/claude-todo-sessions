@@ -92,8 +92,8 @@ export interface Reading {
   links: string[];
 }
 
-/** A day's X bookmarks summed up in a Claude Docs document, or why it was not. */
-export interface XDigest {
+/** A day's readings summed up (its 日報) in a Claude Docs document, or why it was not. */
+export interface Digest {
   /** The local date, YYYY-MM-DD. */
   day: string;
   url: string | null;
@@ -103,7 +103,7 @@ export interface XDigest {
 
 /** The days summed up (the newest first), and the day being summed up. */
 export interface DigestView {
-  digests: XDigest[];
+  digests: Digest[];
   running: string | null;
 }
 
@@ -315,7 +315,8 @@ export interface Board {
   jev_spend: JevSpend;
   /** The lists the user made to keep todos in, in the order made. */
   databases: Database[];
-  x_digests: DigestView;
+  /** The days' readings summed up (日報), and the day being summed up. */
+  digests: DigestView;
   inbox: Session[];
   /** Newest first. */
   artifacts: Artifact[];
@@ -554,8 +555,8 @@ export const api = {
   setChapterRead: (readingId: number, position: number, read: boolean) => invoke<void>("set_chapter_read", { readingId, position, read }),
   /// Keeps a reading read (a good one), or puts it back to read.
   setReadingKept: (id: number, kept: boolean) => invoke<void>("set_reading_kept", { id, kept }),
-  /// Sums up `day`'s X bookmarks (YYYY-MM-DD, the local date) now, behind: the document's link comes on the board.
-  makeXDigest: (day: string) => invoke<void>("make_x_digest", { day }),
+  /// Sums up `day`'s readings (YYYY-MM-DD, the local date) into its 日報 now, behind: the document's link comes on the board.
+  makeDigest: (day: string) => invoke<void>("make_digest", { day }),
   /// Keeps the TypeSafe API key (blank takes it out); what waits is sorted then.
   setTypesafeKey: (key: string) => invoke<void>("set_typesafe_key", { key }),
   /// Keeps Jev's credit as just read off TypeSafe's console: the credit, and the Spend.
