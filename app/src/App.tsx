@@ -5751,8 +5751,8 @@ interface WorkRow {
 }
 
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
-/// then the todos at work, the reviews and the sessions of no todo. j k move,
-/// Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
+/// then the work in one list (the todos at work, the reviews and the sessions
+/// of no todo), in the order chosen. j k move, Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
 function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, run }: {
   board: Board;
   waiting: WaitItem[];
@@ -5781,9 +5781,10 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   // Sessions put away (⌘⇧A) and routines' runs are out, but for one asking.
   const listed = (s: Session) => (!s.hidden && !s.routine) || s.state === "needs_input";
   const loose = board.inbox.filter((s) => (showEnded || live(s)) && listed(s) && !waitingSessions.has(s.session_id));
-  // The todos at work, the reviews and the other sessions are in the order
-  // chosen (s): the one the user put them in (⇧j ⇧k, or dragging; those
-  // never moved on top), or the latest work first, by when it last moved or began.
+  // The work (the todos at work, the reviews and the sessions of no todo, in
+  // one list) is in the order chosen (s): the one the user put it in (⇧j ⇧k,
+  // or dragging; what was never moved on top), or the latest work first, by
+  // when it last moved or began.
   const [sort, setSortState] = useState<WorkSort>(() => load(WORK_SORT_KEY, WORK_SORTS, "manual"));
   const setSort = (s: WorkSort) => {
     remember(WORK_SORT_KEY, s);
@@ -5802,22 +5803,18 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     sort === "manual"
       ? arrange(rows, (r) => r.key, order)
       : latestFirst(rows, (r) => Math.max(0, ...sessionsOf(r).map((s) => (sort === "updated" ? s.state_at : s.started_at))));
-  const atWorkRows = ordered(atWork.map((t): WorkRow => ({ key: `t${t.id}`, todo: t })));
-  const reviewRows = ordered(loose.filter((s) => s.review_url).map((s): WorkRow => ({ key: `s${s.session_id}`, session: s })));
-  const otherRows = ordered(loose.filter((s) => !s.review_url).map((s): WorkRow => ({ key: `s${s.session_id}`, session: s })));
-  const sections = [atWorkRows, reviewRows, otherRows];
-  /// Moves row `key` to where `to` is, both in one section (else nothing):
+  const workRows = ordered([...atWork.map((t): WorkRow => ({ key: `t${t.id}`, todo: t })), ...loose.map((s): WorkRow => ({ key: `s${s.session_id}`, session: s }))]);
+  /// Moves row `key` to where `to` is, both in the work (not あなた待ち):
   /// the list is ordered by hand from then on, as it was shown.
   const moveRow = (key: string, to: string) => {
-    const section = sections.find((rows) => rows.some((r) => r.key === key));
-    if (!section?.some((r) => r.key === to)) return;
+    if (![key, to].every((k) => workRows.some((r) => r.key === k))) return;
     const manual = sort === "manual";
-    setOrder((prev) => moveTo(prev, (manual ? arrange(section, (r) => r.key, prev) : section).map((r) => r.key), key, to));
+    setOrder((prev) => moveTo(prev, (manual ? arrange(workRows, (r) => r.key, prev) : workRows).map((r) => r.key), key, to));
     if (!manual) setSort("manual");
   };
   const { dragging, start: dragRow } = useDragMove("data-row", moveRow);
   const ended = board.inbox.filter((s) => !live(s) && listed(s)).length;
-  const rows: WorkRow[] = [...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })), ...atWorkRows, ...reviewRows, ...otherRows];
+  const rows: WorkRow[] = [...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })), ...workRows];
   const open = (r: WorkRow) => (r.todo ? onPick({ todo: r.todo.id }) : r.session ? onPick({ session: r.session.session_id }) : undefined);
   const { cursorId, setCursor, list } = useRowCursor(
     [QUICK_ROW, ...rows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : [])],
@@ -5830,13 +5827,13 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     (e, id) => {
       if (matches(e, "workEnded")) return (setShowEnded((v) => !v), true);
       if (matches(e, "workSort")) return (setSort(WORK_SORTS[(WORK_SORTS.indexOf(sort) + 1) % WORK_SORTS.length]), true);
-      // ⇧j ⇧k: the row under the cursor a place down or up in its section.
+      // ⇧j ⇧k: the row under the cursor a place down or up in the work.
       const shift = matches(e, "workMoveDown") ? 1 : matches(e, "workMoveUp") ? -1 : 0;
-      if (shift && id) {
-        const section = sections.find((rows) => rows.some((r) => r.key === id));
-        const to = section?.[section.findIndex((r) => r.key === id) + shift];
-        if (to) moveRow(id, to.key);
-        return !!section;
+      const at = workRows.findIndex((r) => r.key === id);
+      if (shift && at >= 0) {
+        const to = workRows[at + shift];
+        if (to) moveRow(id!, to.key);
+        return true;
       }
       // The button of the side without its terminal: start, resume or open where it runs.
       if (matches(e, "start")) {
@@ -5947,10 +5944,11 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
         )}
         <section>
           <div className="section-title">作業中</div>
-          {atWork.length === 0 && <p className="muted hint">動いている todo はありません。管理で todo を任せると、ここに並びます。</p>}
+          {workRows.length === 0 && <p className="muted hint">動いているセッションはありません。管理で todo を任せるか、ちょっと Claude で始めると、ここに並びます。</p>}
           <ul className="rows compact">
-            {atWorkRows.map(({ todo: t }) => {
-              if (!t) return null;
+            {workRows.map((r) => {
+              const t = r.todo;
+              if (!t) return r.session && sessionRow(r, r.session);
               const children = todos.filter((c) => c.parent_id === t.id);
               const key = `t${t.id}`;
               const s = mainSession(t);
@@ -5976,18 +5974,6 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
             })}
           </ul>
         </section>
-        {reviewRows.length > 0 && (
-          <section>
-            <div className="section-title">レビュー</div>
-            <ul className="rows compact">{reviewRows.map((r) => r.session && sessionRow(r, r.session))}</ul>
-          </section>
-        )}
-        {otherRows.length > 0 && (
-          <section>
-            <div className="section-title">todo のないセッション</div>
-            <ul className="rows compact">{otherRows.map((r) => r.session && sessionRow(r, r.session))}</ul>
-          </section>
-        )}
         {ended > 0 && (
           <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
             {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件`} <span className="kbd">{keyLabel(keyOf("workEnded"))}</span>
