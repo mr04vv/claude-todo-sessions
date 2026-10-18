@@ -1089,6 +1089,18 @@ impl Db {
         }
     }
 
+    /// With a tag some reading has no longer among `known` (the tags were
+    /// changed), every reading goes back to be sorted; how many did.
+    pub fn unsort_readings_if_tags_gone(&self, known: &[&str]) -> Result<usize> {
+        let mut stmt = self.conn.prepare("SELECT tags FROM readings WHERE tags IS NOT NULL")?;
+        let tagged = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let gone = tagged.iter().any(|tags| tags.split(TAGS_SEPARATOR).any(|t| !t.is_empty() && !known.contains(&t)));
+        if !gone {
+            return Ok(0);
+        }
+        Ok(self.conn.execute("UPDATE readings SET tags = NULL WHERE tags IS NOT NULL", [])?)
+    }
+
     pub fn set_chapter_read(&self, reading_id: i64, position: i64, read: bool) -> Result<()> {
         match self.conn.execute("UPDATE reading_chapters SET read = ?3 WHERE reading_id = ?1 AND position = ?2", params![reading_id, position, read])? {
             0 => Err(Error::ReadingNotFound(reading_id)),

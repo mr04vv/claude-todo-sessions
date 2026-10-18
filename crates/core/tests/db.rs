@@ -461,6 +461,20 @@ fn a_reading_is_sorted_into_tags_once_and_can_be_retagged() {
 }
 
 #[test]
+fn readings_are_sorted_again_once_a_tag_they_have_is_gone() {
+    let (_d, db) = open();
+    let a = db.add_reading(&article("https://a.example/", "A")).unwrap();
+    let b = db.add_reading(&article("https://b.example/", "B")).unwrap();
+    db.set_reading_tags(a.id, &["フロントエンド".into()]).unwrap();
+    db.set_reading_tags(b.id, &[]).unwrap();
+    assert_eq!(db.unsort_readings_if_tags_gone(&["フロントエンド", "QA"]).unwrap(), 0, "every tag still there: kept");
+    assert!(db.unsorted_readings().unwrap().is_empty());
+    // A tag gone: every reading is sorted again (one with none fitting too, as one of the new may).
+    assert_eq!(db.unsort_readings_if_tags_gone(&["QA"]).unwrap(), 2);
+    assert_eq!(db.unsorted_readings().unwrap().len(), 2);
+}
+
+#[test]
 fn a_book_keeps_its_chapters_and_which_are_read() {
     let (_d, db) = open();
     let root = "https://learning.oreilly.com/library/view/ddia/9781491903063/";

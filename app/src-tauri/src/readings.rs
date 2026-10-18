@@ -105,6 +105,9 @@ pub fn sort_all(app: &AppHandle) {
         return;
     }
     let result = (|| -> Result<(), String> {
+        // Tags changed (one some reading has is gone): all of them are sorted again.
+        let known: Vec<&str> = cts_core::tags::TAGS.iter().map(|(tag, _)| *tag).collect();
+        app.state::<AppState>().db.lock().map_err(err)?.unsort_readings_if_tags_gone(&known).map_err(err)?;
         let Some(key) = api_key() else { return Ok(()) };
         let unsorted = app.state::<AppState>().db.lock().map_err(err)?.unsorted_readings().map_err(err)?;
         for r in unsorted {
