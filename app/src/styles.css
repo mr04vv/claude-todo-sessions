@@ -3184,6 +3184,66 @@ button.slack-reaction:hover {
   color: var(--text);
 }
 
+/* The usage at a glance: Claude's most used limit as a ring, Jev's month under it. */
+.rail-usage {
+  height: auto;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 2px;
+  margin-bottom: 4px;
+  background: none;
+  border-color: transparent;
+  color: var(--text-2);
+  --meter: var(--accent);
+}
+
+.rail-usage.warn {
+  --meter: var(--waiting);
+}
+
+.rail-usage:hover:not(:disabled) {
+  background: var(--card-hover);
+  border-color: transparent;
+}
+
+.ring {
+  width: 30px;
+  height: 30px;
+}
+
+.ring circle {
+  fill: none;
+  stroke: var(--border-2);
+  stroke-width: 3.5;
+}
+
+.ring .ring-used {
+  stroke: var(--meter);
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: center;
+}
+
+.ring text {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+.rail-jev {
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.usage-dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
 /* あなた待ち's count, on 作業's icon. */
 .rail-count {
   position: absolute;

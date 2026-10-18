@@ -58,6 +58,7 @@ import {
   type ReadingSort,
   type Issue,
   type HerdrSessions,
+  type JevSpend,
   type Limit,
   type LocalRepo,
   type Check,
@@ -4732,7 +4733,7 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
       {error && !limits && <span className="muted small-text">取得できませんでした</span>}
       {!limits && !error && <span className="muted small-text">取得しています…</span>}
       {limits?.map((l) => (
-        <div key={l.label} className={`meter${l.severity !== "normal" || l.percent >= 80 ? " warn" : ""}`}>
+        <div key={l.label} className={`meter${limitWarns(l) ? " warn" : ""}`}>
           <div className="meter-row">
             <span>{l.label}</span>
             <b>{l.amount ? `${money(l.amount.used, l.amount.currency)} / ${money(l.amount.limit, l.amount.currency)}` : `${Math.round(l.percent)}%`}</b>
@@ -4747,8 +4748,60 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
   );
 }
 
+/// A limit warns when the API says so, or once this much of it is used.
+const LIMIT_WARN_PERCENT = 80;
+const limitWarns = (l: Limit) => l.severity !== "normal" || l.percent >= LIMIT_WARN_PERCENT;
+/// Jev's spend in dollars: to the cent, or to a hundredth of one while under a cent.
+const jevUsd = (n: number) => `$${n.toFixed(n < 0.01 ? 4 : 2)}`;
+
+/// The rail's usage at a glance: Claude's most used limit as a ring, and
+/// what Jev cost this month under it; a click shows them in full.
+function RailUsage({ limits, jev, onOpen }: { limits: Limit[] | null; jev: JevSpend | undefined; onOpen: () => void }) {
+  const top = limits && limits.length > 0 ? limits.reduce((a, b) => (b.percent > a.percent ? b : a)) : null;
+  const percent = Math.min(100, top?.percent ?? 0);
+  const title = [top ? `Claude：${top.label} ${Math.round(top.percent)}%` : "Claude：取得していません", jev ? `Jev：今月 ${jevUsd(jev.month_usd)}` : null].filter(Boolean).join("\n");
+  return (
+    <button className={`rail-usage${limits?.some(limitWarns) ? " warn" : ""}`} aria-label="使用量" title={`${title}\nクリックで詳しく`} onClick={onOpen}>
+      <svg className="ring" viewBox="0 0 36 36" aria-hidden="true">
+        <circle cx="18" cy="18" r="15" pathLength="100" />
+        <circle className="ring-used" cx="18" cy="18" r="15" pathLength="100" strokeDasharray={`${percent} 100`} />
+        <text x="18" y="18">{top ? Math.round(top.percent) : "–"}</text>
+      </svg>
+      {jev && <span className="rail-jev">{jevUsd(jev.month_usd)}</span>}
+    </button>
+  );
+}
+
+/// Claude's limits and what Jev cost, in full (from the rail).
+function UsageDialog({ limits, error, jev, onClose }: { limits: Limit[] | null; error: string | null; jev: JevSpend | undefined; onClose: () => void }) {
+  return (
+    <Modal title="使用量" onClose={onClose}>
+      <div className="usage-dialog">
+        <UsageBox limits={limits} error={error} />
+        <div className="usage">
+          <div className="section-title">Jev（TypeSafe）</div>
+          {jev ? (
+            (["today", "month"] as const).map((span) => (
+              <div key={span} className="meter-row">
+                <span>{span === "today" ? "今日" : "今月"}</span>
+                <span className="muted">
+                  {jev[span].calls} 回 · 入力 {jev[span].input_tokens.toLocaleString()} トークン
+                </span>
+                <b>{jevUsd(span === "today" ? jev.today_usd : jev.month_usd)}</b>
+              </div>
+            ))
+          ) : (
+            <span className="muted small-text">取得しています…</span>
+          )}
+          <span className="muted small-text">TypeSafe の料金（入力 10 億トークンで $42、出力は料金なし）での目安です。請求額は console.typesafe.ai で見られます。</span>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 type Selection = { kind: "todo"; id: number } | null;
-type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "start" | "settings" | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "start" | "settings" | "usage" | null;
 
 /// A page's alert, confirm or prompt, as the app's dialog (the page waits for the answer).
 function PageDialog({ ask, onAnswer }: { ask: PageDialogAsk; onAnswer: (ok: boolean, text?: string) => void }) {
@@ -4986,8 +5039,18 @@ const SPACE_ACTIONS: [Action, Space][] = SPACES.map((s) => [s.action, s.key]);
 const WAITING_TITLE = "あなた待ち：あなたが動かないと進まないもの（返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼）";
 
 /// The rail down the window's left: the spaces as icons (あなた待ち's count
-/// on 作業's, as what waits is answered there), then ⌘K and the settings at its foot.
-function SpaceRail({ space, waiting, onSpace, onSearch, onSettings }: { space: Space; waiting: number; onSpace: (s: Space) => void; onSearch: () => void; onSettings: () => void }) {
+/// on 作業's, as what waits is answered there), then the usage, ⌘K and the
+/// settings at its foot.
+function SpaceRail({ space, waiting, limits, jev, onSpace, onUsage, onSearch, onSettings }: {
+  space: Space;
+  waiting: number;
+  limits: Limit[] | null;
+  jev: JevSpend | undefined;
+  onSpace: (s: Space) => void;
+  onUsage: () => void;
+  onSearch: () => void;
+  onSettings: () => void;
+}) {
   return (
     <nav className="space-rail" aria-label="場">
       <img className="brand-mark" src={logoUrl} alt="Shosai" title="Shosai" />
@@ -5005,6 +5068,7 @@ function SpaceRail({ space, waiting, onSpace, onSearch, onSettings }: { space: S
         </button>
       ))}
       <span className="grow" />
+      <RailUsage limits={limits} jev={jev} onOpen={onUsage} />
       <button className="space-icon" aria-label="検索・操作" title={`検索・操作（${keyLabel(keyOf("palette"))}）`} onClick={onSearch}>
         <Icon name="search" size={18} />
       </button>
@@ -6928,6 +6992,7 @@ export default function App() {
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "shortcuts", label: "キーの一覧", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "settings", label: "設定（開く場所・ターミナル・herdr・TypeSafe・ログイン・サイトの許可）", run: () => setDialog("settings") },
+    { key: "usage", label: "使用量（Claude・Jev）", run: () => setDialog("usage") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい Todo", hint: keyLabel(keyOf("newTodo")), run: () => setDialog("add") },
     ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: bookmarkShown }] : []),
@@ -7010,7 +7075,16 @@ export default function App() {
         data-zone={sideZone ? "sidebar" : undefined}
         style={{ "--panel-w": `${panelW}px`, "--focus-right-w": `${focusRightW}px`, "--tab-list-w": `${tabListW}px`, "--rail-w": `${railW}px` } as React.CSSProperties}
       >
-        <SpaceRail space={space} waiting={waiting.length} onSpace={goSpace} onSearch={() => setDialog("palette")} onSettings={() => setDialog("settings")} />
+        <SpaceRail
+          space={space}
+          waiting={waiting.length}
+          limits={limits}
+          jev={board?.jev_spend}
+          onSpace={goSpace}
+          onUsage={() => setDialog("usage")}
+          onSearch={() => setDialog("palette")}
+          onSettings={() => setDialog("settings")}
+        />
         {(closePrompt || error || heldWaiting > 0) && (
           <div className="banners">
             {heldWaiting > 0 && (
@@ -7074,7 +7148,6 @@ export default function App() {
                   </nav>
                 ))}
                 <div className="sidebar-foot">
-                  <UsageBox limits={limits} error={usageError} />
                   <div className="sync-line">
                     <span className="dot state-running" />
                     <span className="grow ellipsis muted" title={board?.sync_status}>
@@ -7498,6 +7571,7 @@ export default function App() {
             onClose={() => setDialog(null)}
           />
         )}
+        {dialog === "usage" && <UsageDialog limits={limits} error={usageError} jev={board?.jev_spend} onClose={() => setDialog(null)} />}
         {dialog === "start" && selectedTodo && <StartDialog todo={selectedTodo} allTodos={allTodos} run={run} onClose={() => setDialog(null)} />}
         {dialog === "palette" && (
           <CommandPalette
