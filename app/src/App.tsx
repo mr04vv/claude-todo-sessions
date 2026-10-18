@@ -97,7 +97,7 @@ import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keyma
 import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
-import { ageGroup, arrange, latestFirst, moveTo } from "./order";
+import { ageGroup, arrange, inWorkOrder, moveTo, type WorkSort } from "./order";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -1206,8 +1206,6 @@ const ASKS_ROW = "w:reviews";
 const QUICK_ROW = "quick";
 /// 作業's rows in the order the user put them in (their keys).
 const WORK_ORDER_KEY = "workOrder";
-/// How 作業's list is ordered: by hand, by the work that moved last, or by the work begun last.
-type WorkSort = "manual" | "updated" | "started";
 const WORK_SORTS: WorkSort[] = ["manual", "updated", "started"];
 const WORK_SORT_LABEL: Record<WorkSort, string> = { manual: "手で並べた順", updated: "動きがあった順", started: "始めた順" };
 const WORK_SORT_KEY = "workSort";
@@ -4693,6 +4691,8 @@ interface Command {
   keywords?: string;
   /// A list of its own, which picking it opens in the same box (Esc, or ⌫ on an empty query, goes back).
   items?: () => Command[];
+  /// The span it is in (a list's 今日, 昨日, …), headed where it changes.
+  group?: string;
 }
 
 /// Other words a command is found by, for a word in its label: "プルリク"
@@ -4826,7 +4826,8 @@ function CommandPalette({ commands, todos, readings, start, onOpenTodo, onRead, 
         />
         <ul role="listbox" className="palette-list" ref={list}>
           {items.length === 0 && <li className="muted palette-empty">見つかりません</li>}
-          {items.map((c, i) => (
+          {items.flatMap((c, i) => [
+            ...(c.group && c.group !== items[i - 1]?.group ? [<li key={`g:${c.group}`} role="presentation" className="palette-group">{c.group}</li>] : []),
             <li
               key={c.key}
               role="option"
@@ -4842,8 +4843,8 @@ function CommandPalette({ commands, todos, readings, start, onOpenTodo, onRead, 
               <span className="ellipsis">{c.label}</span>
               {c.hint && <span className="muted">{c.hint}</span>}
               {c.items && <Icon name="chevronRight" size={12} />}
-            </li>
-          ))}
+            </li>,
+          ])}
         </ul>
       </div>
     </div>
@@ -5753,8 +5754,11 @@ interface WorkRow {
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
 /// then the work in one list (the todos at work, the reviews and the sessions
 /// of no todo), in the order chosen. j k move, Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
-function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, run }: {
+function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, onSort, onOrder, run }: {
   board: Board;
+  /// How the work is ordered (as ⌘K's sessions are), and the order the user put it in.
+  sort: WorkSort;
+  order: string[];
   waiting: WaitItem[];
   pick: string | null;
   width: number;
@@ -5767,6 +5771,8 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   onQuick: () => void;
   /// Links a session to a todo (picked in ⌘K), or unlinks it from `todo`.
   onLink: (s: Session, todo: Todo | undefined) => void;
+  onSort: (s: WorkSort) => void;
+  onOrder: (f: (prev: string[]) => string[]) => void;
   run: (f: () => Promise<unknown>) => void;
 }) {
   const fix = useContext(FixContext);
@@ -5785,23 +5791,11 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   // one list) is in the order chosen (s): the one the user put it in (⇧j ⇧k,
   // or dragging; what was never moved on top), or the latest work first, by
   // when it last moved or began.
-  const [sort, setSortState] = useState<WorkSort>(() => load(WORK_SORT_KEY, WORK_SORTS, "manual"));
-  const setSort = (s: WorkSort) => {
-    remember(WORK_SORT_KEY, s);
-    setSortState(s);
-  };
-  const [order, setOrderState] = useState(() => loadJson<string[]>(WORK_ORDER_KEY, []));
-  const setOrder = (f: (prev: string[]) => string[]) =>
-    setOrderState((prev) => {
-      const next = f(prev);
-      remember(WORK_ORDER_KEY, JSON.stringify(next));
-      return next;
-    });
   /// A row's sessions: its own, or its todo's and its subtasks'.
   const sessionsOf = (r: WorkRow) => (r.session ? [r.session] : todos.filter((t) => t.id === r.todo?.id || t.parent_id === r.todo?.id).flatMap((t) => t.sessions));
   /// When a row's work last moved or began (as ordered by), its latest session's.
   const timeOf = (r: WorkRow) => Math.max(0, ...sessionsOf(r).map((s) => (sort === "started" ? s.started_at : s.state_at)));
-  const ordered = (rows: WorkRow[]) => (sort === "manual" ? arrange(rows, (r) => r.key, order) : latestFirst(rows, timeOf));
+  const ordered = (rows: WorkRow[]) => inWorkOrder(rows, sort, (r) => r.key, order, timeOf);
   // Ordered by a time, the list is headed by span: 今日, 昨日, … 1ヶ月以上前.
   const now = new Date();
   const groupOf = (r: WorkRow) => (sort === "manual" ? null : ageGroup(timeOf(r), now));
@@ -5811,8 +5805,8 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   const moveRow = (key: string, to: string) => {
     if (![key, to].every((k) => workRows.some((r) => r.key === k))) return;
     const manual = sort === "manual";
-    setOrder((prev) => moveTo(prev, (manual ? arrange(workRows, (r) => r.key, prev) : workRows).map((r) => r.key), key, to));
-    if (!manual) setSort("manual");
+    onOrder((prev) => moveTo(prev, (manual ? arrange(workRows, (r) => r.key, prev) : workRows).map((r) => r.key), key, to));
+    if (!manual) onSort("manual");
   };
   const { dragging, start: dragRow } = useDragMove("data-row", moveRow);
   const ended = board.inbox.filter((s) => !live(s) && listed(s)).length;
@@ -5828,7 +5822,7 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     },
     (e, id) => {
       if (matches(e, "workEnded")) return (setShowEnded((v) => !v), true);
-      if (matches(e, "workSort")) return (setSort(WORK_SORTS[(WORK_SORTS.indexOf(sort) + 1) % WORK_SORTS.length]), true);
+      if (matches(e, "workSort")) return (onSort(WORK_SORTS[(WORK_SORTS.indexOf(sort) + 1) % WORK_SORTS.length]), true);
       // ⇧j ⇧k: the row under the cursor a place down or up in the work.
       const shift = matches(e, "workMoveDown") ? 1 : matches(e, "workMoveUp") ? -1 : 0;
       const at = workRows.findIndex((r) => r.key === id);
@@ -5903,7 +5897,7 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     <nav className="split-rail work-rail" aria-label="作業の一覧" ref={list}>
       <div className="rail-head">
         <h1>作業</h1>
-        <select className="select compact" value={sort} aria-label="並べ方" title={`並べ方（${keyLabel(keyOf("workSort"))} で切り替え）`} onChange={(e) => setSort(e.target.value as WorkSort)}>
+        <select className="select compact" value={sort} aria-label="並べ方" title={`並べ方（${keyLabel(keyOf("workSort"))} で切り替え）`} onChange={(e) => onSort(e.target.value as WorkSort)}>
           {WORK_SORTS.map((s) => (
             <option key={s} value={s}>
               {WORK_SORT_LABEL[s]}
@@ -7336,19 +7330,42 @@ export default function App() {
   const shownAt = activeTab && !activeTab.pinned ? normalTabs.indexOf(activeTab) : -1;
   const neighbours = shownAt < 0 ? [] : ([["上", normalTabs[shownAt - 1]], ["下", normalTabs[shownAt + 1]]] as const).filter(([, t]) => t);
   // ⌘K lists the spaces and 管理's pages first, then the actions.
-  // The live sessions, the one that changed last first, each opened in 作業.
-  const sessionCommands = (): Command[] =>
-    (board ? sessionItemsOf(board) : [])
-      .filter(({ session: s }) => s.state !== "ended" && listedSession(s))
-      .sort((a, b) => b.session.state_at - a.session.state_at)
-      .map(({ session: s, todo }) => ({
+  // 作業's order, which ⌘K's sessions follow: how (s in 作業) and the order
+  // the user put the work in.
+  const [workSort, setWorkSortState] = useState<WorkSort>(() => load(WORK_SORT_KEY, WORK_SORTS, "manual"));
+  const setWorkSort = (s: WorkSort) => {
+    remember(WORK_SORT_KEY, s);
+    setWorkSortState(s);
+  };
+  const [workOrder, setWorkOrderState] = useState(() => loadJson<string[]>(WORK_ORDER_KEY, []));
+  const setWorkOrder = (f: (prev: string[]) => string[]) =>
+    setWorkOrderState((prev) => {
+      const next = f(prev);
+      remember(WORK_ORDER_KEY, JSON.stringify(next));
+      return next;
+    });
+  // The live sessions in 作業's order (headed by span, 今日 to 1ヶ月以上前,
+  // when that goes by a time), each opened in 作業. A todo's sessions stand
+  // where its row (its parent's, a subtask's) stands there.
+  const sessionCommands = (): Command[] => {
+    const now = new Date();
+    const items = (board ? sessionItemsOf(board) : []).filter(({ session: s }) => s.state !== "ended" && listedSession(s)).sort((a, b) => b.session.state_at - a.session.state_at);
+    type Item = (typeof items)[number];
+    const timeOf = ({ session: s }: Item) => (workSort === "started" ? s.started_at : s.state_at);
+    const keyOf = ({ session: s, todo }: Item) => (todo ? `t${todo.parent_id ?? todo.id}` : `s${s.session_id}`);
+    return inWorkOrder(items, workSort, keyOf, workOrder, timeOf).map((item) => {
+      const { session: s, todo } = item;
+      return {
+        group: workSort === "manual" ? undefined : ageGroup(timeOf(item), now),
         key: `session:${s.session_id}`,
         icon: <StateBadge state={s.state} unread={s.unread} />,
         label: todo ? `${sessionLabel(s)} · #${todo.id} ${todo.title}` : sessionLabel(s),
         hint: [prStageLabel(todo), s.agent === "codex" ? "Codex" : isCloud(s) ? "Cloud" : "Local", ago(s.state_at)].filter(Boolean).join(" · "),
         keywords: [STATE_LABEL[s.state], s.unread ? "新着" : ""].join(" "),
         run: () => openWork({ session: s.session_id }),
-      }));
+      };
+    });
+  };
   const sessionsCommand: Command = { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands };
   /// The sessions of no todo, to link one: listed ones, the one that changed last first.
   const unlinkedSessions = (board?.inbox ?? []).filter(listedSession).sort((a, b) => b.state_at - a.state_at);
@@ -7831,7 +7848,23 @@ export default function App() {
 
           {space === "work" && board && (
             <div className="split">
-              <WorkRail board={board} waiting={waiting} pick={work.pick} width={railW} onResize={setRailW} onPick={openWork} onTodo={goTodo} onShowPrs={() => setView("prs")} onQuick={() => setDialog("quick")} onLink={openLink} run={run} />
+              <WorkRail
+                board={board}
+                waiting={waiting}
+                pick={work.pick}
+                sort={workSort}
+                order={workOrder}
+                width={railW}
+                onResize={setRailW}
+                onPick={openWork}
+                onTodo={goTodo}
+                onShowPrs={() => setView("prs")}
+                onQuick={() => setDialog("quick")}
+                onLink={openLink}
+                onSort={setWorkSort}
+                onOrder={setWorkOrder}
+                run={run}
+              />
               {workView.left || workView.todo ? (
                 <>
                   <section className="focus-left browser" aria-label={workView.right || workView.children.length > 0 ? "指揮役のセッション" : "セッション"}>

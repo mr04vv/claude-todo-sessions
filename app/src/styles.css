@@ -2210,6 +2210,16 @@ input.panel-title:focus-visible {
   background: var(--card-hover);
 }
 
+/* Where a span begins in a list ordered by a time (⌘K's sessions). */
+.palette-list li.palette-group {
+  height: 26px;
+  padding-top: 6px;
+  cursor: default;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
 .palette-list li .muted {
   margin-left: auto;
   font-size: 12px;

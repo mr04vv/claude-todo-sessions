@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ageGroup, arrange, latestFirst, moveTo } from "./order.ts";
+import { ageGroup, arrange, inWorkOrder, latestFirst, moveTo } from "./order.ts";
 
 const id = (s: string) => s;
 
@@ -31,4 +31,14 @@ test("a time falls in today, yesterday, the week, the month or before", () => {
   assert.equal(ageGroup(at(2026, 8, 19, 10), now), "この1ヶ月");
   assert.equal(ageGroup(at(2026, 8, 17, 10), now), "1ヶ月以上前");
   assert.equal(ageGroup(0, now), "1ヶ月以上前", "never: the oldest");
+});
+
+test("作業's order: by hand, or the latest first by the time chosen", () => {
+  const items = [{ k: "a", t: 1 }, { k: "b", t: 3 }, { k: "c", t: 2 }];
+  const keyOf = (i: { k: string }) => i.k;
+  const timeOf = (i: { t: number }) => i.t;
+  assert.deepEqual(inWorkOrder(items, "manual", keyOf, ["c", "a"], timeOf).map(keyOf), ["b", "c", "a"]);
+  assert.deepEqual(inWorkOrder(items, "updated", keyOf, ["c", "a"], timeOf).map(keyOf), ["b", "c", "a"]);
+  assert.deepEqual(inWorkOrder(items, "started", keyOf, [], timeOf).map(keyOf), ["b", "c", "a"]);
+  assert.deepEqual(inWorkOrder(items, "manual", keyOf, [], timeOf).map(keyOf), ["a", "b", "c"], "never moved: as they come");
 });

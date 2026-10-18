@@ -13,6 +13,16 @@ export function latestFirst<T>(items: T[], timeOf: (item: T) => number): T[] {
   return [...items].sort((a, b) => timeOf(b) - timeOf(a));
 }
 
+/// How 作業's list (and ⌘K's sessions) are ordered: by hand, by the work that
+/// moved last, or by the work begun last.
+export type WorkSort = "manual" | "updated" | "started";
+
+/// `items` in 作業's order: by hand (`order`), or the latest first by `timeOf`
+/// (the time `sort` goes by).
+export function inWorkOrder<T>(items: T[], sort: WorkSort, keyOf: (item: T) => string, order: string[], timeOf: (item: T) => number): T[] {
+  return sort === "manual" ? arrange(items, keyOf, order) : latestFirst(items, timeOf);
+}
+
 /// `order` with `key` moved to where `to` is among `keys` (one section as
 /// arranged), which is kept whole in its new order.
 export function moveTo(order: string[], keys: string[], key: string, to: string): string[] {
