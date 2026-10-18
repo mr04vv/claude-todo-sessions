@@ -2891,7 +2891,7 @@ fn main() {
             readings::delete_reading,
             readings::set_reading_tags,
             readings::set_chapter_read,
-            readings::set_openai_key,
+            readings::set_typesafe_key,
             browser_bookmark,
             terminal::term_open,
             terminal::term_write,

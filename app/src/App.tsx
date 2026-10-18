@@ -4792,7 +4792,7 @@ const FIXED_KEYS: [string, string][] = [
 /// Where things open and run, and what the browser keeps for sites: the
 /// logins (their sites and users), the sites not asked about, and the
 /// microphone and camera answers.
-function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasOpenaiKey, run, report, onClose }: {
+function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, run, report, onClose }: {
   cloudTarget: CloudTarget;
   onCloudTarget: (t: CloudTarget) => void;
   terminalTarget: TerminalTarget;
@@ -4800,8 +4800,8 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
   herdr: HerdrSessions | null;
   onLoadHerdr: () => void;
   onPickHerdr: (name: string) => void;
-  /// An OpenAI API key is kept (for the readings' tags).
-  hasOpenaiKey: boolean;
+  /// A TypeSafe API key is kept (for the readings' tags).
+  hasTypesafeKey: boolean;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   onClose: () => void;
@@ -4864,17 +4864,17 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
           <h3>学習</h3>
           <div className="setting-row">
             <span className="grow">
-              OpenAI の API キー（読みものにタグを付ける Decisions API 用。Keychain に置きます）
-              <span className="muted">{hasOpenaiKey ? " · 保存済み" : " · まだありません"}</span>
+              TypeSafe の API キー（読みものにタグを付ける Jev 用。Keychain に置きます）
+              <span className="muted">{hasTypesafeKey ? " · 保存済み" : " · まだありません"}</span>
             </span>
           </div>
           <div className="setting-row">
-            <input ref={keyRef} className="grow mono" type="password" placeholder={hasOpenaiKey ? "新しいキーで置き換える" : "sk-…"} aria-label="OpenAI の API キー" onKeyDown={(e) => isEnter(e) && run(() => api.setOpenaiKey(e.currentTarget.value).then(() => keyRef.current && (keyRef.current.value = "")))} />
-            <button className="small" onClick={() => run(() => api.setOpenaiKey(keyRef.current?.value ?? "").then(() => keyRef.current && (keyRef.current.value = "")))}>
+            <input ref={keyRef} className="grow mono" type="password" placeholder={hasTypesafeKey ? "新しいキーで置き換える" : "API キー"} aria-label="TypeSafe の API キー" onKeyDown={(e) => isEnter(e) && run(() => api.setTypesafeKey(e.currentTarget.value).then(() => keyRef.current && (keyRef.current.value = "")))} />
+            <button className="small" onClick={() => run(() => api.setTypesafeKey(keyRef.current?.value ?? "").then(() => keyRef.current && (keyRef.current.value = "")))}>
               保存
             </button>
-            {hasOpenaiKey && (
-              <button className="ghost small" onClick={() => run(() => api.setOpenaiKey(""))}>
+            {hasTypesafeKey && (
+              <button className="ghost small" onClick={() => run(() => api.setTypesafeKey(""))}>
                 消す
               </button>
             )}
@@ -5175,7 +5175,7 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
         </header>
         {sort && !sort.has_key && readings.some((r) => r.tags === null) && (
           <div className="notice">
-            <span className="grow">OpenAI の API キーを設定すると、タグを自動で付けます（Decisions API）。</span>
+            <span className="grow">TypeSafe の API キーを設定すると、タグを自動で付けます（Jev）。</span>
             <button className="small" onClick={onSettings}>
               設定を開く
             </button>
@@ -6933,7 +6933,7 @@ export default function App() {
     ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, hint: "ブラウザ", run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "shortcuts", label: "キーの一覧", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
-    { key: "settings", label: "設定（開く場所・ターミナル・herdr・OpenAI・ログイン・サイトの許可）", run: () => setDialog("settings") },
+    { key: "settings", label: "設定（開く場所・ターミナル・herdr・TypeSafe・ログイン・サイトの許可）", run: () => setDialog("settings") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい Todo", hint: keyLabel(keyOf("newTodo")), run: () => setDialog("add") },
     ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: bookmarkShown }] : []),
@@ -7498,7 +7498,7 @@ export default function App() {
             herdr={herdr}
             onLoadHerdr={loadHerdr}
             onPickHerdr={pickHerdr}
-            hasOpenaiKey={!!board?.reading_sort.has_key}
+            hasTypesafeKey={!!board?.reading_sort.has_key}
             run={run}
             report={report}
             onClose={() => setDialog(null)}

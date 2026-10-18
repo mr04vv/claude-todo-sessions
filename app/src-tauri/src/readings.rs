@@ -1,7 +1,7 @@
 // Readings (読みもの): kept from the pages (⌘⇧D, a link ⌥-clicked, X's
 // bookmark button, an O'Reilly book's page with its table of contents),
-// filled in with what their pages say, and sorted into tags with OpenAI's
-// Decisions API (cts_core::tags) once an API key is kept in the Keychain.
+// filled in with what their pages say, and sorted into tags with TypeSafe's
+// Jev (cts_core::tags) once an API key is kept in the Keychain.
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -12,7 +12,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{err, logins, AppState};
 
-const KEY_SERVICE: &str = "shosai-openai";
+const KEY_SERVICE: &str = "shosai-typesafe";
 const KEY_ACCOUNT: &str = "api-key";
 const PAGE_META_TIMEOUT: Duration = Duration::from_secs(8);
 /// `{title, kind, chapters}` once a page's reading is kept, for the page to say so.
@@ -83,7 +83,7 @@ pub fn add(app: &AppHandle, r: NewReading) -> Result<Reading, String> {
     Ok(reading)
 }
 
-/// What the Decisions API reads of a reading: its text, or a book's chapters.
+/// What Jev reads of a reading: its text, or a book's chapters.
 fn sort_text(r: &Reading) -> Option<String> {
     let chapters = r.chapters.iter().map(|c| c.title.as_str()).collect::<Vec<_>>().join("\n");
     match (&r.text, chapters.is_empty()) {
@@ -144,9 +144,9 @@ pub fn set_chapter_read(state: State<AppState>, reading_id: i64, position: i64, 
     state.db.lock().map_err(err)?.set_chapter_read(reading_id, position, read).map_err(err)
 }
 
-/// Keeps the OpenAI API key (a blank one takes it out), then sorts what waits.
+/// Keeps the TypeSafe API key (a blank one takes it out), then sorts what waits.
 #[tauri::command(async)]
-pub fn set_openai_key(app: AppHandle, key: String) -> Result<(), String> {
+pub fn set_typesafe_key(app: AppHandle, key: String) -> Result<(), String> {
     let key = key.trim();
     if key.is_empty() {
         logins::delete_secret(KEY_SERVICE, KEY_ACCOUNT)?;

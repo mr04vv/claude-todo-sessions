@@ -487,8 +487,8 @@ export const api = {
   /// The tags put right by hand (from ReadingSort's tags).
   setReadingTags: (id: number, tags: string[]) => invoke<void>("set_reading_tags", { id, tags }),
   setChapterRead: (readingId: number, position: number, read: boolean) => invoke<void>("set_chapter_read", { readingId, position, read }),
-  /// Keeps the OpenAI API key (blank takes it out); what waits is sorted then.
-  setOpenaiKey: (key: string) => invoke<void>("set_openai_key", { key }),
+  /// Keeps the TypeSafe API key (blank takes it out); what waits is sorted then.
+  setTypesafeKey: (key: string) => invoke<void>("set_typesafe_key", { key }),
   /// The tab's page keeps itself to read, as its own ⌘⇧D does.
   browserBookmark: (tab: string) => invoke<void>("browser_bookmark", { tab }),
   forgetArtifact: (id: number) => invoke<void>("forget_artifact", { id }),
