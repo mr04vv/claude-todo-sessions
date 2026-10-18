@@ -97,7 +97,7 @@ import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keyma
 import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
-import { arrange, moveTo } from "./order";
+import { arrange, latestFirst, moveTo } from "./order";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -1206,6 +1206,11 @@ const ASKS_ROW = "w:reviews";
 const QUICK_ROW = "quick";
 /// 作業's rows in the order the user put them in (their keys).
 const WORK_ORDER_KEY = "workOrder";
+/// How 作業's list is ordered: by hand, by the work that moved last, or by the work begun last.
+type WorkSort = "manual" | "updated" | "started";
+const WORK_SORTS: WorkSort[] = ["manual", "updated", "started"];
+const WORK_SORT_LABEL: Record<WorkSort, string> = { manual: "手で並べた順", updated: "動きがあった順", started: "始めた順" };
+const WORK_SORT_KEY = "workSort";
 
 /// Picks a todo's parent, or none. Subtasks go one level deep, so only
 /// top-level todos are offered and a todo with subtasks cannot move.
@@ -5777,7 +5782,13 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   const listed = (s: Session) => (!s.hidden && !s.routine) || s.state === "needs_input";
   const loose = board.inbox.filter((s) => (showEnded || live(s)) && listed(s) && !waitingSessions.has(s.session_id));
   // The todos at work, the reviews and the other sessions are in the order
-  // the user put them in (⇧j ⇧k, or dragging), those never moved on top.
+  // chosen (s): the one the user put them in (⇧j ⇧k, or dragging; those
+  // never moved on top), or the latest work first, by when it last moved or began.
+  const [sort, setSortState] = useState<WorkSort>(() => load(WORK_SORT_KEY, WORK_SORTS, "manual"));
+  const setSort = (s: WorkSort) => {
+    remember(WORK_SORT_KEY, s);
+    setSortState(s);
+  };
   const [order, setOrderState] = useState(() => loadJson<string[]>(WORK_ORDER_KEY, []));
   const setOrder = (f: (prev: string[]) => string[]) =>
     setOrderState((prev) => {
@@ -5785,15 +5796,24 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
       remember(WORK_ORDER_KEY, JSON.stringify(next));
       return next;
     });
-  const atWorkRows = arrange(atWork.map((t): WorkRow => ({ key: `t${t.id}`, todo: t })), (r) => r.key, order);
-  const reviewRows = arrange(loose.filter((s) => s.review_url).map((s): WorkRow => ({ key: `s${s.session_id}`, session: s })), (r) => r.key, order);
-  const otherRows = arrange(loose.filter((s) => !s.review_url).map((s): WorkRow => ({ key: `s${s.session_id}`, session: s })), (r) => r.key, order);
+  /// A row's sessions: its own, or its todo's and its subtasks'.
+  const sessionsOf = (r: WorkRow) => (r.session ? [r.session] : todos.filter((t) => t.id === r.todo?.id || t.parent_id === r.todo?.id).flatMap((t) => t.sessions));
+  const ordered = (rows: WorkRow[]) =>
+    sort === "manual"
+      ? arrange(rows, (r) => r.key, order)
+      : latestFirst(rows, (r) => Math.max(0, ...sessionsOf(r).map((s) => (sort === "updated" ? s.state_at : s.started_at))));
+  const atWorkRows = ordered(atWork.map((t): WorkRow => ({ key: `t${t.id}`, todo: t })));
+  const reviewRows = ordered(loose.filter((s) => s.review_url).map((s): WorkRow => ({ key: `s${s.session_id}`, session: s })));
+  const otherRows = ordered(loose.filter((s) => !s.review_url).map((s): WorkRow => ({ key: `s${s.session_id}`, session: s })));
   const sections = [atWorkRows, reviewRows, otherRows];
-  /// Moves row `key` to where `to` is, both in one section (else nothing).
+  /// Moves row `key` to where `to` is, both in one section (else nothing):
+  /// the list is ordered by hand from then on, as it was shown.
   const moveRow = (key: string, to: string) => {
     const section = sections.find((rows) => rows.some((r) => r.key === key));
     if (!section?.some((r) => r.key === to)) return;
-    setOrder((prev) => moveTo(prev, arrange(section, (r) => r.key, prev).map((r) => r.key), key, to));
+    const manual = sort === "manual";
+    setOrder((prev) => moveTo(prev, (manual ? arrange(section, (r) => r.key, prev) : section).map((r) => r.key), key, to));
+    if (!manual) setSort("manual");
   };
   const { dragging, start: dragRow } = useDragMove("data-row", moveRow);
   const ended = board.inbox.filter((s) => !live(s) && listed(s)).length;
@@ -5809,6 +5829,7 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     },
     (e, id) => {
       if (matches(e, "workEnded")) return (setShowEnded((v) => !v), true);
+      if (matches(e, "workSort")) return (setSort(WORK_SORTS[(WORK_SORTS.indexOf(sort) + 1) % WORK_SORTS.length]), true);
       // ⇧j ⇧k: the row under the cursor a place down or up in its section.
       const shift = matches(e, "workMoveDown") ? 1 : matches(e, "workMoveUp") ? -1 : 0;
       if (shift && id) {
@@ -5859,6 +5880,13 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     <nav className="split-rail work-rail" aria-label="作業の一覧" ref={list}>
       <div className="rail-head">
         <h1>作業</h1>
+        <select className="select compact" value={sort} aria-label="並べ方" title={`並べ方（${keyLabel(keyOf("workSort"))} で切り替え）`} onChange={(e) => setSort(e.target.value as WorkSort)}>
+          {WORK_SORTS.map((s) => (
+            <option key={s} value={s}>
+              {WORK_SORT_LABEL[s]}
+            </option>
+          ))}
+        </select>
         <span className="grow" />
         <button data-row={QUICK_ROW} className={`ghost small${cursorId === QUICK_ROW ? " cursor" : ""}`} onClick={onQuick} title="todo に紐づけずに claude を開く">
           <Icon name="spark" size={12} /> ちょっと Claude
@@ -5966,7 +5994,7 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
           </button>
         )}
         <span className="muted small-text rail-hint">
-          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("workMoveDown"))} {keyLabel(keyOf("workMoveUp"))}（ドラッグでも）で並べ替え · {keyLabel(keyOf("workLink"))} で todo に紐づける · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける · {keyLabel(keyOf("help"))} でキーの一覧
+          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("workMoveDown"))} {keyLabel(keyOf("workMoveUp"))}（ドラッグでも）で並べ替え · {keyLabel(keyOf("workSort"))} で並べ方 · {keyLabel(keyOf("workLink"))} で todo に紐づける · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける · {keyLabel(keyOf("help"))} でキーの一覧
         </span>
       </div>
       <Resizer label="作業の一覧の幅" cssVar="--rail-w" edge="right" width={width} min={RAIL_MIN_W} max={() => RAIL_MAX_W} onResize={onResize} />

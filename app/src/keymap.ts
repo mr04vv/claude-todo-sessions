@@ -51,6 +51,7 @@ export type Action =
   | "workHandled"
   | "workEnded"
   | "workLink"
+  | "workSort"
   | "workMoveDown"
   | "workMoveUp"
   | "slackFilter"
@@ -163,8 +164,9 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["workHandled", "指揮役から回されたものに対応した（あなた待ちから外す）"],
       ["workEnded", "終了したセッションを出す・隠す"],
       ["workLink", "選んでいるセッションを todo に紐づける（紐づいていれば外す）"],
-      ["workMoveDown", "選んでいる行を下へ（並べ替え。ドラッグでも）"],
-      ["workMoveUp", "選んでいる行を上へ（並べ替え。ドラッグでも）"],
+      ["workSort", "並べ方を切り替える（手で並べた順・動きがあった順・始めた順）"],
+      ["workMoveDown", "選んでいる行を下へ（並べ替え。ドラッグでも。手で並べた順になる）"],
+      ["workMoveUp", "選んでいる行を上へ（並べ替え。ドラッグでも。手で並べた順になる）"],
     ],
   },
   {
@@ -264,6 +266,7 @@ const KEYS: Record<Action, string> = {
   workHandled: "d",
   workEnded: "e",
   workLink: "l",
+  workSort: "s",
   workMoveDown: "shift+j",
   workMoveUp: "shift+k",
   slackFilter: "f",
