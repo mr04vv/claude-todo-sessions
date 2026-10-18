@@ -44,6 +44,7 @@
   --sans: "IBM Plex Sans JP", "Hiragino Sans", system-ui, sans-serif;
   --mono-font: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   --sidebar-w: 232px;
+  --space-rail-w: 64px;
   --panel-w: 440px;
   --dock-w: max(520px, 44vw);
   color-scheme: dark;
@@ -2544,10 +2545,13 @@ body.resizing {
 
 /* A short word that something happened in the background. */
 .toast {
-  /* Over the Todo side: the pane's pages draw above the page. */
+  /* At the foot of the space's left column (the rail, then its list): the
+     pages (the browser's, 作業's, 学習's) draw above everything right of it,
+     so with one shown the toast keeps within that column, its text wrapping. */
   position: fixed;
-  left: calc(var(--sidebar-w) + 20px);
+  left: calc(var(--space-rail-w) + 12px);
   bottom: 20px;
+  max-width: min(640px, calc(100vw - var(--space-rail-w) - 24px));
   z-index: 60;
   padding: 8px 14px;
   background: var(--card);
@@ -2557,11 +2561,19 @@ body.resizing {
   font-size: 12px;
 }
 
+.app.space-browser .toast {
+  max-width: calc(var(--tab-list-w) - 24px);
+}
+
+.app.split-shown .toast {
+  max-width: calc(var(--rail-w) - 24px);
+}
+
 .toast.login-ask {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  max-width: 640px;
 }
 
 /* A page's alert, confirm or prompt: its text as the page wrote it. */
@@ -3160,7 +3172,7 @@ button.slack-reaction:hover {
   flex-direction: column;
   align-items: center;
   gap: 4px;
-  width: 64px;
+  width: var(--space-rail-w);
   padding: 12px 0;
   background: var(--sidebar);
   border-right: 1px solid var(--border);
