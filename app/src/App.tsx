@@ -93,7 +93,7 @@ import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
 import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
-import { jevBalance, type JevCredit } from "./usage";
+import { jevBalance, shortMoney, type JevCredit } from "./usage";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -4764,13 +4764,13 @@ const limitWarns = (l: Limit) => l.severity !== "normal" || l.percent >= LIMIT_W
 /// Jev's spend in dollars: to the cent, or to a hundredth of one while under a cent.
 const jevUsd = (n: number) => `$${n.toFixed(n < 0.01 ? 4 : 2)}`;
 
-/// The rail's usage at a glance: Claude's most used limit as a ring, and
-/// under it Jev's credit left (or, not knowing the credit, this month's
-/// spend); a click shows them in full.
+/// The rail's usage at a glance: Claude's most used limit as a ring (with
+/// what was spent of it, when it is money), and under it Jev's credit left
+/// (or, not knowing the credit, this month's spend); a click shows them in full.
 function RailUsage({ limits, jev, jevLeft, onOpen }: { limits: Limit[] | null; jev: JevSpend | undefined; jevLeft: number | null; onOpen: () => void }) {
   const top = limits && limits.length > 0 ? limits.reduce((a, b) => (b.percent > a.percent ? b : a)) : null;
   const percent = Math.min(100, top?.percent ?? 0);
-  const claude = top ? `Claude：${top.label} ${Math.round(top.percent)}%` : "Claude：取得していません";
+  const claude = top ? `Claude：${top.label} ${top.amount ? `${money(top.amount.used, top.amount.currency)} / ${money(top.amount.limit, top.amount.currency)}` : `${Math.round(top.percent)}%`}` : "Claude：取得していません";
   const jevLine = jevLeft !== null ? `残${jevUsd(jevLeft)}` : jev ? jevUsd(jev.month_usd) : null;
   const title = [claude, jevLine && `Jev：${jevLeft !== null ? `クレジットの残り ${jevUsd(jevLeft)}` : `今月 ${jevLine}`}`].filter(Boolean).join("\n");
   return (
@@ -4780,6 +4780,12 @@ function RailUsage({ limits, jev, jevLeft, onOpen }: { limits: Limit[] | null; j
         <circle className="ring-used" cx="18" cy="18" r="15" pathLength="100" strokeDasharray={`${percent} 100`} />
         <text x="18" y="18">{top ? Math.round(top.percent) : "–"}</text>
       </svg>
+      {top?.amount && (
+        <span className="rail-amount">
+          <b>{shortMoney(top.amount.used, top.amount.currency)}</b>
+          <span>/{shortMoney(top.amount.limit, top.amount.currency)}</span>
+        </span>
+      )}
       {jevLine && <span className="rail-jev">{jevLine}</span>}
     </button>
   );

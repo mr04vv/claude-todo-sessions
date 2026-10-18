@@ -3231,10 +3231,28 @@ button.slack-reaction:hover {
   dominant-baseline: central;
 }
 
-.rail-jev {
+.rail-jev,
+.rail-amount {
   font-size: 9px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* What was spent of Claude's money limit, over the limit. */
+.rail-amount {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.25;
+}
+
+.rail-amount b {
+  color: var(--meter);
+}
+
+.rail-jev {
+  padding-top: 3px;
+  border-top: 1px solid var(--border);
 }
 
 .usage-dialog {
