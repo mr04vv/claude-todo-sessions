@@ -2313,8 +2313,10 @@ function DatabaseDialog({ database, databases, run, onMade, onClose }: {
   );
 }
 
-function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, databases, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
+function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, databases, unlinked, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
   todo: Todo;
+  /// The sessions of no todo, to link one to this.
+  unlinked: Session[];
   /// The databases the user made, to put the todo in one.
   databases: Database[];
   /// Every artifact: the todo's (and its subtasks') are listed.
@@ -2533,6 +2535,24 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
               <button className="primary small" onClick={onWork} title="会話は作業で見ます">
                 作業で開く <span className="kbd">{keyLabel(keyOf("session"))}</span>
               </button>
+            </div>
+          )}
+          {unlinked.length > 0 && (
+            <div className="summary-line">
+              <select
+                className="select"
+                value=""
+                aria-label="todo のないセッションを紐づける"
+                title={`todo のないセッションをこの todo に紐づけます（${keyLabel(keyOf("palette"))} の「#${todo.id} にセッションを紐づける」でも）`}
+                onChange={(e) => e.target.value && run(() => api.linkSession(e.target.value, todo.id))}
+              >
+                <option value="">todo のないセッションを紐づける…</option>
+                {unlinked.map((s) => (
+                  <option key={s.session_id} value={s.session_id}>
+                    {sessionLabel(s)}（{STATE_LABEL[s.state]} · {ago(s.state_at)}）
+                  </option>
+                ))}
+              </select>
             </div>
           )}
         </section>
@@ -5649,7 +5669,7 @@ interface WorkRow {
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
 /// then the todos at work, the reviews and the sessions of no todo. j k move,
 /// Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
-function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onShowPrs, onQuick, run }: {
+function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, run }: {
   board: Board;
   waiting: WaitItem[];
   pick: string | null;
@@ -5661,6 +5681,8 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   onTodo: (id: number) => void;
   onShowPrs: () => void;
   onQuick: () => void;
+  /// Links a session to a todo (picked in ⌘K), or unlinks it from `todo`.
+  onLink: (s: Session, todo: Todo | undefined) => void;
   run: (f: () => Promise<unknown>) => void;
 }) {
   const fix = useContext(FixContext);
@@ -5725,7 +5747,10 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
       const r = rows.find((x) => x.key === id);
       const w = waiting.find((x) => `w:${x.key}` === id);
       const s = r?.session;
+      // A todo's row stands for the session it shows.
+      const shown = s ?? (r?.todo && mainSession(r.todo));
       const acts: [boolean, () => void][] = [
+        [matches(e, "workLink") && !!shown, () => onLink(shown!, r?.todo)],
         [matches(e, "archive") && !!s, () => run(() => (isCloud(s!) ? api.archiveSessions([s!.session_id]) : api.hideSession(s!.session_id)))],
         [matches(e, "showTodo") && !!r?.todo, () => onTodo(r!.todo!.id)],
         [matches(e, "workFix") && !!(fix && s && w?.todo && (w.reasons.includes("ci") || w.reasons.includes("changes"))), () => fix!(s!, w!.todo!)],
@@ -5862,7 +5887,7 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
           </button>
         )}
         <span className="muted small-text rail-hint">
-          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("workMoveDown"))} {keyLabel(keyOf("workMoveUp"))}（ドラッグでも）で並べ替え · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける · {keyLabel(keyOf("help"))} でキーの一覧
+          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("workMoveDown"))} {keyLabel(keyOf("workMoveUp"))}（ドラッグでも）で並べ替え · {keyLabel(keyOf("workLink"))} で todo に紐づける · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける · {keyLabel(keyOf("help"))} でキーの一覧
         </span>
       </div>
       <Resizer label="作業の一覧の幅" cssVar="--rail-w" edge="right" width={width} min={RAIL_MIN_W} max={() => RAIL_MAX_W} onResize={onResize} />
@@ -7218,6 +7243,50 @@ export default function App() {
         run: () => openWork({ session: s.session_id }),
       }));
   const sessionsCommand: Command = { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands };
+  /// The sessions of no todo, to link one: listed ones, the one that changed last first.
+  const unlinkedSessions = (board?.inbox ?? []).filter(listedSession).sort((a, b) => b.state_at - a.state_at);
+  /// ⌘K's list linking session `s` to a todo not done (the one changed last
+  /// first), or, with `todo`, unlinking it from that.
+  const linkCommand = (s: Session, todo: Todo | undefined): Command =>
+    todo
+      ? {
+          key: "unlinkSession",
+          label: `${sessionLabel(s)} を #${todo.id} から外す`,
+          run: () => {},
+          items: () => [
+            { key: "yes", label: "外す（todo のないセッションに戻ります）", run: () => run(() => api.unlinkSession(s.session_id)) },
+            { key: "no", label: "やめる", run: () => {} },
+          ],
+        }
+      : {
+          key: "linkSession",
+          label: `${sessionLabel(s)} を todo に紐づける`,
+          run: () => {},
+          items: () =>
+            allTodos
+              .filter((t) => t.status !== "done")
+              .sort((a, b) => b.updated_at - a.updated_at)
+              .map((t) => ({ key: `todo:${t.id}`, label: `#${t.id} ${t.title}`, hint: COLUMNS.find((c) => c.status === t.status)?.label, run: () => run(() => api.linkSession(s.session_id, t.id)) })),
+        };
+  /// 作業's l: that list straight away.
+  const openLink = (s: Session, todo: Todo | undefined) => {
+    setPaletteStart({ command: linkCommand(s, todo) });
+    setDialog("palette");
+  };
+  /// ⌘K's list linking a session of no todo to `todo`.
+  const linkToTodoCommand = (todo: Todo): Command => ({
+    key: "linkToTodo",
+    label: `#${todo.id} にセッションを紐づける`,
+    run: () => {},
+    items: () =>
+      unlinkedSessions.map((s) => ({
+        key: `session:${s.session_id}`,
+        icon: <StateBadge state={s.state} unread={s.unread} />,
+        label: sessionLabel(s),
+        hint: `${placeOf(s)} · ${ago(s.state_at)}`,
+        run: () => run(() => api.linkSession(s.session_id, todo.id)),
+      })),
+  });
   /// ⌘⇧K: ⌘K's list of sessions straight away.
   const openSessions = () => {
     setPaletteStart({ command: sessionsCommand });
@@ -7251,6 +7320,9 @@ export default function App() {
           },
         ]
       : []),
+    ...(selectedTodo && unlinkedSessions.length > 0 ? [linkToTodoCommand(selectedTodo)] : []),
+    // 作業's session shown: linked to a todo, or unlinked from its.
+    ...(space === "work" && workView.left && !workView.right ? [linkCommand(workView.left, workView.todo)] : []),
     ...(selectedTodo && databases.length > 0
       ? [
           {
@@ -7615,6 +7687,7 @@ export default function App() {
                       local={local}
                       groups={groups}
                       databases={databases}
+                      unlinked={unlinkedSessions}
                       run={run}
                       report={report}
                       setStatus={setStatus}
@@ -7631,7 +7704,7 @@ export default function App() {
 
           {space === "work" && board && (
             <div className="split">
-              <WorkRail board={board} waiting={waiting} pick={work.pick} width={railW} onResize={setRailW} onPick={openWork} onTodo={goTodo} onShowPrs={() => setView("prs")} onQuick={() => setDialog("quick")} run={run} />
+              <WorkRail board={board} waiting={waiting} pick={work.pick} width={railW} onResize={setRailW} onPick={openWork} onTodo={goTodo} onShowPrs={() => setView("prs")} onQuick={() => setDialog("quick")} onLink={openLink} run={run} />
               {workView.left || workView.todo ? (
                 <>
                   <section className="focus-left browser" aria-label={workView.right || workView.children.length > 0 ? "指揮役のセッション" : "セッション"}>
