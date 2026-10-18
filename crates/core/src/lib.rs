@@ -240,11 +240,12 @@ pub struct JevTally {
     pub output_tokens: i64,
 }
 
-/// The requests to Jev today and this month (by the local date).
+/// The requests to Jev today, this month (by the local date) and all along.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct JevSpend {
     pub today: JevTally,
     pub month: JevTally,
+    pub all: JevTally,
 }
 
 /// A reading to keep; a book comes with its chapters (title, page).
@@ -1121,7 +1122,7 @@ impl Db {
         Ok(())
     }
 
-    /// The requests to Jev today and this month.
+    /// The requests to Jev today, this month and all along.
     pub fn jev_spend(&self) -> Result<JevSpend> {
         let since = |start: &str| -> Result<JevTally> {
             Ok(self.conn.query_row(
@@ -1130,7 +1131,11 @@ impl Db {
                 |r| Ok(JevTally { calls: r.get(0)?, input_tokens: r.get(1)?, output_tokens: r.get(2)? }),
             )?)
         };
-        Ok(JevSpend { today: since("date('now', 'localtime')")?, month: since("date('now', 'localtime', 'start of month')")? })
+        Ok(JevSpend {
+            today: since("date('now', 'localtime')")?,
+            month: since("date('now', 'localtime', 'start of month')")?,
+            all: since("''")?,
+        })
     }
 
     /// With a tag some reading has no longer among `known` (the tags were

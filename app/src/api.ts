@@ -110,12 +110,14 @@ export interface JevTally {
   output_tokens: number;
 }
 
-/** What the requests to Jev took today and this month (by the local date), in US dollars too. */
+/** What the requests to Jev took today, this month (by the local date) and all along, in US dollars too. */
 export interface JevSpend {
   today: JevTally;
   month: JevTally;
+  all: JevTally;
   today_usd: number;
   month_usd: number;
+  all_usd: number;
 }
 
 export type CiState = "pending" | "success" | "failure";

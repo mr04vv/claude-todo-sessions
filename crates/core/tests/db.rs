@@ -476,13 +476,13 @@ fn readings_are_sorted_again_once_a_tag_they_have_is_gone() {
 }
 
 #[test]
-fn jev_requests_are_tallied_for_today_and_the_month() {
+fn jev_requests_are_tallied_for_today_the_month_and_all_along() {
     let (_d, db) = open();
     assert_eq!(db.jev_spend().unwrap(), JevSpend::default());
     db.add_jev_usage(&Usage { input_tokens: 1200, output_tokens: 21 }).unwrap();
     db.add_jev_usage(&Usage { input_tokens: 800, output_tokens: 10 }).unwrap();
     let tally = JevTally { calls: 2, input_tokens: 2000, output_tokens: 31 };
-    assert_eq!(db.jev_spend().unwrap(), JevSpend { today: tally, month: tally });
+    assert_eq!(db.jev_spend().unwrap(), JevSpend { today: tally, month: tally, all: tally });
 }
 
 #[test]

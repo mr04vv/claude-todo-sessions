@@ -49,18 +49,20 @@ pub fn view(sorting: &Sorting) -> Result<SortingView, String> {
     })
 }
 
-/// What the requests to Jev took today and this month, with what that cost.
+/// What the requests to Jev took today, this month and all along, with what that cost.
 #[derive(Serialize)]
 pub struct SpendView {
     today: JevTally,
     month: JevTally,
+    all: JevTally,
     today_usd: f64,
     month_usd: f64,
+    all_usd: f64,
 }
 
 pub fn spend_view(spend: JevSpend) -> SpendView {
     let usd = |t: &JevTally| cts_core::tags::cost_usd(t.input_tokens);
-    SpendView { today_usd: usd(&spend.today), month_usd: usd(&spend.month), today: spend.today, month: spend.month }
+    SpendView { today_usd: usd(&spend.today), month_usd: usd(&spend.month), all_usd: usd(&spend.all), today: spend.today, month: spend.month, all: spend.all }
 }
 
 fn api_key() -> Option<String> {

@@ -93,6 +93,7 @@ import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
 import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
+import { jevBalance, type JevCredit } from "./usage";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -4755,6 +4756,8 @@ function UsageBox({ limits, error }: { limits: Limit[] | null; error: string | n
   );
 }
 
+/// Where Jev's credit as read off TypeSafe's console is kept (JevCredit).
+const JEV_CREDIT_KEY = "jevCredit";
 /// A limit warns when the API says so, or once this much of it is used.
 const LIMIT_WARN_PERCENT = 80;
 const limitWarns = (l: Limit) => l.severity !== "normal" || l.percent >= LIMIT_WARN_PERCENT;
@@ -4762,11 +4765,14 @@ const limitWarns = (l: Limit) => l.severity !== "normal" || l.percent >= LIMIT_W
 const jevUsd = (n: number) => `$${n.toFixed(n < 0.01 ? 4 : 2)}`;
 
 /// The rail's usage at a glance: Claude's most used limit as a ring, and
-/// what Jev cost this month under it; a click shows them in full.
-function RailUsage({ limits, jev, onOpen }: { limits: Limit[] | null; jev: JevSpend | undefined; onOpen: () => void }) {
+/// under it Jev's credit left (or, not knowing the credit, this month's
+/// spend); a click shows them in full.
+function RailUsage({ limits, jev, jevLeft, onOpen }: { limits: Limit[] | null; jev: JevSpend | undefined; jevLeft: number | null; onOpen: () => void }) {
   const top = limits && limits.length > 0 ? limits.reduce((a, b) => (b.percent > a.percent ? b : a)) : null;
   const percent = Math.min(100, top?.percent ?? 0);
-  const title = [top ? `Claude：${top.label} ${Math.round(top.percent)}%` : "Claude：取得していません", jev ? `Jev：今月 ${jevUsd(jev.month_usd)}` : null].filter(Boolean).join("\n");
+  const claude = top ? `Claude：${top.label} ${Math.round(top.percent)}%` : "Claude：取得していません";
+  const jevLine = jevLeft !== null ? `残${jevUsd(jevLeft)}` : jev ? jevUsd(jev.month_usd) : null;
+  const title = [claude, jevLine && `Jev：${jevLeft !== null ? `クレジットの残り ${jevUsd(jevLeft)}` : `今月 ${jevLine}`}`].filter(Boolean).join("\n");
   return (
     <button className={`rail-usage${limits?.some(limitWarns) ? " warn" : ""}`} aria-label="使用量" title={`${title}\nクリックで詳しく`} onClick={onOpen}>
       <svg className="ring" viewBox="0 0 36 36" aria-hidden="true">
@@ -4774,13 +4780,20 @@ function RailUsage({ limits, jev, onOpen }: { limits: Limit[] | null; jev: JevSp
         <circle className="ring-used" cx="18" cy="18" r="15" pathLength="100" strokeDasharray={`${percent} 100`} />
         <text x="18" y="18">{top ? Math.round(top.percent) : "–"}</text>
       </svg>
-      {jev && <span className="rail-jev">{jevUsd(jev.month_usd)}</span>}
+      {jevLine && <span className="rail-jev">{jevLine}</span>}
     </button>
   );
 }
 
 /// Claude's limits and what Jev cost, in full (from the rail).
-function UsageDialog({ limits, error, jev, onClose }: { limits: Limit[] | null; error: string | null; jev: JevSpend | undefined; onClose: () => void }) {
+function UsageDialog({ limits, error, jev, jevCredit, jevLeft, onClose }: {
+  limits: Limit[] | null;
+  error: string | null;
+  jev: JevSpend | undefined;
+  jevCredit: JevCredit | null;
+  jevLeft: number | null;
+  onClose: () => void;
+}) {
   return (
     <Modal title="使用量" onClose={onClose}>
       <div className="usage-dialog">
@@ -4799,6 +4812,19 @@ function UsageDialog({ limits, error, jev, onClose }: { limits: Limit[] | null; 
             ))
           ) : (
             <span className="muted small-text">取得しています…</span>
+          )}
+          {jevCredit && jevLeft !== null && jev ? (
+            <>
+              <div className="meter-row">
+                <span>クレジットの残り</span>
+                <b>{jevUsd(jevLeft)}</b>
+              </div>
+              <span className="muted small-text">
+                {new Date(jevCredit.at).toLocaleDateString("ja-JP")} に入れたクレジット ${jevCredit.credit} − その時の Spend ${jevCredit.spent} − その後このアプリで使った {jevUsd(Math.max(0, jev.all_usd - jevCredit.base_usd))}（同じキーを使うほかのもの、X の拡張機能などの分は入りません）
+              </span>
+            </>
+          ) : (
+            <span className="muted small-text">設定の「学習」で TypeSafe のクレジットと Spend を入れると、残りを出します。</span>
           )}
           <span className="muted small-text">TypeSafe の料金（入力 10 億トークンで $42、出力は料金なし）での目安です。請求額は console.typesafe.ai で見られます。</span>
         </div>
@@ -4853,7 +4879,7 @@ const FIXED_KEYS: [string, string][] = [
 /// Where things open and run, and what the browser keeps for sites: the
 /// logins (their sites and users), the sites not asked about, and the
 /// microphone and camera answers.
-function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, run, report, onClose }: {
+function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, jevCredit, jevAllUsd, onJevCredit, run, report, onClose }: {
   cloudTarget: CloudTarget;
   onCloudTarget: (t: CloudTarget) => void;
   terminalTarget: TerminalTarget;
@@ -4863,11 +4889,22 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
   onPickHerdr: (name: string) => void;
   /// A TypeSafe API key is kept (for the readings' tags).
   hasTypesafeKey: boolean;
+  /// Jev's credit as last read off TypeSafe's console, and what this app has spent all along.
+  jevCredit: JevCredit | null;
+  jevAllUsd: number;
+  onJevCredit: (c: JevCredit | null) => void;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   onClose: () => void;
 }) {
   const keyRef = useRef<HTMLInputElement>(null);
+  const creditRef = useRef<HTMLInputElement>(null);
+  const spentRef = useRef<HTMLInputElement>(null);
+  const saveCredit = () => {
+    const [credit, spent] = [creditRef.current?.value, spentRef.current?.value].map((v) => Number(v?.trim().replace(/^\$/, "")));
+    if (!(credit >= 0 && spent >= 0)) return report("クレジットと Spend はドルの額（0 以上の数）で入れてください");
+    onJevCredit({ credit, spent, base_usd: jevAllUsd, at: Date.now() });
+  };
   const [logins, setLogins] = useState<{ site: string; user: string }[] | null>(null);
   const [never, setNever] = useState<string[]>([]);
   const [permissions, setPermissions] = useState<Record<string, boolean>>({});
@@ -4936,6 +4973,24 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
             </button>
             {hasTypesafeKey && (
               <button className="ghost small" onClick={() => run(() => api.setTypesafeKey(""))}>
+                消す
+              </button>
+            )}
+          </div>
+          <div className="setting-row">
+            <span className="grow">
+              TypeSafe のクレジット（console.typesafe.ai の請求ページの額と、使用量ページの Spend から、残りを出します）
+              <span className="muted">{jevCredit ? ` · ${new Date(jevCredit.at).toLocaleDateString("ja-JP")} に $${jevCredit.credit} − $${jevCredit.spent}` : " · まだありません"}</span>
+            </span>
+          </div>
+          <div className="setting-row">
+            <input ref={creditRef} className="grow mono" inputMode="decimal" defaultValue={jevCredit?.credit} placeholder="クレジット（$）" aria-label="TypeSafe のクレジット（ドル）" />
+            <input ref={spentRef} className="grow mono" inputMode="decimal" defaultValue={jevCredit?.spent} placeholder="Spend（$）" aria-label="console の Spend（ドル）" onKeyDown={(e) => isEnter(e) && saveCredit()} />
+            <button className="small" onClick={saveCredit}>
+              保存
+            </button>
+            {jevCredit && (
+              <button className="ghost small" onClick={() => onJevCredit(null)}>
                 消す
               </button>
             )}
@@ -5048,11 +5103,12 @@ const WAITING_TITLE = "あなた待ち：あなたが動かないと進まない
 /// The rail down the window's left: the spaces as icons (あなた待ち's count
 /// on 作業's, as what waits is answered there), then the usage, ⌘K and the
 /// settings at its foot.
-function SpaceRail({ space, waiting, limits, jev, onSpace, onUsage, onSearch, onSettings }: {
+function SpaceRail({ space, waiting, limits, jev, jevLeft, onSpace, onUsage, onSearch, onSettings }: {
   space: Space;
   waiting: number;
   limits: Limit[] | null;
   jev: JevSpend | undefined;
+  jevLeft: number | null;
   onSpace: (s: Space) => void;
   onUsage: () => void;
   onSearch: () => void;
@@ -5075,7 +5131,7 @@ function SpaceRail({ space, waiting, limits, jev, onSpace, onUsage, onSearch, on
         </button>
       ))}
       <span className="grow" />
-      <RailUsage limits={limits} jev={jev} onOpen={onUsage} />
+      <RailUsage limits={limits} jev={jev} jevLeft={jevLeft} onOpen={onUsage} />
       <button className="space-icon" aria-label="検索・操作" title={`検索・操作（${keyLabel(keyOf("palette"))}）`} onClick={onSearch}>
         <Icon name="search" size={18} />
       </button>
@@ -6549,6 +6605,13 @@ export default function App() {
   const [collapsed, setCollapsed] = useState<Set<string>>(loadCollapsed);
   const [limits, setLimits] = useState<Limit[] | null>(null);
   const [usageError, setUsageError] = useState<string | null>(null);
+  // Jev's credit as read off TypeSafe's console (設定), and what is left of it.
+  const [jevCredit, setJevCreditState] = useState(() => loadJson<JevCredit | null>(JEV_CREDIT_KEY, null));
+  const setJevCredit = (c: JevCredit | null) => {
+    setJevCreditState(c);
+    remember(JEV_CREDIT_KEY, JSON.stringify(c));
+  };
+  const jevLeft = jevCredit && board ? jevBalance(jevCredit, board.jev_spend.all_usd) : null;
   const [prs, setPrs] = useState<PrLists | null>(null);
   const [prError, setPrError] = useState<string | null>(null);
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: DRAG_DISTANCE_PX } }));
@@ -7099,6 +7162,7 @@ export default function App() {
           waiting={waiting.length}
           limits={limits}
           jev={board?.jev_spend}
+          jevLeft={jevLeft}
           onSpace={goSpace}
           onUsage={() => setDialog("usage")}
           onSearch={() => setDialog("palette")}
@@ -7585,12 +7649,15 @@ export default function App() {
             onLoadHerdr={loadHerdr}
             onPickHerdr={pickHerdr}
             hasTypesafeKey={!!board?.reading_sort.has_key}
+            jevCredit={jevCredit}
+            jevAllUsd={board?.jev_spend.all_usd ?? 0}
+            onJevCredit={setJevCredit}
             run={run}
             report={report}
             onClose={() => setDialog(null)}
           />
         )}
-        {dialog === "usage" && <UsageDialog limits={limits} error={usageError} jev={board?.jev_spend} onClose={() => setDialog(null)} />}
+        {dialog === "usage" && <UsageDialog limits={limits} error={usageError} jev={board?.jev_spend} jevCredit={jevCredit} jevLeft={jevLeft} onClose={() => setDialog(null)} />}
         {dialog === "start" && selectedTodo && <StartDialog todo={selectedTodo} allTodos={allTodos} run={run} onClose={() => setDialog(null)} />}
         {dialog === "palette" && (
           <CommandPalette
