@@ -567,6 +567,15 @@ fn jev_credit_left_is_what_the_console_left_less_what_the_app_used_since() {
 }
 
 #[test]
+fn a_post_keeps_the_links_in_it() {
+    let (_d, db) = open();
+    let links = vec!["https://t.co/abc".to_string(), "https://t.co/def".to_string()];
+    let post = NewReading { kind: ReadingKind::Post, links: links.clone(), ..article("https://x.com/u/status/1", "@u: hi") };
+    assert_eq!(db.add_reading(&post).unwrap().links, links);
+    assert_eq!(db.add_reading(&article("https://a.example/", "A")).unwrap().links, Vec::<String>::new());
+}
+
+#[test]
 fn a_reading_read_is_kept_or_let_go() {
     let (_d, db) = open();
     let a = db.add_reading(&article("https://a.example/", "A")).unwrap();

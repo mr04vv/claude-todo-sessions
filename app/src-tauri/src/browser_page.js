@@ -289,15 +289,20 @@
   const TITLE_MAX = 120;
   const enc = encodeURIComponent;
   const oneLine = (text) => (text ?? "").trim().replace(/\s+/g, " ");
-  const keep = (kind, url, title, text, chapters) =>
-    send(`${BOOKMARK}?k=${kind}&u=${enc(url)}&t=${enc(title || url)}&x=${enc((text ?? "").slice(0, TEXT_MAX))}${chapters ? `&c=${enc(JSON.stringify(chapters))}` : ""}`);
+  const keep = (kind, url, title, text, chapters, links) =>
+    send(
+      `${BOOKMARK}?k=${kind}&u=${enc(url)}&t=${enc(title || url)}&x=${enc((text ?? "").slice(0, TEXT_MAX))}${chapters ? `&c=${enc(JSON.stringify(chapters))}` : ""}${links?.length ? `&l=${enc(JSON.stringify(links))}` : ""}`,
+    );
   const meta = (name) => document.querySelector(`meta[property="${name}"], meta[name="${name}"]`)?.content?.trim() ?? "";
   // An O'Reilly book's pages are under its own (…/library/view/<book>/<isbn>/).
   const OREILLY_BOOK = /^https:\/\/learning\.oreilly\.com\/library\/view\/[^/]+\/[^/]+\//;
   const X_HOST = /(^|\.)(x|twitter)\.com$/;
   const X_STATUS = /^\/([^/]+)\/status\/\d+/;
-  /// A post on X: its own page, its author and its text.
-  const keepPost = (url, user, text) => keep("post", url, `@${user}: ${oneLine(text).slice(0, TITLE_MAX) || url}`, text);
+  /// A post on X: its own page, its author, its text and the links in it
+  /// (its text's and its card's; X gives them as t.co, the app follows them).
+  const POST_LINKS = '[data-testid="tweetText"] a[href^="https://t.co/"], [data-testid="card.wrapper"] a[href]';
+  const linksOf = (post) => [...new Set([...(post?.querySelectorAll(POST_LINKS) ?? [])].map((a) => a.href))];
+  const keepPost = (url, user, text, post) => keep("post", url, `@${user}: ${oneLine(text).slice(0, TITLE_MAX) || url}`, text, null, linksOf(post));
   // ⌘⇧D (here, or from the app's side): the page shown. A book's page keeps
   // the book with the chapters it links to (its table of contents).
   window.__todoSessionsBookmark = () => {
@@ -316,7 +321,7 @@
       return keep("book", root, meta("og:title") || document.title.split("|").pop().trim(), meta("og:description") || meta("description"), chapters);
     }
     const status = X_HOST.test(location.hostname) && location.pathname.match(X_STATUS);
-    if (status) return keepPost(location.href.split("?")[0], status[1], document.querySelector('article [data-testid="tweetText"]')?.innerText);
+    if (status) return keepPost(location.href.split("?")[0], status[1], document.querySelector('article [data-testid="tweetText"]')?.innerText, document.querySelector("article"));
     keep("article", location.href, document.title, meta("og:description") || meta("description"));
   };
   // ⌥ + click keeps the link to read instead of following it.
@@ -341,7 +346,7 @@
       const link = post && [...post.querySelectorAll('a[href*="/status/"]')].find((a) => a.querySelector("time"));
       const status = link?.pathname.match(X_STATUS);
       if (!status) return;
-      keepPost(link.href.split("?")[0], status[1], post.querySelector('[data-testid="tweetText"]')?.innerText);
+      keepPost(link.href.split("?")[0], status[1], post.querySelector('[data-testid="tweetText"]')?.innerText, post);
     },
     true,
   );

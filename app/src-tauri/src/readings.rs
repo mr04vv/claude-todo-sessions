@@ -267,6 +267,7 @@ mod tests {
             chapters: chapters.iter().enumerate().map(|(i, t)| cts_core::Chapter { position: i as i64 + 1, title: t.to_string(), url: String::new(), read: false }).collect(),
             created_at: 0,
             kept: false,
+            links: vec![],
         }
     }
 

@@ -230,6 +230,8 @@ pub struct Reading {
     pub created_at: i64,
     /// Read and kept (a good one), as against still to read.
     pub kept: bool,
+    /// A post's links, as X gives them (t.co); none for the others.
+    pub links: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -308,6 +310,9 @@ pub struct NewReading {
     pub text: Option<String>,
     #[serde(default)]
     pub chapters: Vec<(String, String)>,
+    /// A post's links.
+    #[serde(default)]
+    pub links: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -728,7 +733,9 @@ CREATE TABLE IF NOT EXISTS readings (
     tags TEXT,
     created_at INTEGER NOT NULL,
     -- Read and kept (a good one), as against still to read.
-    kept INTEGER NOT NULL DEFAULT 0
+    kept INTEGER NOT NULL DEFAULT 0,
+    -- A post's links (as X gives them, t.co), one per line.
+    links TEXT
 );
 CREATE TABLE IF NOT EXISTS reading_chapters (
     reading_id INTEGER NOT NULL REFERENCES readings(id) ON DELETE CASCADE,
@@ -765,7 +772,7 @@ CREATE TABLE IF NOT EXISTS jev_credit (
 );
 ";
 
-const READING_COLS: &str = "id, kind, url, title, text, image, tags, created_at, kept";
+const READING_COLS: &str = "id, kind, url, title, text, image, tags, created_at, kept, links";
 /// A reading's tags are kept one per line (a tag may have a comma).
 const TAGS_SEPARATOR: char = '\n';
 
@@ -867,6 +874,7 @@ fn reading_from_row(r: &Row) -> rusqlite::Result<Reading> {
         chapters: Vec::new(),
         created_at: r.get(7)?,
         kept: r.get(8)?,
+        links: r.get::<_, Option<String>>(9)?.map(|l| l.lines().map(Into::into).collect()).unwrap_or_default(),
     })
 }
 
@@ -924,7 +932,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [now()],
         )?;
     }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone"), ("readings", "kept")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone"), ("readings", "kept"), ("readings", "links")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -1132,9 +1140,10 @@ impl Db {
     /// the chapters it lacks.
     pub fn add_reading(&self, r: &NewReading) -> Result<Reading> {
         let text = r.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        let links = Some(r.links.join("\n")).filter(|l| !l.is_empty());
         self.conn.execute(
-            "INSERT OR IGNORE INTO readings (kind, url, title, text, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![r.kind.as_str(), r.url, r.title.trim(), text, now()],
+            "INSERT OR IGNORE INTO readings (kind, url, title, text, created_at, links) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![r.kind.as_str(), r.url, r.title.trim(), text, now(), links],
         )?;
         let id: i64 = self.conn.query_row("SELECT id FROM readings WHERE url = ?1", [&r.url], |row| row.get(0))?;
         for (i, (title, url)) in r.chapters.iter().enumerate() {

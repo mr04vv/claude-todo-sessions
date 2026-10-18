@@ -1693,6 +1693,7 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
                 title: param("t"),
                 text: Some(param("x")).filter(|x| !x.is_empty()),
                 chapters: serde_json::from_str(&param("c")).unwrap_or_default(),
+                links: serde_json::from_str(&param("l")).unwrap_or_default(),
             };
             if let Err(e) = readings::add(app, reading) {
                 eprintln!("bookmark: {e}");
