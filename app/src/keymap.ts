@@ -50,6 +50,8 @@ export type Action =
   | "workFix"
   | "workHandled"
   | "workEnded"
+  | "workMoveDown"
+  | "workMoveUp"
   | "slackFilter"
   | "slackCompose"
   | "slackDone"
@@ -158,6 +160,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["workFix", "あなた待ちの CI の失敗・修正の依頼を、元のセッションに直させる"],
       ["workHandled", "指揮役から回されたものに対応した（あなた待ちから外す）"],
       ["workEnded", "終了したセッションを出す・隠す"],
+      ["workMoveDown", "選んでいる行を下へ（並べ替え。ドラッグでも）"],
+      ["workMoveUp", "選んでいる行を上へ（並べ替え。ドラッグでも）"],
     ],
   },
   {
@@ -255,6 +259,8 @@ const KEYS: Record<Action, string> = {
   workFix: "f",
   workHandled: "d",
   workEnded: "e",
+  workMoveDown: "shift+j",
+  workMoveUp: "shift+k",
   slackFilter: "f",
   slackDone: "e",
   slackForget: "d",

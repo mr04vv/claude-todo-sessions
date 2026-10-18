@@ -96,6 +96,7 @@ import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keyma
 import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
+import { arrange, moveTo } from "./order";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -113,8 +114,8 @@ const FOCUS_SETTLE_MS = 120;
 /// The shown tab's address is checked this often, for pages that move
 /// without loading or changing their title.
 const ADDRESS_POLL_MS = 500;
-/// A tab starts moving once the pointer has gone this far with the button down.
-const TAB_DRAG_PX = 4;
+/// A tab (or 作業's row) starts moving once the pointer has gone this far with the button down.
+const DRAG_START_PX = 4;
 
 /// The window is on screen. Closing it only hides it (the app goes on
 /// behind, back from the Dock), and there is no point polling for a page nobody sees.
@@ -1202,6 +1203,8 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
 const ASKS_ROW = "w:reviews";
 /// 作業's ちょっと Claude, the list's first row (j k reach it, Enter opens it).
 const QUICK_ROW = "quick";
+/// 作業's rows in the order the user put them in (their keys).
+const WORK_ORDER_KEY = "workOrder";
 
 /// Picks a todo's parent, or none. Subtasks go one level deep, so only
 /// top-level todos are offered and a todo with subtasks cannot move.
@@ -1678,6 +1681,34 @@ const STUDY_RIGHT = ["pinnotebooklm", "pinchatgpt", "pinclaude"];
 /// (⌃l), with what was selected on the other side typed in.
 const CHAT_PAGES = ["pinchatgpt", "pinclaude", "pinnotebooklm"];
 
+/// Items (elements with `attr`, their id) moved by dragging with the pointer:
+/// the item under it takes the dragged one's place, as `onMove(id, to)`.
+/// (Pointer events rather than HTML drag and drop, which the webview's file
+/// drop handling can swallow.)
+function useDragMove(attr: string, onMove: (id: string, to: string) => void) {
+  const [dragging, setDragging] = useState<string | null>(null);
+  const start = (e: React.PointerEvent, id: string) => {
+    if (e.button !== 0) return;
+    const startY = e.clientY;
+    let moved = false;
+    const move = (ev: PointerEvent) => {
+      if (!moved && Math.abs(ev.clientY - startY) < DRAG_START_PX) return;
+      moved = true;
+      setDragging(id);
+      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(`[${attr}]`)?.getAttribute(attr);
+      if (over && over !== id) onMove(id, over);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDragging(null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+  return { dragging, start };
+}
+
 /// The browser space's row for the new tab page (tab ids are letters and digits only).
 const NEW_TAB_ROW = "new-tab";
 
@@ -1713,29 +1744,8 @@ function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize
   /// A press on the tab list (not on a tab): the page shown takes the keyboard.
   onStrip: () => void;
 }) {
-  // Tabs move by dragging with the pointer; the tab under it takes the dragged
-  // one's place. (Pointer events rather than HTML drag and drop, which the
-  // webview's file drop handling can swallow.)
-  const [dragging, setDragging] = useState<string | null>(null);
-  const dragTab = (e: React.PointerEvent, id: string) => {
-    if (e.button !== 0) return;
-    const startY = e.clientY;
-    let moved = false;
-    const move = (ev: PointerEvent) => {
-      if (!moved && Math.abs(ev.clientY - startY) < TAB_DRAG_PX) return;
-      moved = true;
-      setDragging(id);
-      const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest<HTMLElement>("[data-tab]")?.dataset.tab;
-      if (over && over !== id) onMove(id, over);
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      setDragging(null);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  };
+  // Tabs move by dragging with the pointer.
+  const { dragging, start: dragTab } = useDragMove("data-tab", onMove);
   const { cursorId, setCursor, list } = useRowCursor([...PINNED_PAGES.map((p) => p.id), NEW_TAB_ROW, ...tabs.map((t) => t.id)], (id) =>
     id === NEW_TAB_ROW ? onNewTab() : PINNED_PAGES.some((p) => p.id === id) ? onPinned(id) : onSelect(id),
   );
@@ -5665,15 +5675,28 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   // Sessions put away (⌘⇧A) and routines' runs are out, but for one asking.
   const listed = (s: Session) => (!s.hidden && !s.routine) || s.state === "needs_input";
   const loose = board.inbox.filter((s) => (showEnded || live(s)) && listed(s) && !waitingSessions.has(s.session_id));
-  const reviews = loose.filter((s) => s.review_url);
-  const others = loose.filter((s) => !s.review_url);
+  // The todos at work, the reviews and the other sessions are in the order
+  // the user put them in (⇧j ⇧k, or dragging), those never moved on top.
+  const [order, setOrderState] = useState(() => loadJson<string[]>(WORK_ORDER_KEY, []));
+  const setOrder = (f: (prev: string[]) => string[]) =>
+    setOrderState((prev) => {
+      const next = f(prev);
+      remember(WORK_ORDER_KEY, JSON.stringify(next));
+      return next;
+    });
+  const atWorkRows = arrange(atWork.map((t): WorkRow => ({ key: `t${t.id}`, todo: t })), (r) => r.key, order);
+  const reviewRows = arrange(loose.filter((s) => s.review_url).map((s): WorkRow => ({ key: `s${s.session_id}`, session: s })), (r) => r.key, order);
+  const otherRows = arrange(loose.filter((s) => !s.review_url).map((s): WorkRow => ({ key: `s${s.session_id}`, session: s })), (r) => r.key, order);
+  const sections = [atWorkRows, reviewRows, otherRows];
+  /// Moves row `key` to where `to` is, both in one section (else nothing).
+  const moveRow = (key: string, to: string) => {
+    const section = sections.find((rows) => rows.some((r) => r.key === key));
+    if (!section?.some((r) => r.key === to)) return;
+    setOrder((prev) => moveTo(prev, arrange(section, (r) => r.key, prev).map((r) => r.key), key, to));
+  };
+  const { dragging, start: dragRow } = useDragMove("data-row", moveRow);
   const ended = board.inbox.filter((s) => !live(s) && listed(s)).length;
-  const rows: WorkRow[] = [
-    ...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })),
-    ...atWork.map((t) => ({ key: `t${t.id}`, todo: t })),
-    ...reviews.map((s) => ({ key: `s${s.session_id}`, session: s })),
-    ...others.map((s) => ({ key: `s${s.session_id}`, session: s })),
-  ];
+  const rows: WorkRow[] = [...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })), ...atWorkRows, ...reviewRows, ...otherRows];
   const open = (r: WorkRow) => (r.todo ? onPick({ todo: r.todo.id }) : r.session ? onPick({ session: r.session.session_id }) : undefined);
   const { cursorId, setCursor, list } = useRowCursor(
     [QUICK_ROW, ...rows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : [])],
@@ -5685,6 +5708,14 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     },
     (e, id) => {
       if (matches(e, "workEnded")) return (setShowEnded((v) => !v), true);
+      // ⇧j ⇧k: the row under the cursor a place down or up in its section.
+      const shift = matches(e, "workMoveDown") ? 1 : matches(e, "workMoveUp") ? -1 : 0;
+      if (shift && id) {
+        const section = sections.find((rows) => rows.some((r) => r.key === id));
+        const to = section?.[section.findIndex((r) => r.key === id) + shift];
+        if (to) moveRow(id, to.key);
+        return !!section;
+      }
       // The button of the side without its terminal: start, resume or open where it runs.
       if (matches(e, "start")) {
         const side = document.querySelector(".app.typing-right") ? "right" : "left";
@@ -5709,7 +5740,7 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   useEffect(() => void (rows[0] && setCursor(rows[0].key)), []); // eslint-disable-line react-hooks/exhaustive-deps
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
   const sessionRow = (r: WorkRow, s: Session) => (
-    <li key={r.key} data-row={r.key} className={`row work-row${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}`} onClick={() => open(r)}>
+    <li key={r.key} data-row={r.key} className={`row work-row${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
       <span className="work-line">
         <StateBadge state={s.state} unread={s.unread} />
         <span className="row-title ellipsis">{sessionLabel(s)}</span>
@@ -5786,13 +5817,14 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
           <div className="section-title">作業中</div>
           {atWork.length === 0 && <p className="muted hint">動いている todo はありません。管理で todo を任せると、ここに並びます。</p>}
           <ul className="rows compact">
-            {atWork.map((t) => {
+            {atWorkRows.map(({ todo: t }) => {
+              if (!t) return null;
               const children = todos.filter((c) => c.parent_id === t.id);
               const key = `t${t.id}`;
               const s = mainSession(t);
               const under = waiting.filter((w) => w.todo && (w.todo.id === t.id || w.todo.parent_id === t.id)).length;
               return (
-                <li key={key} data-row={key} className={`row work-row${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}`} onClick={() => onPick({ todo: t.id })}>
+                <li key={key} data-row={key} className={`row work-row${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
                   <span className="work-line">
                     {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={t.status} />}
                     <span className="mono muted">#{t.id}</span>
@@ -5812,16 +5844,16 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
             })}
           </ul>
         </section>
-        {reviews.length > 0 && (
+        {reviewRows.length > 0 && (
           <section>
             <div className="section-title">レビュー</div>
-            <ul className="rows compact">{reviews.map((s) => sessionRow({ key: `s${s.session_id}`, session: s }, s))}</ul>
+            <ul className="rows compact">{reviewRows.map((r) => r.session && sessionRow(r, r.session))}</ul>
           </section>
         )}
-        {others.length > 0 && (
+        {otherRows.length > 0 && (
           <section>
             <div className="section-title">todo のないセッション</div>
-            <ul className="rows compact">{others.map((s) => sessionRow({ key: `s${s.session_id}`, session: s }, s))}</ul>
+            <ul className="rows compact">{otherRows.map((r) => r.session && sessionRow(r, r.session))}</ul>
           </section>
         )}
         {ended > 0 && (
@@ -5830,7 +5862,7 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
           </button>
         )}
         <span className="muted small-text rail-hint">
-          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける · {keyLabel(keyOf("help"))} でキーの一覧
+          {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で開く · {keyLabel(keyOf("workMoveDown"))} {keyLabel(keyOf("workMoveUp"))}（ドラッグでも）で並べ替え · {keyLabel(keyOf("sidePane"))} でセッションへ · {keyLabel(keyOf("archive"))} で片付ける · {keyLabel(keyOf("help"))} でキーの一覧
         </span>
       </div>
       <Resizer label="作業の一覧の幅" cssVar="--rail-w" edge="right" width={width} min={RAIL_MIN_W} max={() => RAIL_MAX_W} onResize={onResize} />
