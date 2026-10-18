@@ -1,7 +1,9 @@
 // Readings (読みもの): kept from the pages (⌘⇧D, a link ⌥-clicked, X's
 // bookmark button, an O'Reilly book's page with its table of contents),
 // filled in with what their pages say, and sorted into tags with TypeSafe's
-// Jev (cts_core::tags) once an API key is kept in the Keychain.
+// Jev (cts_core::tags) once an API key is kept in the Keychain. With the same
+// key, posts on X's home timeline not about engineering fold away.
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -10,7 +12,7 @@ use cts_core::{NewReading, Reading, ReadingKind};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use crate::{err, logins, AppState};
+use crate::{cef_browser, err, logins, AppState};
 
 const KEY_SERVICE: &str = "shosai-typesafe";
 const KEY_ACCOUNT: &str = "api-key";
@@ -142,6 +144,42 @@ pub fn set_reading_tags(state: State<AppState>, id: i64, tags: Vec<String>) -> R
 #[tauri::command(async)]
 pub fn set_chapter_read(state: State<AppState>, reading_id: i64, position: i64, read: bool) -> Result<(), String> {
     state.db.lock().map_err(err)?.set_chapter_read(reading_id, position, read).map_err(err)
+}
+
+/// How likely each post seen on X's timeline (by its id) is about
+/// engineering, as Jev said, for as long as the app runs.
+#[derive(Default)]
+pub struct PostVerdicts(Mutex<HashMap<String, f64>>);
+
+/// A post on X's home timeline (`id`, its text) asked about: how likely it is
+/// about engineering goes back to the page, which folds it away when unlikely.
+/// With no key, or Jev failing, the page gets null and leaves it shown.
+pub fn on_post(app: &AppHandle, tab: &str, id: String, text: String) {
+    let (app, tab) = (app.clone(), tab.to_string());
+    std::thread::spawn(move || {
+        let probability = match post_verdict(&app, &id, &text) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("x post {id}: {e}");
+                None
+            }
+        };
+        let args = serde_json::to_string(&(id, probability)).unwrap_or_default();
+        if let Err(e) = cef_browser::eval(&app, &tab, &format!("window.__todoSessionsPostVerdict?.(...{args})")) {
+            eprintln!("x post verdict: {e}");
+        }
+    });
+}
+
+fn post_verdict(app: &AppHandle, id: &str, text: &str) -> Result<Option<f64>, String> {
+    let verdicts = app.state::<PostVerdicts>();
+    if let Some(p) = verdicts.0.lock().map_err(err)?.get(id) {
+        return Ok(Some(*p));
+    }
+    let Some(key) = api_key() else { return Ok(None) };
+    let p = cts_core::tags::engineering(&key, text)?;
+    verdicts.0.lock().map_err(err)?.insert(id.to_string(), p);
+    Ok(Some(p))
 }
 
 /// Keeps the TypeSafe API key (a blank one takes it out), then sorts what waits.

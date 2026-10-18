@@ -4,7 +4,8 @@
 // picking a Google result), as the user set them), the page translates where it is (Claude, through the app),
 // and what is worth reading is kept (読みもの): the page (⌘⇧D; an O'Reilly
 // book's page as the book, with its contents), a link ⌥-clicked, a post
-// bookmarked on X. A book's chapter read to its end is marked read.
+// bookmarked on X. A book's chapter read to its end is marked read. Posts on
+// X's home timeline not about engineering fold away (Jev, through the app).
 // It runs in the page's frames too (a doc's editor on claude.ai is one), which
 // get the app's keys as the page does and tell the app themselves (FRAME), but
 // for the page's own history keys.
@@ -36,6 +37,7 @@
   const CLOSE_TAB = "todo-sessions://close-tab";
   const BOOKMARK = "todo-sessions://bookmark";
   const CHAPTER_READ = "todo-sessions://chapter-read";
+  const X_POST = "todo-sessions://x-post";
   const NEW_TODO = "todo-sessions://new-todo";
   const ZOOM_IN = "todo-sessions://zoom-in";
   const ZOOM_OUT = "todo-sessions://zoom-out";
@@ -340,6 +342,72 @@
     },
     true,
   );
+  // On X's home timeline, a post not about engineering folds away to a line
+  // saying so (a click shows it): the app asks TypeSafe's Jev about each one
+  // and answers with __todoSessionsPostVerdict. A post without text stays.
+  const X_HOME = "/home";
+  const ENGINEERING_MIN = 0.5;
+  const postIdOf = (post) => [...post.querySelectorAll('a[href*="/status/"]')].find((a) => a.querySelector("time"))?.pathname.match(/\/status\/(\d+)/)?.[1];
+  const askPosts = () => {
+    if (location.pathname !== X_HOME) return;
+    for (const post of document.querySelectorAll('article[data-testid="tweet"]')) {
+      // X reuses a post's cell for another as the timeline scrolls.
+      const cell = post.closest('[data-testid="cellInnerDiv"]') ?? post;
+      const id = postIdOf(post);
+      if (!id || cell.dataset.tsPost === id) continue;
+      cell.dataset.tsPost = id;
+      delete cell.dataset.tsFold;
+      const text = post.querySelector('[data-testid="tweetText"]')?.innerText.trim();
+      if (!text) continue;
+      cell.dataset.tsFold = "asking";
+      send(`${X_POST}?i=${id}&t=${enc(text.slice(0, TEXT_MAX))}`);
+    }
+  };
+  /// How likely post `id` is about engineering (null: not known, it stays).
+  window.__todoSessionsPostVerdict = (id, probability) => {
+    for (const cell of document.querySelectorAll(`[data-ts-post="${id}"][data-ts-fold="asking"]`)) {
+      if (probability === null || probability >= ENGINEERING_MIN) {
+        delete cell.dataset.tsFold;
+        continue;
+      }
+      cell.dataset.tsFold = "folded";
+      cell.dataset.tsFoldLabel = `エンジニアリング以外の投稿を隠しています（${Math.round(probability * 100)}%）· クリックで表示`;
+    }
+  };
+  const watchPosts = () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      [data-ts-fold="asking"] article { opacity: 0.35; }
+      [data-ts-fold="folded"] article { display: none !important; }
+      [data-ts-fold="folded"]::before { content: attr(data-ts-fold-label); display: block; padding: 10px 16px; font-size: 13px;
+        color: rgb(113, 118, 123); border-bottom: 1px solid rgb(47, 51, 54); cursor: pointer; }`;
+    document.head.appendChild(style);
+    let scheduled = false;
+    new MutationObserver(() => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        askPosts();
+      });
+    }).observe(document.body, { childList: true, subtree: true });
+    askPosts();
+    window.addEventListener(
+      "click",
+      (e) => {
+        const cell = e.target instanceof Element ? e.target.closest('[data-ts-fold="folded"]') : null;
+        if (!cell) return;
+        e.preventDefault();
+        e.stopPropagation();
+        cell.dataset.tsFold = "shown";
+      },
+      true,
+    );
+  };
+  if (X_HOST.test(location.hostname)) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", watchPosts);
+    else watchPosts();
+  }
   // A book's chapter scrolled to its end is read (once per page).
   const END_SLACK_PX = 80;
   const readChapters = new Set();

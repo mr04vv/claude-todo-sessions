@@ -1,6 +1,8 @@
-//! Sorting a reading (an article, a post, a book) into the tags below with TypeSafe's Jev
-//! (https://docs.typesafe.ai/api): one yes/no (noul) question per tag, asked
-//! at once, and the tags likely enough are kept (several may be).
+//! What a reading or a post is about, asked of TypeSafe's Jev
+//! (https://docs.typesafe.ai/api). A reading (an article, a post, a book) is
+//! sorted into the tags below: one yes/no (noul) question per tag, asked at
+//! once, and the tags likely enough are kept (several may be). A post on X's
+//! timeline is asked whether it is about engineering.
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -67,20 +69,56 @@ pub fn tags_of(response: &Value) -> Result<Vec<String>, String> {
 
 /// Asks Jev which tags the reading has (none may fit).
 pub fn sort(api_key: &str, title: &str, url: &str, text: Option<&str>) -> Result<Vec<String>, String> {
+    tags_of(&ask(api_key, request(title, url, text))?)
+}
+
+/// The question's name for whether a post is about engineering.
+const ENGINEERING: &str = "engineering";
+
+/// The Jev request asking whether a post on X is about engineering.
+pub fn engineering_request(text: &str) -> Value {
+    json!({
+        "model": MODEL,
+        "state": text,
+        "questions": { ENGINEERING: {
+            "type": "noul",
+            "instructions": "Is this post on X (Twitter) related to engineering?",
+            "criteria": {
+                "true": "The post is about software development, programming, infrastructure, DevOps, developer tools, \
+                    ML/AI engineering, hardware engineering, or the careers, teams, and organizations of engineers.",
+                "false": "The post is about something else, such as daily life, politics, entertainment, sports, \
+                    general news, or marketing unrelated to building technology.",
+            },
+        }},
+    })
+}
+
+/// How likely the post is about engineering (0 to 1).
+pub fn engineering_of(response: &Value) -> Result<f64, String> {
+    response["answers"][ENGINEERING]["noul"].as_f64().ok_or_else(|| format!("Jev の答えが読めません: {response}"))
+}
+
+/// Asks Jev how likely a post on X is about engineering.
+pub fn engineering(api_key: &str, text: &str) -> Result<f64, String> {
+    engineering_of(&ask(api_key, engineering_request(text))?)
+}
+
+/// Sends a request to Jev; an error says the status and what came back.
+fn ask(api_key: &str, request: Value) -> Result<Value, String> {
     let tls = ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build();
     // An error's body says why (a wrong key, no access yet): it goes in the error.
     let config = ureq::Agent::config_builder().timeout_global(Some(TIMEOUT)).tls_config(tls).http_status_as_error(false).build();
     let mut response = ureq::Agent::new_with_config(config)
         .post(ENDPOINT)
         .header("Authorization", &format!("Bearer {api_key}"))
-        .send_json(request(title, url, text))
+        .send_json(request)
         .map_err(|e| format!("Jev: {e}"))?;
     let status = response.status().as_u16();
     if !response.status().is_success() {
         let body = response.body_mut().read_to_string().map_err(|e| format!("Jev {status}: {e}"))?;
         return Err(format!("Jev {status}: {body}"));
     }
-    tags_of(&response.body_mut().read_json().map_err(|e| format!("Jev: {e}"))?)
+    response.body_mut().read_json().map_err(|e| format!("Jev: {e}"))
 }
 
 #[cfg(test)]
@@ -120,5 +158,22 @@ mod tests {
     #[test]
     fn says_so_when_the_answers_are_not_there() {
         assert!(tags_of(&json!({})).unwrap_err().starts_with("Jev"));
+    }
+
+    #[test]
+    fn asks_whether_a_post_is_about_engineering() {
+        let r = engineering_request("Rust 2027 edition is out");
+        assert_eq!(r["model"], MODEL);
+        assert_eq!(r["state"], "Rust 2027 edition is out");
+        let q = &r["questions"][ENGINEERING];
+        assert_eq!(q["type"], "noul");
+        assert!(q["criteria"]["true"].as_str().unwrap().contains("software development"));
+        assert!(q["criteria"]["false"].as_str().unwrap().contains("daily life"));
+    }
+
+    #[test]
+    fn a_post_is_about_engineering_as_likely_as_jev_says() {
+        assert_eq!(engineering_of(&json!({ "answers": { ENGINEERING: { "type": "noul", "noul": 0.82 } } })), Ok(0.82));
+        assert!(engineering_of(&json!({ "answers": {} })).unwrap_err().starts_with("Jev"));
     }
 }

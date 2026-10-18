@@ -1658,6 +1658,8 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         Some("translate") => return translate::on_blocks(app, tab, &param("b")),
         Some("translate-selection") => return translate::on_selection(app, tab, param("i").parse().unwrap_or(0), param("t")),
         Some("translated") => return translate::on_translated(app, tab, param("on") == "1"),
+        // A post on X's home timeline, to fold away if not about engineering.
+        Some("x-post") => return readings::on_post(app, tab, param("i"), param("t")),
         // Kept to read (⌘⇧D, a link ⌥-clicked, X's bookmark button): the page keeps the keyboard.
         Some("bookmark") => {
             let reading = NewReading {
@@ -2726,6 +2728,7 @@ fn main() {
         .manage(translate::Kept::load())
         .manage(slack::Slack::new(slack_tx))
         .manage(readings::Sorting::load())
+        .manage(readings::PostVerdicts::default())
         .manage(AppState {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
