@@ -701,6 +701,11 @@ function relationLabel(todo: Todo, allTodos: Todo[]): string | null {
   return null;
 }
 
+/// Whether the pointer itself moved: a list opening under a still pointer
+/// (⌘⇧K's, under where it rests) gets hover events too, which must not pick
+/// a row away from where the keys put it.
+const pointerMoved = (e: React.MouseEvent) => e.movementX !== 0 || e.movementY !== 0;
+
 /// Closes a menu when the pointer goes down outside `root`.
 function useOutsideClose(root: React.RefObject<HTMLElement | null>, open: boolean, close: () => void) {
   useEffect(() => {
@@ -750,6 +755,7 @@ function useMenuKeys(open: boolean, close: () => void, first = 0) {
   };
   // The pointer marks the item it is over, so it and the keys agree.
   const onMouseMove = (e: React.MouseEvent) => {
+    if (!pointerMoved(e)) return;
     const i = items().indexOf((e.target as HTMLElement).closest<HTMLButtonElement>("[role=menuitem]")!);
     if (i >= 0 && i !== active) setActive(i);
   };
@@ -920,7 +926,7 @@ function RepoChoice({ local, groups, exclude = [], value = "", placeholder, onPi
                   role="option"
                   aria-selected={i === active}
                   className={`combo-item${i === active ? " active" : ""}`}
-                  onMouseEnter={() => setActive(i)}
+                  onMouseMove={(e) => pointerMoved(e) && setActive(i)}
                   onMouseDown={(e) => {
                     e.preventDefault();
                     pick(c);
@@ -4833,7 +4839,7 @@ function CommandPalette({ commands, todos, readings, start, onOpenTodo, onRead, 
               role="option"
               aria-selected={i === active}
               className={i === active ? "active" : ""}
-              onMouseEnter={() => setActive(i)}
+              onMouseMove={(e) => pointerMoved(e) && setActive(i)}
               onMouseDown={(e) => {
                 e.preventDefault();
                 pick(c);
