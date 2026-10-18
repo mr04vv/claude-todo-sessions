@@ -5751,6 +5751,28 @@ interface WorkRow {
   session?: Session;
 }
 
+/// 作業's list as 作業 and ⌘⇧K show it: あなた待ち (but the review requests
+/// not started, counted apart), then the work in the order chosen (by hand,
+/// or the latest first by `timeOf`): the todos at work (not done; a subtask's
+/// at its parent) and the sessions of no todo (listed; the ended too with `ended`).
+function workListOf(board: Board, waiting: WaitItem[], sort: WorkSort, order: string[], ended: boolean) {
+  const live = (s: Session) => s.state !== "ended";
+  const todos = board.todos.filter((t) => t.status !== "done");
+  // A todo is at work while it or (for a parent) one of its subtasks has a live session.
+  const atWork = todos.filter((t) => t.parent_id === null && (t.sessions.some(live) || todos.some((c) => c.parent_id === t.id && c.sessions.some(live))));
+  const waitingSessions = new Set(waiting.flatMap((w) => (w.session ? [w.session.session_id] : [])));
+  const waits = waiting.filter((w) => !isReviewAsk(w));
+  // Sessions put away (⌘⇧A) and routines' runs are out, but for one asking.
+  const listed = (s: Session) => (!s.hidden && !s.routine) || s.state === "needs_input";
+  const loose = board.inbox.filter((s) => (ended || live(s)) && listed(s) && !waitingSessions.has(s.session_id));
+  /// A row's sessions: its own, or its todo's and its subtasks'.
+  const sessionsOf = (r: WorkRow) => (r.session ? [r.session] : todos.filter((t) => t.id === r.todo?.id || t.parent_id === r.todo?.id).flatMap((t) => t.sessions));
+  /// When a row's work last moved or began (as ordered by), its latest session's.
+  const timeOf = (r: WorkRow) => Math.max(0, ...sessionsOf(r).map((s) => (sort === "started" ? s.started_at : s.state_at)));
+  const work = inWorkOrder([...atWork.map((t): WorkRow => ({ key: `t${t.id}`, todo: t })), ...loose.map((s): WorkRow => ({ key: `s${s.session_id}`, session: s }))], sort, (r) => r.key, order, timeOf);
+  return { todos, waits, asks: waiting.length - waits.length, work, timeOf, endedCount: board.inbox.filter((s) => !live(s) && listed(s)).length };
+}
+
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
 /// then the work in one list (the todos at work, the reviews and the sessions
 /// of no todo), in the order chosen. j k move, Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
@@ -5777,29 +5799,14 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
 }) {
   const fix = useContext(FixContext);
   const [showEnded, setShowEnded] = useState(false);
-  const live = (s: Session) => s.state !== "ended";
-  const todos = board.todos.filter((t) => t.status !== "done");
-  // A todo is at work while it or (for a parent) one of its subtasks has a live session.
-  const atWork = todos.filter((t) => t.parent_id === null && (t.sessions.some(live) || todos.some((c) => c.parent_id === t.id && c.sessions.some(live))));
-  const waitingSessions = new Set(waiting.flatMap((w) => (w.session ? [w.session.session_id] : [])));
-  const shownWaits = waiting.filter((w) => !isReviewAsk(w));
-  const asks = waiting.length - shownWaits.length;
-  // Sessions put away (⌘⇧A) and routines' runs are out, but for one asking.
-  const listed = (s: Session) => (!s.hidden && !s.routine) || s.state === "needs_input";
-  const loose = board.inbox.filter((s) => (showEnded || live(s)) && listed(s) && !waitingSessions.has(s.session_id));
   // The work (the todos at work, the reviews and the sessions of no todo, in
   // one list) is in the order chosen (s): the one the user put it in (⇧j ⇧k,
   // or dragging; what was never moved on top), or the latest work first, by
   // when it last moved or began.
-  /// A row's sessions: its own, or its todo's and its subtasks'.
-  const sessionsOf = (r: WorkRow) => (r.session ? [r.session] : todos.filter((t) => t.id === r.todo?.id || t.parent_id === r.todo?.id).flatMap((t) => t.sessions));
-  /// When a row's work last moved or began (as ordered by), its latest session's.
-  const timeOf = (r: WorkRow) => Math.max(0, ...sessionsOf(r).map((s) => (sort === "started" ? s.started_at : s.state_at)));
-  const ordered = (rows: WorkRow[]) => inWorkOrder(rows, sort, (r) => r.key, order, timeOf);
+  const { todos, waits: shownWaits, asks, work: workRows, timeOf, endedCount: ended } = workListOf(board, waiting, sort, order, showEnded);
   // Ordered by a time, the list is headed by span: 今日, 昨日, … 1ヶ月以上前.
   const now = new Date();
   const groupOf = (r: WorkRow) => (sort === "manual" ? null : ageGroup(timeOf(r), now));
-  const workRows = ordered([...atWork.map((t): WorkRow => ({ key: `t${t.id}`, todo: t })), ...loose.map((s): WorkRow => ({ key: `s${s.session_id}`, session: s }))]);
   /// Moves row `key` to where `to` is, both in the work (not あなた待ち):
   /// the list is ordered by hand from then on, as it was shown.
   const moveRow = (key: string, to: string) => {
@@ -5809,7 +5816,6 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
     if (!manual) onSort("manual");
   };
   const { dragging, start: dragRow } = useDragMove("data-row", moveRow);
-  const ended = board.inbox.filter((s) => !live(s) && listed(s)).length;
   const rows: WorkRow[] = [...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })), ...workRows];
   const open = (r: WorkRow) => (r.todo ? onPick({ todo: r.todo.id }) : r.session ? onPick({ session: r.session.session_id }) : undefined);
   const { cursorId, setCursor, list } = useRowCursor(
@@ -7344,29 +7350,38 @@ export default function App() {
       remember(WORK_ORDER_KEY, JSON.stringify(next));
       return next;
     });
-  // The live sessions in 作業's order (headed by span, 今日 to 1ヶ月以上前,
-  // when that goes by a time), each opened in 作業. A todo's sessions stand
-  // where its row (its parent's, a subtask's) stands there.
+  // ⌘⇧K: 作業's list as 作業 shows it (あなた待ち, then the work in the order
+  // chosen, headed by span when by a time), each row opened there.
   const sessionCommands = (): Command[] => {
+    if (!board) return [];
     const now = new Date();
-    const items = (board ? sessionItemsOf(board) : []).filter(({ session: s }) => s.state !== "ended" && listedSession(s)).sort((a, b) => b.session.state_at - a.session.state_at);
-    type Item = (typeof items)[number];
-    const timeOf = ({ session: s }: Item) => (workSort === "started" ? s.started_at : s.state_at);
-    const keyOf = ({ session: s, todo }: Item) => (todo ? `t${todo.parent_id ?? todo.id}` : `s${s.session_id}`);
-    return inWorkOrder(items, workSort, keyOf, workOrder, timeOf).map((item) => {
-      const { session: s, todo } = item;
-      return {
-        group: workSort === "manual" ? undefined : ageGroup(timeOf(item), now),
-        key: `session:${s.session_id}`,
-        icon: <StateBadge state={s.state} unread={s.unread} />,
-        label: todo ? `${sessionLabel(s)} · #${todo.id} ${todo.title}` : sessionLabel(s),
-        hint: [prStageLabel(todo), s.agent === "codex" ? "Codex" : isCloud(s) ? "Cloud" : "Local", ago(s.state_at)].filter(Boolean).join(" · "),
-        keywords: [STATE_LABEL[s.state], s.unread ? "新着" : ""].join(" "),
-        run: () => openWork({ session: s.session_id }),
-      };
-    });
+    const { waits, asks, work, timeOf } = workListOf(board, waiting, workSort, workOrder, false);
+    const open = (todo: Todo | undefined, s: Session | undefined) => () => (todo ? openWork({ todo: todo.id }) : s && openWork({ session: s.session_id }));
+    return [
+      ...waits.map((w) => ({
+        key: `wait:${w.key}`,
+        group: "あなた待ち",
+        icon: w.session ? <StateBadge state={w.session.state} unread={w.session.unread} /> : undefined,
+        label: `${w.reasons.map((x) => WAIT_WORD[x]).join("・")}：${w.todo ? `#${w.todo.id} ` : ""}${w.session ? sessionLabel(w.session) : (w.todo?.title ?? w.review?.title ?? "")}`,
+        hint: w.line,
+        run: open(w.todo, w.session),
+      })),
+      ...(asks > 0 ? [{ key: "asks", group: "あなた待ち", label: `まだ始めていないレビュー依頼 ${asks} 件`, hint: "管理の PR で始めます", run: () => setView("prs") }] : []),
+      ...work.map((r) => {
+        const s = r.session ?? (r.todo && mainSession(r.todo));
+        return {
+          key: r.key,
+          group: workSort === "manual" ? "作業中" : ageGroup(timeOf(r), now),
+          icon: s ? <StateBadge state={s.state} unread={s.unread} /> : r.todo && <StatusIcon status={r.todo.status} />,
+          label: r.todo ? `#${r.todo.id} ${r.todo.title}` : s ? `${s.review_url ? `${prRef(s.review_url)} · ` : ""}${sessionLabel(s)}` : r.key,
+          hint: [prStageLabel(r.todo), s && placeOf(s), s && ago(s.state_at)].filter(Boolean).join(" · "),
+          keywords: s ? [STATE_LABEL[s.state], s.unread ? "新着" : ""].join(" ") : undefined,
+          run: open(r.todo, r.session),
+        };
+      }),
+    ];
   };
-  const sessionsCommand: Command = { key: "sessions", label: "セッション一覧", hint: `${allSessions.length}件`, run: () => {}, items: sessionCommands };
+  const sessionsCommand: Command = { key: "sessions", label: "セッション一覧（作業の一覧）", run: () => {}, items: sessionCommands };
   /// The sessions of no todo, to link one: listed ones, the one that changed last first.
   const unlinkedSessions = (board?.inbox ?? []).filter(listedSession).sort((a, b) => b.state_at - a.state_at);
   /// ⌘K's list linking session `s` to a todo not done (the one changed last
