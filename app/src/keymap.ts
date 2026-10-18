@@ -201,8 +201,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
   {
     group: "⌘K のメニュー",
     items: [
-      ["paletteDown", "下へ"],
-      ["paletteUp", "上へ"],
+      ["paletteDown", "下へ（一覧・メニューでも）"],
+      ["paletteUp", "上へ（一覧・メニューでも）"],
     ],
   },
 ];

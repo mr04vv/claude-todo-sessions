@@ -709,10 +709,10 @@ function useOutsideClose(root: React.RefObject<HTMLElement | null>, open: boolea
   }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
-/// ↓ (or the down key, j) is 1, ↑ (or k) -1, else 0.
+/// ↓ (or the down key, j, or the menu's ⌃j) is 1, ↑ (or k, ⌃k) -1, else 0.
 const stepOf = (e: KeyboardEvent) => {
   const arrow = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
-  return (arrow && e.key === "ArrowDown") || matches(e, "down") ? 1 : (arrow && e.key === "ArrowUp") || matches(e, "up") ? -1 : 0;
+  return (arrow && e.key === "ArrowDown") || matches(e, "down") || matches(e, "paletteDown") ? 1 : (arrow && e.key === "ArrowUp") || matches(e, "up") || matches(e, "paletteUp") ? -1 : 0;
 };
 
 /// A menu that takes the keyboard when it opens: ↑↓ or j k move, Enter
@@ -6299,12 +6299,13 @@ export default function App() {
         setFocusTyping("left");
         return give(splitLeft, false);
       }
-      // To the list on the left.
+      // To the list on the left: nothing focused in it (its rows take j k as
+      // they are; a button there, focused, would take Enter).
       setFocusTyping(null);
       setTypingSide("app");
       noteFocusRequest();
       api.focusAppPage().catch(report);
-      return void document.querySelector<HTMLElement>(".split-rail [data-row], .split-rail button")?.focus();
+      return void (document.activeElement as HTMLElement | null)?.blur();
     }
     // Left from the list is the sidebar (管理's, 学習's filters), or with none the rail.
     if (!pane) {
@@ -6875,7 +6876,7 @@ export default function App() {
         return;
       }
       const z = zoneRef.current;
-      if (z && !e.metaKey && !e.ctrlKey) {
+      if (z && !e.metaKey && (!e.ctrlKey || stepOf(e))) {
         // A zone's keys are its own (picking an entry re-renders at once,
         // and the pages' keys must not take the same Enter after it).
         e.stopImmediatePropagation();
