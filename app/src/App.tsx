@@ -53,6 +53,7 @@ import {
   issueRef,
   MODELS,
   type Board,
+  type Database,
   type Reading,
   type ReadingKind,
   type ReadingSort,
@@ -150,11 +151,21 @@ const HERDR_SESSION_KEY = "herdrSession";
 type Space = "manage" | "work" | "study" | "browser";
 const SPACE_KEY = "space";
 
-/// 管理's pages. `doing`: the Todo page's list of what is Doing (today's work), on its own.
-type View = "todos" | "doing" | "prs" | "artifacts" | "slack";
+/// 管理's pages. `doing`: the Todo page's list of what is Doing (today's work), on its own;
+/// `db:<id>`: the Todo page's todos in a database the user made (Frontend Backlog).
+type View = "todos" | "doing" | "prs" | "artifacts" | "slack" | `db:${number}`;
+const PAGES = ["todos", "doing", "prs", "artifacts", "slack"] as const;
+const dbView = (id: number): View => `db:${id}`;
+/// The database view `v` shows, if it shows one.
+const dbOfView = (v: View) => (v.startsWith("db:") ? Number(v.slice("db:".length)) : null);
+/// 管理's page as last left (a database's too).
+const loadView = (): View => {
+  const v = loadText(VIEW_KEY);
+  return (PAGES as readonly string[]).includes(v) || /^db:\d+$/.test(v) ? (v as View) : "todos";
+};
 /// The sidebar's groups, in its order.
-type NavGroup = "仕事" | "連絡";
-const NAV_GROUPS: NavGroup[] = ["仕事", "連絡"];
+type NavGroup = "仕事" | "DB" | "連絡";
+const NAV_GROUPS: NavGroup[] = ["仕事", "DB", "連絡"];
 type Layout = "board" | "list";
 type GroupBy = "repo" | "parent";
 
@@ -2233,8 +2244,66 @@ function StartDialog({ todo, allTodos, run, onClose }: { todo: Todo; allTodos: T
   );
 }
 
-function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
+/// A database to put a todo in, or none.
+function DatabaseSelect({ databases, value, onPick }: { databases: Database[]; value: number | null; onPick: (id: number | null) => void }) {
+  return (
+    <select className="select" value={value ?? ""} aria-label="DB" onClick={stop} onChange={(e) => onPick(e.target.value ? Number(e.target.value) : null)}>
+      <option value="">なし</option>
+      {databases.map((d) => (
+        <option key={d.id} value={d.id}>
+          {d.name}
+        </option>
+      ))}
+    </select>
+  );
+}
+
+/// A database's name: a new one's (shown once made), or `database`'s put right.
+function DatabaseDialog({ database, databases, run, onMade, onClose }: {
+  database: Database | null;
+  databases: Database[];
+  run: (f: () => Promise<unknown>) => void;
+  onMade: (d: Database) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(database?.name ?? "");
+  const trimmed = name.trim();
+  const taken = databases.some((d) => d.name === trimmed && d.id !== database?.id);
+  const save = () => {
+    if (!trimmed || taken) return;
+    onClose();
+    run(async () => (database ? api.renameDatabase(database.id, trimmed) : onMade(await api.createDatabase(trimmed))));
+  };
+  return (
+    <Modal
+      title={database ? "DB の名前を変える" : "新しい DB"}
+      onClose={onClose}
+      footer={
+        <>
+          <span className="grow" />
+          <button className="ghost" onClick={onClose}>
+            やめる
+          </button>
+          <button className="primary" disabled={!trimmed || taken} onClick={save}>
+            {database ? "変える" : "作る"}
+          </button>
+        </>
+      }
+    >
+      <label className="field">
+        <span>名前</span>
+        <input autoFocus value={name} placeholder="Frontend Backlog" onChange={(e) => setName(e.target.value)} onKeyDown={(e) => isEnter(e) && save()} />
+      </label>
+      {taken && <p className="muted small-text">同じ名前の DB があります。</p>}
+      {!database && <p className="muted small-text">管理のサイドバーの「DB」に並びます。todo はシートの「DB」か、{keyLabel(keyOf("palette"))} の「DB に入れる」で入れます。</p>}
+    </Modal>
+  );
+}
+
+function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, databases, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
   todo: Todo;
+  /// The databases the user made, to put the todo in one.
+  databases: Database[];
   /// Every artifact: the todo's (and its subtasks') are listed.
   artifacts: Artifact[];
   /// あなた待ち, for what of it is under this todo.
@@ -2374,6 +2443,14 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
           <dt>リポジトリ</dt>
           <dd>
             <RepoChips todo={todo} local={local} groups={groups} update={update} />
+          </dd>
+          <dt>DB</dt>
+          <dd>
+            {databases.length > 0 ? (
+              <DatabaseSelect databases={databases} value={databases.find((d) => d.todos.includes(todo.id))?.id ?? null} onPick={(id) => run(() => api.setTodoDatabase(todo.id, id))} />
+            ) : (
+              <span className="muted">まだありません（{keyLabel(keyOf("palette"))} の「新しい DB を作る」から）</span>
+            )}
           </dd>
           <dt>親</dt>
           <dd>
@@ -4330,10 +4407,13 @@ function Modal({ title, onClose, children, footer, wide }: {
 /// ⌘N: a todo in one go. 「作って任せる」 (⌘Enter) makes it and starts its
 /// session as last time (behind: nothing comes forward); 「置いておく」 (Enter)
 /// only makes it, and the dialog stays for the next.
-function AddTodoDialog({ local, groups, initialRepo, initialMemo, run, onClose, onOpenTodo, onImport }: {
+function AddTodoDialog({ local, groups, databases, initialRepo, initialDatabase, initialMemo, run, onClose, onOpenTodo, onImport }: {
   local: LocalRepo[];
   groups: string[];
+  databases: Database[];
   initialRepo: string | null;
+  /// The database the new todo goes in (the one shown).
+  initialDatabase: number | null;
   /// What the memo starts with (a Slack message's 「Todo にする」).
   initialMemo?: string;
   run: (f: () => Promise<unknown>) => void;
@@ -4348,12 +4428,17 @@ function AddTodoDialog({ local, groups, initialRepo, initialMemo, run, onClose, 
   const [memo, setMemo] = useState(initialMemo ?? "");
   const [repo, setRepo] = useState(initialRepo && initialRepo !== NO_REPO_LANE ? initialRepo : "");
   const [issueUrl, setIssueUrl] = useState("");
+  const [database, setDatabase] = useState(initialDatabase);
   const [plan, setPlan] = useState(false);
   const [added, setAdded] = useState<Todo[]>([]);
   const titleRef = useRef<HTMLInputElement>(null);
   useEffect(() => titleRef.current?.focus(), []);
   const launch = prefs[plan ? "plan" : "direct"];
-  const make = () => api.createTodo({ title: title.trim(), memo: memo.trim() || undefined, repos: repo ? [repo] : [], cwd: local.find((r) => r.key === repo)?.path, issue_url: issueUrl.trim() || undefined });
+  const make = async () => {
+    const todo = await api.createTodo({ title: title.trim(), memo: memo.trim() || undefined, repos: repo ? [repo] : [], cwd: local.find((r) => r.key === repo)?.path, issue_url: issueUrl.trim() || undefined });
+    if (database !== null) await api.setTodoDatabase(todo.id, database);
+    return todo;
+  };
   const keep = () => {
     if (!title.trim()) return;
     run(async () => {
@@ -4419,6 +4504,12 @@ function AddTodoDialog({ local, groups, initialRepo, initialMemo, run, onClose, 
           <input value={issueUrl} placeholder="https://github.com/…" onChange={(e) => setIssueUrl(e.target.value)} onKeyDown={(e) => isEnter(e) && !e.metaKey && keep()} />
         </label>
       </div>
+      {databases.length > 0 && (
+        <label className="field">
+          <span>DB（任意）</span>
+          <DatabaseSelect databases={databases} value={database} onPick={setDatabase} />
+        </label>
+      )}
       <div className="field">
         <span>任せ方（前回の設定）</span>
         <LaunchControls plan={plan} launch={launch} onPlan={setPlan} onLaunch={(patch) => setLaunch(plan, patch)} />
@@ -4840,7 +4931,7 @@ function UsageDialog({ limits, error, jev, jevCredit, jevLeft, onClose }: {
 }
 
 type Selection = { kind: "todo"; id: number } | null;
-type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "start" | "settings" | "usage" | null;
+type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "start" | "settings" | "usage" | "database" | null;
 
 /// A page's alert, confirm or prompt, as the app's dialog (the page waits for the answer).
 function PageDialog({ ask, onAnswer }: { ask: PageDialogAsk; onAnswer: (ok: boolean, text?: string) => void }) {
@@ -6560,7 +6651,7 @@ export default function App() {
       else (document.activeElement as HTMLElement | null)?.blur();
     }
   }, [dialogUp]); // eslint-disable-line react-hooks/exhaustive-deps
-  const [view, setViewState] = useState<View>(() => load(VIEW_KEY, ["todos", "doing", "prs", "artifacts", "slack"] as const, "todos"));
+  const [view, setViewState] = useState<View>(loadView);
   const viewRef = useRef(view);
   viewRef.current = view;
   const [layout, setLayoutState] = useState<Layout>(() => load(LAYOUT_KEY, ["board", "list"] as const, "board"));
@@ -6872,6 +6963,7 @@ export default function App() {
       const cwd = repos.length === 1 ? local.find((r) => r.key === repos[0])?.path : undefined;
       const todo = await api.createTodo({ title, repos, cwd, parent_id: lane.parent?.id });
       if (status !== "todo") await api.updateTodo(todo.id, { status });
+      if (openDb) await api.setTodoDatabase(todo.id, openDb.id);
     });
 
   const onDragStart = ({ active }: DragStartEvent) => setDragging(Number(String(active.id).split(":")[1]));
@@ -6892,12 +6984,35 @@ export default function App() {
   // The Doing page is the Todo page's list of the Doing todos alone, its
   // filter and folds left to the Todo page.
   const doingView = view === "doing";
-  const todoView = view === "todos" || doingView;
+  // A database's page is the Todo page's, of the todos in it alone.
+  const databases = board?.databases ?? [];
+  const openDbId = dbOfView(view);
+  const openDb = databases.find((d) => d.id === openDbId) ?? null;
+  const todoView = view === "todos" || doingView || openDbId !== null;
+  const databaseOf = (todoId: number) => databases.find((d) => d.todos.includes(todoId));
+  /// The database dialog's: one to rename, or null for a new one.
+  const [renamingDb, setRenamingDb] = useState<Database | null>(null);
+  const askDatabase = (d: Database | null) => {
+    setRenamingDb(d);
+    setDialog("database");
+  };
+  const [deletingDb, setDeletingDb] = useState(false);
+  useEffect(() => setDeletingDb(false), [openDbId]);
+  /// Its todos stay, in no database; its page, shown, gives way to the Todo page.
+  const deleteDatabase = (d: Database) => {
+    if (openDbId === d.id) {
+      remember(VIEW_KEY, "todos");
+      setViewState("todos");
+    }
+    run(() => api.deleteDatabase(d.id));
+  };
   const doingTodos = shownTodos.filter((t) => t.status === "doing");
+  // (A database just made has none until the board has it.)
+  const pageTodos = doingView ? doingTodos : openDbId !== null ? visibleTodos.filter((t) => openDb?.todos.includes(t.id)) : visibleTodos;
   const pageLayout: Layout = doingView ? "list" : layout;
   const pageFolded = doingView ? new Set<Status>() : foldedCols;
   // A Done parent without shown subtasks is a card like any other.
-  const lanes = buildLanes(doingView ? doingTodos : visibleTodos, groupBy, shownTodos);
+  const lanes = buildLanes(pageTodos, groupBy, shownTodos);
   const repoLanes = buildLanes(shownTodos, "repo", shownTodos);
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
@@ -6924,7 +7039,7 @@ export default function App() {
   /// あなた待ち: 作業, whose list has it at the top.
   const showWaiting = () => goSpace("work");
   const openTodoCount = allTodos.filter((t) => t.status !== "done").length;
-  const colCounts = Object.fromEntries(COLUMNS.map((c) => [c.status, visibleTodos.filter((t) => t.status === c.status).length])) as Record<Status, number>;
+  const colCounts = Object.fromEntries(COLUMNS.map((c) => [c.status, pageTodos.filter((t) => t.status === c.status).length])) as Record<Status, number>;
 
   const openTodo = (id: number) => {
     setSelection({ kind: "todo", id });
@@ -7022,9 +7137,19 @@ export default function App() {
   // 管理's sidebar lists the objects only, each with what of it waits on the
   // user (or how many there are); how a list shows is chosen on its page.
   const nav: { key: string; group: NavGroup; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
-    { key: "todos", group: "仕事", label: "Todo", icon: "board", count: openTodoCount, on: todoView, go: () => setView(todoView ? view : "todos") },
+    { key: "todos", group: "仕事", label: "Todo", icon: "board", count: openTodoCount, on: view === "todos" || doingView, go: () => setView(doingView ? view : "todos") },
     { key: "prs", group: "仕事", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent" title="まだレビューを始めていないレビュー依頼">レビュー {reviewCount}</span> },
     { key: "artifacts", group: "仕事", label: "成果物", icon: "open", count: board?.artifacts.length, on: view === "artifacts", go: () => setView("artifacts") },
+    ...databases.map((d) => ({
+      key: `db:${d.id}`,
+      group: "DB" as const,
+      label: d.name,
+      icon: "list" as const,
+      count: d.todos.filter((id) => allTodos.find((t) => t.id === id)?.status !== "done").length,
+      on: openDbId === d.id,
+      go: () => setView(dbView(d.id)),
+    })),
+    { key: "db:new", group: "DB", label: "新しい DB", icon: "plus", on: false, go: () => askDatabase(null) },
     {
       key: "slack",
       group: "連絡",
@@ -7083,6 +7208,33 @@ export default function App() {
     { key: "usage", label: "使用量（Claude・Jev）", run: () => setDialog("usage") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい Todo", hint: keyLabel(keyOf("newTodo")), run: () => setDialog("add") },
+    ...(openDb
+      ? [
+          { key: "renameDatabase", label: `DB「${openDb.name}」の名前を変える`, run: () => askDatabase(openDb) },
+          {
+            key: "deleteDatabase",
+            label: `DB「${openDb.name}」を消す（中の todo は残ります）`,
+            run: () => {},
+            items: () => [
+              { key: "yes", label: "消す", run: () => deleteDatabase(openDb) },
+              { key: "no", label: "やめる", run: () => {} },
+            ],
+          },
+        ]
+      : []),
+    ...(selectedTodo && databases.length > 0
+      ? [
+          {
+            key: "todoDatabase",
+            label: `#${selectedTodo.id} を DB に入れる`,
+            run: () => {},
+            items: () => [
+              ...databases.map((d) => ({ key: `db:${d.id}`, label: d.name, hint: databaseOf(selectedTodo.id)?.id === d.id ? "入っている" : undefined, run: () => run(() => api.setTodoDatabase(selectedTodo.id, d.id)) })),
+              ...(databaseOf(selectedTodo.id) ? [{ key: "none", label: "DB から外す", run: () => run(() => api.setTodoDatabase(selectedTodo.id, null)) }] : []),
+            ],
+          },
+        ]
+      : []),
     ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: bookmarkShown }] : []),
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
@@ -7253,16 +7405,18 @@ export default function App() {
                 {todoView && (
                   <>
                     <header className="toolbar">
-                      <h1>Todo</h1>
+                      <h1>{openDbId !== null ? (openDb?.name ?? "DB") : "Todo"}</h1>
                       <div className="segmented" role="group" aria-label="見え方">
                         {(["board", "list"] as const).map((l) => (
-                          <button key={l} className={!doingView && layout === l ? "on" : ""} aria-pressed={!doingView && layout === l} onClick={() => showTodos(l)}>
+                          <button key={l} className={!doingView && layout === l ? "on" : ""} aria-pressed={!doingView && layout === l} onClick={() => (openDb ? setLayout(l) : showTodos(l))}>
                             {l === "board" ? "カンバン" : "リスト"}
                           </button>
                         ))}
-                        <button className={doingView ? "on" : ""} aria-pressed={doingView} title="今日やるもの（Doing の todo）だけ" onClick={() => setView("doing")}>
-                          Doing {doingTodos.length}
-                        </button>
+                        {!openDb && (
+                          <button className={doingView ? "on" : ""} aria-pressed={doingView} title="今日やるもの（Doing の todo）だけ" onClick={() => setView("doing")}>
+                            Doing {doingTodos.length}
+                          </button>
+                        )}
                       </div>
                       <div className="segmented" role="group" aria-label="まとめ方">
                         {GROUPINGS.map((g) => (
@@ -7274,7 +7428,7 @@ export default function App() {
                       {!doingView && (
                         <TodoFilterBar filter={todoFilter} version={`${layout}:${filterVersion}`} places={repoLanes.map((l) => l.key)} onChange={(f) => setTodoFilter(f, f === NO_FILTER)} onSave={saveFilter} />
                       )}
-                      {!doingView && savedFilters.length > 0 && (
+                      {!doingView && !openDb && savedFilters.length > 0 && (
                         <select
                           className="select compact"
                           value={savedFilters.find((f) => f.layout === layout && sameFilter(todoFilter, f.filter))?.id ?? ""}
@@ -7293,7 +7447,7 @@ export default function App() {
                           ))}
                         </select>
                       )}
-                      {!doingView && savedFilters.some((f) => f.layout === layout && sameFilter(todoFilter, f.filter)) && (
+                      {!doingView && !openDb && savedFilters.some((f) => f.layout === layout && sameFilter(todoFilter, f.filter)) && (
                         <button
                           className="ghost icon"
                           aria-label="このビューを消す"
@@ -7304,6 +7458,27 @@ export default function App() {
                         </button>
                       )}
                       <span className="grow" />
+                      {openDb &&
+                        (deletingDb ? (
+                          <span className="inline-confirm">
+                            <span className="muted small-text">中の todo は残ります</span>
+                            <button className="danger small" onClick={() => deleteDatabase(openDb)}>
+                              DB を消す
+                            </button>
+                            <button className="ghost small" onClick={() => setDeletingDb(false)}>
+                              やめる
+                            </button>
+                          </span>
+                        ) : (
+                          <>
+                            <button className="ghost small" onClick={() => askDatabase(openDb)}>
+                              名前を変える
+                            </button>
+                            <button className="ghost small" onClick={() => setDeletingDb(true)}>
+                              消す
+                            </button>
+                          </>
+                        ))}
                       <button className="primary" onClick={() => setDialog("add")}>
                         <Icon name="plus" size={13} /> 新しい Todo <span className="kbd">{keyLabel(keyOf("newTodo"))}</span>
                       </button>
@@ -7358,7 +7533,9 @@ export default function App() {
                           <p className="muted empty">
                             {doingView
                               ? "Doing の todo はありません。今日やるものを Doing にすると、ここに並びます。"
-                              : filterCount(todoFilter) > 0
+                              : openDb && openDb.todos.length === 0
+                                ? "この DB にはまだ todo がありません。ここで新しい Todo を作るか、todo のシートの「DB」で入れると並びます。"
+                                : filterCount(todoFilter) > 0
                                 ? "フィルターに合う todo はありません。"
                                 : `表示できる todo がありません。${keyLabel(keyOf("newTodo"))} で追加するか、${keyLabel(keyOf("palette"))} から issue を取り込めます。`}
                           </p>
@@ -7408,6 +7585,7 @@ export default function App() {
                       artifacts={board?.artifacts ?? []}
                       local={local}
                       groups={groups}
+                      databases={databases}
                       run={run}
                       report={report}
                       setStatus={setStatus}
@@ -7583,7 +7761,9 @@ export default function App() {
           <AddTodoDialog
             local={local}
             groups={groups}
+            databases={databases}
             initialRepo={todoFilter.places.length === 1 ? todoFilter.places[0] : null}
+            initialDatabase={openDb?.id ?? null}
             initialMemo={addMemo}
             run={run}
             onClose={() => {
@@ -7663,6 +7843,7 @@ export default function App() {
             onClose={() => setDialog(null)}
           />
         )}
+        {dialog === "database" && <DatabaseDialog database={renamingDb} databases={databases} run={run} onMade={(d) => setView(dbView(d.id))} onClose={() => setDialog(null)} />}
         {dialog === "usage" && <UsageDialog limits={limits} error={usageError} jev={board?.jev_spend} jevCredit={jevCredit} jevLeft={jevLeft} onClose={() => setDialog(null)} />}
         {dialog === "start" && selectedTodo && <StartDialog todo={selectedTodo} allTodos={allTodos} run={run} onClose={() => setDialog(null)} />}
         {dialog === "palette" && (

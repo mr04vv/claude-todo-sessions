@@ -103,6 +103,13 @@ export interface ReadingSort {
   tags: string[];
 }
 
+/** A list the user made to keep todos in (Frontend Backlog), with the ids of the todos in it (a todo is in one at most). */
+export interface Database {
+  id: number;
+  name: string;
+  todos: number[];
+}
+
 /** The requests to Jev over a span, and their tokens. */
 export interface JevTally {
   calls: number;
@@ -275,6 +282,8 @@ export interface Board {
   readings: Reading[];
   reading_sort: ReadingSort;
   jev_spend: JevSpend;
+  /** The lists the user made to keep todos in, in the order made. */
+  databases: Database[];
   inbox: Session[];
   /** Newest first. */
   artifacts: Artifact[];
@@ -431,6 +440,12 @@ export const api = {
   createTodo: (input: TodoInput) => invoke<Todo>("create_todo", { input }),
   updateTodo: (id: number, update: TodoUpdate) => invoke<Todo>("update_todo", { id, update }),
   deleteTodo: (id: number) => invoke<void>("delete_todo", { id }),
+  createDatabase: (name: string) => invoke<Database>("create_database", { name }),
+  renameDatabase: (id: number, name: string) => invoke<void>("rename_database", { id, name }),
+  /// Its todos stay, in no database.
+  deleteDatabase: (id: number) => invoke<void>("delete_database", { id }),
+  /// Puts the todo in a database (out of the one it was in), or with null in none.
+  setTodoDatabase: (todoId: number, databaseId: number | null) => invoke<void>("set_todo_database", { todoId, databaseId }),
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
   /// A plain claude in herdr, at home unless `cwd` is given.
