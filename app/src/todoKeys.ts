@@ -1,6 +1,7 @@
 // Keyboard for the Todo kanban and list: a cursor over the cards (or rows),
 // moved with j k / h l (or the arrows; the keys are keymap.ts's, which the
-// user may change), and keys acting on the todo under it:
+// user may change; past the last card that way, j k scroll the page), and
+// keys acting on the todo under it:
 // Enter its sheet, s its status, ⇧h ⇧l (kanban) the column it is in, o its
 // sessions in 作業 (o and ⌘Enter, without one, the launch sheet), p its PR, u its parent; c adds a todo there, / searches,
 // ? lists the keys. The browser's tab keys (⌘⇧[ ⌘⇧]) go to the lane (a
@@ -40,6 +41,8 @@ export interface TodoKeyActions {
 }
 
 const ROW = "[data-row]";
+/// What j k scroll the page by when there is no card further that way.
+const SCROLL_STEP_PX = 80;
 const LANE_ROW = "lane:";
 const TODO_ROW = "todo:";
 /// Lanes of a parent todo when grouped by parent (App.tsx's buildLanes).
@@ -157,9 +160,13 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
         }
         return;
       }
+      // No card further that way: the page scrolls on instead (to what is
+      // beyond the column's last card, a lane's other columns).
+      const step = (next: HTMLElement | undefined) =>
+        next ? move(next) : root.current?.scrollBy({ top: (down ? 1 : -1) * SCROLL_STEP_PX, behavior: e.repeat ? "auto" : "smooth" });
       if (layout === "list") {
         const lane = row.startsWith(LANE_ROW) ? row.slice(LANE_ROW.length) : laneOf(at);
-        if (down || up) return move(rows[rows.indexOf(at) + (down ? 1 : -1)]);
+        if (down || up) return step(rows[rows.indexOf(at) + (down ? 1 : -1)]);
         if (!lane) return;
         // h folds the lane (the cursor goes to its head), l opens it.
         if (left && !actions.isCollapsed(lane)) {
@@ -175,7 +182,7 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
       if (!cell) return;
       if (down || up) {
         const inCol = rows.filter((el) => colOf(el)?.dataset.col === cell.dataset.col);
-        return move(inCol[inCol.indexOf(at) + (down ? 1 : -1)]);
+        return step(inCol[inCol.indexOf(at) + (down ? 1 : -1)]);
       }
       const cells = [...(cell.closest("[data-lane]")?.querySelectorAll<HTMLElement>("[data-col]") ?? [])];
       const index = [...cell.querySelectorAll<HTMLElement>(ROW)].indexOf(at);
