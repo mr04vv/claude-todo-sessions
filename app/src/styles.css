@@ -2577,8 +2577,9 @@ body.resizing {
   margin: 0 0 12px;
 }
 
-/* The sidebar with the keyboard (⌃h from the Todo side): its entry under the cursor. */
-.app[data-zone="sidebar"] .sidebar {
+/* The sidebar (or 学習's filters) with the keyboard (⌃h from the list): its entry under the cursor. */
+.app[data-zone="sidebar"] .sidebar,
+.app[data-zone="sidebar"] .readings-filters {
   box-shadow: inset -3px 0 0 var(--accent);
 }
 
@@ -2586,7 +2587,8 @@ body.resizing {
   box-shadow: none;
 }
 
-.sidebar [data-cursor] {
+.sidebar [data-cursor],
+.readings-filters [data-cursor] {
   outline: 2px solid var(--accent-line);
   outline-offset: -2px;
 }

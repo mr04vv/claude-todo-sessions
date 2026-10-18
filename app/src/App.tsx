@@ -6020,15 +6020,16 @@ export default function App() {
     else if (!activeTab && normalTabs.length > 0) setNewTab(false);
     return true;
   };
-  // The sidebar as a place for the keyboard (⌃h from the Todo side): j k
-  // move over its entries, Enter picks one (and goes to it), ⌃l or Esc go back.
+  // The sidebar (管理's, or 学習's filters) as a place for the keyboard (⌃h
+  // from the list): j k move over its entries, Enter picks one (and goes to
+  // it), ⌃l or Esc go back.
   const [sideZone, setSideZoneState] = useState(false);
   const sideZoneRef = useRef(sideZone);
   sideZoneRef.current = sideZone;
   const [sideCursor, setSideCursor] = useState(0);
   const sideCursorRef = useRef(sideCursor);
   sideCursorRef.current = sideCursor;
-  const sideItems = () => [...document.querySelectorAll<HTMLElement>(".sidebar nav button")];
+  const sideItems = () => [...document.querySelectorAll<HTMLElement>(".sidebar nav button, .readings-filters button")];
   const setSideZone = (on: boolean) => {
     sideZoneRef.current = on;
     setSideZoneState(on);
@@ -6069,9 +6070,9 @@ export default function App() {
       api.focusAppPage().catch(report);
       return void document.querySelector<HTMLElement>(".split-rail [data-row], .split-rail button")?.focus();
     }
-    // Left from the list is the sidebar (管理's); right from the sidebar, the list.
+    // Left from the list is the sidebar (管理's, 学習's filters); right from the sidebar, the list.
     if (!pane) {
-      if (typingSideRef.current === "app" && !sideZoneRef.current && spaceRef.current === "manage") setSideZone(true);
+      if (typingSideRef.current === "app" && !sideZoneRef.current && (spaceRef.current === "manage" || spaceRef.current === "study")) setSideZone(true);
       setTypingSide("app");
       return void (document.activeElement as HTMLElement | null)?.blur();
     }

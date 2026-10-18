@@ -93,7 +93,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["sessions", "セッション一覧（⌘K の一番上）"],
       ["newTodo", "新しい todo"],
       ["reload", "今の画面を取り直す（ページでは再読み込み）"],
-      ["sideApp", "入力先を左へ（一覧、作業・学習では左のページ）"],
+      ["sideApp", "入力先を左へ（一覧から管理のサイドバー・学習の絞り込み、作業・学習では左のページ）"],
       ["sidePane", "入力先を右へ（ページ、作業・学習では右のページ）"],
     ],
   },
