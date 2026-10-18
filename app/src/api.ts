@@ -88,6 +88,23 @@ export interface Reading {
   created_at: number;
   /** Read and kept (a good one), as against still to read. */
   kept: boolean;
+  /** A post's links, as X gives them (t.co). */
+  links: string[];
+}
+
+/** A day's X bookmarks summed up in a Claude Docs document, or why it was not. */
+export interface XDigest {
+  /** The local date, YYYY-MM-DD. */
+  day: string;
+  url: string | null;
+  error: string | null;
+  made_at: number;
+}
+
+/** The days summed up (the newest first), and the day being summed up. */
+export interface DigestView {
+  digests: XDigest[];
+  running: string | null;
 }
 
 export interface Chapter {
@@ -298,6 +315,7 @@ export interface Board {
   jev_spend: JevSpend;
   /** The lists the user made to keep todos in, in the order made. */
   databases: Database[];
+  x_digests: DigestView;
   inbox: Session[];
   /** Newest first. */
   artifacts: Artifact[];
@@ -536,6 +554,8 @@ export const api = {
   setChapterRead: (readingId: number, position: number, read: boolean) => invoke<void>("set_chapter_read", { readingId, position, read }),
   /// Keeps a reading read (a good one), or puts it back to read.
   setReadingKept: (id: number, kept: boolean) => invoke<void>("set_reading_kept", { id, kept }),
+  /// Sums up `day`'s X bookmarks (YYYY-MM-DD, the local date) now, behind: the document's link comes on the board.
+  makeXDigest: (day: string) => invoke<void>("make_x_digest", { day }),
   /// Keeps the TypeSafe API key (blank takes it out); what waits is sorted then.
   setTypesafeKey: (key: string) => invoke<void>("set_typesafe_key", { key }),
   /// Keeps Jev's credit as just read off TypeSafe's console: the credit, and the Spend.

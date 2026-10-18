@@ -34,7 +34,7 @@ pub fn question<'a>(entries: impl IntoIterator<Item = &'a Value>) -> Option<Stri
     asked.map(|q| q.chars().take(QUESTION_MAX_CHARS).collect())
 }
 
-const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
+pub(crate) const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
 /// How the Artifact tool reports a publish: "Published <file> at <url> (…".
 const PUBLISHED: &str = "Published ";
 const PUBLISHED_AT: &str = " at ";
@@ -154,7 +154,7 @@ const LINK_END: &[char] = &['"', '\'', '`', '(', ')', '<', '>', '[', ']', '\\', 
 /// The artifact link `s` starts with. Its last part is `[<title>-]<id>`, the
 /// title in any letters; the id is letters and digits, so what follows it
 /// (a "。") is left out.
-fn artifact_at(s: &str) -> Option<String> {
+pub(crate) fn artifact_at(s: &str) -> Option<String> {
     let page = ARTIFACT_PAGES.iter().find(|p| s.starts_with(**p))?;
     let rest = &s[page.len()..];
     let end = rest.find(|c: char| c.is_whitespace() || LINK_END.contains(&c)).unwrap_or(rest.len());

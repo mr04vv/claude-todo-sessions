@@ -54,6 +54,7 @@ import {
   MODELS,
   type Board,
   type Database,
+  type DigestView,
   type Reading,
   type ReadingKind,
   type ReadingSort,
@@ -5286,6 +5287,15 @@ const READING_KIND: Record<ReadingKind, string> = { article: "記事", post: "X 
 type KindFilter = "all" | ReadingKind;
 const KIND_FILTERS: KindFilter[] = ["all", "article", "post", "book"];
 const KIND_FILTER_LABEL: Record<KindFilter, string> = { all: "すべて", ...READING_KIND };
+/// A local date (YYYY-MM-DD) `offset` days from today.
+const localDay = (offset: number) => {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+/// A day as the list shows it: 10/18（土）.
+const dayLabel = (day: string) => new Date(`${day}T00:00:00`).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" });
+
 /// 学習's shelves: the readings still to read, the ones read and kept (good
 /// ones; the rest are deleted once read), or both.
 type Shelf = "toRead" | "kept" | "all";
@@ -5320,9 +5330,11 @@ function ReadingMeta({ r }: { r: Reading }) {
 /// 学習's list: every reading, the newest first, narrowed by kind, tag and
 /// words. Picked ones (x) read together, or have their URLs copied for
 /// NotebookLM; every action has its key (keymap.ts, "学習の一覧").
-function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, onBrowser, onSettings, onToast }: {
+function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, onResume, onBrowser, onSettings, onToast }: {
   readings: Reading[];
   sort: ReadingSort | undefined;
+  /// The days' X bookmarks summed up, each opened in the browser.
+  digests: DigestView | undefined;
   /// How many readings are open to read (to go back to them).
   opened: number;
   run: (f: () => Promise<unknown>) => void;
@@ -5423,6 +5435,19 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
             <span className="muted">{count(t)}</span>
           </button>
         ))}
+        <div className="section-title">X のまとめ</div>
+        {(digests?.digests.length ?? 0) === 0 && <span className="muted small-text digest-hint">毎朝、前の日の X のブックマークを Claude Docs にまとめます（{keyLabel(keyOf("palette"))} から今すぐも）</span>}
+        {digests?.digests.map((d) => (
+          <button
+            key={d.day}
+            className="filter-row"
+            title={d.url ? `${d.url} をブラウザで開く` : `まとめられませんでした：${d.error}（押すともう一度）`}
+            onClick={() => (d.url ? onBrowser(d.url) : run(() => api.makeXDigest(d.day)))}
+          >
+            <span className="grow">{dayLabel(d.day)}</span>
+            <span className="muted">{digests.running === d.day ? "まとめています…" : d.url ? "開く" : "失敗・もう一度"}</span>
+          </button>
+        ))}
       </nav>
       <main className="main readings-main">
         <header className="toolbar">
@@ -5447,6 +5472,11 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
         {sort?.error && (
           <div className="notice danger-notice">
             <span className="grow">タグを付けられませんでした：{sort.error}（次に入れたときか、キーを設定し直したときにやり直します）</span>
+          </div>
+        )}
+        {digests?.running && (
+          <div className="notice" role="status">
+            <span className="grow">{dayLabel(digests.running)} の X のブックマークを、リンク先まで読んでまとめています（数分かかります）。</span>
           </div>
         )}
         {picked.length > 0 ? (
@@ -7363,6 +7393,9 @@ export default function App() {
     { key: "usage", label: "使用量（Claude・Jev）", run: () => setDialog("usage") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい Todo", hint: keyLabel(keyOf("newTodo")), run: () => setDialog("add") },
+    { key: "digestYesterday", label: `昨日（${dayLabel(localDay(-1))}）の X のブックマークをまとめる`, run: () => run(() => api.makeXDigest(localDay(-1))) },
+    { key: "digestToday", label: "今日の X のブックマークを今まとめる", run: () => run(() => api.makeXDigest(localDay(0))) },
+    ...(board?.x_digests.digests ?? []).flatMap((d) => (d.url ? [{ key: `digest:${d.day}`, label: `X のまとめ：${dayLabel(d.day)}`, run: () => openInBrowser(d.url!) }] : [])),
     ...(studyReading && studyReadingShown
       ? [
           {
@@ -7837,6 +7870,7 @@ export default function App() {
             <ReadingsPage
               readings={readings}
               sort={board.reading_sort}
+              digests={board.x_digests}
               opened={study.open.length}
               run={run}
               report={report}

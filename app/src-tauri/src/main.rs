@@ -3,6 +3,7 @@
 mod ask;
 mod banner;
 mod cef_browser;
+mod digest;
 mod logins;
 mod power;
 mod readings;
@@ -164,6 +165,8 @@ struct Board {
     jev_spend: readings::SpendView,
     /// The lists the user made to keep todos in, in the order made.
     databases: Vec<cts_core::Database>,
+    /// The days' X bookmarks summed up, and the day being summed up.
+    x_digests: digest::DigestView,
     inbox: Vec<SessionView>,
     /// What sessions made besides PRs, newest first.
     artifacts: Vec<cts_core::Artifact>,
@@ -235,8 +238,8 @@ struct TodoUpdate {
 }
 
 #[tauri::command(async)]
-fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: State<readings::Sorting>) -> Result<Board, String> {
-    let (todos, readings, inbox, artifacts, slack, jev_spend, databases) = {
+fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: State<readings::Sorting>, digesting: State<digest::Digesting>) -> Result<Board, String> {
+    let (todos, readings, inbox, artifacts, slack, jev_spend, databases, x_digests) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
         let (desktop, routines) = (state.desktop.lock().map_err(err)?.clone(), state.routines.lock().map_err(err)?.clone());
@@ -259,7 +262,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
             .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
             .map(mark)
             .collect();
-        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, readings::spend_view(db.jev_spend().map_err(err)?, db.jev_credit().map_err(err)?), db.databases().map_err(err)?)
+        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, readings::spend_view(db.jev_spend().map_err(err)?, db.jev_credit().map_err(err)?), db.databases().map_err(err)?, digest::view(&digesting, &db)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -278,7 +281,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend, databases, inbox, artifacts, sync_status })
+    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend, databases, x_digests, inbox, artifacts, sync_status })
 }
 
 #[tauri::command(async)]
@@ -2755,6 +2758,7 @@ fn main() {
         .manage(slack::Slack::new(slack_tx))
         .manage(readings::Sorting::load())
         .manage(readings::PostVerdicts::default())
+        .manage(digest::Digesting::default())
         .manage(AppState {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
@@ -2810,6 +2814,9 @@ fn main() {
             // What was kept while the app was closed (or before a key) is sorted now.
             let handle = app.handle().clone();
             std::thread::spawn(move || readings::sort_all(&handle));
+            // The day before's X bookmarks, summed up every morning.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || digest::digest_loop(handle));
             Ok(())
         })
         .menu(app_menu)
@@ -2925,6 +2932,7 @@ fn main() {
             readings::set_reading_tags,
             readings::set_chapter_read,
             readings::set_reading_kept,
+            digest::make_x_digest,
             readings::set_typesafe_key,
             readings::set_jev_credit,
             readings::clear_jev_credit,

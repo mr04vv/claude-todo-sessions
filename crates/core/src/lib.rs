@@ -2,6 +2,7 @@ pub mod agents;
 pub mod cloud;
 pub mod codex;
 pub mod desktop;
+pub mod digest;
 pub mod files;
 pub mod github;
 pub mod herdr;
@@ -313,6 +314,16 @@ pub struct NewReading {
     /// A post's links.
     #[serde(default)]
     pub links: Vec<String>,
+}
+
+/// A day's X bookmarks summed up: the document's link, or why it was not made.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct XDigest {
+    /// The local date, YYYY-MM-DD.
+    pub day: String,
+    pub url: Option<String>,
+    pub error: Option<String>,
+    pub made_at: i64,
 }
 
 #[derive(Debug, Default)]
@@ -761,6 +772,13 @@ CREATE TABLE IF NOT EXISTS databases (
 CREATE TABLE IF NOT EXISTS database_todos (
     todo_id INTEGER PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
     database_id INTEGER NOT NULL REFERENCES databases(id) ON DELETE CASCADE
+);
+-- A day's X bookmarks summed up (in a Claude Docs document), or why that failed.
+CREATE TABLE IF NOT EXISTS x_digests (
+    day TEXT PRIMARY KEY,
+    url TEXT,
+    error TEXT,
+    made_at INTEGER NOT NULL
 );
 -- Jev's credit as last read off TypeSafe's console (JevCredit); one row at most.
 CREATE TABLE IF NOT EXISTS jev_credit (
@@ -1322,6 +1340,50 @@ impl Db {
     /// Marks the chapter whose page `url` is as read; false when no book has it.
     pub fn mark_chapter_read(&self, url: &str) -> Result<bool> {
         Ok(self.conn.execute("UPDATE reading_chapters SET read = 1 WHERE url = ?1", [chapter_url(url)])? > 0)
+    }
+
+    /// The local date `offset` days from today, YYYY-MM-DD (the database's clock, as the days are kept).
+    pub fn local_day(&self, offset: i64) -> Result<String> {
+        Ok(self.conn.query_row("SELECT date('now', 'localtime', ?1 || ' days')", [offset.to_string()], |r| r.get(0))?)
+    }
+
+    /// The local hour now (0–23).
+    pub fn local_hour(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT CAST(strftime('%H', 'now', 'localtime') AS INTEGER)", [], |r| r.get(0))?)
+    }
+
+    /// The posts on X kept on `day` (the local date), in the order kept.
+    pub fn posts_on(&self, day: &str) -> Result<Vec<Reading>> {
+        self.query_readings("kind = 'post' AND date(created_at, 'unixepoch', 'localtime') = ?1 ORDER BY created_at, id", [day])
+    }
+
+    /// A day's digest made (its document's link), or why it was not.
+    pub fn set_x_digest(&self, day: &str, made: std::result::Result<&str, &str>) -> Result<()> {
+        let (url, error) = match made {
+            Ok(url) => (Some(url), None),
+            Err(why) => (None, Some(why)),
+        };
+        self.conn.execute(
+            "INSERT INTO x_digests (day, url, error, made_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(day) DO UPDATE SET url = ?2, error = ?3, made_at = ?4",
+            params![day, url, error, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn x_digest(&self, day: &str) -> Result<Option<XDigest>> {
+        Ok(self.x_digests_where("day = ?1", [day])?.pop())
+    }
+
+    /// Every day's digest, the newest first.
+    pub fn x_digests(&self) -> Result<Vec<XDigest>> {
+        self.x_digests_where("1", [])
+    }
+
+    fn x_digests_where<P: rusqlite::Params>(&self, filter: &str, p: P) -> Result<Vec<XDigest>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT day, url, error, made_at FROM x_digests WHERE {filter} ORDER BY day DESC"))?;
+        let digests = stmt.query_map(p, |r| Ok(XDigest { day: r.get(0)?, url: r.get(1)?, error: r.get(2)?, made_at: r.get(3)? }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(digests)
     }
 
     /// Keeps a reading read (a good one), or puts it back to read.

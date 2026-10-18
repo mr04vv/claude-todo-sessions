@@ -3632,6 +3632,11 @@ button.tab-row {
   margin-top: 10px;
 }
 
+/* Where the days' X digests will be, before there is one. */
+.digest-hint {
+  padding: 0 10px;
+}
+
 .filter-row {
   height: 30px;
   margin: 0;

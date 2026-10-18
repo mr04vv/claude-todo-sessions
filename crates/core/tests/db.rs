@@ -576,6 +576,28 @@ fn a_post_keeps_the_links_in_it() {
 }
 
 #[test]
+fn the_posts_kept_on_a_day_are_found_by_the_local_date() {
+    let (_d, db) = open();
+    let post = db.add_reading(&NewReading { kind: ReadingKind::Post, ..article("https://x.com/u/status/1", "@u: hi") }).unwrap();
+    db.add_reading(&article("https://a.example/", "A")).unwrap();
+    let today = db.local_day(0).unwrap();
+    assert_eq!(db.posts_on(&today).unwrap().iter().map(|r| r.id).collect::<Vec<_>>(), [post.id], "posts alone");
+    assert!(db.posts_on(&db.local_day(-1).unwrap()).unwrap().is_empty());
+}
+
+#[test]
+fn a_day_s_digest_is_kept_once_made_or_why_not() {
+    let (_d, db) = open();
+    assert_eq!(db.x_digest("2026-10-17").unwrap(), None);
+    db.set_x_digest("2026-10-17", Err("claude: busy")).unwrap();
+    assert_eq!(db.x_digest("2026-10-17").unwrap().map(|d| (d.url, d.error)), Some((None, Some("claude: busy".into()))));
+    db.set_x_digest("2026-10-17", Ok("https://claude.ai/artifact/abc")).unwrap();
+    db.set_x_digest("2026-10-18", Ok("https://claude.ai/artifact/def")).unwrap();
+    let all = db.x_digests().unwrap();
+    assert_eq!(all.iter().map(|d| (d.day.as_str(), d.url.as_deref(), d.error.as_deref())).collect::<Vec<_>>(), [("2026-10-18", Some("https://claude.ai/artifact/def"), None), ("2026-10-17", Some("https://claude.ai/artifact/abc"), None)], "newest first");
+}
+
+#[test]
 fn a_reading_read_is_kept_or_let_go() {
     let (_d, db) = open();
     let a = db.add_reading(&article("https://a.example/", "A")).unwrap();
