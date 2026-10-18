@@ -5152,14 +5152,12 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
             <span className="muted">{count(UNSORTED)}</span>
           </button>
         )}
-        {tags
-          .filter((t) => count(t) > 0)
-          .map((t) => (
-            <button key={t} className={`filter-row${tag === t ? " on" : ""}`} aria-pressed={tag === t} onClick={() => setTag(t)}>
-              <span className="grow ellipsis">{t}</span>
-              <span className="muted">{count(t)}</span>
-            </button>
-          ))}
+        {tags.map((t) => (
+          <button key={t} className={`filter-row${tag === t ? " on" : ""}`} aria-pressed={tag === t} onClick={() => setTag(t)}>
+            <span className="grow ellipsis">{t}</span>
+            <span className="muted">{count(t)}</span>
+          </button>
+        ))}
       </nav>
       <main className="main readings-main">
         <header className="toolbar">
