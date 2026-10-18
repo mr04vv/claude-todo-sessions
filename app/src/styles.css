@@ -3576,6 +3576,8 @@ button.tab-row {
 
 .reading-row input[type="checkbox"],
 .chapter-row input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
   margin: 0;
   flex-shrink: 0;
   accent-color: var(--accent-fill);
