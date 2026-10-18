@@ -1173,6 +1173,8 @@ impl Db {
             "INSERT OR IGNORE INTO readings (kind, url, title, text, created_at, links) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![r.kind.as_str(), r.url, r.title.trim(), text, now(), links],
         )?;
+        // Kept again: a post kept before its links were gets them.
+        self.conn.execute("UPDATE readings SET links = ?2 WHERE url = ?1 AND links IS NULL", params![r.url, links])?;
         let id: i64 = self.conn.query_row("SELECT id FROM readings WHERE url = ?1", [&r.url], |row| row.get(0))?;
         for (i, (title, url)) in r.chapters.iter().enumerate() {
             self.conn.execute(

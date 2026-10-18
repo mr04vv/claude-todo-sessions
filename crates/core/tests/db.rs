@@ -576,6 +576,19 @@ fn a_post_keeps_the_links_in_it() {
 }
 
 #[test]
+fn a_post_kept_before_its_links_were_gets_them_when_kept_again() {
+    let (_d, db) = open();
+    let bare = NewReading { kind: ReadingKind::Post, ..article("https://x.com/u/status/1", "@u: hi") };
+    db.add_reading(&bare).unwrap();
+    let links = vec!["https://t.co/abc".to_string()];
+    let again = db.add_reading(&NewReading { links: links.clone(), ..bare.clone() }).unwrap();
+    assert_eq!(again.links, links, "filled in");
+    let other = NewReading { links: vec!["https://t.co/zzz".into()], ..bare };
+    assert_eq!(db.add_reading(&other).unwrap().links, links, "the links kept stay");
+    assert_eq!(db.list_readings().unwrap().len(), 1);
+}
+
+#[test]
 fn the_readings_kept_on_a_day_are_found_by_the_local_date() {
     let (_d, db) = open();
     let post = db.add_reading(&NewReading { kind: ReadingKind::Post, ..article("https://x.com/u/status/1", "@u: hi") }).unwrap();
