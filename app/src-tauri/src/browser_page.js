@@ -184,15 +184,18 @@
 
   if (FRAME) return;
 
-  // The app asks a page (ChatGPT's) to take the typing: its prompt box, once
-  // the page has drawn it, with `text` typed into it when given.
-  const INPUT = '#prompt-textarea, [contenteditable="true"], textarea, input[type="text"], input:not([type])';
+  // The app asks a page (ChatGPT's, Claude's, NotebookLM's) to take the
+  // typing: its prompt box, once the page has drawn it, with `text` typed
+  // into it when given. The first kind shown wins, not the first in the page
+  // (Claude's sidebar has a search field ahead of its prompt box).
+  const INPUTS = ['#prompt-textarea', '[contenteditable="true"][role="textbox"]', '[contenteditable="true"]', "textarea", 'input[type="text"]', "input:not([type])"];
   const INPUT_WAIT_MS = 10000;
   const INPUT_RETRY_MS = 200;
+  const drawn = (el) => el.getClientRects().length > 0;
   window.__todoSessionsFocusInput = (text) => {
     const until = Date.now() + INPUT_WAIT_MS;
     const tryFocus = () => {
-      const el = document.querySelector(INPUT);
+      const el = INPUTS.flatMap((kind) => [...document.querySelectorAll(kind)]).find(drawn);
       if (!el) {
         if (Date.now() < until) setTimeout(tryFocus, INPUT_RETRY_MS);
         return;
@@ -214,7 +217,7 @@
     'input[type=email], input[autocomplete~=username], input[name*=user i], input[name*=email i], input[name*=login i], input[id*=user i], input[id*=email i]';
   const shown = (el) => el && el.offsetParent !== null && !el.disabled && !el.readOnly;
   const userField = () => [...document.querySelectorAll(USER_FIELDS)].find((el) => shown(el) && el.type !== "password" && el.type !== "hidden");
-  const passField = () => [...document.querySelectorAll("input[type=password]")].find(shown);
+  const passField = () => [...document.querySelectorAll("input[type=password]")].find(drawn);
   /// The user typed in a step before the password's.
   const LOGIN_USER_KEY = "__todoSessionsLoginUser";
   /// The user a site remembers, kept in a hidden field beside the password (OneLogin's).
@@ -248,7 +251,7 @@
   };
   const sendFrom = (el) => {
     const scope = el.form ?? document;
-    const button = [...scope.querySelectorAll('button[type=submit], input[type=submit], button:not([type])')].find(shown);
+    const button = [...scope.querySelectorAll('button[type=submit], input[type=submit], button:not([type])')].find(drawn);
     if (button) button.click();
     else if (el.form) el.form.requestSubmit();
   };
