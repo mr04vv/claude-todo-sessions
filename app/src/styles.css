@@ -322,8 +322,10 @@ a:hover {
 /* Layout */
 
 /* The window: the spaces' rail down the left, the space shown beside it
-   (under the banners, when there are any). */
+   (under the banners, when there are any). 学習's list beside its reading is
+   作業's width, but no wider than a list of titles needs. */
 .app {
+  --study-rail-w: min(var(--rail-w), 280px);
   position: relative;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -2552,6 +2554,7 @@ body.resizing {
   left: calc(var(--space-rail-w) + 12px);
   bottom: 20px;
   max-width: min(640px, calc(100vw - var(--space-rail-w) - 24px));
+  overflow-wrap: anywhere;
   z-index: 60;
   padding: 8px 14px;
   background: var(--card);
@@ -2567,6 +2570,10 @@ body.resizing {
 
 .app.split-shown .toast {
   max-width: calc(var(--rail-w) - 24px);
+}
+
+.app.space-study.split-shown .toast {
+  max-width: calc(var(--study-rail-w) - 24px);
 }
 
 .toast.login-ask {
@@ -3325,7 +3332,7 @@ button.slack-reaction:hover {
 }
 
 .study-rail {
-  width: min(var(--rail-w), 280px);
+  width: var(--study-rail-w);
 }
 
 .rail-head {
