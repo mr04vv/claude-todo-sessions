@@ -1928,6 +1928,12 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
   );
 }
 
+/// The side of a split view (作業, 学習 while reading) `el` is on; null off both (its list).
+const splitSideOf = (el: Element) => {
+  const side = el.closest(".focus-left, .focus-right");
+  return side ? (side.classList.contains("focus-right") ? "right" : "left") : null;
+};
+
 /// One tab's page: its webview laid over a placeholder that follows the
 /// layout. `covered` hides it while a dialog is up, since a native webview
 /// draws above everything in the page.
@@ -5741,6 +5747,7 @@ export default function App() {
     ensurePinned(study.right);
     const first = readingTabId(list[0].id);
     focusSoon(first);
+    setFocusTyping("left");
     setStudy((s) => ({ ...s, open: [...new Set([...s.open, ...list.map((r) => r.id)])], active: first, view: "read" }));
     setSpace("study");
   };
@@ -6033,16 +6040,16 @@ export default function App() {
   });
   /// ⌃l gives the typing one side to the right, ⌃h one to the left (from a
   /// page, ⌃h comes back through FOCUS_APP_EVENT). In a split view: its list,
-  /// its left page, its right one; `text` (selected on the left) is typed
+  /// its left page, its right one, going on `from` the side the key was
+  /// pressed on (null: the list); `text` (selected on the left) is typed
   /// into the right's box. Elsewhere: the sidebar, the list, the page.
-  const focusSide = (pane: boolean, text?: string) => {
+  const focusSide = (pane: boolean, from: "left" | "right" | null, text?: string) => {
     const give = (tab: BrowserTab | undefined | null, chat: boolean) => {
       if (!tab) return;
       if (tab.term) focusTerminal(tab.id);
       else giveKeys(tab.id, report, chat, chat ? text : undefined);
     };
     if (splitRef.current) {
-      const from = focusTyping;
       if (pane) {
         const to = from === null ? (splitLeft ? "left" : "right") : "right";
         const tab = to === "left" ? splitLeft : splitRight;
@@ -6107,8 +6114,7 @@ export default function App() {
       if (pressedInPane && (!el || el === document.body)) return;
       setTypingSide(el?.closest(".xterm, .browser-main, .focus-left, .focus-right") ? "pane" : "app");
       if (!el || el === document.body) return;
-      const side = el.closest(".focus-left, .focus-right");
-      setFocusTyping(side ? (side.classList.contains("focus-right") ? "right" : "left") : null);
+      setFocusTyping(splitSideOf(el));
     };
     // A page took it. What was focused here would come back as this page
     // takes the keyboard on the way to a side (a page's ⌃h ⌃l), marking the
@@ -6342,9 +6348,9 @@ export default function App() {
         setSlackPick(mentionKey(payload));
         setViewRef.current("slack");
       }),
-      listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, payload.text ?? undefined)),
+      listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, onSplitRightRef.current(payload.tab) ? "right" : "left", payload.text ?? undefined)),
       // Back from a page: nothing on this side keeps the typing, so j k work.
-      listen(FOCUS_APP_EVENT, () => (splitRef.current ? focusSideRef.current(false) : (document.activeElement as HTMLElement | null)?.blur())),
+      listen<{ tab: string }>(FOCUS_APP_EVENT, ({ payload }) => (splitRef.current ? focusSideRef.current(false, onSplitRightRef.current(payload.tab) ? "right" : "left") : (document.activeElement as HTMLElement | null)?.blur())),
       // Notifications open cloud sessions as set here.
       listen<{ session_id: string }>(OPEN_CLOUD_EVENT, ({ payload }) => openCloudRef.current(payload.session_id)),
     ];
@@ -6622,7 +6628,7 @@ export default function App() {
         e.preventDefault();
         // A selection in a split view's terminal goes along to the right.
         const inTerminal = (e.target as HTMLElement).closest(".xterm");
-        focusSideRef.current(matches(e, "sidePane"), inTerminal && focusLeftRef.current ? terminalSelection(focusLeftRef.current.id) : undefined);
+        focusSideRef.current(matches(e, "sidePane"), splitSideOf(e.target as HTMLElement), inTerminal && focusLeftRef.current ? terminalSelection(focusLeftRef.current.id) : undefined);
         return;
       }
       if (sideZoneRef.current && !e.metaKey && !e.ctrlKey) {
