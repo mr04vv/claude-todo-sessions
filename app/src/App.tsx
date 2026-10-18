@@ -538,7 +538,7 @@ function buildLanes(todos: Todo[], groupBy: GroupBy, allTodos: Todo[]): Lane[] {
 type IconName =
   | "board" | "list" | "spark" | "pr" | "search" | "sync" | "check" | "plus" | "import" | "close" | "open"
   | "up" | "down" | "chevron" | "chevronRight" | "more" | "back" | "forward" | "reload" | "chat"
-  | "globe" | "terminal" | "book" | "bookmark" | "key";
+  | "globe" | "terminal" | "book" | "bookmark" | "key" | "settings";
 
 const ICON_PATHS: Record<IconName, string> = {
   board: "M4 4h6v16H4zM14 4h6v9h-6z",
@@ -566,6 +566,7 @@ const ICON_PATHS: Record<IconName, string> = {
   book: "M4 5h6a2 2 0 0 1 2 2v13a2 2 0 0 0-2-2H4zM20 5h-6a2 2 0 0 0-2 2v13a2 2 0 0 1 2-2h6z",
   bookmark: "M7 4h10v16l-5-4-5 4z",
   key: "M14 4a6 6 0 1 0 0.01 0M11 12l-7 7M6 17l2 2",
+  settings: "M4 7h9M17 7h3M15 5v4M4 17h3M11 17h9M9 15v4",
 };
 
 function Icon({ name, size = 15 }: { name: IconName; size?: number }) {
@@ -4973,7 +4974,7 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-/// The spaces in the bar at the top, with their keys (⌘1–⌘4).
+/// The spaces in the rail at the left, with their keys (⌘1–⌘4).
 const SPACES: { key: Space; label: string; icon: IconName; action: Action }[] = [
   { key: "manage", label: "管理", icon: "board", action: "spaceManage" },
   { key: "work", label: "作業", icon: "terminal", action: "spaceWork" },
@@ -4982,40 +4983,35 @@ const SPACES: { key: Space; label: string; icon: IconName; action: Action }[] = 
 ];
 const SPACE_ACTIONS: [Action, Space][] = SPACES.map((s) => [s.action, s.key]);
 
-/// The bar at the window's top: the spaces (あなた待ち's count on 作業's,
-/// as what waits is answered there), ⌘K, and the settings.
-function SpaceBar({ space, waiting, onSpace, onSearch, onSettings }: { space: Space; waiting: number; onSpace: (s: Space) => void; onSearch: () => void; onSettings: () => void }) {
+const WAITING_TITLE = "あなた待ち：あなたが動かないと進まないもの（返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼）";
+
+/// The rail down the window's left: the spaces as icons (あなた待ち's count
+/// on 作業's, as what waits is answered there), then ⌘K and the settings at its foot.
+function SpaceRail({ space, waiting, onSpace, onSearch, onSettings }: { space: Space; waiting: number; onSpace: (s: Space) => void; onSearch: () => void; onSettings: () => void }) {
   return (
-    <header className="space-bar">
-      <span className="brand">
-        <img className="brand-mark" src={logoUrl} alt="" aria-hidden="true" />
-        <span>Shosai</span>
-      </span>
-      <nav className="spaces" aria-label="場">
-        {SPACES.map((s) => (
-          <button key={s.key} className={`space-tab${space === s.key ? " on" : ""}`} aria-current={space === s.key ? "page" : undefined} onClick={() => onSpace(s.key)}>
-            <Icon name={s.icon} size={14} />
-            {s.label}
-            {s.key === "work" && waiting > 0 && (
-              <span className="pill waiting" title="あなたが動かないと進まないもの：返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼">
-                <i />
-                あなた待ち {waiting}
-              </span>
-            )}
-            <span className="kbd">{keyLabel(keyOf(s.action))}</span>
-          </button>
-        ))}
-      </nav>
+    <nav className="space-rail" aria-label="場">
+      <img className="brand-mark" src={logoUrl} alt="Shosai" title="Shosai" />
+      {SPACES.map((s) => (
+        <button
+          key={s.key}
+          className={`space-icon${space === s.key ? " on" : ""}`}
+          aria-label={s.label}
+          aria-current={space === s.key ? "page" : undefined}
+          title={`${s.label}（${keyLabel(keyOf(s.action))}）${s.key === "work" && waiting > 0 ? `\n${WAITING_TITLE} ${waiting} 件` : ""}`}
+          onClick={() => onSpace(s.key)}
+        >
+          <Icon name={s.icon} size={18} />
+          {s.key === "work" && waiting > 0 && <span className="rail-count">{waiting}</span>}
+        </button>
+      ))}
       <span className="grow" />
-      <button className="search" onClick={onSearch}>
-        <Icon name="search" size={13} />
-        <span className="grow ellipsis">検索・操作</span>
-        <span className="kbd">{keyLabel(keyOf("palette"))}</span>
+      <button className="space-icon" aria-label="検索・操作" title={`検索・操作（${keyLabel(keyOf("palette"))}）`} onClick={onSearch}>
+        <Icon name="search" size={18} />
       </button>
-      <button className="ghost small" onClick={onSettings}>
-        設定
+      <button className="space-icon" aria-label="設定" title="設定" onClick={onSettings}>
+        <Icon name="settings" size={18} />
       </button>
-    </header>
+    </nav>
   );
 }
 
@@ -7014,7 +7010,7 @@ export default function App() {
         data-zone={sideZone ? "sidebar" : undefined}
         style={{ "--panel-w": `${panelW}px`, "--focus-right-w": `${focusRightW}px`, "--tab-list-w": `${tabListW}px`, "--rail-w": `${railW}px` } as React.CSSProperties}
       >
-        <SpaceBar space={space} waiting={waiting.length} onSpace={goSpace} onSearch={() => setDialog("palette")} onSettings={() => setDialog("settings")} />
+        <SpaceRail space={space} waiting={waiting.length} onSpace={goSpace} onSearch={() => setDialog("palette")} onSettings={() => setDialog("settings")} />
         {(closePrompt || error || heldWaiting > 0) && (
           <div className="banners">
             {heldWaiting > 0 && (

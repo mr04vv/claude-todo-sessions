@@ -43,7 +43,6 @@
   --radius: 10px;
   --sans: "IBM Plex Sans JP", "Hiragino Sans", system-ui, sans-serif;
   --mono-font: "IBM Plex Mono", ui-monospace, Menlo, monospace;
-  --brand: "Shippori Mincho", "Hiragino Mincho ProN", serif;
   --sidebar-w: 232px;
   --panel-w: 440px;
   --dock-w: max(520px, 44vw);
@@ -321,18 +320,21 @@ a:hover {
 
 /* Layout */
 
-/* The window: the spaces' bar on top, the space shown under it. */
+/* The window: the spaces' rail down the left, the space shown beside it
+   (under the banners, when there are any). */
 .app {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   height: 100%;
   overflow: hidden;
 }
 
 .space-body {
   position: relative;
-  flex: 1;
+  grid-row: 2;
+  grid-column: 2;
   min-height: 0;
   display: flex;
 }
@@ -441,6 +443,8 @@ a:hover {
 }
 
 .banners {
+  grid-row: 1;
+  grid-column: 2;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -449,30 +453,11 @@ a:hover {
 
 /* Sidebar */
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 8px;
-  font-family: var(--brand);
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-}
-
 /* The logo's mark: the app's icon (its own margin taken into the size). */
 .brand-mark {
   width: 30px;
   height: 30px;
   margin: -3px;
-}
-
-.search {
-  justify-content: flex-start;
-  height: 30px;
-  background: var(--input);
-  border-color: var(--border-2);
-  color: var(--text-2);
 }
 
 .nav {
@@ -481,8 +466,7 @@ a:hover {
   gap: 2px;
 }
 
-.nav button,
-.search {
+.nav button {
   justify-content: flex-start;
   text-align: left;
 }
@@ -3158,53 +3142,63 @@ button.slack-reaction:hover {
   color: var(--text-3);
 }
 
-/* The spaces' bar (管理・作業・学習・ブラウザ), across the window's top. */
-.space-bar {
+/* The spaces' rail (管理・作業・学習・ブラウザ) down the window's left, as
+   icons; ⌘K and the settings at its foot. */
+.space-rail {
+  grid-row: 1 / -1;
+  grid-column: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  min-height: 44px;
-  padding: 6px 12px;
-  flex-shrink: 0;
+  gap: 4px;
+  width: 52px;
+  padding: 12px 0;
   background: var(--sidebar);
-  border-bottom: 1px solid var(--border);
+  border-right: 1px solid var(--border);
 }
 
-.space-bar .brand {
-  margin-right: 10px;
+.space-rail .brand-mark {
+  margin: -3px -3px 9px;
 }
 
-.spaces {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 2px;
-}
-
-.space-tab {
-  height: 30px;
-  gap: 7px;
-  padding: 0 10px;
+.space-icon {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  justify-content: center;
   background: none;
   border-color: transparent;
   color: var(--text-2);
-  font-size: 13px;
 }
 
-.space-tab:hover:not(:disabled) {
+.space-icon:hover:not(:disabled) {
   background: var(--card-hover);
   border-color: transparent;
   color: var(--text);
 }
 
-.space-tab.on {
+.space-icon.on {
   background: var(--card-hover);
   border-color: var(--border-2);
   color: var(--text);
-  font-weight: 500;
 }
 
-.space-bar .search {
-  width: 220px;
+/* あなた待ち's count, on 作業's icon. */
+.rail-count {
+  position: absolute;
+  top: -3px;
+  right: -5px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--waiting);
+  color: var(--bg);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 16px;
+  text-align: center;
 }
 
 /* A split view (作業, 学習 while reading): a list on the left, then the
