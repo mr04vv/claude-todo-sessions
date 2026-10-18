@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressToUrl, findTabFor, insertAfter, nextAfterClose, sameObject } from "./tabs.ts";
+import { addressToUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, sameObject } from "./tabs.ts";
 
 const tabs = (...ids: string[]) => ids.map((id) => ({ id }));
 
@@ -60,3 +60,11 @@ test("a host with a port, or localhost, opens as a URL", () => {
   assert.equal(addressToUrl("example.com:8443/x"), "https://example.com:8443/x");
 });
 
+test("a split view's right is a pinned page to ask, or the page of the session on its right", () => {
+  const split = [{ id: "r1" }, { id: "pinchatgpt" }, { id: "wa", session: "a" }, { id: "wb", session: "b" }];
+  assert.equal(isSplitRight(split, "pinchatgpt", ["pinchatgpt"], undefined), true);
+  assert.equal(isSplitRight(split, "wb", ["pinchatgpt"], "b"), true);
+  assert.equal(isSplitRight(split, "wa", ["pinchatgpt"], "b"), false);
+  // With no session on the right, a reading's page (which has none) is still the left.
+  assert.equal(isSplitRight(split, "r1", ["pinchatgpt"], undefined), false);
+});

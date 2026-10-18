@@ -38,6 +38,12 @@ export function nextAfterClose<T extends { id: string }>(tabs: T[], closed: stri
   return tabs[i + 1] ?? tabs[i - 1] ?? null;
 }
 
+/// Whether tab `id` is a split view's right: one of `rights` (学習's pages to
+/// ask), or a page of `rightSession` (the session on 作業's right).
+export function isSplitRight<T extends { id: string; session?: string }>(tabs: T[], id: string, rights: string[], rightSession: string | undefined): boolean {
+  return rights.includes(id) || (rightSession !== undefined && tabs.find((t) => t.id === id)?.session === rightSession);
+}
+
 /// `tabs` with `tab` put right after `after` (the tab it was opened from), or last.
 export function insertAfter<T extends { id: string }>(tabs: T[], tab: T, after: string | null): T[] {
   const i = after === null ? -1 : tabs.findIndex((t) => t.id === after);

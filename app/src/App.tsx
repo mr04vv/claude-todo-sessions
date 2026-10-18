@@ -90,7 +90,7 @@ import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
-import { addressToUrl, fileUrl, findTabFor, insertAfter, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
+import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
@@ -5892,7 +5892,7 @@ export default function App() {
   const switchSplitTabRef = useRef(switchSplitTab);
   switchSplitTabRef.current = switchSplitTab;
   /// Whether tab `id` is a split view's right side.
-  const onSplitRight = (id: string) => STUDY_RIGHT.includes(id) || tabs.find((t) => t.id === id)?.session === workView.right?.session_id;
+  const onSplitRight = (id: string) => isSplitRight(tabs, id, STUDY_RIGHT, workView.right?.session_id);
   const onSplitRightRef = useRef(onSplitRight);
   onSplitRightRef.current = onSplitRight;
 
