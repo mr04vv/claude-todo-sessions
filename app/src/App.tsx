@@ -1661,14 +1661,20 @@ const STUDY_RIGHT = ["pinnotebooklm", "pinchatgpt", "pinclaude"];
 /// (⌃l), with what was selected on the other side typed in.
 const CHAT_PAGES = ["pinchatgpt", "pinclaude", "pinnotebooklm"];
 
+/// The browser space's row for the new tab page (tab ids are letters and digits only).
+const NEW_TAB_ROW = "new-tab";
+
 /// The browser space: the tab list on the left (the pinned pages at its top,
 /// then the tabs, which move by dragging), and the page shown, or a new tab
-/// page when no tab is picked.
-function BrowserSpace({ tabs, active, covered, width, report, onResize, onSelect, onPinned, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
+/// page when no tab is picked. While the list has the keyboard, j k move over
+/// its rows and Enter shows the page under the cursor.
+function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize, onSelect, onPinned, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
   /// The tabs, apart from the pinned pages.
   tabs: BrowserTab[];
   active: BrowserTab | null;
   covered: boolean;
+  /// Whether the tab list has the keyboard (its cursor shows).
+  listKeys: boolean;
   /// The tab list's.
   width: number;
   report: (e: unknown) => void;
@@ -1713,12 +1719,19 @@ function BrowserSpace({ tabs, active, covered, width, report, onResize, onSelect
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   };
+  const { cursorId, setCursor, list } = useRowCursor([...PINNED_PAGES.map((p) => p.id), NEW_TAB_ROW, ...tabs.map((t) => t.id)], (id) =>
+    id === NEW_TAB_ROW ? onNewTab() : PINNED_PAGES.some((p) => p.id === id) ? onPinned(id) : onSelect(id),
+  );
+  // The cursor starts on the page shown, each time the list takes the keyboard.
+  const activeRow = active?.id ?? NEW_TAB_ROW;
+  useEffect(() => setCursor(activeRow), [activeRow, listKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  const cursor = (id: string) => (listKeys && id === cursorId ? " cursor" : "");
   return (
     <div className="browser-space">
-      <nav className="tab-list" aria-label="タブ" onMouseDown={(e) => !(e.target as HTMLElement).closest("button, input") && onStrip()}>
+      <nav className="tab-list" aria-label="タブ" ref={list} onMouseDown={(e) => !(e.target as HTMLElement).closest("button, input") && onStrip()}>
         <div className="pins" role="group" aria-label="固定のページ">
           {PINNED_PAGES.map((p) => (
-            <button key={p.id} className={`pin${p.id === active?.id ? " on" : ""}`} aria-pressed={p.id === active?.id} title={p.label} onClick={() => onPinned(p.id)}>
+            <button key={p.id} data-row={p.id} className={`pin${p.id === active?.id ? " on" : ""}${cursor(p.id)}`} aria-pressed={p.id === active?.id} title={p.label} onClick={() => onPinned(p.id)}>
               <span className="pin-mark" data-pin={p.id} aria-hidden="true">
                 {p.short}
               </span>
@@ -1726,14 +1739,14 @@ function BrowserSpace({ tabs, active, covered, width, report, onResize, onSelect
             </button>
           ))}
         </div>
-        <button className={`tab-row new-tab-row${!active ? " on" : ""}`} onClick={onNewTab}>
+        <button data-row={NEW_TAB_ROW} className={`tab-row new-tab-row${!active ? " on" : ""}${cursor(NEW_TAB_ROW)}`} onClick={onNewTab}>
           <Icon name="plus" size={13} />
           <span className="grow">新しいタブ</span>
           <span className="kbd">{keyLabel(keyOf("newTab"))}</span>
         </button>
         <ul className="tab-rows" role="tablist" aria-orientation="vertical" aria-label="開いているタブ">
           {tabs.map((t) => (
-            <li key={t.id} data-tab={t.id} className={`tab-row${t.id === active?.id ? " on" : ""}${t.id === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragTab(e, t.id)}>
+            <li key={t.id} data-tab={t.id} data-row={t.id} className={`tab-row${t.id === active?.id ? " on" : ""}${t.id === dragging ? " dragging" : ""}${cursor(t.id)}`} onPointerDown={(e) => dragTab(e, t.id)}>
               <button role="tab" aria-selected={t.id === active?.id} aria-busy={t.loading} className="tab-row-main" title={t.url} onClick={() => onSelect(t.id)}>
                 {t.loading ? <span className="spinner" aria-label="読み込み中" /> : <span className="favicon" aria-hidden="true">{hostOf(t.url).slice(0, 1).toUpperCase()}</span>}
                 <span className="ellipsis">{t.title || hostOf(t.url)}</span>
@@ -1745,7 +1758,7 @@ function BrowserSpace({ tabs, active, covered, width, report, onResize, onSelect
           ))}
         </ul>
         <span className="muted small-text tab-list-hint">
-          {keyLabel(keyOf("prevTab"))} {keyLabel(keyOf("nextTab"))} で移る · {keyLabel(keyOf("closeTab"))} で閉じる（固定のページは閉じない）
+          {keyLabel(keyOf("sideApp"))} でここへ、{keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選んで Enter で開く · {keyLabel(keyOf("prevTab"))} {keyLabel(keyOf("nextTab"))} で移る · {keyLabel(keyOf("closeTab"))} で閉じる（固定のページは閉じない）
         </span>
         <Resizer label="タブの一覧の幅" cssVar="--tab-list-w" edge="right" width={width} min={TAB_LIST_MIN_W} max={() => TAB_LIST_MAX_W} onResize={onResize} />
       </nav>
@@ -7388,6 +7401,7 @@ export default function App() {
               tabs={normalTabs}
               active={activeTab}
               covered={covered}
+              listKeys={typingSide === "app"}
               width={tabListW}
               report={report}
               onResize={setTabListW}

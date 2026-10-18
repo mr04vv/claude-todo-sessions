@@ -3351,6 +3351,12 @@ button.slack-reaction:hover {
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
+/* The tab list with the keyboard: the row j k are on. */
+.tab-list .cursor {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}
+
 .pins {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

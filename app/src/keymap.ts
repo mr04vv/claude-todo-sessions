@@ -116,7 +116,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     ],
   },
   {
-    group: "一覧（Todo・PR・作業・学習・メニュー）",
+    group: "一覧（Todo・PR・作業・学習・ブラウザのタブ・メニュー）",
     items: [
       ["down", "下へ（ブラウザのページではスクロール）"],
       ["up", "上へ（ブラウザのページではスクロール）"],
