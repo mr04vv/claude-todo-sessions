@@ -78,14 +78,45 @@ pub fn ensure_session(name: &str, herdr: impl Fn() -> Command) -> Result<(), Str
 /// to from here, as in its own panes) at `cwd`, and runs `command` in it.
 /// `run` runs the herdr CLI with its arguments and gives back what it
 /// printed. Without `focus` herdr's view stays where it is.
-pub fn start_workspace(run: impl Fn(&[&str]) -> Result<String, String>, session: Option<&str>, cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
+pub fn start_workspace(run: impl Fn(&[&str]) -> Result<String, String>, session: Option<&str>, cwd: &str, label: &str, command: &str, focus: bool) -> Result<String, String> {
     let with_session = |args: &[&str]| -> Vec<String> { session.map(|s| vec!["--session".to_string(), s.to_string()]).unwrap_or_default().into_iter().chain(args.iter().map(|a| a.to_string())).collect() };
     let create = with_session(&["workspace", "create", "--cwd", cwd, "--label", label, if focus { "--focus" } else { "--no-focus" }]);
     let created = run(&create.iter().map(String::as_str).collect::<Vec<_>>())?;
     let v: Value = serde_json::from_str(&created).map_err(|e| format!("herdr output: {e}"))?;
     let pane = crate::launch::herdr_pane_id(&v).ok_or("herdr output has no pane id")?;
     let run_args = with_session(&["pane", "run", &pane, command]);
-    run(&run_args.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ())
+    run(&run_args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    Ok(workspace_of_pane(&pane).to_string())
+}
+
+/// The workspace a pane id (`w4W:p1`) belongs to.
+fn workspace_of_pane(pane: &str) -> &str {
+    pane.split(':').next().unwrap_or(pane)
+}
+
+/// Workspaces opened here, by id, with whether an agent has run in them yet.
+pub type Watched = std::collections::HashMap<String, bool>;
+
+/// From `herdr pane list` JSON: the watched workspaces whose agent has gone
+/// (it ran, and no pane there runs one now), to close; those herdr no longer
+/// has are dropped, and so are the ones returned.
+pub fn finished_workspaces(watched: &mut Watched, panes: &Value) -> Vec<String> {
+    let panes = panes["result"]["panes"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut finished = vec![];
+    watched.retain(|workspace, ran| {
+        let here: Vec<&Value> = panes.iter().filter(|p| p["workspace_id"] == workspace.as_str()).collect();
+        if here.is_empty() {
+            return false;
+        }
+        if here.iter().any(|p| p.get("agent").is_some()) {
+            *ran = true;
+        } else if *ran {
+            finished.push(workspace.clone());
+            return false;
+        }
+        true
+    });
+    finished
 }
 
 /// Pane id of the agent whose Claude session id matches, from
@@ -247,6 +278,7 @@ mod tests {
 #[cfg(test)]
 mod start_tests {
     use super::*;
+    use serde_json::json;
     use std::cell::RefCell;
 
     #[test]
@@ -271,5 +303,22 @@ mod start_tests {
         };
         start_workspace(run, None, "/w", "l", "c", true).unwrap();
         assert_eq!(calls.into_inner()[0], ["workspace", "create", "--cwd", "/w", "--label", "l", "--focus"]);
+    }
+
+    #[test]
+    fn a_workspace_closes_once_its_agent_has_gone() {
+        let with = json!({"result": {"panes": [{"workspace_id": "w1", "agent": "claude"}, {"workspace_id": "w2"}]}});
+        let without = json!({"result": {"panes": [{"workspace_id": "w1"}, {"workspace_id": "w2"}]}});
+        let mut watched = Watched::from([("w1".into(), false), ("w2".into(), false), ("w3".into(), false)]);
+        assert!(finished_workspaces(&mut watched, &with).is_empty(), "w2 has not started its agent yet; w3 is gone");
+        assert_eq!(watched, Watched::from([("w1".into(), true), ("w2".into(), false)]));
+        assert_eq!(finished_workspaces(&mut watched, &without), ["w1"]);
+        assert_eq!(watched, Watched::from([("w2".into(), false)]));
+    }
+
+    #[test]
+    fn a_workspace_opened_reports_its_id() {
+        let run = |args: &[&str]| Ok(if args.contains(&"create") { r#"{"result": {"root_pane": {"pane_id": "w9:p1"}}}"#.to_string() } else { String::new() });
+        assert_eq!(start_workspace(run, None, "/w", "l", "c", false).unwrap(), "w9");
     }
 }

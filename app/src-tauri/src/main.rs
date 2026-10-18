@@ -64,6 +64,8 @@ struct AppState {
     cloud_wake: Mutex<std::sync::mpsc::Sender<()>>,
     /// herdr session the user picked for new workspaces, if any.
     herdr_session: Mutex<Option<String>>,
+    /// Workspaces opened in each herdr session, to close once their agent has exited.
+    herdr_workspaces: Mutex<HashMap<String, cts_core::herdr::Watched>>,
     /// Local sessions run in the in-app terminal pane rather than herdr.
     in_app_terminal: AtomicBool,
     /// A split view (作業・学習) is shown: a page taking the keyboard says so,
@@ -854,7 +856,31 @@ fn start_in_herdr(state: &AppState, cwd: &str, label: &str, command: &str, focus
     } else {
         session
     };
-    cts_core::herdr::start_workspace(herdr, Some(&session), cwd, label, command, focus)
+    let workspace = cts_core::herdr::start_workspace(herdr, Some(&session), cwd, label, command, focus)?;
+    if let Ok(mut watched) = state.herdr_workspaces.lock() {
+        watched.entry(session).or_default().insert(workspace, false);
+    }
+    Ok(())
+}
+
+/// Closes the workspaces opened here whose agent has exited (closing the
+/// session in its pane), so they do not stay behind as bare shells.
+fn close_finished_workspaces(state: &AppState) {
+    let Ok(mut watched) = state.herdr_workspaces.lock() else { return };
+    for (session, workspaces) in watched.iter_mut() {
+        let panes = match herdr(&["--session", session, "pane", "list"]).and_then(|out| serde_json::from_str(&out).map_err(|e| format!("herdr pane list: {e}"))) {
+            Ok(panes) => panes,
+            Err(e) => {
+                eprintln!("{e}");
+                continue;
+            }
+        };
+        for workspace in cts_core::herdr::finished_workspaces(workspaces, &panes) {
+            if let Err(e) = herdr(&["--session", session, "workspace", "close", &workspace]) {
+                eprintln!("{e}");
+            }
+        }
+    }
 }
 
 /// Whether the todo is a subtask, whose sessions run in the subtasks' herdr session.
@@ -2593,6 +2619,7 @@ fn watch_loop(app: AppHandle) {
             if let Err(e) = discover_sessions(&db, with_agents) {
                 eprintln!("{e}");
             }
+            close_finished_workspaces(&app.state::<AppState>());
         }
         tick = tick.wrapping_add(1);
         if let Ok(todos) = db.list_todos(None) {
@@ -2768,6 +2795,7 @@ fn main() {
             sync_status: Mutex::new("cloud: 同期待ち".into()),
             origin_cache: Mutex::new(HashMap::new()),
             herdr_session: Mutex::new(None),
+            herdr_workspaces: Mutex::new(HashMap::new()),
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
             focus_mode: AtomicBool::new(false),
