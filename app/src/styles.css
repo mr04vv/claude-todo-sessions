@@ -3320,6 +3320,12 @@ button.slack-reaction:hover {
   font-size: 16px;
 }
 
+/* A button in the head that the list's j k reach (作業's ちょっと Claude), under the cursor. */
+.rail-head .cursor {
+  outline: 2px solid var(--accent-line);
+  outline-offset: -2px;
+}
+
 .rail-body {
   flex: 1;
   min-height: 0;

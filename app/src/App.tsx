@@ -1200,6 +1200,8 @@ function BoardLane({ lane, collapsed, onToggle, selectedId, onSelectTodo, report
 
 /// 作業's list's one line for the review requests, as its row.
 const ASKS_ROW = "w:reviews";
+/// 作業's ちょっと Claude, the list's first row (j k reach it, Enter opens it).
+const QUICK_ROW = "quick";
 
 /// Picks a todo's parent, or none. Subtasks go one level deep, so only
 /// top-level todos are offered and a todo with subtasks cannot move.
@@ -5673,9 +5675,10 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     ...others.map((s) => ({ key: `s${s.session_id}`, session: s })),
   ];
   const open = (r: WorkRow) => (r.todo ? onPick({ todo: r.todo.id }) : r.session ? onPick({ session: r.session.session_id }) : undefined);
-  const { cursorId, list } = useRowCursor(
-    [...rows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : [])],
+  const { cursorId, setCursor, list } = useRowCursor(
+    [QUICK_ROW, ...rows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : [])],
     (id) => {
+      if (id === QUICK_ROW) return onQuick();
       if (id === ASKS_ROW) return onShowPrs();
       const r = rows.find((x) => x.key === id);
       if (r) open(r);
@@ -5702,6 +5705,8 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
       return !!hit;
     },
   );
+  // The cursor starts on the first of the work, not on ちょっと Claude above it.
+  useEffect(() => void (rows[0] && setCursor(rows[0].key)), []); // eslint-disable-line react-hooks/exhaustive-deps
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
   const sessionRow = (r: WorkRow, s: Session) => (
     <li key={r.key} data-row={r.key} className={`row work-row${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}`} onClick={() => open(r)}>
@@ -5720,7 +5725,7 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
       <div className="rail-head">
         <h1>作業</h1>
         <span className="grow" />
-        <button className="ghost small" onClick={onQuick} title="todo に紐づけずに claude を開く">
+        <button data-row={QUICK_ROW} className={`ghost small${cursorId === QUICK_ROW ? " cursor" : ""}`} onClick={onQuick} title="todo に紐づけずに claude を開く">
           <Icon name="spark" size={12} /> ちょっと Claude
         </button>
       </div>
