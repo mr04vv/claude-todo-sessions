@@ -3347,7 +3347,7 @@ button.slack-reaction:hover {
   border-right: 1px solid var(--border);
 }
 
-.app.typing-pane.space-browser .tab-list {
+.app.typing-app.space-browser .tab-list {
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
@@ -3497,9 +3497,16 @@ button.tab-row {
   padding: 0 4px;
 }
 
+/* Its top edge marks the page having the keyboard: kept clear of the page,
+   which covers everything under it (a pinned page has no address bar). */
 .browser-main {
   flex: 1;
   min-width: 0;
+  border-top: 3px solid transparent;
+}
+
+.app.typing-pane.space-browser .browser-main {
+  border-top-color: var(--accent);
 }
 
 .resizer.right-edge {
