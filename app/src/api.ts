@@ -86,6 +86,8 @@ export interface Reading {
   /** A book's table of contents, in order. */
   chapters: Chapter[];
   created_at: number;
+  /** Read and kept (a good one), as against still to read. */
+  kept: boolean;
 }
 
 export interface Chapter {
@@ -532,6 +534,8 @@ export const api = {
   /// The tags put right by hand (from ReadingSort's tags).
   setReadingTags: (id: number, tags: string[]) => invoke<void>("set_reading_tags", { id, tags }),
   setChapterRead: (readingId: number, position: number, read: boolean) => invoke<void>("set_chapter_read", { readingId, position, read }),
+  /// Keeps a reading read (a good one), or puts it back to read.
+  setReadingKept: (id: number, kept: boolean) => invoke<void>("set_reading_kept", { id, kept }),
   /// Keeps the TypeSafe API key (blank takes it out); what waits is sorted then.
   setTypesafeKey: (key: string) => invoke<void>("set_typesafe_key", { key }),
   /// Keeps Jev's credit as just read off TypeSafe's console: the credit, and the Spend.

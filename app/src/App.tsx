@@ -5286,6 +5286,12 @@ const READING_KIND: Record<ReadingKind, string> = { article: "記事", post: "X 
 type KindFilter = "all" | ReadingKind;
 const KIND_FILTERS: KindFilter[] = ["all", "article", "post", "book"];
 const KIND_FILTER_LABEL: Record<KindFilter, string> = { all: "すべて", ...READING_KIND };
+/// 学習's shelves: the readings still to read, the ones read and kept (good
+/// ones; the rest are deleted once read), or both.
+type Shelf = "toRead" | "kept" | "all";
+const SHELVES: Shelf[] = ["toRead", "kept", "all"];
+const SHELF_LABEL: Record<Shelf, string> = { toRead: "これから読む", kept: "残した", all: "すべて" };
+const onShelf = (r: Reading, shelf: Shelf) => shelf === "all" || r.kept === (shelf === "kept");
 /// The tag filter's choices besides the tags: every reading, and those not sorted yet.
 const ALL_TAGS = "";
 const UNSORTED = "\n";
@@ -5297,6 +5303,7 @@ function ReadingMeta({ r }: { r: Reading }) {
     <span className="reading-meta">
       <span className="muted">{r.kind === "post" ? "X" : hostOf(r.url)}</span>
       <span className="muted">· {ago(r.created_at)}</span>
+      {r.kept && <span className="tag kept">残した</span>}
       {r.tags === null ? <span className="tag pending">分類待ち</span> : r.tags.map((t) => <span key={t} className="tag">{t}</span>)}
       {r.kind === "book" && r.chapters.length > 0 && (
         <span className="book-progress" title={`${r.chapters.length} 章のうち ${read} 章を読んだ`}>
@@ -5326,6 +5333,7 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
   onSettings: () => void;
   onToast: (text: string) => void;
 }) {
+  const [shelf, setShelf] = useState<Shelf>("toRead");
   const [kind, setKind] = useState<KindFilter>("all");
   const [tag, setTag] = useState(ALL_TAGS);
   const [query, setQuery] = useState("");
@@ -5333,7 +5341,8 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
   const [forgetting, setForgetting] = useState<number | null>(null);
   const [tagsFor, setTagsFor] = useState<number | null>(null);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  const ofKind = readings.filter((r) => kind === "all" || r.kind === kind);
+  const shelved = readings.filter((r) => onShelf(r, shelf));
+  const ofKind = shelved.filter((r) => kind === "all" || r.kind === kind);
   const shown = ofKind.filter(
     (r) =>
       (tag === ALL_TAGS || (tag === UNSORTED ? r.tags === null : !!r.tags?.includes(tag))) &&
@@ -5373,6 +5382,7 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
         [matches(e, "studyForget"), () => (forgetting === r.id ? (setForgetting(null), run(() => api.deleteReading(r.id))) : setForgetting(r.id))],
         [matches(e, "studyTags"), () => setTagsFor(r.id)],
         [matches(e, "studyCopy"), () => copyUrls(picked.length > 0 ? picked : [r.id])],
+        [matches(e, "studyKeep"), () => run(() => api.setReadingKept(r.id, !r.kept))],
       ];
       const hit = acts.find(([yes]) => yes);
       hit?.[1]();
@@ -5382,11 +5392,18 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
   return (
     <div className="readings-page">
       <nav className="readings-filters" aria-label="絞り込み">
+        <div className="section-title">読む・残した</div>
+        {SHELVES.map((sh) => (
+          <button key={sh} className={`filter-row${shelf === sh ? " on" : ""}`} aria-pressed={shelf === sh} onClick={() => setShelf(sh)}>
+            <span className="grow">{SHELF_LABEL[sh]}</span>
+            <span className="muted">{readings.filter((r) => onShelf(r, sh)).length}</span>
+          </button>
+        ))}
         <div className="section-title">種類 <span className="kbd">{keyLabel(keyOf("studyKind"))}</span></div>
         {KIND_FILTERS.map((k) => (
           <button key={k} className={`filter-row${kind === k ? " on" : ""}`} aria-pressed={kind === k} onClick={() => setKind(k)}>
             <span className="grow">{KIND_FILTER_LABEL[k]}</span>
-            <span className="muted">{k === "all" ? readings.length : readings.filter((r) => r.kind === k).length}</span>
+            <span className="muted">{k === "all" ? shelved.length : shelved.filter((r) => r.kind === k).length}</span>
           </button>
         ))}
         <div className="section-title">タグ</div>
@@ -5471,6 +5488,9 @@ function ReadingsPage({ readings, sort, opened, run, report, onRead, onResume, o
                     <button className="small" title="読む（Enter）" onClick={() => onRead([r.id])}>
                       {r.kind === "book" ? (r.chapters.some((c) => c.read) ? "続きを読む" : "読み始める") : "読む"}
                     </button>
+                    <button className="ghost small" title={`読んで良かったものを残す、残したものを「これから読む」に戻す（${keyLabel(keyOf("studyKeep"))}）`} onClick={() => run(() => api.setReadingKept(r.id, !r.kept))}>
+                      {r.kept ? "読むに戻す" : "残す"}
+                    </button>
                     <button className="ghost small" title={`ブラウザで開く（${keyLabel(keyOf("studyBrowser"))}）`} onClick={() => onBrowser(r.url)}>
                       ブラウザで
                     </button>
@@ -5529,7 +5549,7 @@ function TagMenu({ reading, tags, run, onClose }: { reading: Reading; tags: stri
 
 /// 学習's left while reading: a book's contents (its chapters, read or not:
 /// m marks the one under the cursor), or the readings to open beside.
-function StudyRail({ reading, readings, opened, run, onRead, onChapter, onCopy, onList }: {
+function StudyRail({ reading, readings, opened, run, onRead, onChapter, onCopy, onList, onKeep, onForget }: {
   /// The reading shown on the left.
   reading: Reading | undefined;
   readings: Reading[];
@@ -5541,7 +5561,12 @@ function StudyRail({ reading, readings, opened, run, onRead, onChapter, onCopy, 
   /// Copies the open readings' URLs.
   onCopy: () => void;
   onList: () => void;
+  /// Read: kept (a good one; again, back to read), or let go (its tab closes).
+  onKeep: (r: Reading) => void;
+  onForget: (r: Reading) => void;
 }) {
+  const [forgetting, setForgetting] = useState(false);
+  useEffect(() => setForgetting(false), [reading?.id]);
   const book = reading?.kind === "book" && reading.chapters.length > 0 ? reading : undefined;
   const rows = book ? book.chapters.map((c) => `c:${c.position}`) : readings.map((r) => `r:${r.id}`);
   const toggle = (position: number, read: boolean) => book && run(() => api.setChapterRead(book.id, position, read));
@@ -5555,8 +5580,11 @@ function StudyRail({ reading, readings, opened, run, onRead, onChapter, onCopy, 
       }
     },
     (e, id) => {
-      if (matches(e, "studyList")) return (onList(), true);
+      if (matches(e, "studyList")) return (forgetting ? setForgetting(false) : onList(), true);
       if (matches(e, "studyCopy")) return (onCopy(), true);
+      if (reading && matches(e, "studyKeep")) return (onKeep(reading), true);
+      // d asks, d again lets it go.
+      if (reading && matches(e, "studyForget")) return (forgetting ? (setForgetting(false), onForget(reading)) : setForgetting(true), true);
       if (!matches(e, "studyChapter") || !id?.startsWith("c:")) return false;
       const c = book?.chapters.find((x) => `c:${x.position}` === id);
       if (c) toggle(c.position, !c.read);
@@ -5571,6 +5599,27 @@ function StudyRail({ reading, readings, opened, run, onRead, onChapter, onCopy, 
           <Icon name="back" size={12} /> 一覧
         </button>
         <span className="muted small-text">{book ? "目次" : "読みもの"}</span>
+        <span className="grow" />
+        {reading &&
+          (forgetting ? (
+            <span className="inline-confirm">
+              <button className="danger small" onClick={() => (setForgetting(false), onForget(reading))}>
+                消す
+              </button>
+              <button className="ghost small" onClick={() => setForgetting(false)}>
+                やめる
+              </button>
+            </span>
+          ) : (
+            <>
+              <button className="ghost small" title={`読んで良かったので残す（もう一度で「これから読む」に戻す。${keyLabel(keyOf("studyKeep"))}）`} onClick={() => onKeep(reading)}>
+                {reading.kept ? "残した" : "残す"} <span className="kbd">{keyLabel(keyOf("studyKeep"))}</span>
+              </button>
+              <button className="ghost small" title={`読み終わって要らないので消す（${keyLabel(keyOf("studyForget"))} を2回）`} onClick={() => setForgetting(true)}>
+                消す
+              </button>
+            </>
+          ))}
       </div>
       {book ? (
         <>
@@ -6056,6 +6105,14 @@ export default function App() {
     setTabs((prev) => prev.filter((t) => t.id !== id));
     setStudy((s) => ({ ...s, open: s.open.filter((r) => r !== tab?.reading), active: s.active === id ? (next?.id ?? null) : s.active, view: next ? s.view : "list" }));
     if (id === studyLeft?.id && next) keysToTab(next, undefined, report);
+  };
+  const studyReadingShown = studyLeft?.reading !== undefined ? readings.find((r) => r.id === studyLeft.reading) : undefined;
+  /// 学習's reading read: kept (a good one; again, back to read), or let go (its tab closes).
+  const keepReading = (r: Reading) => run(() => api.setReadingKept(r.id, !r.kept));
+  const forgetReading = (r: Reading) => {
+    const tab = tabs.find((t) => t.reading === r.id);
+    if (tab) closeStudyTab(tab.id);
+    run(() => api.deleteReading(r.id));
   };
   /// Picks the page on 学習's right; it takes the typing (its text box, with `text` typed in).
   const setStudyRight = (id: string, text?: string) => {
@@ -7306,6 +7363,24 @@ export default function App() {
     { key: "usage", label: "使用量（Claude・Jev）", run: () => setDialog("usage") },
     { key: "forgetLogin", label: "表示中のサイトの保存したログインを消す", run: forgetShownLogin },
     { key: "add", label: "新しい Todo", hint: keyLabel(keyOf("newTodo")), run: () => setDialog("add") },
+    ...(studyReading && studyReadingShown
+      ? [
+          {
+            key: "keepReading",
+            label: studyReadingShown.kept ? `「${studyReadingShown.title}」を「これから読む」に戻す` : `「${studyReadingShown.title}」を残す（読んで良かった）`,
+            run: () => keepReading(studyReadingShown),
+          },
+          {
+            key: "forgetReading",
+            label: `「${studyReadingShown.title}」を消す（読み終わって要らない）`,
+            run: () => {},
+            items: () => [
+              { key: "yes", label: "消す", run: () => forgetReading(studyReadingShown) },
+              { key: "no", label: "やめる", run: () => {} },
+            ],
+          },
+        ]
+      : []),
     ...(openDb
       ? [
           { key: "renameDatabase", label: `DB「${openDb.name}」の名前を変える`, run: () => askDatabase(openDb) },
@@ -7398,7 +7473,6 @@ export default function App() {
   };
   /// A book's chapter from 学習's contents, in the tab reading it.
   const goChapter = (url: string) => studyLeft && setTabs((prev) => prev.map((t) => (t.id === studyLeft.id ? { ...t, url, loading: true, nav: t.nav + 1 } : t)));
-  const studyReadingShown = studyLeft?.reading !== undefined ? readings.find((r) => r.id === studyLeft.reading) : undefined;
 
   // A todo picked on the Todo pages opens in the same sheet.
   const panel = todoView && selectedTodo ? "todo" : null;
@@ -7775,7 +7849,7 @@ export default function App() {
           )}
           {studyReading && (
             <div className="split">
-              <StudyRail reading={studyReadingShown} readings={readings} opened={study.open} run={run} onRead={readReadings} onChapter={goChapter} onCopy={copyOpenUrls} onList={() => setStudy((st) => ({ ...st, view: "list" }))} />
+              <StudyRail reading={studyReadingShown} readings={readings} opened={study.open} run={run} onRead={readReadings} onChapter={goChapter} onCopy={copyOpenUrls} onList={() => setStudy((st) => ({ ...st, view: "list" }))} onKeep={keepReading} onForget={forgetReading} />
               <section className="focus-left browser" aria-label="読んでいるページ">
                 <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && studyLeft && keysToTab(studyLeft, studyLeft.id, report)}>
                   {studyLefts.map((t) => (

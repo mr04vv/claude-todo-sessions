@@ -3718,6 +3718,12 @@ button.tab-row {
   color: var(--text-3);
 }
 
+/* A reading read and kept (a good one). */
+.tag.kept {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
 .book-progress {
   display: inline-flex;
   align-items: center;

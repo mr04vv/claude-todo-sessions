@@ -76,6 +76,7 @@ export type Action =
   | "studyKind"
   | "studyCopy"
   | "studyChapter"
+  | "studyKeep"
   | "studyList"
   | "artifactForget"
   | "search"
@@ -197,6 +198,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["studyKind", "種類を切り替える（すべて・記事・X の投稿・本）"],
       ["studyCopy", "選んだもの（なければカーソルの行、読んでいるときは開いているもの）の URL をコピー（NotebookLM 用）"],
       ["studyChapter", "目次：章を読んだ・まだにする（Enter でその章へ）"],
+      ["studyKeep", "読んで良かったものを残す（もう一度で「これから読む」に戻す。読んでいる画面でも）"],
       ["studyList", "読んでいるところと一覧を行き来する（一覧では、消すのや選ぶのをやめるのが先）"],
     ],
   },
@@ -287,6 +289,7 @@ const KEYS: Record<Action, string> = {
   studyKind: "f",
   studyCopy: "c",
   studyChapter: "m",
+  studyKeep: "s",
   studyList: "Escape",
   artifactForget: "d",
   search: "/",
