@@ -761,7 +761,7 @@ function useRowCursor(
     const onKeyDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       // A todo's sheet over the list takes the keys.
-      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app[data-zone=sidebar], .sheet-backdrop")) return;
+      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app[data-zone], .sheet-backdrop")) return;
       const { ids, cursorId, onEnter, onKey } = state.current;
       const step = stepOf(e);
       if (step && ids.length > 0) {
@@ -1943,6 +1943,13 @@ function NewTabPage({ onOpen }: { onOpen: (url: string) => void }) {
   );
 }
 
+/// The places for the keyboard left of a space's list (App's `zone`): the
+/// sidebar (管理's, 学習's filters) and the spaces' rail, by their entries.
+type Zone = "side" | "rail";
+const ZONES: Zone[] = ["side", "rail"];
+const ZONE_ITEMS: Record<Zone, string> = { side: ".sidebar nav button, .readings-filters button", rail: ".space-rail button" };
+const zoneItems = (z: Zone) => [...document.querySelectorAll<HTMLElement>(ZONE_ITEMS[z])];
+
 /// The side of a split view (作業, 学習 while reading) `el` is on; null off both (its list).
 const splitSideOf = (el: Element) => {
   const side = el.closest(".focus-left, .focus-right");
@@ -2254,7 +2261,7 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, run, rep
   const root = useRef<HTMLElement>(null);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .app[data-zone=sidebar]")) return;
+      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector("[role=dialog], .app[data-zone]")) return;
       const el = root.current;
       const title = matches(e, "editTitle") && el?.querySelector<HTMLInputElement>(".panel-title");
       const target = title || (matches(e, "editMemo") && el?.querySelector<HTMLElement>(".memo.editable")) || (matches(e, "addSubtask") && el?.querySelector<HTMLElement>(".add-inline"));
@@ -2784,7 +2791,7 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   // The page's keys (keymap.ts, "Slack の画面"); j k and Enter are the list's.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app[data-zone=sidebar], .sheet-backdrop, [role=dialog]")) return;
+      if ((e.target as HTMLElement).closest(TYPING) || document.querySelector(".app[data-zone], .sheet-backdrop, [role=dialog]")) return;
       if (matches(e, "slackFilter")) setFilter((f) => SLACK_FILTERS[(SLACK_FILTERS.indexOf(f) + 1) % SLACK_FILTERS.length]);
       else if (matches(e, "slackCompose")) setComposing(true);
       else if (composing && e.key === "Escape") setComposing(false);
@@ -6091,37 +6098,46 @@ export default function App() {
     else if (!activeTab && normalTabs.length > 0) setNewTab(false);
     return true;
   };
-  // The sidebar (管理's, or 学習's filters) as a place for the keyboard (⌃h
-  // from the list): j k move over its entries, Enter picks one (and goes to
-  // it), ⌃l or Esc go back.
-  const [sideZone, setSideZoneState] = useState(false);
-  const sideZoneRef = useRef(sideZone);
-  sideZoneRef.current = sideZone;
-  const [sideCursor, setSideCursor] = useState(0);
-  const sideCursorRef = useRef(sideCursor);
-  sideCursorRef.current = sideCursor;
-  const sideItems = () => [...document.querySelectorAll<HTMLElement>(".sidebar nav button, .readings-filters button")];
-  const setSideZone = (on: boolean) => {
-    sideZoneRef.current = on;
-    setSideZoneState(on);
-    // It starts on the page shown.
-    if (on) setSideCursor(Math.max(0, sideItems().findIndex((el) => el.classList.contains("on"))));
+  // Places for the keyboard left of the list (⌃h from it): the sidebar
+  // (管理's, or 学習's filters), and left of everything the spaces' rail.
+  // j k move over their entries, Enter picks one (and goes to it), ⌃l steps
+  // back right, Esc goes back to the list.
+  const [zone, setZoneState] = useState<Zone | null>(null);
+  const zoneRef = useRef(zone);
+  zoneRef.current = zone;
+  const [zoneCursor, setZoneCursor] = useState(0);
+  const zoneCursorRef = useRef(zoneCursor);
+  zoneCursorRef.current = zoneCursor;
+  const setZone = (z: Zone | null) => {
+    zoneRef.current = z;
+    setZoneState(z);
+    // It starts on what is shown.
+    if (z) setZoneCursor(Math.max(0, zoneItems(z).findIndex((el) => el.classList.contains("on"))));
   };
   useEffect(() => {
-    sideItems().forEach((el, i) => el.toggleAttribute("data-cursor", sideZone && i === sideCursor));
+    for (const z of ZONES) zoneItems(z).forEach((el, i) => el.toggleAttribute("data-cursor", zone === z && i === zoneCursor));
   });
   /// ⌃l gives the typing one side to the right, ⌃h one to the left (from a
-  /// page, ⌃h comes back through FOCUS_APP_EVENT). In a split view: its list,
-  /// its left page, its right one, going on `from` the side the key was
-  /// pressed on (null: the list); `text` (selected on the left) is typed
-  /// into the right's box. Elsewhere: the sidebar, the list, the page.
+  /// page, ⌃h comes back through FOCUS_APP_EVENT), the spaces' rail being
+  /// the leftmost. In a split view: the rail, its list, its left page, its
+  /// right one, going on `from` the side the key was pressed on (null: the
+  /// list); `text` (selected on the left) is typed into the right's box.
+  /// Elsewhere: the rail, the sidebar (if the space has one), the list (the
+  /// browser's tab list), the page.
   const focusSide = (pane: boolean, from: "left" | "right" | null, text?: string) => {
     const give = (tab: BrowserTab | undefined | null, chat: boolean) => {
       if (!tab) return;
       if (tab.term) focusTerminal(tab.id);
       else giveKeys(tab.id, report, chat, chat ? text : undefined);
     };
+    const hasSide = zoneItems("side").length > 0;
+    if (zoneRef.current) {
+      if (pane) setZone(zoneRef.current === "rail" && hasSide ? "side" : null);
+      else setZone("rail");
+      return;
+    }
     if (splitRef.current) {
+      if (!pane && from === null) return setZone("rail");
       if (pane) {
         const to = from === null ? (splitLeft ? "left" : "right") : "right";
         const tab = to === "left" ? splitLeft : splitRight;
@@ -6141,13 +6157,12 @@ export default function App() {
       api.focusAppPage().catch(report);
       return void document.querySelector<HTMLElement>(".split-rail [data-row], .split-rail button")?.focus();
     }
-    // Left from the list is the sidebar (管理's, 学習's filters); right from the sidebar, the list.
+    // Left from the list is the sidebar (管理's, 学習's filters), or with none the rail.
     if (!pane) {
-      if (typingSideRef.current === "app" && !sideZoneRef.current && (spaceRef.current === "manage" || spaceRef.current === "study")) setSideZone(true);
+      if (typingSideRef.current === "app") setZone(hasSide ? "side" : "rail");
       setTypingSide("app");
       return void (document.activeElement as HTMLElement | null)?.blur();
     }
-    if (sideZoneRef.current) return setSideZone(false);
     if (!browserShown) return;
     // The new tab page: its address field.
     if (!activeTab) return void document.querySelector<HTMLInputElement>(".browser-main input")?.focus();
@@ -6182,6 +6197,8 @@ export default function App() {
     const press = (e: PointerEvent) => {
       const t = e.target as HTMLElement;
       pressedInPane = !!t.closest(".browser-tabs, .tab-list") && !t.closest("input");
+      // A press anywhere leaves the zone the keys were in (its entry, pressed, still acts).
+      if (zoneRef.current) setZone(null);
     };
     const here = () => {
       const el = document.activeElement;
@@ -6195,6 +6212,7 @@ export default function App() {
     // side it is on, so it lets go; a click puts the focus back.
     const toPage = () => {
       setTypingSide("pane");
+      setZone(null);
       if (!document.hasFocus()) (document.activeElement as HTMLElement | null)?.blur();
     };
     // This page lost it, to a page (which says so in a split view) or to
@@ -6705,20 +6723,21 @@ export default function App() {
         focusSideRef.current(matches(e, "sidePane"), splitSideOf(e.target as HTMLElement), inTerminal && focusLeftRef.current ? terminalSelection(focusLeftRef.current.id) : undefined);
         return;
       }
-      if (sideZoneRef.current && !e.metaKey && !e.ctrlKey) {
-        // The sidebar's keys are its own (picking an entry re-renders at once,
+      const z = zoneRef.current;
+      if (z && !e.metaKey && !e.ctrlKey) {
+        // A zone's keys are its own (picking an entry re-renders at once,
         // and the pages' keys must not take the same Enter after it).
         e.stopImmediatePropagation();
         const step = stepOf(e);
         if (step) {
           e.preventDefault();
-          setSideCursor((i) => Math.min(Math.max(i + step, 0), sideItems().length - 1));
+          setZoneCursor((i) => Math.min(Math.max(i + step, 0), zoneItems(z).length - 1));
         } else if (e.key === "Enter") {
           e.preventDefault();
           // Picks the entry and goes over to what it shows.
-          sideItems()[sideCursorRef.current]?.click();
-          setSideZone(false);
-        } else if (e.key === "Escape") setSideZone(false);
+          zoneItems(z)[zoneCursorRef.current]?.click();
+          setZone(null);
+        } else if (e.key === "Escape") setZone(null);
         return;
       }
       // ⌘1–⌘4: the spaces.
@@ -6867,7 +6886,7 @@ export default function App() {
   /// its session, its list).
   const goSpace = (s: Space) => {
     setSpace(s);
-    setSideZone(false);
+    setZone(null);
     const tab = s === "browser" ? (activeTab ?? null) : s === "work" ? workTab(workView.left) : s === "study" && study.view === "read" ? studyLeft : undefined;
     if (tab !== undefined) {
       setFocusTyping(tab ? "left" : null);
@@ -6886,7 +6905,7 @@ export default function App() {
   const todoPage = useRef<HTMLDivElement>(null);
   const [statusMenuFor, setStatusMenuFor] = useState<number | null>(null);
   const statusMenuTodo = statusMenuFor !== null ? allTodos.find((t) => t.id === statusMenuFor) : undefined;
-  const { setCursor: setTodoCursor } = useTodoKeys(todoPage, pageLayout, space === "manage" && todoView && !covered && !sideZone, selectedTodo !== null, {
+  const { setCursor: setTodoCursor } = useTodoKeys(todoPage, pageLayout, space === "manage" && todoView && !covered && zone === null, selectedTodo !== null, {
     open: (id) => openTodo(id),
     select: openTodo,
     status: setStatusMenuFor,
@@ -7072,7 +7091,7 @@ export default function App() {
     <SessionTitleContext.Provider value={sessionTitle}>
       <div
         className={`app space-${space}${split ? " split-shown" : ""}${typingSide ? ` typing-${typingSide}` : ""}${split && focusTyping ? ` typing-${focusTyping}` : ""}`}
-        data-zone={sideZone ? "sidebar" : undefined}
+        data-zone={zone ?? undefined}
         style={{ "--panel-w": `${panelW}px`, "--focus-right-w": `${focusRightW}px`, "--tab-list-w": `${tabListW}px`, "--rail-w": `${railW}px` } as React.CSSProperties}
       >
         <SpaceRail
@@ -7131,7 +7150,7 @@ export default function App() {
         <div className="space-body">
           {space === "manage" && (
             <>
-              <aside className="sidebar" onPointerDown={() => sideZoneRef.current && setSideZone(false)}>
+              <aside className="sidebar">
                 {NAV_GROUPS.map((group) => (
                   <nav key={group} className="nav" aria-label={group}>
                     <div className="section-title">{group}</div>
