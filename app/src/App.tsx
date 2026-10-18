@@ -97,7 +97,7 @@ import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keyma
 import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
-import { arrange, latestFirst, moveTo } from "./order";
+import { ageGroup, arrange, latestFirst, moveTo } from "./order";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -5799,10 +5799,12 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
     });
   /// A row's sessions: its own, or its todo's and its subtasks'.
   const sessionsOf = (r: WorkRow) => (r.session ? [r.session] : todos.filter((t) => t.id === r.todo?.id || t.parent_id === r.todo?.id).flatMap((t) => t.sessions));
-  const ordered = (rows: WorkRow[]) =>
-    sort === "manual"
-      ? arrange(rows, (r) => r.key, order)
-      : latestFirst(rows, (r) => Math.max(0, ...sessionsOf(r).map((s) => (sort === "updated" ? s.state_at : s.started_at))));
+  /// When a row's work last moved or began (as ordered by), its latest session's.
+  const timeOf = (r: WorkRow) => Math.max(0, ...sessionsOf(r).map((s) => (sort === "started" ? s.started_at : s.state_at)));
+  const ordered = (rows: WorkRow[]) => (sort === "manual" ? arrange(rows, (r) => r.key, order) : latestFirst(rows, timeOf));
+  // Ordered by a time, the list is headed by span: 今日, 昨日, … 1ヶ月以上前.
+  const now = new Date();
+  const groupOf = (r: WorkRow) => (sort === "manual" ? null : ageGroup(timeOf(r), now));
   const workRows = ordered([...atWork.map((t): WorkRow => ({ key: `t${t.id}`, todo: t })), ...loose.map((s): WorkRow => ({ key: `s${s.session_id}`, session: s }))]);
   /// Moves row `key` to where `to` is, both in the work (not あなた待ち):
   /// the list is ordered by hand from then on, as it was shown.
@@ -5861,6 +5863,30 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
   // The cursor starts on the first of the work, not on ちょっと Claude above it.
   useEffect(() => void (rows[0] && setCursor(rows[0].key)), []); // eslint-disable-line react-hooks/exhaustive-deps
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
+  const todoRow = (t: Todo) => {
+    const children = todos.filter((c) => c.parent_id === t.id);
+    const key = `t${t.id}`;
+    const s = mainSession(t);
+    const under = waiting.filter((w) => w.todo && (w.todo.id === t.id || w.todo.parent_id === t.id)).length;
+    return (
+      <li key={key} data-row={key} className={`row work-row${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
+        <span className="work-line">
+          {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={t.status} />}
+          <span className="mono muted">#{t.id}</span>
+          <span className="row-title ellipsis">{t.title}</span>
+        </span>
+        <span className="work-line muted small-text">
+          {children.length > 0 && (
+            <span>
+              サブタスク {board.todos.filter((c) => c.parent_id === t.id && c.status === "done").length}/{board.todos.filter((c) => c.parent_id === t.id).length}
+            </span>
+          )}
+          {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
+          {s && <span className="ellipsis">{placeOf(s)} · {ago(s.state_at)}</span>}
+        </span>
+      </li>
+    );
+  };
   const sessionRow = (r: WorkRow, s: Session) => (
     <li key={r.key} data-row={r.key} className={`row work-row${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
       <span className="work-line">
@@ -5946,31 +5972,11 @@ function WorkRail({ board, waiting, pick, width, onResize, onPick, onTodo, onSho
           <div className="section-title">作業中</div>
           {workRows.length === 0 && <p className="muted hint">動いているセッションはありません。管理で todo を任せるか、ちょっと Claude で始めると、ここに並びます。</p>}
           <ul className="rows compact">
-            {workRows.map((r) => {
-              const t = r.todo;
-              if (!t) return r.session && sessionRow(r, r.session);
-              const children = todos.filter((c) => c.parent_id === t.id);
-              const key = `t${t.id}`;
-              const s = mainSession(t);
-              const under = waiting.filter((w) => w.todo && (w.todo.id === t.id || w.todo.parent_id === t.id)).length;
-              return (
-                <li key={key} data-row={key} className={`row work-row${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
-                  <span className="work-line">
-                    {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={t.status} />}
-                    <span className="mono muted">#{t.id}</span>
-                    <span className="row-title ellipsis">{t.title}</span>
-                  </span>
-                  <span className="work-line muted small-text">
-                    {children.length > 0 && (
-                      <span>
-                        サブタスク {board.todos.filter((c) => c.parent_id === t.id && c.status === "done").length}/{board.todos.filter((c) => c.parent_id === t.id).length}
-                      </span>
-                    )}
-                    {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
-                    {s && <span className="ellipsis">{placeOf(s)} · {ago(s.state_at)}</span>}
-                  </span>
-                </li>
-              );
+            {workRows.flatMap((r, i) => {
+              // Heads where the span changes, the list ordered by a time.
+              const group = groupOf(r);
+              const head = group && (i === 0 || groupOf(workRows[i - 1]) !== group) ? [<li key={`g:${group}`} className="row-group">{group}</li>] : [];
+              return [...head, r.todo ? todoRow(r.todo) : r.session ? sessionRow(r, r.session) : null];
             })}
           </ul>
         </section>

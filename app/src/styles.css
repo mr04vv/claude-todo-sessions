@@ -3541,6 +3541,14 @@ button.tab-row {
   opacity: 0.6;
 }
 
+/* 作業's list, ordered by a time: where a span (今日, 昨日, …) begins. */
+.row-group {
+  padding: 10px 10px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-3);
+}
+
 .tab-row-main {
   flex: 1;
   min-width: 0;
