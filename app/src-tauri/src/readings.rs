@@ -175,6 +175,12 @@ pub fn set_reading_tags(state: State<AppState>, id: i64, tags: Vec<String>) -> R
     state.db.lock().map_err(err)?.set_reading_tags(id, &tags).map_err(err)
 }
 
+/// Keeps a reading read (a good one), or puts it back to read.
+#[tauri::command(async)]
+pub fn set_reading_kept(state: State<AppState>, id: i64, kept: bool) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_reading_kept(id, kept).map_err(err)
+}
+
 #[tauri::command(async)]
 pub fn set_chapter_read(state: State<AppState>, reading_id: i64, position: i64, read: bool) -> Result<(), String> {
     state.db.lock().map_err(err)?.set_chapter_read(reading_id, position, read).map_err(err)
@@ -260,6 +266,7 @@ mod tests {
             tags: None,
             chapters: chapters.iter().enumerate().map(|(i, t)| cts_core::Chapter { position: i as i64 + 1, title: t.to_string(), url: String::new(), read: false }).collect(),
             created_at: 0,
+            kept: false,
         }
     }
 

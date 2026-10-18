@@ -228,6 +228,8 @@ pub struct Reading {
     /// A book's table of contents, in order; none for the others.
     pub chapters: Vec<Chapter>,
     pub created_at: i64,
+    /// Read and kept (a good one), as against still to read.
+    pub kept: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -724,7 +726,9 @@ CREATE TABLE IF NOT EXISTS readings (
     image TEXT,
     -- One per line; NULL until sorted.
     tags TEXT,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    -- Read and kept (a good one), as against still to read.
+    kept INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS reading_chapters (
     reading_id INTEGER NOT NULL REFERENCES readings(id) ON DELETE CASCADE,
@@ -761,7 +765,7 @@ CREATE TABLE IF NOT EXISTS jev_credit (
 );
 ";
 
-const READING_COLS: &str = "id, kind, url, title, text, image, tags, created_at";
+const READING_COLS: &str = "id, kind, url, title, text, image, tags, created_at, kept";
 /// A reading's tags are kept one per line (a tag may have a comma).
 const TAGS_SEPARATOR: char = '\n';
 
@@ -862,6 +866,7 @@ fn reading_from_row(r: &Row) -> rusqlite::Result<Reading> {
         tags: tags.map(|t| t.split(TAGS_SEPARATOR).filter(|t| !t.is_empty()).map(Into::into).collect()),
         chapters: Vec::new(),
         created_at: r.get(7)?,
+        kept: r.get(8)?,
     })
 }
 
@@ -919,7 +924,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [now()],
         )?;
     }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone"), ("readings", "kept")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -930,8 +935,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             // which TODO_COLS casts back when reading.
             let ty = match column {
                 "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto" | "fix_count" => "INTEGER",
-                // A flag every row needs: not let go.
-                "gone" => "INTEGER NOT NULL DEFAULT 0",
+                // A flag every row needs: not let go, not kept.
+                "gone" | "kept" => "INTEGER NOT NULL DEFAULT 0",
                 _ => "TEXT",
             };
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
@@ -1308,6 +1313,14 @@ impl Db {
     /// Marks the chapter whose page `url` is as read; false when no book has it.
     pub fn mark_chapter_read(&self, url: &str) -> Result<bool> {
         Ok(self.conn.execute("UPDATE reading_chapters SET read = 1 WHERE url = ?1", [chapter_url(url)])? > 0)
+    }
+
+    /// Keeps a reading read (a good one), or puts it back to read.
+    pub fn set_reading_kept(&self, id: i64, kept: bool) -> Result<()> {
+        match self.conn.execute("UPDATE readings SET kept = ?2 WHERE id = ?1", params![id, kept])? {
+            0 => Err(Error::ReadingNotFound(id)),
+            _ => Ok(()),
+        }
     }
 
     pub fn delete_reading(&self, id: i64) -> Result<()> {

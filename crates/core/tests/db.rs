@@ -567,6 +567,28 @@ fn jev_credit_left_is_what_the_console_left_less_what_the_app_used_since() {
 }
 
 #[test]
+fn a_reading_read_is_kept_or_let_go() {
+    let (_d, db) = open();
+    let a = db.add_reading(&article("https://a.example/", "A")).unwrap();
+    assert!(!a.kept, "to read, at first");
+    db.set_reading_kept(a.id, true).unwrap();
+    assert!(db.list_readings().unwrap()[0].kept);
+    db.set_reading_kept(a.id, false).unwrap();
+    assert!(!db.list_readings().unwrap()[0].kept);
+    assert!(matches!(db.set_reading_kept(999, true), Err(Error::ReadingNotFound(999))));
+}
+
+#[test]
+fn a_db_from_before_readings_were_kept_has_them_all_to_read() {
+    let (dir, db) = open();
+    db.add_reading(&article("https://a.example/", "A")).unwrap();
+    drop(db);
+    rusqlite::Connection::open(db_path(&dir)).unwrap().execute_batch("ALTER TABLE readings DROP COLUMN kept;").unwrap();
+    let db = Db::open(&db_path(&dir)).unwrap();
+    assert!(!db.list_readings().unwrap()[0].kept);
+}
+
+#[test]
 fn a_book_keeps_its_chapters_and_which_are_read() {
     let (_d, db) = open();
     let root = "https://learning.oreilly.com/library/view/ddia/9781491903063/";

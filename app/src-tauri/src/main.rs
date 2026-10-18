@@ -2923,6 +2923,7 @@ fn main() {
             readings::delete_reading,
             readings::set_reading_tags,
             readings::set_chapter_read,
+            readings::set_reading_kept,
             readings::set_typesafe_key,
             readings::set_jev_credit,
             readings::clear_jev_credit,
