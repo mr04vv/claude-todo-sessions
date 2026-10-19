@@ -7347,15 +7347,14 @@ export default function App() {
   const goSpace = (s: Space) => {
     setSpace(s);
     setZone(null);
-    const tab = s === "browser" ? (activeTab ?? null) : s === "work" ? workTab(workView.left) : s === "study" && study.view === "read" ? studyLeft : undefined;
-    if (tab !== undefined) {
-      setFocusTyping(tab ? "left" : null);
-      return keysToTab(tab, undefined, report);
-    }
+    // The keys start on the leftmost pane, not a page: 管理's sidebar, 学習's
+    // filters, else the list (作業's, the tab list); ⌃L moves them right.
     setFocusTyping(null);
     noteFocusRequest();
     api.focusAppPage().catch(report);
     (document.activeElement as HTMLElement | null)?.blur();
+    // Once the space is drawn, as the sidebar is looked for on the page.
+    requestAnimationFrame(() => zoneItems("side").length > 0 && setZone("side"));
   };
   const goSpaceRef = useRef(goSpace);
   goSpaceRef.current = goSpace;
