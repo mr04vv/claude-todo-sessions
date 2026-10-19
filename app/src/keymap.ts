@@ -83,6 +83,7 @@ export type Action =
   | "studyList"
   | "artifactForget"
   | "search"
+  | "todoView"
   | "help"
   | "paletteDown"
   | "paletteUp";
@@ -138,6 +139,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["parent", "親の todo を開く"],
       ["add", "その場所に todo を追加"],
       ["search", "絞り込み欄へ"],
+      ["todoView", "Todo：カンバン・リスト・Doing を切り替える"],
       ["help", "キーの一覧"],
     ],
   },
@@ -302,6 +304,7 @@ const KEYS: Record<Action, string> = {
   studyList: "Escape",
   artifactForget: "d",
   search: "/",
+  todoView: "f",
   help: "?",
   paletteDown: "ctrl+j",
   paletteUp: "ctrl+k",

@@ -7375,6 +7375,8 @@ export default function App() {
       if (url) openInBrowser(url);
     },
     help: () => setDialog("keys"),
+    // カンバン → リスト → Doing, as the toolbar's buttons go (a DB has no Doing).
+    nextView: () => (openDb ? setLayout(layout === "board" ? "list" : "board") : doingView ? showTodos("board") : layout === "board" ? showTodos("list") : setView("doing")),
     parent: (id) => {
       const parent = allTodos.find((t) => t.id === id)?.parent_id;
       if (parent != null) openTodo(parent);
