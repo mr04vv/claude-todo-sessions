@@ -4036,6 +4036,9 @@ function useReviewStarter(local: LocalRepo[], run: (f: () => Promise<unknown>) =
 }
 
 const PR_FILTERS = ["all", "review", "mine"] as const;
+/// The PR page's own tab (letters and digits only, as tab ids are), showing
+/// the picked PR on GitHub where its detail is.
+const PR_PAGE_TAB = "prpage";
 type PrFilter = (typeof PR_FILTERS)[number];
 
 /// Where a review asked of the user stands, by its session (`session`, to open).
@@ -4059,7 +4062,7 @@ const REVIEW_CLS: Partial<Record<Review["state"], string>> = { requested: "gh-pr
 /// The PRs on the left (review requests, then the user's own), the picked
 /// one on the right: a request's description and how its review starts, or
 /// an own PR's stage, checks, reviews and what to do next.
-function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, run, report, onRefresh, onOpenTodo }: {
+function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, covered, run, report, onRefresh, onOpenTodo }: {
   prs: PrLists | null;
   /// While the PRs are being taken again, so ↻ turns.
   prsLoading: boolean;
@@ -4074,6 +4077,8 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   report: (e: unknown) => void;
   onRefresh: () => void;
   onOpenTodo: (id: number) => void;
+  /// A dialog is up, over which the GitHub page (a native view) must not draw.
+  covered: boolean;
 }) {
   // Review requests first: they are what waits on the user.
   const [filter, setFilter] = useState<PrFilter>("review");
@@ -4122,6 +4127,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
       else if (startable(p)) startReview(p);
     },
     (e) => {
+      if (e.key === "Escape" && page) return (setPage(null), true);
       if (matches(e, "prFilter")) return (setFilter(PR_FILTERS[(PR_FILTERS.indexOf(filter) + 1) % PR_FILTERS.length]), true);
       const act = matches(e, "start") ? actions.github : matches(e, "session") ? actions.work : matches(e, "showTodo") ? actions.todo : undefined;
       if (act) return (act(), true);
@@ -4142,16 +4148,23 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   const next = pickedMine && nextStep(pickedMine, todo?.id);
   const canFix = !!(fix && next?.fix && todo && latest && latest.state !== "running");
   const workSession = standing?.session ?? (todo && todo.sessions.length > 0 ? latest : undefined);
+  // The picked PR on GitHub, shown where its detail is (no going to the
+  // browser); it follows the cursor to the next PR, and Esc goes back.
+  const [page, setPage] = useState<BrowserTab | null>(null);
+  const showPage = (url: string) => setPage((t) => ({ id: PR_PAGE_TAB, url, openedFor: url, title: null, loading: true, nav: (t?.nav ?? 0) + 1 }));
+  useEffect(() => {
+    if (page && pickedPr && page.openedFor !== pickedPr.url) showPage(pickedPr.url);
+  }, [pickedPr?.url]); // eslint-disable-line react-hooks/exhaustive-deps
   // What the detail's buttons (and their keys) do; each does nothing when it is not there.
   const actions = {
-    github: () => pickedPr && openInBrowser?.(pickedPr.url),
+    github: () => pickedPr && (page ? setPage(null) : showPage(pickedPr.url)),
     work: () => workSession && openWork?.(todo ? { todo: todo.id } : { session: workSession.session_id }),
     fix: () => canFix && fix!(latest!, todo!),
     todo: () => todo && onOpenTodo(todo.id),
   };
   const reviewerLabel = (reviews: Review[]) => (reviews.length === 0 ? "レビュー未依頼" : `${reviews.slice(0, 2).map((r) => r.who).join("・")}${reviews.length > 2 ? ` ほか ${reviews.length - 2}` : ""}`);
   const kbd = (action: Action) => <span className="kbd">{keyLabel(keyOf(action))}</span>;
-  const githubButton = <button onClick={actions.github}>GitHub で見る {kbd("start")}</button>;
+  const githubButton = <button onClick={actions.github}>GitHub をここで見る {kbd("start")}</button>;
   const workButton = workSession && openWork && <button onClick={actions.work}>作業で開く {kbd("session")}</button>;
   let detail: React.ReactNode = <p className="muted pad">{prs ? "PR を選んでください。" : ""}</p>;
   if (pickedReview && standing) {
@@ -4414,7 +4427,22 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
             </section>
           )}
         </div>
-        <div className="pr-detail">{detail}</div>
+        {page ? (
+          <section className="browser pr-browser" aria-label="GitHub の PR">
+            <div className="browser-tabs focus-head">
+              <button className="ghost small" onClick={() => setPage(null)}>
+                <Icon name="back" size={12} /> 詳細に戻る <span className="kbd">Esc</span>
+              </button>
+              <span className="grow" />
+              <button className="ghost small" onClick={() => openInBrowser?.(page.url)}>
+                ブラウザで開く
+              </button>
+            </div>
+            <TabView key={PR_PAGE_TAB} tab={page} covered={covered} report={report} onAddress={(url) => setPage((t) => t && { ...t, url })} />
+          </section>
+        ) : (
+          <div className="pr-detail">{detail}</div>
+        )}
       </div>
     </>
   );
@@ -7907,6 +7935,7 @@ export default function App() {
                     report={report}
                     onRefresh={loadPrs}
                     onOpenTodo={goTodo}
+                    covered={covered}
                   />
                 )}
                 {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />}

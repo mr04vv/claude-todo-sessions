@@ -1894,6 +1894,11 @@ input.panel-title:focus-visible {
   border-right: 1px solid var(--border);
 }
 
+/* The picked PR on GitHub, where its detail is. */
+.pr-browser {
+  min-width: 0;
+}
+
 .pr-detail {
   min-height: 0;
   overflow-y: auto;
