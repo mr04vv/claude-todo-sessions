@@ -2966,6 +2966,7 @@ fn main() {
             readings::set_reading_kept,
             digest::make_digest,
             digest::make_picked_digest,
+            digest::retry_picked_digest,
             digest::set_gemini_key,
             readings::set_typesafe_key,
             readings::set_jev_credit,

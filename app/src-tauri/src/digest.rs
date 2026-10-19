@@ -193,6 +193,29 @@ pub fn make_picked_digest(app: AppHandle, readings: Vec<i64>, podcast: bool) -> 
         return Err(NO_GEMINI_KEY.into());
     }
     let id = app.state::<AppState>().db.lock().map_err(err)?.add_picked_digest(&readings, podcast, READING_PAGES).map_err(err)?;
+    make_picked_behind(app, id, readings, podcast);
+    Ok(())
+}
+
+/// A picked digest that failed, made again in its place.
+#[tauri::command(async)]
+pub fn retry_picked_digest(app: AppHandle, id: i64) -> Result<(), String> {
+    let (readings, podcast) = {
+        let state = app.state::<AppState>();
+        let db = state.db.lock().map_err(err)?;
+        let p = db.picked_digests().map_err(err)?.into_iter().find(|p| p.id == id).ok_or("その日報はもうありません")?;
+        if p.podcast && gemini_key().is_none() {
+            return Err(NO_GEMINI_KEY.into());
+        }
+        db.restart_picked_digest(id, READING_PAGES).map_err(err)?;
+        (p.readings, p.podcast)
+    };
+    make_picked_behind(app, id, readings, podcast);
+    Ok(())
+}
+
+/// Makes picked digest `id` behind, keeping why not if it fails.
+fn make_picked_behind(app: AppHandle, id: i64, readings: Vec<i64>, podcast: bool) {
     std::thread::spawn(move || {
         if let Err(why) = make_picked(&app, id, &readings, podcast) {
             if let Err(e) = app.state::<AppState>().db.lock().map_err(err).and_then(|db| db.fail_picked_digest(id, &why).map_err(err)) {
@@ -200,7 +223,6 @@ pub fn make_picked_digest(app: AppHandle, readings: Vec<i64>, podcast: bool) -> 
             }
         }
     });
-    Ok(())
 }
 
 /// Reads the picked readings' pages, makes their podcast if asked for, and
