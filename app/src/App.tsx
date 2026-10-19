@@ -5679,9 +5679,10 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
   const tags = sort?.tags ?? [];
   const count = (t: string) => ofKind.filter((r) => (t === UNSORTED ? r.tags === null : r.tags?.includes(t))).length;
   const togglePick = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
-  /// The picked readings summed up in a 日報 (with their podcast if `podcast`), behind.
-  const makeDigestOf = (podcast: boolean) => {
-    const ids = picked;
+  /// Readings `ids` summed up in a 日報 (with their podcast if `podcast`),
+  /// behind; a podcast without a Gemini API key opens the settings for one.
+  const makeDigestOf = (ids: number[], podcast: boolean) => {
+    if (podcast && !digests?.has_gemini_key) return onSettings();
     run(() =>
       api.makePickedDigest(ids, podcast).then(() => {
         setPicked([]);
@@ -5720,6 +5721,8 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
         [matches(e, "studyForget"), () => (forgetting === r.id ? (setForgetting(null), run(() => api.deleteReading(r.id))) : setForgetting(r.id))],
         [matches(e, "studyTags"), () => setTagsFor(r.id)],
         [matches(e, "studyCopy"), () => copyUrls(picked.length > 0 ? picked : [r.id])],
+        [matches(e, "studyDigest"), () => makeDigestOf(picked.length > 0 ? picked : [r.id], false)],
+        [matches(e, "studyPodcast"), () => makeDigestOf(picked.length > 0 ? picked : [r.id], true)],
         [matches(e, "studyKeep"), () => run(() => api.setReadingKept(r.id, !r.kept))],
       ];
       const hit = acts.find(([yes]) => yes);
@@ -5836,15 +5839,15 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
             <button className="primary small" onClick={() => onRead(picked)}>
               まとめて読む <span className="kbd">{keyLabel(keyOf("studyRead"))}</span>
             </button>
-            <button className="small" title="選んだ読みものを 1 つの日報（HTML のアーティファクト）にまとめます" onClick={() => makeDigestOf(false)}>
-              日報を作る
+            <button className="small" title="選んだ読みものを 1 つの日報（HTML のアーティファクト）にまとめます" onClick={() => makeDigestOf(picked, false)}>
+              日報を作る <span className="kbd">{keyLabel(keyOf("studyDigest"))}</span>
             </button>
             <button
               className="small"
               title={digests?.has_gemini_key ? "1 件ずつ解説するポッドキャストを埋め込んだ日報を作ります（Gemini の音声合成）" : "設定の「学習」で Gemini の API キーを入れると作れます"}
-              onClick={() => (digests?.has_gemini_key ? makeDigestOf(true) : onSettings())}
+              onClick={() => makeDigestOf(picked, true)}
             >
-              音声つきで作る
+              音声つきで作る <span className="kbd">{keyLabel(keyOf("studyPodcast"))}</span>
             </button>
             <button className="small" onClick={() => copyUrls(picked)}>
               URL をコピー（NotebookLM 用） <span className="kbd">{keyLabel(keyOf("studyCopy"))}</span>
@@ -5855,7 +5858,7 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
           </div>
         ) : (
           <p className="muted hint readings-hint">
-            入れ方：ページで {keyLabel(keyOf("bookmark"))}、リンクを ⌥ クリック、X ではブックマークのボタン。O'Reilly の本のページなら本として目次ごと入ります。{keyLabel(keyOf("studyPick"))} で選ぶと、まとめて読めます。
+            入れ方：ページで {keyLabel(keyOf("bookmark"))}、リンクを ⌥ クリック、X ではブックマークのボタン。O'Reilly の本のページなら本として目次ごと入ります。{keyLabel(keyOf("studyPick"))} で選ぶと、まとめて読んだり、日報（{keyLabel(keyOf("studyDigest"))}）や音声つきの日報（{keyLabel(keyOf("studyPodcast"))}）にしたりできます。選ばなければカーソルの行が対象です。
           </p>
         )}
         <div className="content" ref={list}>
