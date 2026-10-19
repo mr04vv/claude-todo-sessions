@@ -6049,7 +6049,7 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
                       <span className="row-title ellipsis">{w.session ? sessionLabel(w.session) : (w.todo?.title ?? w.review?.title)}</span>
                     </span>
                     <span className="ask-line" title={w.line}>
-                      {w.line}
+                      <span>{w.line}</span>
                     </span>
                     <span className="work-line muted small-text">
                       <span className="ellipsis">{[w.todo?.parent_id ? `親 #${w.todo.parent_id}` : null, w.session ? placeOf(w.session) : null, w.session ? ago(w.session.state_at) : null].filter(Boolean).join(" · ")}</span>
