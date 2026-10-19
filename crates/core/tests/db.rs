@@ -665,6 +665,33 @@ fn a_digest_of_readings_picked_by_hand_is_kept_as_it_is_made() {
 }
 
 #[test]
+fn a_digest_is_what_its_session_publishes_not_a_file_it_writes() {
+    let (_d, db) = open();
+    db.start_digest("2026-10-18", "sess-1").unwrap();
+    let picked = db.add_picked_digest(&[1], false, "ページを読んでいます").unwrap();
+    db.start_picked_digest(picked, "sess-2").unwrap();
+    for session in ["sess-1", "sess-2"] {
+        assert!(!db.digest_made_by(session, "/private/tmp/scratchpad/20261019-reading-digest.html").unwrap(), "the html skill's file, written before publishing");
+        assert!(db.digest_made_by(session, "https://claude.ai/artifact/abc").unwrap());
+    }
+    assert_eq!(db.digest("2026-10-18").unwrap().unwrap().url.as_deref(), Some("https://claude.ai/artifact/abc"));
+    assert_eq!(db.picked_digests().unwrap()[0].url.as_deref(), Some("https://claude.ai/artifact/abc"));
+}
+
+#[test]
+fn a_picked_digest_made_again_is_the_same_one_from_scratch() {
+    let (_d, db) = open();
+    let id = db.add_picked_digest(&[2, 1], true, "ページを読んでいます").unwrap();
+    db.start_picked_digest(id, "sess-1").unwrap();
+    db.fail_picked_digest(id, "止まっていました").unwrap();
+    db.restart_picked_digest(id, "ページを読んでいます").unwrap();
+    let all = db.picked_digests().unwrap();
+    assert_eq!(all.len(), 1, "no second one");
+    let p = &all[0];
+    assert_eq!((p.readings.clone(), p.podcast, p.stage.as_deref(), p.error.clone(), p.session_id.clone(), p.url.clone()), (vec![2, 1], true, Some("ページを読んでいます"), None, None, None));
+}
+
+#[test]
 fn picked_digests_left_half_made_are_failed_at_launch() {
     let (_d, db) = open();
     let left = db.add_picked_digest(&[1], true, "台本を書いています").unwrap();

@@ -1432,6 +1432,10 @@ impl Db {
     /// An artifact session `session_id` published: the digest it makes, if it
     /// makes one (and has none yet); whether it was.
     pub fn digest_made_by(&self, session_id: &str, url: &str) -> Result<bool> {
+        // Published, not a file: the html skill's page is written to a file first.
+        if !url.starts_with("https://") {
+            return Ok(false);
+        }
         let day = self.conn.execute("UPDATE digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])?;
         let picked = self.conn.execute("UPDATE picked_digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])?;
         Ok(day + picked > 0)
@@ -1443,6 +1447,15 @@ impl Db {
         let ids = readings.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
         self.conn.execute("INSERT INTO picked_digests (readings, podcast, stage, made_at) VALUES (?1, ?2, ?3, ?4)", params![ids, podcast, stage, now()])?;
         Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Picked digest `id` to make again, from scratch, at `stage`.
+    pub fn restart_picked_digest(&self, id: i64, stage: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE picked_digests SET stage = ?2, url = NULL, error = NULL, session_id = NULL, made_at = ?3 WHERE id = ?1",
+            params![id, stage, now()],
+        )?;
+        Ok(())
     }
 
     /// What is being done for picked digest `id`.

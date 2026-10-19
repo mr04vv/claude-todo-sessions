@@ -5793,7 +5793,7 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
               className="filter-row"
               title={`${names}\n\n${p.url ? `${p.url} をブラウザで開く` : p.stage ? p.stage : making ? "作業のセッションがまとめています（押すとそのセッションを開く）" : `作れませんでした：${p.error}（押すともう一度）`}`}
               disabled={!!p.stage}
-              onClick={() => (p.url ? onBrowser(p.url) : making ? onSession(making) : run(() => api.makePickedDigest(p.readings, p.podcast)))}
+              onClick={() => (p.url ? onBrowser(p.url) : making ? onSession(making) : run(() => api.retryPickedDigest(p.id)))}
             >
               <span className="grow ellipsis">
                 {timeDayLabel(p.made_at)} 選んだ {p.readings.length} 件{p.podcast ? "・音声つき" : ""}
@@ -8248,6 +8248,7 @@ export default function App() {
     { key: "digestYesterday", label: `昨日（${dayLabel(localDay(-1))}）の日報を作る`, run: () => run(() => api.makeDigest(localDay(-1))) },
     { key: "digestToday", label: "今日の日報を今作る（今日保存した読みもの）", run: () => run(() => api.makeDigest(localDay(0))) },
     ...(board?.digests.digests ?? []).flatMap((d) => (d.url ? [{ key: `digest:${d.day}`, label: `日報：${dayLabel(d.day)}`, run: () => openInBrowser(d.url!) }] : [])),
+    ...(board?.digests.picked ?? []).flatMap((p) => (p.url ? [{ key: `picked:${p.id}`, label: `日報：${timeDayLabel(p.made_at)} 選んだ ${p.readings.length} 件${p.podcast ? "・音声つき" : ""}`, run: () => openInBrowser(p.url!) }] : [])),
     ...(studyReading && studyReadingShown
       ? [
           {

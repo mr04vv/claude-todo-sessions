@@ -603,6 +603,7 @@ export const api = {
   /// Has `day`'s readings (YYYY-MM-DD, the local date) summed up into its 日報 now, behind: a session (in 作業) publishes it, and its link comes on the board.
   makeDigest: (day: string) => invoke<void>("make_digest", { day }),
   makePickedDigest: (readings: number[], podcast: boolean) => invoke<void>("make_picked_digest", { readings, podcast }),
+  retryPickedDigest: (id: number) => invoke<void>("retry_picked_digest", { id }),
   setGeminiKey: (key: string) => invoke<void>("set_gemini_key", { key }),
   /// Keeps the TypeSafe API key (blank takes it out); what waits is sorted then.
   setTypesafeKey: (key: string) => invoke<void>("set_typesafe_key", { key }),
