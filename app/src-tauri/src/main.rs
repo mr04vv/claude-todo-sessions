@@ -1284,6 +1284,12 @@ fn keep_artifacts(session: &Session) {
     }
 }
 
+/// Puts an artifact under a todo (none: under none).
+#[tauri::command(async)]
+fn link_artifact(state: State<AppState>, id: i64, todo_id: Option<i64>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.link_artifact(id, todo_id).map_err(err)
+}
+
 /// Takes an artifact off the list (it is not found again).
 #[tauri::command(async)]
 fn forget_artifact(state: State<AppState>, id: i64) -> Result<(), String> {
@@ -3147,6 +3153,7 @@ fn main() {
             todo_events,
             open_path,
             forget_artifact,
+            link_artifact,
             translate::browser_translate,
             start_terminal,
             start_cloud,

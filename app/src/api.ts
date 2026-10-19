@@ -613,6 +613,8 @@ export const api = {
   /// The tab's page keeps itself to read, as its own ⌘⇧D does.
   browserBookmark: (tab: string) => invoke<void>("browser_bookmark", { tab }),
   forgetArtifact: (id: number) => invoke<void>("forget_artifact", { id }),
+  /// Puts an artifact under a todo (null: under none).
+  linkArtifact: (id: number, todoId: number | null) => invoke<void>("link_artifact", { id, todoId }),
   startTerminal: (todoId: number, options?: StartOptions) => invoke<void>("start_terminal", { todoId, options: options ?? null }),
   /** Starts a cloud session and returns its id; `desktop` also opens it in Claude Desktop. */
   startCloud: (todoId: number, options?: StartOptions) => invoke<string>("start_cloud", { todoId, options: options ?? null }),

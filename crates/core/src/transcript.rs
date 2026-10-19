@@ -174,11 +174,23 @@ const HTML_TYPED: &str = "<command-name>/html</command-name>";
 
 /// A document as the html skill names it, `{yyyymmdd}-{what}.html` (a page
 /// of an app, index.html, is not one).
-fn html_document(path: &str) -> Option<Found> {
+fn html_document(path: &str, content: &str) -> Option<Found> {
     let stem = path.rsplit('/').next()?.strip_suffix(".html")?;
     let (date, rest) = stem.split_at_checked(8)?;
     (date.bytes().all(|b| b.is_ascii_digit()) && rest.len() > 1 && rest.starts_with('-'))
-        .then(|| Found { url: path.into(), title: Some(stem.into()), kind: crate::ArtifactKind::File })
+        .then(|| Found { url: path.into(), title: page_title(content).or_else(|| Some(stem.into())), kind: crate::ArtifactKind::File })
+}
+
+/// The entities a page's title is likely to hold, as they read.
+const TITLE_ENTITIES: [(&str, &str); 5] = [("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&amp;", "&")];
+
+/// A page's own name, its `<title>`, in one line.
+fn page_title(html: &str) -> Option<String> {
+    let open = html.find("<title")?;
+    let start = open + html[open..].find('>')? + 1;
+    let raw = &html[start..start + html[start..].find("</title>")?];
+    let title = TITLE_ENTITIES.iter().fold(raw.split_whitespace().collect::<Vec<_>>().join(" "), |t, (e, c)| t.replace(e, c));
+    (!title.is_empty()).then_some(title)
 }
 
 /// Every artifact a session published and every doc it made, as those
@@ -201,7 +213,7 @@ pub fn artifacts(entries: &[Value]) -> Vec<Found> {
                     }
                     html |= name == "Skill" && block["input"]["skill"] == HTML_SKILL;
                     if html && name == "Write" {
-                        found.extend(block["input"]["file_path"].as_str().and_then(html_document));
+                        found.extend(block["input"]["file_path"].as_str().and_then(|path| html_document(path, block["input"]["content"].as_str().unwrap_or_default())));
                     }
                 }
                 Some("tool_result") if block["tool_use_id"].as_str().and_then(|id| tools.get(id)).is_some_and(|t| makes_artifacts(t)) => {
@@ -230,9 +242,12 @@ fn made_in(text: &str) -> Vec<Found> {
         let line = until_line_end(&text[i + PUBLISHED.len()..]);
         let Some(j) = line.find(PUBLISHED_AT) else { continue };
         let Some(url) = artifact_at(&line[j + PUBLISHED_AT.len()..]) else { continue };
-        let file = line[..j].rsplit('/').next().unwrap_or_default();
-        let title = file.rsplit_once('.').map_or(file, |(stem, _)| stem).trim();
-        found.push((i, Found { url, title: (!title.is_empty()).then(|| title.to_string()), kind: crate::ArtifactKind::Artifact }));
+        // The page's own title while its file is there, else the file's name.
+        let path = line[..j].trim();
+        let file = path.rsplit('/').next().unwrap_or_default();
+        let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem).trim();
+        let title = std::fs::read_to_string(path).ok().and_then(|t| page_title(&t)).or_else(|| (!stem.is_empty()).then(|| stem.to_string()));
+        found.push((i, Found { url, title, kind: crate::ArtifactKind::Artifact }));
     }
     for made in MADE_AT {
         for (i, _) in text.match_indices(made) {
@@ -458,6 +473,26 @@ mod tests {
         let typed = json!({"type": "user", "message": {"content": "<command-message>html</command-message>\n<command-name>/html</command-name>\n<command-args>CSP</command-args>"}});
         let entries: Vec<Value> = [vec![typed], write("w1", "/w/20261012-csp.html").to_vec()].concat();
         assert_eq!(artifacts(&entries).len(), 1, "the skill typed as /html counts too");
+    }
+
+    #[test]
+    fn a_page_is_named_by_its_own_title_over_its_file_name() {
+        let skill = assistant(json!([{"type": "tool_use", "id": "s1", "name": "Skill", "input": {"skill": "html"}}]), json!({}));
+        let page = "<!doctype html><html><head><title>\n  OIDC の流れ &amp; PKCE\n</title></head></html>";
+        let written = [
+            assistant(json!([{"type": "tool_use", "id": "w1", "name": "Write", "input": {"file_path": "/w/20261012-oidc.html", "content": page}}]), json!({})),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "w1", "content": "File created successfully"}]}}),
+        ];
+        let entries: Vec<Value> = [vec![skill], written.to_vec()].concat();
+        assert_eq!(artifacts(&entries)[0].title.as_deref(), Some("OIDC の流れ & PKCE"));
+
+        // A published file is read for it, while it is there.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("security-issues.html");
+        std::fs::write(&path, "<html><head><title>セキュリティの指摘まとめ</title></head></html>").unwrap();
+        let published = |path: &str| tool("p1", "Artifact", json!(format!("Published {path} at https://claude.ai/artifact/Abc1 (Version 1)")));
+        assert_eq!(artifacts(&published(path.to_str().unwrap()))[0].title.as_deref(), Some("セキュリティの指摘まとめ"));
+        assert_eq!(artifacts(&published("/gone/security-issues.html"))[0].title.as_deref(), Some("security-issues"), "else its file's name");
     }
 
     #[test]

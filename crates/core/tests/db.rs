@@ -1406,6 +1406,33 @@ fn artifacts_are_kept_once_newest_first_with_their_todo() {
 }
 
 #[test]
+fn linking_a_session_links_what_it_made_to_the_todo_too() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("調査")).unwrap();
+    let other = db.create_todo(new_todo("別")).unwrap();
+    db.record_session("s1", "/w", SessionState::Idle).unwrap();
+    let made = |url: &str, todo_id| cts_core::NewArtifact { url: url.into(), title: None, kind: cts_core::ArtifactKind::Artifact, session_id: Some("s1".into()), todo_id };
+    db.add_artifact(made("https://claude.ai/artifact/a", None)).unwrap();
+    db.add_artifact(made("https://claude.ai/artifact/b", Some(other.id))).unwrap();
+    db.link_session("s1", t.id).unwrap();
+    let todo_of = |url: &str| db.artifacts().unwrap().into_iter().find(|a| a.url == url).unwrap().todo_id;
+    assert_eq!(todo_of("https://claude.ai/artifact/a"), Some(t.id));
+    assert_eq!(todo_of("https://claude.ai/artifact/b"), Some(other.id), "one linked already stays");
+}
+
+#[test]
+fn an_artifact_is_linked_to_a_todo_by_hand_and_taken_off_it() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("調査")).unwrap();
+    db.add_artifact(cts_core::NewArtifact { url: "https://claude.ai/artifact/a".into(), title: None, kind: cts_core::ArtifactKind::Artifact, session_id: None, todo_id: None }).unwrap();
+    let id = db.artifacts().unwrap()[0].id;
+    db.link_artifact(id, Some(t.id)).unwrap();
+    assert_eq!(db.artifacts().unwrap()[0].todo_id, Some(t.id));
+    db.link_artifact(id, None).unwrap();
+    assert_eq!(db.artifacts().unwrap()[0].todo_id, None);
+}
+
+#[test]
 fn a_forgotten_artifact_stays_out_even_when_found_again() {
     let (_d, db) = open();
     let found = || cts_core::NewArtifact { url: "/tmp/20261012-test.html".into(), title: None, kind: cts_core::ArtifactKind::File, session_id: Some("s1".into()), todo_id: None };
