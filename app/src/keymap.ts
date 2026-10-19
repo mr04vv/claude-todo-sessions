@@ -133,7 +133,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["moveLeft", "カンバン：カードを左の列へ"],
       ["moveRight", "カンバン：カードを右の列へ"],
       ["status", "ステータスを変える"],
-      ["session", "作業で開く（セッションがなければ起動シート）"],
+      ["session", "作業で開く（終わったセッションは再開、セッションがなければ起動シート）"],
       ["showTodo", "その todo を管理で開く（PR・作業の一覧）"],
       ["link", "PR / issue を開く"],
       ["parent", "親の todo を開く"],

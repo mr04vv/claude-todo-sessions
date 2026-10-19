@@ -2344,7 +2344,7 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
   onOpenTodo: (id: number) => void;
   /// The launch sheet.
   onStart: () => void;
-  /// Its sessions (and its subtasks') in 作業.
+  /// Its sessions (and its subtasks') in 作業, the ended one resumed.
   onWork: () => void;
   onClose: () => void;
 }) {
@@ -2545,7 +2545,7 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
               {under.length > 0 && <span className="pill waiting">あなた待ち {under.length}</span>}
               <span className="grow" />
               <button className="primary small" onClick={onWork} title="会話は作業で見ます">
-                作業で開く <span className="kbd">{keyLabel(keyOf("session"))}</span>
+                {mainSession(todo)?.state === "ended" ? "再開する" : "作業で開く"} <span className="kbd">{keyLabel(keyOf("session"))}</span>
               </button>
             </div>
           )}
@@ -6372,6 +6372,14 @@ export default function App() {
     else if (side) focusSoon(workTabId(side.session_id));
     setFocusTyping(parent ? "right" : "left");
   };
+  /// 作業 at a todo from the Todo page (o, 作業で開く): its session resumed
+  /// there when it has ended, as the pane's 「再開する」 does.
+  const workOnTodo = (id: number) => {
+    openWork({ todo: id });
+    const todo = allTodos.find((t) => t.id === id);
+    const session = todo && mainSession(todo);
+    if (session?.state === "ended") ensureWorkTab(session, true);
+  };
   const openWorkRef = useRef(openWork);
   openWorkRef.current = openWork;
   /// Picks a subtask on 作業's right; its session takes the keyboard.
@@ -7388,7 +7396,7 @@ export default function App() {
     // A todo with sessions: 作業 at it; without, the launch sheet.
     work: (id) => {
       const todo = allTodos.find((t) => t.id === id);
-      if (todo && (todo.sessions.length > 0 || allTodos.some((c) => c.parent_id === id && c.sessions.length > 0))) return openWork({ todo: id });
+      if (todo && (todo.sessions.length > 0 || allTodos.some((c) => c.parent_id === id && c.sessions.length > 0))) return workOnTodo(id);
       openTodo(id);
       setDialog("start");
     },
@@ -7970,7 +7978,7 @@ export default function App() {
                       setStatus={setStatus}
                       onOpenTodo={openTodo}
                       onStart={() => setDialog("start")}
-                      onWork={() => openWork({ todo: selectedTodo.id })}
+                      onWork={() => workOnTodo(selectedTodo.id)}
                       onClose={() => setSelection(null)}
                     />
                   </div>
