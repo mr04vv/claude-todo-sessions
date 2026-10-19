@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-const CLOUD_PREFIX: &str = "cse_";
+pub(crate) const CLOUD_PREFIX: &str = "cse_";
 
 pub fn is_cloud_session(id: &str) -> bool {
     id.starts_with(CLOUD_PREFIX)
@@ -207,7 +207,7 @@ pub enum SubtaskEvent {
     /// Its session waits for a reply: what it asks.
     Asks(Option<String>),
     /// A Cloud subtask stopped on a question with choices (AskUserQuestion),
-    /// which a message (SendMessage) does not answer: what it asks.
+    /// which a message does not answer: what it asks.
     CloudAsks(Option<String>),
     /// Its PR's CI failed: the checks that failed.
     CiFailed(Vec<String>),
@@ -231,7 +231,7 @@ impl SubtaskEvent {
                 q.as_deref().map(|q| format!("：「{q}」")).unwrap_or_default()
             ),
             SubtaskEvent::CloudAsks(q) => format!(
-                "{who}（Cloud）が選択肢の画面で止まっています{}。この画面には SendMessage では答えられません（メッセージは画面のあとに並ぶだけです）。答えの案を添えて escalate で私に回してください。",
+                "{who}（Cloud）が選択肢の画面で止まっています{}。この画面にはメッセージでは答えられません（メッセージは画面のあとに並ぶだけです）。答えの案を添えて escalate で私に回してください。",
                 q.as_deref().map(|q| format!("：「{q}」")).unwrap_or_default()
             ),
             SubtaskEvent::CiFailed(names) => format!(
@@ -241,7 +241,7 @@ impl SubtaskEvent {
             SubtaskEvent::ChangesRequested => format!("{who}の PR に修正依頼が来ました。fix_subtask（id={todo_id}）で直させてください。"),
             SubtaskEvent::Done => format!("{who}が Done になりました。"),
             SubtaskEvent::TurnEnded(said) => format!(
-                "{who}（Cloud）がひと区切りしました{}。続きを頼むなら SendMessage で送ってください。向こうからこのセッションへは返事が来ません。",
+                "{who}（Cloud）がひと区切りしました{}。続きを頼むなら reply_to_subtask（todo_id={todo_id}）で送ってください。向こうからこのセッションへは返事が来ません。",
                 said.as_deref().map(|s| format!("：「{s}」")).unwrap_or_default()
             ),
         };
@@ -686,10 +686,10 @@ mod relay_tests {
         let done = SubtaskEvent::Done.message(42, "グラフ");
         assert!(done.contains("Done") && done.contains("#42"), "{done}");
         let turn = SubtaskEvent::TurnEnded(Some("PR を作りました".into())).message(42, "グラフ");
-        assert!(turn.contains("#42") && turn.contains("PR を作りました") && turn.contains("SendMessage"), "{turn}");
+        assert!(turn.contains("#42") && turn.contains("PR を作りました") && turn.contains("reply_to_subtask") && !turn.contains("SendMessage"), "{turn}");
         assert!(!SubtaskEvent::TurnEnded(None).message(42, "グラフ").contains("「」"));
         assert!(!asks.contains("SendMessage"), "a herdr subtask's question is typed into its pane: {asks}");
         let cloud = SubtaskEvent::CloudAsks(Some("どうしますか？".into())).message(42, "グラフ");
-        assert!(cloud.contains("どうしますか？") && cloud.contains("escalate") && cloud.contains("SendMessage では答えられません"), "a question with choices on Cloud is the user's to pick: {cloud}");
+        assert!(cloud.contains("どうしますか？") && cloud.contains("escalate") && cloud.contains("メッセージでは答えられません") && !cloud.contains("SendMessage"), "a question with choices on Cloud is the user's to pick: {cloud}");
     }
 }

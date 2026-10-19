@@ -366,8 +366,8 @@ fn planning_splits_any_todo_into_subtasks() {
         assert!(body.contains(tool), "{tool}: {body}");
     }
     assert!(body.contains("AskUserQuestion"), "asks where to start them: {body}");
-    // A Cloud subtask is told things with SendMessage, not handed to the user.
-    assert!(body.contains("SendMessage") && body.contains("ListAgents") && !body.contains("送れないので"), "{body}");
+    // A Cloud subtask is told things through the app, as a herdr one is: SendMessage does not reach it.
+    assert!(!body.contains("SendMessage") && !body.contains("ListAgents") && !body.contains("送れないので"), "{body}");
     // A custom prompt is planned too.
     let c = db.update_todo(t.id, TodoPatch { prompt: Some("分けて進めたい".into()), ..Default::default() }).unwrap();
     let body = c.prompt_body(true);

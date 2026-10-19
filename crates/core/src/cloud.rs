@@ -290,14 +290,14 @@ fn api_post(token: &str, path: &str, org: &str, body: &Value) -> Result<Value, u
         .read_json()
 }
 
-/// `POST {path}` with no body to read back, as the archive API answers.
-fn api_post_empty(token: &str, path: &str, org: &str) -> Result<(), ureq::Error> {
+/// `POST {path}` with no answer to read back, as the archive API gives none.
+fn api_post_empty(token: &str, path: &str, org: &str, body: &Value) -> Result<(), ureq::Error> {
     ureq::post(format!("{API_BASE}{path}"))
         .header("Authorization", format!("Bearer {token}"))
         .header("anthropic-version", ANTHROPIC_VERSION)
         .header("anthropic-beta", CREATE_BETA)
         .header("x-organization-uuid", org)
-        .send_json(json!({}))?;
+        .send_json(body)?;
     Ok(())
 }
 
@@ -378,10 +378,10 @@ impl Client {
     /// Archives a session; one archived already (409) counts as done.
     fn archive(&mut self, id: &str, org: &str) -> Result<(), String> {
         let path = format!("/v1/code/sessions/{id}/archive");
-        let mut result = api_post_empty(&access_token(&self.creds)?, &path, org);
+        let mut result = api_post_empty(&access_token(&self.creds)?, &path, org, &json!({}));
         if let Err(ureq::Error::StatusCode(401)) = result {
             self.creds = refresh(&self.creds)?;
-            result = api_post_empty(&access_token(&self.creds)?, &path, org);
+            result = api_post_empty(&access_token(&self.creds)?, &path, org, &json!({}));
         }
         match result {
             Ok(()) | Err(ureq::Error::StatusCode(409)) => Ok(()),
@@ -495,6 +495,30 @@ pub fn usage() -> Result<Vec<crate::usage::Limit>, String> {
 /// The latest messages of a cloud session, oldest first.
 pub fn recent_entries(session_id: &str) -> Result<Vec<Value>, String> {
     Ok(crate::transcript::from_events(&Client::new()?.get(&format!("/v1/code/sessions/{session_id}/events"))?))
+}
+
+/// What `send_message` posts: a user message, as Claude Code's SendMessage
+/// posts one to a Cloud session (its payload names the session `session_…`).
+pub fn message_body(session_id: &str, text: &str, uuid: &str) -> Value {
+    json!({"events": [{"payload": {
+        "type": "user", "message": {"role": "user", "content": text}, "parent_tool_use_id": null,
+        "session_id": session_id.replacen(crate::launch::CLOUD_PREFIX, "session_", 1), "uuid": uuid,
+    }}]})
+}
+
+/// Sends `text` to a Cloud session as the user's next message: it starts a
+/// turn, or waits behind the one running (or a question with choices).
+pub fn send_message(session_id: &str, text: &str) -> Result<(), String> {
+    let org = organization_uuid()?;
+    let mut client = Client::new()?;
+    let path = format!("/v1/code/sessions/{session_id}/events");
+    let body = message_body(session_id, text, &uuid::Uuid::new_v4().to_string());
+    let mut result = api_post_empty(&access_token(&client.creds)?, &path, &org, &body);
+    if let Err(ureq::Error::StatusCode(401)) = result {
+        client.creds = refresh(&client.creds)?;
+        result = api_post_empty(&access_token(&client.creds)?, &path, &org, &body);
+    }
+    result.map_err(|e| format!("POST {path}: {e}"))
 }
 
 enum Outcome {
@@ -667,6 +691,16 @@ mod tests {
         let only_sources = json!({"config": {"sources": [{"type": "git_repository", "url": "https://github.com/o/a"}, {"type": "git_repository", "url": "https://github.com/o/b"}], "outcomes": []}});
         assert_eq!(repo_keys(&only_sources), vec!["o/a", "o/b"]);
         assert!(repo_keys(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn a_message_is_a_user_event_of_the_session_it_is_posted_to() {
+        let body = message_body("cse_abc", "続けてください", "u1");
+        let event = &body["events"][0]["payload"];
+        assert_eq!(event["type"], "user");
+        assert_eq!(event["message"], json!({"role": "user", "content": "続けてください"}));
+        assert_eq!(event["session_id"], "session_abc", "the payload names it as the web does");
+        assert_eq!(event["uuid"], "u1");
     }
 
     #[test]

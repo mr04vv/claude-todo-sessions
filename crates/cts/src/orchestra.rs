@@ -96,9 +96,8 @@ pub fn reply(id: i64, text: &str) -> Result<String, String> {
     let t = todo(&db, id)?;
     let s = latest_session(&db, id)?;
     if launch::is_cloud_session(&s.session_id) {
-        return Err("Cloud のサブタスクには、ここからは送れません。Claude Code の SendMessage で送ってください（宛先は ListAgents に出る、このサブタスクのセッション）".into());
-    }
-    if !prompt_pane(&s.session_id, text)? {
+        cts_core::cloud::send_message(&s.session_id, text)?;
+    } else if !prompt_pane(&s.session_id, text)? {
         return Err("このサブタスクのセッションは herdr で動いていません".into());
     }
     let short: String = text.chars().take(EVENT_TEXT_MAX).collect();
@@ -116,8 +115,9 @@ pub fn fix(id: i64) -> Result<String, String> {
     let ci = (t.ci_state.as_deref() == Some("failure")).then_some(t.ci_failed.as_slice());
     let prompt = launch::fix_prompt(pr, ci, t.pr_state.as_deref() == Some("changes_requested"));
     let s = latest_session(&db, id)?;
-    let cloud = launch::is_cloud_session(&s.session_id);
-    if !cloud && !prompt_pane(&s.session_id, &prompt)? {
+    if launch::is_cloud_session(&s.session_id) {
+        cts_core::cloud::send_message(&s.session_id, &prompt)?;
+    } else if !prompt_pane(&s.session_id, &prompt)? {
         // Not running any more: resumed with the request, in a workspace not shown.
         let program = if s.agent == Agent::Codex { "codex resume" } else { "claude --resume" };
         let command = format!("{program} {} {}", s.session_id, launch::shell_quote(&prompt));
@@ -125,9 +125,6 @@ pub fn fix(id: i64) -> Result<String, String> {
     }
     let n = db.count_fix(id).map_err(|e| e.to_string())?;
     log(&db, &t, &format!("#{} に PR を直させました（{n} 回目）", t.id))?;
-    if cloud {
-        return Ok(format!("todo {} runs on Cloud, which is not sent from here: send its session (ListAgents names it) this with SendMessage ({n} of {}):\n\n{prompt}", t.id, cts_core::MAX_FIXES));
-    }
     Ok(format!("sent todo {} what to fix ({n} of {})", t.id, cts_core::MAX_FIXES))
 }
 
