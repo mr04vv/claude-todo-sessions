@@ -1167,10 +1167,15 @@ button.lane-toggle:hover .lane-name {
   box-shadow: inset 2px 0 0 var(--accent);
 }
 
-/* The row the keyboard is on (sessions page). */
+/* The row the keyboard is on: an outline, apart from the open one's fill. */
 .row.cursor {
-  box-shadow: inset 2px 0 0 var(--accent-line);
-  background: var(--card-hover);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* With the keys on a page, the list's cursor is not where they go. */
+.app.typing-pane .split-rail .row.cursor {
+  outline-color: transparent;
 }
 
 .row.done .row-title {
@@ -2665,9 +2670,8 @@ body.resizing {
 
 /* The inputs a page can go into (AddToInputDialog). */
 
-/* A session's state as its row's colour (after .row.cursor, which it wins
-   over; the cursor then shows as an outline): waiting for input, unread,
-   running. */
+/* A session's state as its row's colour (the cursor is an outline over
+   it): waiting for input, unread, running. */
 
 .row.unread {
   background: var(--accent-soft);
@@ -2682,12 +2686,6 @@ body.resizing {
 .row.running {
   background: var(--running-soft);
   box-shadow: inset 3px 0 0 var(--running);
-}
-
-.row.unread.cursor,
-.row.running.cursor {
-  outline: 1px solid var(--accent-line);
-  outline-offset: -1px;
 }
 
 .row.unread:hover,
