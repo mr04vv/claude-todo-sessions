@@ -1,7 +1,7 @@
 // Runs in every page of the browser pane, which has no browser chrome of its
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
-// commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling (and
-// picking a Google result), as the user set them), the page translates where it is (Claude, through the app),
+// commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling and
+// ⇧J ⇧K picking a link (a Google result), as the user set them), the page translates where it is (Claude, through the app),
 // and what is worth reading is kept (読みもの): the page (⌘⇧D; an O'Reilly
 // book's page as the book, with its contents), a link ⌥-clicked, a post
 // bookmarked on X. A book's chapter read to its end is marked read. Posts on
@@ -145,8 +145,9 @@
     true,
   );
 
-  // The list keys (j k) scroll the page when no field has the typing, unless
-  // the page took them itself (X's own j k, say). The page's scrolling box
+  // The list keys (j k) scroll the page when no field has the typing, ahead
+  // of the page's own (X's j k; GitHub's own come with ⇧J ⇧K); ⇧J ⇧K pick the next or previous
+  // link for Enter to open (⌘Enter in a new tab). The page's scrolling box
   // is the one under the middle of the view, or the page itself.
   const SCROLL_STEP = 80;
   const editing = (el) => el instanceof Element && (el.isContentEditable || el.closest("input, textarea, select, [role=textbox]"));
@@ -157,48 +158,80 @@
     }
     return document.scrollingElement ?? document.documentElement;
   };
-  // On a Google results page they pick a result instead: it takes the focus,
-  // so Enter opens it (⌘Enter in a new tab), as a link does.
-  const GOOGLE = /(^|\.)google\.[a-z.]+$/;
+  // The link picked takes the focus, so Enter opens it as a link does; it
+  // is outlined, its page's own focus ring being faint or none.
   const PICKED = "todo-sessions-picked";
-  const onResults = () => !FRAME && GOOGLE.test(location.hostname) && location.pathname === "/search";
-  const results = () =>
-    [...new Set([...document.querySelectorAll("#search a h3, #rso a h3, #center_col a h3")].map((h) => h.closest("a")))].filter((a) => a && a.offsetParent !== null);
-  const pickResult = (dir, smooth) => {
-    const list = results();
-    if (list.length === 0) return false;
+  const pick = (link, block, smooth) => {
     if (!document.getElementById(PICKED)) {
       const style = document.createElement("style");
       style.id = PICKED;
-      style.textContent = `.${PICKED} { outline: 2px solid #5e6ad2 !important; outline-offset: 6px; border-radius: 6px; }`;
+      style.textContent = `.${PICKED} { outline: 2px solid #5e6ad2 !important; outline-offset: 2px; border-radius: 4px; }`;
       document.head.appendChild(style);
     }
-    const at = list.findIndex((a) => a.classList.contains(PICKED));
-    const next = list[at === -1 ? (dir > 0 ? 0 : list.length - 1) : Math.min(Math.max(at + dir, 0), list.length - 1)];
-    list.forEach((a) => a.classList.toggle(PICKED, a === next));
-    next.focus({ preventScroll: true });
-    next.scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
-    return true;
+    document.querySelectorAll(`.${PICKED}`).forEach((a) => a !== link && a.classList.remove(PICKED));
+    link.classList.add(PICKED);
+    link.focus({ preventScroll: true });
+    link.scrollIntoView({ block, behavior: smooth ? "smooth" : "auto" });
   };
-  const listDir = (e) =>
-    e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement) ? 0 : is(e, "down") ? 1 : is(e, "up") ? -1 : 0;
-  // Ahead of Google's own keys (a letter typed anywhere goes to its search box).
+  // On a Google results page the links are its results (not its menus).
+  const GOOGLE = /(^|\.)google\.[a-z.]+$/;
+  const onResults = () => !FRAME && GOOGLE.test(location.hostname) && location.pathname === "/search";
+  const results = () =>
+    [...new Set([...document.querySelectorAll("#search a h3, #rso a h3, #center_col a h3")].map((h) => h.closest("a")))].filter((a) => a && a.offsetParent !== null);
+  const drawnLinks = () =>
+    [...document.querySelectorAll("a[href]")].filter((a) => {
+      const r = a.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    });
+  const inView = (a) => {
+    const r = a.getBoundingClientRect();
+    return r.bottom > 0 && r.top < innerHeight;
+  };
+  // From the link picked while it is in view, else from the view's first
+  // (going down) or last (going up), as j k may have scrolled it away.
+  const pickLink = (dir, smooth) => {
+    const list = onResults() ? results() : drawnLinks();
+    const at = list.findIndex((a) => a.classList.contains(PICKED) && inView(a));
+    const next =
+      at >= 0
+        ? list[Math.min(Math.max(at + dir, 0), list.length - 1)]
+        : dir > 0
+          ? list.find((a) => a.getBoundingClientRect().top >= 0)
+          : list.findLast((a) => a.getBoundingClientRect().bottom <= innerHeight);
+    if (next) pick(next, onResults() ? "center" : "nearest", smooth);
+  };
+  const typing = (e) => e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement);
+  const dirOf = (e, down, up) => (typing(e) ? 0 : is(e, down) ? 1 : is(e, up) ? -1 : 0);
+  const scrollBy = (dir, e) => scroller().scrollBy({ top: dir * SCROLL_STEP, behavior: e.repeat ? "auto" : "smooth" });
+  // Sites whose own j k are worth keeping (GitHub's go through its lists):
+  // there ⇧J ⇧K are them, handed to the page as j k typed.
+  const OWN_LIST_KEYS = /(^|\.)github\.com$/;
+  const ownListKeys = () => OWN_LIST_KEYS.test(location.hostname);
+  let handing = false;
+  const handToPage = (key, target) => {
+    handing = true;
+    try {
+      target.dispatchEvent(new KeyboardEvent("keydown", { key, code: `Key${key.toUpperCase()}`, bubbles: true, cancelable: true, composed: true }));
+    } finally {
+      handing = false;
+    }
+  };
+  // Ahead of the page's own keys (Google's search box, X's and GitHub's j k).
   window.addEventListener(
     "keydown",
     (e) => {
-      const dir = onResults() ? listDir(e) : 0;
-      if (!dir || !pickResult(dir, !e.repeat)) return;
+      if (handing) return;
+      const scroll = dirOf(e, "down", "up");
+      const link = scroll ? 0 : dirOf(e, "linkNext", "linkPrev");
+      if (!scroll && !link) return;
       e.preventDefault();
       e.stopImmediatePropagation();
+      if (scroll) scrollBy(scroll, e);
+      else if (ownListKeys()) handToPage(link > 0 ? "j" : "k", e.target);
+      else pickLink(link, !e.repeat);
     },
     true,
   );
-  window.addEventListener("keydown", (e) => {
-    const dir = e.defaultPrevented ? 0 : listDir(e);
-    if (!dir) return;
-    e.preventDefault();
-    scroller().scrollBy({ top: dir * SCROLL_STEP, behavior: e.repeat ? "auto" : "smooth" });
-  });
 
   if (FRAME) return;
 

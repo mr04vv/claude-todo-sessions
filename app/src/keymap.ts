@@ -53,6 +53,8 @@ export type Action =
   | "workLink"
   | "workSort"
   | "workMoveDown"
+  | "linkNext"
+  | "linkPrev"
   | "workMoveUp"
   | "slackFilter"
   | "slackCompose"
@@ -121,6 +123,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
       ["archive", "Cloud セッションのページをアーカイブ（作業の一覧では、行のセッションを片付ける）"],
       ["bookmark", "表示中のページを読みものに入れる（O'Reilly の本のページなら本として目次ごと）"],
+      ["linkNext", "ページの次のリンクを選ぶ（Enter で開く、⌘Enter で新しいタブ。Google では検索結果、GitHub では GitHub の j）"],
+      ["linkPrev", "ページの前のリンクを選ぶ（GitHub では GitHub の k）"],
     ],
   },
   {
@@ -274,6 +278,8 @@ const KEYS: Record<Action, string> = {
   workLink: "l",
   workSort: "s",
   workMoveDown: "shift+j",
+  linkNext: "shift+j",
+  linkPrev: "shift+k",
   workMoveUp: "shift+k",
   slackFilter: "f",
   slackDone: "e",
