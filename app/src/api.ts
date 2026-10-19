@@ -684,6 +684,8 @@ export const OPEN_URL_EVENT = "open-url";
 export const OPENED_EVENT = "opened";
 /** When a page's ⌘N asks for a new todo. */
 export const OPEN_NEW_TODO_EVENT = "open-new-todo";
+/** `{tab, links: [{url, text}]}` when a page's ⌘⇧L asks to pick one of the links it shows. */
+export const PAGE_LINKS_EVENT = "page-links";
 /** `{path, name}` when a page's download has finished (in the Downloads folder). */
 export const BROWSER_DOWNLOADED_EVENT = "browser-downloaded";
 /** `{id, tab, kind, message, default}` when a page shows an alert, confirm or prompt (answerPageDialog). */
