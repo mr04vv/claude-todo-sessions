@@ -40,6 +40,7 @@ import {
   BROWSER_NEW_TAB_EVENT,
   OPEN_URL_EVENT,
   OPENED_EVENT,
+  PAGE_LINKS_EVENT,
   OPEN_NEW_TODO_EVENT,
   BROWSER_DOWNLOADED_EVENT,
   PAGE_DIALOG_EVENT,
@@ -7136,19 +7137,25 @@ export default function App() {
     setTerminalLinkOpener((url, front) => openTerminalLinkRef.current(url, front));
     return () => setTerminalLinkOpener(null);
   }, []);
-  /// ⌘⇧L in terminal `id`: the addresses it shows, to pick one from in ⌘K's box.
-  /// ⌘K opened on a list of its own: a terminal's links (back to `terminal` on Esc), or the sessions.
-  const [paletteStart, setPaletteStart] = useState<{ command: Command; terminal?: string } | null>(null);
-  const pickTerminalLink = (id: string) => {
-    const links = terminalLinks(id);
+  /// ⌘⇧L in a terminal or a page: the addresses it shows, to pick one from in ⌘K's box.
+  /// ⌘K opened on a list of its own: a terminal's or a page's links (back to
+  /// that `terminal` or `tab` on Esc), or the sessions.
+  const [paletteStart, setPaletteStart] = useState<{ command: Command; terminal?: string; tab?: string } | null>(null);
+  const pickLink = (links: { url: string; text?: string }[], from: { terminal: string } | { tab: string }) => {
     setPaletteStart({
-      terminal: id,
-      command: { key: "terminalLinks", label: "ターミナルのリンク", run: () => {}, items: () => links.map(({ url, text }) => ({ key: url, label: text ?? url, hint: text && url, run: () => openTerminalLink(url, false), alt: () => openTerminalLink(url, true) })) },
+      ...from,
+      command: {
+        key: "links",
+        label: "terminal" in from ? "ターミナルのリンク" : "ページのリンク",
+        run: () => {},
+        // A terminal's open beside it (⌘Enter: in the browser space); a page's in a new tab.
+        items: () => links.map(({ url, text }) => ({ key: url, label: text ?? url, hint: text && url, run: () => openTerminalLink(url, !("terminal" in from)), alt: () => openTerminalLink(url, true) })),
+      },
     });
     setDialog("palette");
   };
-  const pickTerminalLinkRef = useRef(pickTerminalLink);
-  pickTerminalLinkRef.current = pickTerminalLink;
+  const pickLinkRef = useRef(pickLink);
+  pickLinkRef.current = pickLink;
   const togglePalette = () => setDialog((d) => (d === "palette" ? null : "palette"));
   const paletteRef = useRef(togglePalette);
   paletteRef.current = togglePalette;
@@ -7540,6 +7547,7 @@ export default function App() {
       // A notification's PR: opened by the user, so it takes the keyboard.
       listen<{ url: string }>(OPEN_URL_EVENT, ({ payload }) => openRef.current(payload.url)),
       listen(OPENED_EVENT, () => takeOpened()),
+      listen<{ tab: string; links: { url: string; text?: string }[] }>(PAGE_LINKS_EVENT, ({ payload }) => pickLinkRef.current(payload.links, { tab: payload.tab })),
       listen(OPEN_NEW_TODO_EVENT, () => {
         dialogFromPage.current = true;
         setDialog("add");
@@ -7843,7 +7851,7 @@ export default function App() {
       const terminal = matches(e, "terminalLinks") ? (e.target as HTMLElement).closest<HTMLElement>("[data-terminal]")?.dataset.terminal : undefined;
       if (terminal) {
         e.preventDefault();
-        pickTerminalLinkRef.current(terminal);
+        pickLinkRef.current(terminalLinks(terminal), { terminal });
         return;
       }
       if (matches(e, "sessions")) {
@@ -8965,9 +8973,10 @@ export default function App() {
             onRead={(id) => readReadings([id])}
             onClose={() => {
               setDialog(null);
-              // Back to the terminal the links were picked from (a link picked takes the keyboard after).
-              const from = paletteStart?.terminal;
-              if (from) requestAnimationFrame(() => focusTerminal(from));
+              // Back to the terminal or page the links were picked from (a link picked takes the keyboard after).
+              const { terminal, tab } = paletteStart ?? {};
+              if (terminal) requestAnimationFrame(() => focusTerminal(terminal));
+              else if (tab) requestAnimationFrame(() => giveKeys(tab, report));
             }}
           />
         )}

@@ -48,6 +48,7 @@
   const OPEN_OUTSIDE = "todo-sessions://open-outside";
   const TRANSLATED = "todo-sessions://translated";
   const TRANSLATE_SELECTION = "todo-sessions://translate-selection";
+  const PAGE_LINKS = "todo-sessions://page-links";
 
   // The app's keys (keymap.ts), which the app sets on the page as
   // __todoSessionsKeys: action → "cmd+shift+[" and the like.
@@ -76,6 +77,22 @@
       (e.shiftKey === parts.includes("shift") || (symbol && !parts.includes("shift")))
     );
   };
+  // The links the view shows (⌘⇧L, as a terminal's), in the page's order,
+  // each once, with their text, for the app to offer in ⌘K's box.
+  const MAX_LINKS = 200;
+  const LINK_TEXT_MAX = 120;
+  const shownLinks = () => {
+    const links = new Map();
+    for (const a of document.querySelectorAll("a[href]")) {
+      if (links.size >= MAX_LINKS) break;
+      if (!/^https?:/.test(a.href) || links.has(a.href)) continue;
+      const r = a.getBoundingClientRect();
+      if (r.width === 0 || r.height === 0 || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
+      const text = (a.innerText || a.getAttribute("aria-label") || a.title || "").replace(/\s+/g, " ").trim().slice(0, LINK_TEXT_MAX);
+      links.set(a.href, { url: a.href, text: text || undefined });
+    }
+    return [...links.values()];
+  };
   // What each key does here: the app's actions go to the app as messages
   // on the console (see `send`); the page's own (back, forward, reload) happen here.
   const KEY_ACTIONS = [
@@ -93,6 +110,7 @@
     ["spaceArtifacts", () => send(`${SPACE}?s=artifacts`)],
     ["sessions", () => send(SESSIONS)],
     ["focusUrl", () => send(FOCUS_URL)],
+    ["terminalLinks", () => send(`${PAGE_LINKS}?l=${encodeURIComponent(JSON.stringify(shownLinks()))}`)],
     ["newTab", () => send(NEW_TAB)],
     ["newTodo", () => send(NEW_TODO)],
     ["closeTab", () => send(CLOSE_TAB)],

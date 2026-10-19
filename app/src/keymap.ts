@@ -126,7 +126,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["prevTab", "前のタブ（作業・学習では入力先の側のタブ、Todo では前のレーン）"],
       ["nextTab", "次のタブ（作業・学習では入力先の側のタブ、Todo では次のレーン）"],
       ["focusUrl", "アドレス欄へ"],
-      ["terminalLinks", "ターミナルに出ているリンクを選んで開く（Enter で横に、⌘Enter でブラウザに。⌘ クリックと ⌘⇧ クリックも同じ）"],
+      ["terminalLinks", "ターミナルやページに出ているリンクを選んで開く（ターミナルでは Enter で横に、⌘Enter でブラウザに。⌘ クリックと ⌘⇧ クリックも同じ。ページでは新しいタブに）"],
       ["back", "戻る"],
       ["forward", "進む"],
       ["zoomIn", "拡大"],

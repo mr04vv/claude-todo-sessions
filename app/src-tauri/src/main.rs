@@ -1568,6 +1568,8 @@ const FOCUS_PANE_EVENT: &str = "focus-pane";
 const KEYS_HANDED_ON: [&str; 4] = ["tab-prev", "tab-next", "close-tab", "focus-pane"];
 /// When a page's ⌘N asks for a new todo.
 const OPEN_NEW_TODO_EVENT: &str = "open-new-todo";
+/// `{tab, links}` when a page's ⌘⇧L asks to pick one of the links it shows.
+const PAGE_LINKS_EVENT: &str = "page-links";
 
 /// `{host, user}` when a page sent a login not kept yet: asked whether to keep it.
 const LOGIN_CAPTURED_EVENT: &str = "login-captured";
@@ -1689,6 +1691,19 @@ const BROWSER_ARCHIVE_EVENT: &str = "browser-archive";
 #[derive(Clone, Serialize)]
 struct TabOnly {
     tab: String,
+}
+
+/// A link a page shows: its address, and its text if it has some.
+#[derive(Clone, Serialize, Deserialize)]
+struct PageLink {
+    url: String,
+    text: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct PageLinks {
+    tab: String,
+    links: Vec<PageLink>,
 }
 
 /// `{tab, zoom}` when a tab's zoom changes (1.0 is none).
@@ -1882,6 +1897,11 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         Some("space") => app.emit_to(to, SPACE_EVENT, SpaceAsk { space: url.query_pairs().find(|(k, _)| k == "s").map(|(_, v)| v.into_owned()).unwrap_or_default() }),
         Some("close-tab") => app.emit_to(to, BROWSER_CLOSE_TAB_EVENT, TabOnly { tab }),
         Some("work-right") => app.emit_to(to, WORK_RIGHT_EVENT, ()),
+        // The page's word on its links: only web pages are offered.
+        Some("page-links") => {
+            let links = serde_json::from_str::<Vec<PageLink>>(&param("l")).unwrap_or_default().into_iter().filter(|l| is_web_url(&l.url)).collect();
+            app.emit_to(to, PAGE_LINKS_EVENT, PageLinks { tab, links })
+        }
         _ => app.emit_to(to, BROWSER_FOCUS_URL_EVENT, TabOnly { tab }),
     };
 }
