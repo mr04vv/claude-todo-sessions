@@ -14,6 +14,10 @@ const API: &str = "https://slack.com/api";
 const TIMEOUT: Duration = Duration::from_secs(20);
 /// Slack's search takes longer in a large workspace.
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(60);
+/// A file sent to Slack may be large.
+const UPLOAD_TIMEOUT: Duration = Duration::from_secs(120);
+/// Where Slack keeps the files of messages: only there does the token go.
+const FILES_HOST: &str = "https://files.slack.com/";
 /// Matches asked of a search: the newest, enough between two checks.
 pub const SEARCH_COUNT: &str = "20";
 
@@ -83,6 +87,36 @@ pub struct Message {
     pub ts: String,
     pub reactions: Vec<Reaction>,
     pub attachments: Vec<Attachment>,
+    pub files: Vec<File>,
+}
+
+/// A file shared in a message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct File {
+    pub name: String,
+    /// A picture's largest thumbnail (itself without one), on FILES_HOST;
+    /// None for another kind of file.
+    pub image: Option<String>,
+    pub permalink: Option<String>,
+}
+
+/// A picture's addresses, the one to show first.
+const PICTURE_KEYS: [&str; 4] = ["thumb_720", "thumb_480", "thumb_360", "url_private"];
+
+/// A message's file; a deleted one (a tombstone, without a name) is left out.
+fn parse_file(f: &Value) -> Option<File> {
+    let name = f["name"].as_str().filter(|n| !n.is_empty())?;
+    let picture = f["mimetype"].as_str().is_some_and(|m| m.starts_with("image/"));
+    Some(File {
+        name: name.into(),
+        image: picture.then(|| PICTURE_KEYS.iter().find_map(|k| f[*k].as_str().map(String::from))).flatten(),
+        permalink: f["permalink"].as_str().map(String::from),
+    })
+}
+
+/// Whether `url` is a file of Slack's, to read with the token.
+pub fn is_file_url(url: &str) -> bool {
+    url.starts_with(FILES_HOST)
 }
 
 /// What Slack shows under a message: a link it unfurled (a page's preview,
@@ -241,6 +275,16 @@ pub fn parse_channels(v: &Value) -> Vec<Channel> {
         .collect()
 }
 
+/// files.getUploadURLExternal's address to send the file to, and its id.
+pub fn parse_upload_url(v: &Value) -> Option<(String, String)> {
+    Some((v["upload_url"].as_str()?.into(), v["file_id"].as_str()?.into()))
+}
+
+/// The ts of the message files.info's file was shared in to `channel`; None until Slack has shared it.
+pub fn parse_share_ts(v: &Value, channel: &str) -> Option<String> {
+    ["public", "private"].iter().find_map(|kind| v["file"]["shares"][*kind][channel][0]["ts"].as_str()).map(String::from)
+}
+
 /// chat.postMessage's ts for the message it posted.
 pub fn parse_posted_ts(v: &Value) -> Option<String> {
     v["ts"].as_str().map(String::from)
@@ -315,6 +359,7 @@ pub fn parse_replies(v: &Value) -> Vec<Message> {
                     })
                     .collect(),
                 attachments: m["attachments"].as_array().into_iter().flatten().filter_map(parse_attachment).collect(),
+                files: m["files"].as_array().into_iter().flatten().filter_map(parse_file).collect(),
             })
         })
         .collect()
@@ -691,6 +736,61 @@ pub fn post_message(token: &str, channel: &str, thread_ts: Option<&str>, text: &
     parse_posted_ts(&answer(v)?).ok_or_else(|| "Slack chat.postMessage: ts がありません".into())
 }
 
+/// Calls Web API `method` with the user's token, its arguments as a form.
+fn post_form(token: &str, method: &str, form: &[(&str, &str)]) -> Result<Value, String> {
+    let v: Value = AGENT
+        .post(format!("{API}/{method}"))
+        .header("Authorization", format!("Bearer {token}"))
+        .send_form(form.iter().copied())
+        .map_err(|e| failed(method, e))?
+        .body_mut()
+        .read_json()
+        .map_err(|e| failed(method, e))?;
+    answer(v)
+}
+
+/// Shares `files` (name, bytes) as the user in one message with `text`
+/// (`files:write`): in a thread, or in the channel itself. Slack shares
+/// them after it answers (`shared_ts` finds the message); the first file's id.
+pub fn upload(token: &str, channel: &str, thread_ts: Option<&str>, text: &str, files: &[(String, Vec<u8>)]) -> Result<String, String> {
+    let mut ids = Vec::new();
+    for (name, bytes) in files {
+        let v = post_form(token, "files.getUploadURLExternal", &[("filename", name), ("length", &bytes.len().to_string())])?;
+        let (url, id) = parse_upload_url(&v).ok_or("Slack files.getUploadURLExternal: 送り先がありません")?;
+        AGENT.post(&url).config().timeout_global(Some(UPLOAD_TIMEOUT)).build().send(&bytes[..]).map_err(|e| failed("upload", e))?;
+        ids.push(id);
+    }
+    let first = ids.first().cloned().ok_or("Slack: 送るファイルがありません")?;
+    let listed = Value::from(ids.into_iter().map(|id| serde_json::json!({ "id": id })).collect::<Vec<_>>()).to_string();
+    let mut form = vec![("files", listed.as_str()), ("channel_id", channel)];
+    if let Some(thread) = thread_ts {
+        form.push(("thread_ts", thread));
+    }
+    if !text.trim().is_empty() {
+        form.push(("initial_comment", text));
+    }
+    post_form(token, "files.completeUploadExternal", &form)?;
+    Ok(first)
+}
+
+/// The ts of the message `file` was shared in to `channel`, once Slack has (`files:read`).
+pub fn shared_ts(token: &str, file: &str, channel: &str) -> Result<Option<String>, String> {
+    Ok(parse_share_ts(&call(token, "files.info", &[("file", file)])?, channel))
+}
+
+/// A file of a message (`files:read`), its bytes.
+pub fn file(token: &str, url: &str) -> Result<Vec<u8>, String> {
+    if !is_file_url(url) {
+        return Err(format!("Slack のファイルではありません: {url}"));
+    }
+    let mut res = AGENT.get(url).header("Authorization", format!("Bearer {token}")).call().map_err(|e| failed("files", e))?;
+    // A token that may not read it is answered with the sign-in page.
+    if res.headers().get("content-type").and_then(|t| t.to_str().ok()).is_some_and(|t| t.starts_with("text/html")) {
+        return Err("Slack: ファイルを読めませんでした（files:read が要ります）".into());
+    }
+    res.body_mut().read_to_vec().map_err(|e| failed("files", e))
+}
+
 /// reactions.add's or reactions.remove's answer: one already as asked
 /// (given before, or taken off before) is done too.
 fn reacted(v: Value) -> Result<(), String> {
@@ -857,7 +957,7 @@ mod tests {
         ]});
         let messages = parse_replies(&v);
         assert_eq!(messages.len(), 3);
-        assert_eq!(messages[0], Message { user: "U2".into(), user_name: None, text: "決済のタイムアウト".into(), ts: "100.0".into(), reactions: Vec::new(), attachments: Vec::new() });
+        assert_eq!(messages[0], Message { user: "U2".into(), user_name: None, text: "決済のタイムアウト".into(), ts: "100.0".into(), reactions: Vec::new(), attachments: Vec::new(), files: Vec::new() });
         assert_eq!(messages[2].user, "", "a bot has no user");
         assert_eq!(messages[2].user_name.as_deref(), Some("ci"), "but its name");
     }
@@ -894,6 +994,50 @@ mod tests {
                 Attachment { text: Some("通知です".into()), ..none },
             ]
         );
+    }
+
+    #[test]
+    fn a_messages_files_come_with_it_pictures_by_their_largest_thumbnail() {
+        let v = json!({"ok": true, "messages": [
+            {"user": "U2", "text": "", "ts": "100.0", "files": [
+                {"id": "F1", "name": "screen.png", "mimetype": "image/png", "url_private": "https://files.slack.com/files-pri/T1-F1/screen.png", "thumb_360": "https://files.slack.com/files-tmb/T1-F1/screen_360.png", "thumb_720": "https://files.slack.com/files-tmb/T1-F1/screen_720.png", "permalink": "https://acme.slack.com/files/U2/F1/screen.png"},
+                {"id": "F2", "name": "tiny.gif", "mimetype": "image/gif", "url_private": "https://files.slack.com/files-pri/T1-F2/tiny.gif"},
+                {"id": "F3", "name": "spec.pdf", "mimetype": "application/pdf", "url_private": "https://files.slack.com/files-pri/T1-F3/spec.pdf", "thumb_360": "https://files.slack.com/files-tmb/T1-F3/spec_360.png", "permalink": "https://acme.slack.com/files/U2/F3/spec.pdf"},
+                {"id": "F4", "mode": "tombstone"}
+            ]}
+        ]});
+        assert_eq!(
+            parse_replies(&v)[0].files,
+            vec![
+                File { name: "screen.png".into(), image: Some("https://files.slack.com/files-tmb/T1-F1/screen_720.png".into()), permalink: Some("https://acme.slack.com/files/U2/F1/screen.png".into()) },
+                File { name: "tiny.gif".into(), image: Some("https://files.slack.com/files-pri/T1-F2/tiny.gif".into()), permalink: None },
+                File { name: "spec.pdf".into(), image: None, permalink: Some("https://acme.slack.com/files/U2/F3/spec.pdf".into()) },
+            ],
+            "a picture without thumbnails is itself, another kind of file has none, a deleted one is left out"
+        );
+    }
+
+    #[test]
+    fn only_slacks_own_file_addresses_are_read_with_the_token() {
+        assert!(is_file_url("https://files.slack.com/files-tmb/T1-F1/screen_720.png"));
+        assert!(!is_file_url("https://files.slack.com.evil.example/x.png"));
+        assert!(!is_file_url("http://files.slack.com/files-pri/T1-F1/x.png"));
+        assert!(!is_file_url("https://example.com/files.slack.com/x.png"));
+    }
+
+    #[test]
+    fn an_upload_is_sent_where_slack_says() {
+        assert_eq!(parse_upload_url(&json!({"ok": true, "upload_url": "https://files.slack.com/upload/v1/ABC", "file_id": "F1"})), Some(("https://files.slack.com/upload/v1/ABC".into(), "F1".into())));
+        assert_eq!(parse_upload_url(&json!({"ok": true})), None);
+    }
+
+    #[test]
+    fn a_shared_files_message_is_found_once_slack_has_shared_it() {
+        let shared = |kind: &str| json!({"ok": true, "file": {"id": "F1", "shares": {kind: {"C1": [{"ts": "1531763348.000001", "thread_ts": "1531763273.000015"}]}}}});
+        assert_eq!(parse_share_ts(&shared("public"), "C1").as_deref(), Some("1531763348.000001"));
+        assert_eq!(parse_share_ts(&shared("private"), "C1").as_deref(), Some("1531763348.000001"), "a private channel");
+        assert_eq!(parse_share_ts(&shared("public"), "C2"), None, "another channel");
+        assert_eq!(parse_share_ts(&json!({"ok": true, "file": {"id": "F1", "shares": {}}}), "C1"), None, "not shared yet");
     }
 
     #[test]
