@@ -2015,6 +2015,12 @@ input.panel-title:focus-visible {
   color: var(--text-3);
 }
 
+/* An artifact of no todo: the session that made it, as wide as a todo's chip. */
+.made-in {
+  max-width: 180px;
+  font-size: 12px;
+}
+
 .todo-chip {
   max-width: 150px;
   overflow: hidden;

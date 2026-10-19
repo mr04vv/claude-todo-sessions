@@ -2326,8 +2326,10 @@ function DatabaseDialog({ database, databases, run, onMade, onClose }: {
   );
 }
 
-function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, databases, unlinked, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
+function TodoPanel({ todo, allTodos, waiting, artifacts, madeIn, local, groups, databases, unlinked, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
   todo: Todo;
+  /// The session an artifact was made in, by its name.
+  madeIn: (a: Artifact) => string | null;
   /// The sessions of no todo, to link one to this.
   unlinked: Session[];
   /// The databases the user made, to put the todo in one.
@@ -2403,6 +2405,8 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
   }, [todo.id, isParent]); // eslint-disable-line react-hooks/exhaustive-deps
   const latestOf = (t: Todo) => [...t.sessions].sort((a, b) => b.state_at - a.state_at)[0];
   const mine = artifacts.filter((a) => a.todo_id === todo.id || children.some((c) => c.id === a.todo_id));
+  // What no todo has, to put under this one.
+  const loose = artifacts.filter((a) => a.todo_id === null);
   return (
     <aside ref={root} className="panel" aria-label={`#${todo.id} ${todo.title}`} onClick={stop}>
       <header className="panel-head">
@@ -2612,12 +2616,24 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
           <MemoEditor value={todo.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
         </section>
 
-        {mine.length > 0 && (
+        {(mine.length > 0 || loose.length > 0) && (
           <section>
             <h3>
               成果物 <span className="muted">{mine.length}</span>
             </h3>
-            <ArtifactRows artifacts={mine} todos={allTodos} report={report} onOpenTodo={onOpenTodo} />
+            <ArtifactRows artifacts={mine} todos={allTodos} madeIn={madeIn} report={report} onOpenTodo={onOpenTodo} />
+            {loose.length > 0 && (
+              <div className="summary-line">
+                <select className="select" value="" aria-label="todo のない成果物を紐づける" onChange={(e) => e.target.value && run(() => api.linkArtifact(Number(e.target.value), todo.id))}>
+                  <option value="">todo のない成果物を紐づける…</option>
+                  {loose.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {artifactName(a)}（{[madeIn(a), ago(a.created_at)].filter(Boolean).join(" · ")}）
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </section>
         )}
 
@@ -2679,9 +2695,11 @@ function useOpenArtifact() {
 
 /// Artifacts as rows: their kind, name, todo and when; with `onForget`, a
 /// way to take each off the list (the cursor's row shown as such).
-function ArtifactRows({ artifacts, todos, report, onOpenTodo, cursorId, onForget }: {
+function ArtifactRows({ artifacts, todos, madeIn, report, onOpenTodo, cursorId, onForget }: {
   artifacts: Artifact[];
   todos: Todo[];
+  /// The session an artifact was made in, by its name: shown where no todo is.
+  madeIn: (a: Artifact) => string | null;
   report: (e: unknown) => void;
   onOpenTodo: (id: number) => void;
   cursorId?: string | null;
@@ -2696,10 +2714,16 @@ function ArtifactRows({ artifacts, todos, report, onOpenTodo, cursorId, onForget
           <li key={a.id} data-row={artifactRow(a)} className={`row artifact-row${artifactRow(a) === cursorId ? " cursor" : ""}`} title={a.url} onClick={() => open(a)}>
             <span className="tag">{ARTIFACT_KIND[a.kind]}</span>
             <span className="row-title ellipsis">{artifactName(a)}</span>
-            {todo && (
+            {todo ? (
               <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
                 #{todo.id} {todo.title}
               </button>
+            ) : (
+              madeIn(a) && (
+                <span className="muted ellipsis made-in" title="作ったセッション">
+                  {madeIn(a)}
+                </span>
+              )
             )}
             <span className="muted when">{ago(a.created_at)}</span>
             {onForget && (
@@ -2718,9 +2742,10 @@ const artifactRow = (a: Artifact) => `a:${a.id}`;
 
 /// What sessions made besides PRs, newest first, narrowed to a todo (a parent
 /// with its subtasks).
-function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
+function ArtifactsPage({ artifacts, todos, madeIn, report, run, onOpenTodo }: {
   artifacts: Artifact[];
   todos: Todo[];
+  madeIn: (a: Artifact) => string | null;
   report: (e: unknown) => void;
   run: (f: () => Promise<unknown>) => void;
   onOpenTodo: (id: number) => void;
@@ -2769,7 +2794,7 @@ function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
         {shown.length === 0 && (
           <p className="muted empty">まだありません。セッションが claude.ai にアーティファクトやドキュメントを作ると、ひと区切りしたときにここへ並びます。html スキルで書いた文書も並びます。ほかの Mac のファイルは、セッションが todo-sessions の add_artifact で登録します。</p>
         )}
-        <ArtifactRows artifacts={shown} todos={todos} report={report} onOpenTodo={onOpenTodo} cursorId={cursorId} onForget={forget} />
+        <ArtifactRows artifacts={shown} todos={todos} madeIn={madeIn} report={report} onOpenTodo={onOpenTodo} cursorId={cursorId} onForget={forget} />
       </div>
     </>
   );
@@ -7302,6 +7327,9 @@ export default function App() {
   const repoLanes = buildLanes(shownTodos, "repo", shownTodos);
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
+  /// The session an artifact was made in, by its name (where no todo names it).
+  const sessionNames = new Map([...allTodos.flatMap((t) => t.sessions), ...(board?.inbox ?? [])].map((s) => [s.session_id, sessionLabel(s)]));
+  const madeIn = (a: Artifact) => (a.session_id && sessionNames.get(a.session_id)) || null;
   const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? []).filter((s) => s.state !== "ended")];
   /// A terminal's title: the session it shows, as the session list names it.
   const sessionTitle = (id: string) => (board ? (sessionItemsOf(board).find((i) => i.session.session_id === id)?.session.title ?? null) : null);
@@ -7949,7 +7977,7 @@ export default function App() {
                     covered={covered}
                   />
                 )}
-                {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />}
+                {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} madeIn={madeIn} report={report} run={run} onOpenTodo={goTodo} />}
                 {view === "slack" && board && (
                   <SlackPage
                     slack={board.slack}
@@ -7971,6 +7999,7 @@ export default function App() {
                       allTodos={allTodos}
                       waiting={waiting}
                       artifacts={board?.artifacts ?? []}
+                      madeIn={madeIn}
                       local={local}
                       groups={groups}
                       databases={databases}

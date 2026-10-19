@@ -1656,6 +1656,9 @@ impl Db {
         }
         self.conn
             .execute("UPDATE sessions SET todo_id = ?2 WHERE session_id = ?1", params![id, todo_id])?;
+        // What it made before it was linked goes with it.
+        self.conn
+            .execute("UPDATE artifacts SET todo_id = ?2 WHERE session_id = ?1 AND todo_id IS NULL", params![id, todo_id])?;
         self.update_todo(todo_id, TodoPatch { status: Some(Status::Doing), ..Default::default() })?;
         Ok(())
     }
@@ -1835,6 +1838,12 @@ impl Db {
 
     /// Takes an artifact off the list. Its row stays, so finding it again in
     /// its session's record does not bring it back.
+    /// Puts an artifact under a todo (None: under none).
+    pub fn link_artifact(&self, id: i64, todo_id: Option<i64>) -> Result<()> {
+        self.conn.execute("UPDATE artifacts SET todo_id = ?2 WHERE id = ?1", params![id, todo_id])?;
+        Ok(())
+    }
+
     pub fn forget_artifact(&self, id: i64) -> Result<()> {
         self.conn.execute("UPDATE artifacts SET gone = 1 WHERE id = ?1", [id])?;
         Ok(())
