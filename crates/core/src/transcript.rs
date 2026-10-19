@@ -121,6 +121,26 @@ pub fn summary_prompt(digest: &str) -> String {
     )
 }
 
+/// Characters kept of what a session said last: its end, where a question is.
+pub const LAST_WORDS_MAX_CHARS: usize = 1000;
+
+/// What a session said last, in one line: the text of its last message
+/// (a question asked in words, and the choices it lists), the end kept when
+/// it is long. Entries oldest first.
+pub fn last_words<'a>(entries: impl IntoIterator<Item = &'a Value>) -> Option<String> {
+    let text = entries
+        .into_iter()
+        .filter(|e| e["type"] == "assistant")
+        .filter_map(|e| {
+            let texts: Vec<&str> = e["message"]["content"].as_array()?.iter().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
+            (!texts.is_empty()).then(|| texts.join("\n"))
+        })
+        .last()?;
+    let line = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ");
+    let n = line.chars().count();
+    Some(if n > LAST_WORDS_MAX_CHARS { format!("…{}", line.chars().skip(n - LAST_WORDS_MAX_CHARS).collect::<String>()) } else { line })
+}
+
 const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
 /// How the Artifact tool reports a publish: "Published <file> at <url> (…".
 const PUBLISHED: &str = "Published ";
@@ -341,6 +361,26 @@ mod tests {
         let long = "あ".repeat(QUESTION_MAX_CHARS + 50);
         let entries = [assistant(json!([{"type": "text", "text": long}]), json!({}))];
         assert_eq!(question(&entries).unwrap().chars().count(), QUESTION_MAX_CHARS);
+    }
+
+    #[test]
+    fn last_words_are_the_whole_last_message_in_one_line() {
+        let entries = [
+            assistant(json!([{"type": "text", "text": "前の発言"}]), json!({})),
+            assistant(json!([{"type": "text", "text": "調べ終わりました。\n\n1 問目です。\n- 案1: DDL を渡す\n- 案2: 自作する\nどちらにしますか？"}]), json!({})),
+            assistant(json!([{"type": "tool_use", "name": "Bash", "input": {}}]), json!({})),
+        ];
+        assert_eq!(last_words(&entries).as_deref(), Some("調べ終わりました。 1 問目です。 - 案1: DDL を渡す - 案2: 自作する どちらにしますか？"));
+        assert_eq!(last_words(&[]), None);
+    }
+
+    #[test]
+    fn long_last_words_keep_their_end_where_the_question_is() {
+        let long = format!("{}どちらにしますか？", "あ".repeat(LAST_WORDS_MAX_CHARS));
+        let entries = [assistant(json!([{"type": "text", "text": long}]), json!({}))];
+        let said = last_words(&entries).unwrap();
+        assert!(said.starts_with('…') && said.ends_with("どちらにしますか？"), "{said}");
+        assert_eq!(said.chars().count(), LAST_WORDS_MAX_CHARS + 1);
     }
 
     /// A tool called (by id) and what it gave back.

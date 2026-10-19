@@ -213,8 +213,8 @@ pub enum SubtaskEvent {
     CiFailed(Vec<String>),
     ChangesRequested,
     Done,
-    /// A Cloud subtask's turn ended (it cannot message the orchestrator
-    /// itself): what it said last.
+    /// A subtask's turn ended (it cannot message the orchestrator itself):
+    /// what it said last, where a question asked in words is.
     TurnEnded(Option<String>),
 }
 
@@ -241,8 +241,8 @@ impl SubtaskEvent {
             SubtaskEvent::ChangesRequested => format!("{who}の PR に修正依頼が来ました。fix_subtask（id={todo_id}）で直させてください。"),
             SubtaskEvent::Done => format!("{who}が Done になりました。"),
             SubtaskEvent::TurnEnded(said) => format!(
-                "{who}（Cloud）がひと区切りしました{}。続きを頼むなら reply_to_subtask（todo_id={todo_id}）で送ってください。向こうからこのセッションへは返事が来ません。",
-                said.as_deref().map(|s| format!("：「{s}」")).unwrap_or_default()
+                "{who}がひと区切りしました{}。質問していれば、計画で答えられるなら reply_to_subtask（todo_id={todo_id}）で答え、決められないことなら escalate で私に回してください。続きを頼むときも reply_to_subtask で送ります。",
+                said.as_deref().map(|s| format!("。最後の発言：「{s}」")).unwrap_or_default()
             ),
         };
         format!("{RELAY_HEAD} {what}")
@@ -687,6 +687,8 @@ mod relay_tests {
         assert!(done.contains("Done") && done.contains("#42"), "{done}");
         let turn = SubtaskEvent::TurnEnded(Some("PR を作りました".into())).message(42, "グラフ");
         assert!(turn.contains("#42") && turn.contains("PR を作りました") && turn.contains("reply_to_subtask") && !turn.contains("SendMessage"), "{turn}");
+        // Any subtask's, herdr's too: a question asked in words is answered or handed on.
+        assert!(!turn.contains("Cloud") && turn.contains("escalate") && turn.contains("質問"), "{turn}");
         assert!(!SubtaskEvent::TurnEnded(None).message(42, "グラフ").contains("「」"));
         assert!(!asks.contains("SendMessage"), "a herdr subtask's question is typed into its pane: {asks}");
         let cloud = SubtaskEvent::CloudAsks(Some("どうしますか？".into())).message(42, "グラフ");

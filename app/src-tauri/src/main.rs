@@ -1299,18 +1299,14 @@ fn open_path(path: String) -> Result<(), String> {
     cli("open").arg(&path).status().map_err(err)?.success().then_some(()).ok_or_else(|| format!("{path} を開けませんでした"))
 }
 
-/// What a session waiting for a reply asks, from its transcript (local) or
-/// events (cloud). Codex's rollouts are not read.
+/// A session's latest messages (session_entries); Codex's rollouts are not read.
+fn entries_of(session: &Session) -> Option<Vec<serde_json::Value>> {
+    (session.agent != cts_core::Agent::Codex).then(|| session_entries(&session.session_id)).flatten()
+}
+
+/// What a session waiting for a reply asks.
 fn session_question(session: &Session) -> Option<String> {
-    if session.agent == cts_core::Agent::Codex {
-        return None;
-    }
-    let entries = if launch::is_cloud_session(&session.session_id) {
-        cts_core::cloud::recent_entries(&session.session_id).map_err(|e| eprintln!("{e}")).ok()?
-    } else {
-        cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id, TRANSCRIPT_TAIL_BYTES)?)
-    };
-    cts_core::transcript::question(&entries)
+    cts_core::transcript::question(&entries_of(session)?)
 }
 
 /// What 作業's cards show of each session (Claude's, not Codex's): its last
@@ -2768,18 +2764,17 @@ fn relay_to_orchestrator(db: &Db, subtask: &Todo, event: launch::SubtaskEvent) -
     true
 }
 
-/// Tells a Cloud subtask's orchestrator that its turn ended, with what it
-/// said last: a Cloud session cannot message another one.
-fn relay_cloud_turn(session: &Session) {
-    if !launch::is_cloud_session(&session.session_id) {
-        return;
-    }
+/// Tells a subtask's orchestrator that its turn ended, with what it said
+/// last: a subtask cannot message its orchestrator, and one may ask in words
+/// (no AskUserQuestion), which leaves it waiting without anyone told.
+fn relay_turn(session: &Session) {
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => return eprintln!("{e}"),
     };
     if let Some(subtask) = session.todo_id.and_then(|id| db.get_todo(id).ok().flatten()).filter(|t| t.parent_id.is_some()) {
-        relay_to_orchestrator(&db, &subtask, launch::SubtaskEvent::TurnEnded(session_question(session)));
+        let said = entries_of(session).and_then(|e| cts_core::transcript::last_words(&e));
+        relay_to_orchestrator(&db, &subtask, launch::SubtaskEvent::TurnEnded(said));
     }
 }
 
@@ -2906,7 +2901,7 @@ fn watch_loop(app: AppHandle) {
                         let session = s.clone();
                         std::thread::spawn(move || {
                             keep_artifacts(&session);
-                            relay_cloud_turn(&session);
+                            relay_turn(&session);
                         });
                         // Look for the PR now.
                         if let (Some(todo_id), Ok(tx)) = (s.todo_id, app.state::<AppState>().github_wake.lock()) {
