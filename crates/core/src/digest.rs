@@ -9,11 +9,15 @@ use crate::launch::shell_quote;
 use crate::ogp::Page;
 use crate::{Reading, ReadingKind};
 
-/// What the session may do without asking: read its brief, write the page,
-/// read the artifact skill and publish.
+/// What the session may do without asking: read its brief and the html
+/// skill's design system, write the page, read the skills and publish.
 const SESSION_TOOLS: &str = "Read,Write,Skill,ToolSearch,Artifact";
-/// Enough of a page's text for a close summary.
-const PAGE_TEXT_MAX_CHARS: usize = 20_000;
+/// The session's model: the page is worth the larger one, whatever the
+/// default at home (a quick question's).
+const SESSION_MODEL: &str = "opus";
+/// Enough of a page's text for a close summary (a long article cut at 20,000
+/// characters lost its second half).
+const PAGE_TEXT_MAX_CHARS: usize = 60_000;
 
 /// A reading kept that day, and its pages as read (an article's own, a post's
 /// links'; a book's, behind a login, none), or why one was not.
@@ -37,17 +41,24 @@ pub fn brief(title: &str, items: &[Item], podcast: Option<&Podcast>) -> String {
         "# {title}\n\
          \n\
          読みもの {n} 件（記事、X の投稿、本）と、そのページ（記事そのもの、投稿のリンク先）の本文を下に渡します。\n\
-         これを読んで、HTML のアーティファクトを 1 つ作り、Artifact ツールで公開してください（書く前に artifact-design スキルを読む）。\n\
+         これを読んで、1 件ずつ図で分かるように解説する HTML を作り、Artifact ツールでアーティファクトとして公開してください（HTML のアーティファクト）。\n\
          \n\
-         - タイトルは「{title}」。\n\
-         - 文章を読ませるページではなく、見て分かるページにする。どのカードも文章だけにしない。\n\
-         - 一番上に、全体の要点（3〜5 行）と、テーマ（タグ）ごとの件数が一目で分かる小さなグラフ。\n\
-         - テーマごとのまとまりに分けて、1 件ずつカードにする。カードには種類（記事・X の投稿・本）の印、タイトル（投稿なら投稿者）、元の URL へのリンク、要約。\n\
-         - 要約はできるだけ詳しく（背景、主張、具体的な手順・コード・数字、結論。大事な点を落とさない）。投稿はリンク先のページも同じように。\
-         本は説明と目次から、何についての本か。\n\
-         - 要約は短い段落と箇条書きにし、中身に合わせて図にする：手順や処理の流れは流れ図（mermaid でよい）、比べている内容は比較表、\
-         構成や関係は関係図、測った数字や前後の差は大きく見せる数字か小さなグラフ。\n\
-         - 得られることや、仕事にどう活かせるかも一言添える。\n\
+         作り方:\n\
+         - 書く前に html スキルと explain スキルを読み、~/.claude/skills/html/design-system/component-samples.html を見て、\
+         html スキルのデザインシステム（document.css の部品）・構成・図・コードの決まりに従う。Artifact ツールの決まりのために artifact-design スキルも読むが、見た目は html スキルを優先する。\n\
+         - ~/.claude/skills/html/design-system/ の document.css と math-copy.js は、Artifact ツールの files で design-system/document.css・design-system/math-copy.js として\
+         ページと一緒に公開し、相対パスで読み込む。doctype・html・head・body のタグは書かない（Artifact ツールが付ける）。\
+         外から読み込むスクリプトは版を固定する（MathJax は数式があるときだけ、mathjax@3.2.2）。\n\
+         \n\
+         中身:\n\
+         - タイトルは「{title}」。h1 とリード文の下に目次（.mb-toc）、全体の要点（3〜5 行）、テーマ（タグ）ごとの件数が一目で分かる小さなグラフ。\n\
+         - テーマごとのまとまりに分けて、1 件ずつ h2 の節にする。節の頭に種類（記事・X の投稿・本）、タイトル（投稿なら投稿者）、元の URL へのリンク。\n\
+         - 読み手はその記事を読んでいない前提で解説する。要約の羅列ではなく、何がどういう仕組みで動き、なぜそうなのかが分かるように書く。\n\
+         - 各節は html スキルの構成にならう：用語（その記事の専門用語を 1〜2 文で定義。本文で使う前に）→ 背景 → 本論（主張と仕組み）→ 具体例（手順・コード・数字）→ 補足・限界。\
+         投稿はリンク先のページも同じように。本は説明と目次から、何についての本か。大事な点を落とさない。\n\
+         - 文章だけの節にしない。仕組み・構成・処理の流れは自作の図（インライン SVG の線画）で、比べている内容は表で、測った数字や前後の差は大きく見せる数字か小さなグラフで示す。\
+         記事に重要な図があれば、出所を書いて引用する。コードは Highlight.js で言語を付けて示す。\n\
+         - 最後に、得られることや、仕事にどう活かせるかを一言添える。\n\
          - 本文を読めなかったページは、読めなかったと書く。中身を推測で書かない。\n\
          - 中身の薄いもの（日常の話など）は、最後の「軽いもの」に短くまとめる。\n\
          - 日本語で書く。\n",
@@ -58,7 +69,7 @@ pub fn brief(title: &str, items: &[Item], podcast: Option<&Podcast>) -> String {
         out.push_str(&format!(
             "- 一番上（要点の上）に、この読みものを 1 件ずつ解説するポッドキャストのプレーヤーを置く。\
              音声は {file} にある。Artifact ツールの files で podcast.mp3 として公開し、<audio controls src=\"podcast.mp3\"> で再生する。\
-             プレーヤーの下に、記事ごとの頭出しボタン（押すとその秒から再生）を並べ、各カードにも同じ頭出しボタンを置く。各記事の始まり:\n{chapters}",
+             プレーヤーの下に、記事ごとの頭出しボタン（押すとその秒から再生）を並べ、各記事の節にも同じ頭出しボタンを置く。各記事の始まり:\n{chapters}",
             file = podcast.file,
         ));
     }
@@ -98,7 +109,7 @@ fn readings(items: &[Item]) -> String {
 pub fn session_command(session_id: &str, briefs_dir: &str, brief_path: &str) -> String {
     // The prompt first: --add-dir and --allowedTools take as many values as follow them.
     format!(
-        "claude {} --session-id {session_id} --add-dir {} --allowedTools {}",
+        "claude {} --session-id {session_id} --model {SESSION_MODEL} --add-dir {} --allowedTools {}",
         shell_quote(&first_prompt(brief_path)),
         shell_quote(briefs_dir),
         shell_quote(SESSION_TOOLS)
@@ -223,7 +234,9 @@ mod tests {
         book.kind = ReadingKind::Book;
         book.chapters = vec![crate::Chapter { position: 1, title: "Replication".into(), url: String::new(), read: false }];
         let b = brief("読みものの日報 2026-10-18", &[Item { reading: &r, pages: vec![Ok(page), Err("timeout".into())] }, Item { reading: &book, pages: vec![] }], None);
-        assert!(b.contains("「読みものの日報 2026-10-18」") && b.contains("HTML のアーティファクト") && b.contains("artifact-design"));
+        assert!(b.contains("「読みものの日報 2026-10-18」") && b.contains("HTML のアーティファクト"));
+        assert!(b.contains("html スキル") && b.contains("design-system/document.css"), "made in the html skill's way, its stylesheet published beside the page");
+        assert!(b.contains("用語") && b.contains("インライン SVG"), "terms defined before use, figures drawn");
         assert!(b.contains("## 2 件目（本）") && b.contains("目次:\nReplication"));
         assert!(b.contains("## 1 件目（X の投稿）\nURL: https://x.com/ashunar0/status/1") && b.contains("タグ: AI/LLM") && b.contains("Void を触ってみた"));
         assert!(b.contains("### ページ 1: https://ashunar0.dev/posts/try-void\nタイトル: Void"));
@@ -272,6 +285,7 @@ mod tests {
         let prompt = c.find("/data/digests/2026-10-18.md を読んで").unwrap();
         assert!(prompt < c.find("--add-dir").unwrap() && prompt < c.find("--allowedTools").unwrap(), "a prompt after --allowedTools is taken for a tool, and the session waits");
         assert!(c.starts_with("claude ") && c.contains("--session-id sess-1"));
+        assert!(c.contains("--model opus"), "the page is worth the larger model, whatever the default at home");
     }
 
     #[test]
