@@ -76,6 +76,8 @@ export type Action =
   | "studyTags"
   | "studyKind"
   | "studyCopy"
+  | "studyDigest"
+  | "studyPodcast"
   | "studyChapter"
   | "studyKeep"
   | "studyList"
@@ -199,6 +201,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["studyTags", "タグを直す"],
       ["studyKind", "種類を切り替える（すべて・記事・X の投稿・本）"],
       ["studyCopy", "選んだもの（なければカーソルの行、読んでいるときは開いているもの）の URL をコピー（NotebookLM 用）"],
+      ["studyDigest", "選んだもの（なければカーソルの行）で日報を作る"],
+      ["studyPodcast", "選んだもの（なければカーソルの行）で音声つきの日報を作る（Gemini の API キーが要る）"],
       ["studyChapter", "目次：章を読んだ・まだにする（Enter でその章へ）"],
       ["studyKeep", "読んで良かったものを残す（もう一度で「これから読む」に戻す。読んでいる画面でも）"],
       ["studyList", "読んでいるところと一覧を行き来する（一覧では、消すのや選ぶのをやめるのが先）"],
@@ -284,13 +288,15 @@ const KEYS: Record<Action, string> = {
   slackScrollUp: "shift+k",
   slackNarrower: "[",
   slackWider: "]",
-  studyPick: "x",
+  studyPick: " ",
   studyRead: "cmd+Enter",
   studyBrowser: "o",
   studyForget: "d",
   studyTags: "t",
   studyKind: "f",
   studyCopy: "c",
+  studyDigest: "n",
+  studyPodcast: "p",
   studyChapter: "m",
   studyKeep: "s",
   studyList: "Escape",
