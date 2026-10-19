@@ -12,6 +12,7 @@ pub mod slack;
 pub mod tags;
 pub mod transcript;
 pub mod translate;
+pub mod tts;
 pub mod usage;
 
 use std::path::Path;
@@ -325,6 +326,22 @@ pub struct Digest {
     pub error: Option<String>,
     pub made_at: i64,
     /// The session making it (the artifact it publishes is the digest).
+    pub session_id: Option<String>,
+}
+
+/// A 日報 of readings picked by hand, with a podcast of them if asked for:
+/// what is being done while it is made (`stage`), then the session making
+/// the page, then the page's link, or why it was not made.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PickedDigest {
+    pub id: i64,
+    /// The readings' ids, in the order picked.
+    pub readings: Vec<i64>,
+    pub podcast: bool,
+    pub stage: Option<String>,
+    pub url: Option<String>,
+    pub error: Option<String>,
+    pub made_at: i64,
     pub session_id: Option<String>,
 }
 
@@ -778,6 +795,17 @@ CREATE TABLE IF NOT EXISTS database_todos (
 -- A day's readings summed up (its 日報, a Claude Docs document), or why that failed.
 CREATE TABLE IF NOT EXISTS digests (
     day TEXT PRIMARY KEY,
+    url TEXT,
+    error TEXT,
+    made_at INTEGER NOT NULL,
+    session_id TEXT
+);
+-- A 日報 of readings picked by hand (PickedDigest); readings are their ids, comma-separated.
+CREATE TABLE IF NOT EXISTS picked_digests (
+    id INTEGER PRIMARY KEY,
+    readings TEXT NOT NULL,
+    podcast INTEGER NOT NULL DEFAULT 0,
+    stage TEXT,
     url TEXT,
     error TEXT,
     made_at INTEGER NOT NULL,
@@ -1399,7 +1427,62 @@ impl Db {
     /// An artifact session `session_id` published: the digest it makes, if it
     /// makes one (and has none yet); whether it was.
     pub fn digest_made_by(&self, session_id: &str, url: &str) -> Result<bool> {
-        Ok(self.conn.execute("UPDATE digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])? > 0)
+        let day = self.conn.execute("UPDATE digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])?;
+        let picked = self.conn.execute("UPDATE picked_digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])?;
+        Ok(day + picked > 0)
+    }
+
+    /// A 日報 of `readings` (ids, in the order picked) to make, its podcast too
+    /// if `podcast`, at `stage`; its id.
+    pub fn add_picked_digest(&self, readings: &[i64], podcast: bool, stage: &str) -> Result<i64> {
+        let ids = readings.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        self.conn.execute("INSERT INTO picked_digests (readings, podcast, stage, made_at) VALUES (?1, ?2, ?3, ?4)", params![ids, podcast, stage, now()])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// What is being done for picked digest `id`.
+    pub fn set_picked_stage(&self, id: i64, stage: &str) -> Result<()> {
+        self.conn.execute("UPDATE picked_digests SET stage = ?2 WHERE id = ?1", params![id, stage])?;
+        Ok(())
+    }
+
+    /// Picked digest `id`'s page being made in session `session_id`.
+    pub fn start_picked_digest(&self, id: i64, session_id: &str) -> Result<()> {
+        self.conn.execute("UPDATE picked_digests SET stage = NULL, session_id = ?2 WHERE id = ?1", params![id, session_id])?;
+        Ok(())
+    }
+
+    /// Why picked digest `id` was not made.
+    pub fn fail_picked_digest(&self, id: i64, why: &str) -> Result<()> {
+        self.conn.execute("UPDATE picked_digests SET stage = NULL, error = ?2 WHERE id = ?1", params![id, why])?;
+        Ok(())
+    }
+
+    /// The picked digests still being made by the app (not by a session), as
+    /// failed for `why`: the app ended while it made them.
+    pub fn fail_unfinished_picked_digests(&self, why: &str) -> Result<()> {
+        self.conn.execute("UPDATE picked_digests SET stage = NULL, error = ?1 WHERE stage IS NOT NULL", [why])?;
+        Ok(())
+    }
+
+    /// The digests of readings picked by hand, the newest first.
+    pub fn picked_digests(&self) -> Result<Vec<PickedDigest>> {
+        let mut stmt = self.conn.prepare("SELECT id, readings, podcast, stage, url, error, made_at, session_id FROM picked_digests ORDER BY made_at DESC, id DESC")?;
+        let picked = stmt
+            .query_map([], |r| {
+                Ok(PickedDigest {
+                    id: r.get(0)?,
+                    readings: r.get::<_, String>(1)?.split(',').filter_map(|id| id.parse().ok()).collect(),
+                    podcast: r.get(2)?,
+                    stage: r.get(3)?,
+                    url: r.get(4)?,
+                    error: r.get(5)?,
+                    made_at: r.get(6)?,
+                    session_id: r.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(picked)
     }
 
     pub fn digest(&self, day: &str) -> Result<Option<Digest>> {

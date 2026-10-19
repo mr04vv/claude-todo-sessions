@@ -103,10 +103,28 @@ export interface Digest {
   session_id: string | null;
 }
 
-/** The days summed up (the newest first), and the day being summed up. */
+/** A 日報 of readings picked by hand (with a podcast of them if asked for):
+ *  what is being done while it is made, then the session making the page,
+ *  then the page, or why it was not made. */
+export interface PickedDigest {
+  id: number;
+  /** The readings' ids, in the order picked. */
+  readings: number[];
+  podcast: boolean;
+  stage: string | null;
+  url: string | null;
+  error: string | null;
+  made_at: number;
+  session_id: string | null;
+}
+
+/** The days summed up (the newest first), the day being summed up, the
+ *  digests of readings picked by hand, and whether podcasts can be made. */
 export interface DigestView {
   digests: Digest[];
   running: string | null;
+  picked: PickedDigest[];
+  has_gemini_key: boolean;
 }
 
 export interface Chapter {
@@ -559,6 +577,8 @@ export const api = {
   setReadingKept: (id: number, kept: boolean) => invoke<void>("set_reading_kept", { id, kept }),
   /// Has `day`'s readings (YYYY-MM-DD, the local date) summed up into its 日報 now, behind: a session (in 作業) publishes it, and its link comes on the board.
   makeDigest: (day: string) => invoke<void>("make_digest", { day }),
+  makePickedDigest: (readings: number[], podcast: boolean) => invoke<void>("make_picked_digest", { readings, podcast }),
+  setGeminiKey: (key: string) => invoke<void>("set_gemini_key", { key }),
   /// Keeps the TypeSafe API key (blank takes it out); what waits is sorted then.
   setTypesafeKey: (key: string) => invoke<void>("set_typesafe_key", { key }),
   /// Keeps Jev's credit as just read off TypeSafe's console: the credit, and the Spend.

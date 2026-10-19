@@ -16,6 +16,11 @@ const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
 /// string). The prompt goes in on stdin (a long one would not fit in an
 /// argument).
 pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>) -> Result<Value, String> {
+    claude_within(prompt, schema, model, effort, CLAUDE_TIMEOUT)
+}
+
+/// `claude`, waiting up to `timeout` for the answer (a long one, from much to read).
+pub fn claude_within(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>, timeout: Duration) -> Result<Value, String> {
     let mut cmd = crate::cli("claude");
     cmd.args(["-p", "--output-format", "json", "--tools", "", "--no-session-persistence"]);
     if let Some(schema) = schema {
@@ -63,7 +68,7 @@ pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort:
                     _ => Err("claude が決まった形で答えませんでした".into()),
                 };
             }
-            None if started.elapsed() > CLAUDE_TIMEOUT => {
+            None if started.elapsed() > timeout => {
                 let _ = child.kill();
                 return Err("claude の答えを待ちきれませんでした".into());
             }

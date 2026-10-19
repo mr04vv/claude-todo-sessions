@@ -54,7 +54,9 @@ import {
   MODELS,
   type Board,
   type Database,
+  type Digest,
   type DigestView,
+  type PickedDigest,
   type Reading,
   type ReadingKind,
   type ReadingSort,
@@ -5019,7 +5021,7 @@ const FIXED_KEYS: [string, string][] = [
 /// Where things open and run, and what the browser keeps for sites: the
 /// logins (their sites and users), the sites not asked about, and the
 /// microphone and camera answers.
-function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, jevCredit, run, report, onClose }: {
+function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, hasGeminiKey, jevCredit, run, report, onClose }: {
   cloudTarget: CloudTarget;
   onCloudTarget: (t: CloudTarget) => void;
   terminalTarget: TerminalTarget;
@@ -5029,6 +5031,8 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
   onPickHerdr: (name: string) => void;
   /// A TypeSafe API key is kept (for the readings' tags).
   hasTypesafeKey: boolean;
+  /// A Gemini API key is kept (for the digests' podcasts).
+  hasGeminiKey: boolean;
   /// Jev's credit as last read off TypeSafe's console.
   jevCredit: JevCredit | null;
   run: (f: () => Promise<unknown>) => void;
@@ -5036,6 +5040,7 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
   onClose: () => void;
 }) {
   const keyRef = useRef<HTMLInputElement>(null);
+  const geminiRef = useRef<HTMLInputElement>(null);
   const creditRef = useRef<HTMLInputElement>(null);
   const spentRef = useRef<HTMLInputElement>(null);
   const saveCredit = () => {
@@ -5111,6 +5116,23 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
             </button>
             {hasTypesafeKey && (
               <button className="ghost small" onClick={() => run(() => api.setTypesafeKey(""))}>
+                消す
+              </button>
+            )}
+          </div>
+          <div className="setting-row">
+            <span className="grow">
+              Gemini の API キー（日報のポッドキャストの音声合成用。aistudio.google.com で作ったもの。Keychain に置きます）
+              <span className="muted">{hasGeminiKey ? " · 保存済み" : " · まだありません"}</span>
+            </span>
+          </div>
+          <div className="setting-row">
+            <input ref={geminiRef} className="grow mono" type="password" placeholder={hasGeminiKey ? "新しいキーで置き換える" : "API キー"} aria-label="Gemini の API キー" onKeyDown={(e) => isEnter(e) && run(() => api.setGeminiKey(e.currentTarget.value).then(() => geminiRef.current && (geminiRef.current.value = "")))} />
+            <button className="small" onClick={() => run(() => api.setGeminiKey(geminiRef.current?.value ?? "").then(() => geminiRef.current && (geminiRef.current.value = "")))}>
+              保存
+            </button>
+            {hasGeminiKey && (
+              <button className="ghost small" onClick={() => run(() => api.setGeminiKey(""))}>
                 消す
               </button>
             )}
@@ -5307,6 +5329,8 @@ const localDay = (offset: number) => {
 };
 /// A day as the list shows it: 10/18（土）.
 const dayLabel = (day: string) => new Date(`${day}T00:00:00`).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" });
+/// A moment's day (Unix seconds), as dayLabel says it.
+const timeDayLabel = (at: number) => new Date(at * 1000).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" });
 
 /// 学習's shelves: the readings still to read, the ones read and kept (good
 /// ones; the rest are deleted once read), or both.
@@ -5360,6 +5384,11 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
   onToast: (text: string) => void;
 }) {
   const [shelf, setShelf] = useState<Shelf>("toRead");
+  // The days' digests and those of readings picked by hand, the newest first.
+  const digestRows: ({ key: string; at: number } & ({ day: Digest } | { picked: PickedDigest }))[] = [
+    ...(digests?.digests ?? []).map((d) => ({ key: `d:${d.day}`, at: d.made_at, day: d })),
+    ...(digests?.picked ?? []).map((p) => ({ key: `p:${p.id}`, at: p.made_at, picked: p })),
+  ].sort((a, b) => b.at - a.at);
   const [kind, setKind] = useState<KindFilter>("all");
   const [tag, setTag] = useState(ALL_TAGS);
   const [query, setQuery] = useState("");
@@ -5377,6 +5406,16 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
   const tags = sort?.tags ?? [];
   const count = (t: string) => ofKind.filter((r) => (t === UNSORTED ? r.tags === null : r.tags?.includes(t))).length;
   const togglePick = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  /// The picked readings summed up in a 日報 (with their podcast if `podcast`), behind.
+  const makeDigestOf = (podcast: boolean) => {
+    const ids = picked;
+    run(() =>
+      api.makePickedDigest(ids, podcast).then(() => {
+        setPicked([]);
+        onToast(`${ids.length} 件の${podcast ? "音声つきの" : ""}日報を作り始めました。左の日報に進み具合が出ます`);
+      }),
+    );
+  };
   const copyUrls = (ids: number[]) => {
     const urls = ids.map((id) => readings.find((r) => r.id === id)?.url).filter((u): u is string => !!u);
     api.copyText(urls.join("\n")).then(() => onToast(`${urls.length} 件の URL をコピーしました。NotebookLM のソースの追加（ウェブサイト）に貼ってください`), report);
@@ -5450,19 +5489,40 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
           </button>
         ))}
         <div className="section-title">日報</div>
-        {(digests?.digests.length ?? 0) === 0 && <span className="muted small-text digest-hint">毎朝、前の日に保存した読みものを HTML のアーティファクトにまとめます（{keyLabel(keyOf("palette"))} から今すぐも）</span>}
-        {digests?.digests.map((d) => {
-          // Made (open it), being made in a session (show it), or failed (again).
-          const making = !d.url && !d.error && d.session_id;
+        {digestRows.length === 0 && <span className="muted small-text digest-hint">毎朝、前の日に保存した読みものを HTML のアーティファクトにまとめます（{keyLabel(keyOf("palette"))} から今すぐも）。選んだ読みものからも、音声つきでも作れます</span>}
+        {digestRows.map((row) => {
+          if ("day" in row) {
+            const d = row.day;
+            // Made (open it), being made in a session (show it), or failed (again).
+            const making = !d.url && !d.error && d.session_id;
+            return (
+              <button
+                key={row.key}
+                className="filter-row"
+                title={d.url ? `${d.url} をブラウザで開く` : making ? "作業のセッションがまとめています（押すとそのセッションを開く）" : `まとめられませんでした：${d.error}（押すともう一度）`}
+                onClick={() => (d.url ? onBrowser(d.url) : making ? onSession(making) : run(() => api.makeDigest(d.day)))}
+              >
+                <span className="grow">{dayLabel(d.day)}</span>
+                <span className="muted">{digests?.running === d.day || making ? "まとめています…" : d.url ? "開く" : "失敗・もう一度"}</span>
+              </button>
+            );
+          }
+          const p = row.picked;
+          // Being made here (its stage), then in a session (show it), made (open it), or failed (again).
+          const making = !p.url && !p.error && !p.stage && p.session_id;
+          const names = p.readings.map((id) => readings.find((r) => r.id === id)?.title ?? "（消した読みもの）").join("\n");
           return (
             <button
-              key={d.day}
+              key={row.key}
               className="filter-row"
-              title={d.url ? `${d.url} をブラウザで開く` : making ? "作業のセッションがまとめています（押すとそのセッションを開く）" : `まとめられませんでした：${d.error}（押すともう一度）`}
-              onClick={() => (d.url ? onBrowser(d.url) : making ? onSession(making) : run(() => api.makeDigest(d.day)))}
+              title={`${names}\n\n${p.url ? `${p.url} をブラウザで開く` : p.stage ? p.stage : making ? "作業のセッションがまとめています（押すとそのセッションを開く）" : `作れませんでした：${p.error}（押すともう一度）`}`}
+              disabled={!!p.stage}
+              onClick={() => (p.url ? onBrowser(p.url) : making ? onSession(making) : run(() => api.makePickedDigest(p.readings, p.podcast)))}
             >
-              <span className="grow">{dayLabel(d.day)}</span>
-              <span className="muted">{digests.running === d.day || making ? "まとめています…" : d.url ? "開く" : "失敗・もう一度"}</span>
+              <span className="grow ellipsis">
+                {timeDayLabel(p.made_at)} 選んだ {p.readings.length} 件{p.podcast ? "・音声つき" : ""}
+              </span>
+              <span className="muted">{p.stage ? `${p.stage}…` : making ? "まとめています…" : p.url ? "開く" : "失敗・もう一度"}</span>
             </button>
           );
         })}
@@ -5502,6 +5562,16 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
             <b className="grow">{picked.length} 件を選んでいます</b>
             <button className="primary small" onClick={() => onRead(picked)}>
               まとめて読む <span className="kbd">{keyLabel(keyOf("studyRead"))}</span>
+            </button>
+            <button className="small" title="選んだ読みものを 1 つの日報（HTML のアーティファクト）にまとめます" onClick={() => makeDigestOf(false)}>
+              日報を作る
+            </button>
+            <button
+              className="small"
+              title={digests?.has_gemini_key ? "1 件ずつ解説するポッドキャストを埋め込んだ日報を作ります（Gemini の音声合成）" : "設定の「学習」で Gemini の API キーを入れると作れます"}
+              onClick={() => (digests?.has_gemini_key ? makeDigestOf(true) : onSettings())}
+            >
+              音声つきで作る
             </button>
             <button className="small" onClick={() => copyUrls(picked)}>
               URL をコピー（NotebookLM 用） <span className="kbd">{keyLabel(keyOf("studyCopy"))}</span>
@@ -8126,6 +8196,7 @@ export default function App() {
             onLoadHerdr={loadHerdr}
             onPickHerdr={pickHerdr}
             hasTypesafeKey={!!board?.reading_sort.has_key}
+            hasGeminiKey={!!board?.digests.has_gemini_key}
             jevCredit={board?.jev_spend.credit ?? null}
             run={run}
             report={report}
