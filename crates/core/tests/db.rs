@@ -643,6 +643,41 @@ fn a_digest_s_session_is_off_the_lists() {
 }
 
 #[test]
+fn a_digest_of_readings_picked_by_hand_is_kept_as_it_is_made() {
+    let (_d, db) = open();
+    let picked = |id| db.picked_digests().unwrap().into_iter().find(|p| p.id == id).unwrap();
+    let page = db.add_picked_digest(&[3, 1], false, "ページを読んでいます").unwrap();
+    let podcast = db.add_picked_digest(&[2], true, "ページを読んでいます").unwrap();
+    assert_eq!(db.picked_digests().unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), [podcast, page], "newest first");
+    let p = picked(page);
+    assert_eq!((p.readings, p.podcast, p.stage.as_deref(), p.url, p.error), (vec![3, 1], false, Some("ページを読んでいます"), None, None), "the readings in the order picked");
+    db.set_picked_stage(podcast, "音声を作っています（2/3）").unwrap();
+    assert_eq!(picked(podcast).stage.as_deref(), Some("音声を作っています（2/3）"));
+    db.fail_picked_digest(podcast, "Gemini の API キーがありません").unwrap();
+    assert_eq!((picked(podcast).stage, picked(podcast).error.as_deref()), (None, Some("Gemini の API キーがありません")));
+    db.register_session("sess-9", "/home", "読みものの日報（選んだ 2 件）", None).unwrap();
+    db.start_picked_digest(page, "sess-9").unwrap();
+    assert!(db.get_session("sess-9").unwrap().unwrap().hidden, "its session is off the lists");
+    assert_eq!((picked(page).stage, picked(page).session_id.as_deref()), (None, Some("sess-9")), "the session makes the page now");
+    assert!(db.digest_made_by("sess-9", "https://claude.ai/artifact/xyz").unwrap(), "what it publishes is the page");
+    assert_eq!(picked(page).url.as_deref(), Some("https://claude.ai/artifact/xyz"));
+    assert!(!db.digest_made_by("sess-9", "https://claude.ai/artifact/later").unwrap(), "the first one published stays");
+}
+
+#[test]
+fn picked_digests_left_half_made_are_failed_at_launch() {
+    let (_d, db) = open();
+    let left = db.add_picked_digest(&[1], true, "台本を書いています").unwrap();
+    let made = db.add_picked_digest(&[2], false, "ページを読んでいます").unwrap();
+    db.start_picked_digest(made, "sess-1").unwrap();
+    db.fail_unfinished_picked_digests("Shosai が途中で終わりました").unwrap();
+    let all = db.picked_digests().unwrap();
+    let of = |id| all.iter().find(|p| p.id == id).unwrap();
+    assert_eq!((of(left).stage.as_deref(), of(left).error.as_deref()), (None, Some("Shosai が途中で終わりました")));
+    assert_eq!(of(made).error, None, "a page a session makes is left to it");
+}
+
+#[test]
 fn the_x_digests_made_before_are_the_days_digests() {
     let (dir, db) = open();
     drop(db);
