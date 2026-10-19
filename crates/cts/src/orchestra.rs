@@ -62,7 +62,7 @@ pub fn start_subtask(id: i64, cloud: Option<bool>, agent: Option<&str>, model: O
     let (place, session) = if launch::subtask_on_cloud(&t.repos, agent, cloud) {
         let mut repos = launch::github_repos(&t.repos);
         repos.extend(t.issue_url.as_deref().and_then(launch::repo_key).filter(|r| !repos.contains(r)));
-        let body = launch::cloud_subtask_prompt(&db.session_prompt(&t, false).map_err(|e| e.to_string())?);
+        let body = db.session_prompt(&t, false).map_err(|e| e.to_string())?;
         ("Cloud", Some(cts_core::cloud::create_session(&db, t.id, &repos, &t.title, &body, &opts)?))
     } else {
         ("herdr", launch::start_todo_in_herdr(&db, &t, &opts, &cwd_of(&t), subtasks_session()?.as_deref(), herdr)?)

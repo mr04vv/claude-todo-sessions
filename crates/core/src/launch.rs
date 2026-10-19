@@ -249,13 +249,6 @@ impl SubtaskEvent {
     }
 }
 
-/// What a Cloud subtask an orchestrator starts is told besides its todo: to
-/// ask in words and end its turn, which the orchestrator hears of and answers
-/// with SendMessage; a question with choices would wait on the user.
-pub fn cloud_subtask_prompt(body: &str) -> String {
-    format!("{body}\n\n## 質問のしかた\n\nこのセッションは、親 todo の指揮役のセッションが見守っています。質問や確認は AskUserQuestion を使わず、文章で書いてそのターンを終えてください。指揮役がメッセージで答えます（選択肢の画面には指揮役から答えられず、止まったままになります）。")
-}
-
 /// Where an orchestrator starts a subtask: as asked (`cloud`), else on Cloud
 /// when it has a GitHub repository to check out, else in herdr. Codex runs in
 /// herdr only.
@@ -698,11 +691,5 @@ mod relay_tests {
         assert!(!asks.contains("SendMessage"), "a herdr subtask's question is typed into its pane: {asks}");
         let cloud = SubtaskEvent::CloudAsks(Some("どうしますか？".into())).message(42, "グラフ");
         assert!(cloud.contains("どうしますか？") && cloud.contains("escalate") && cloud.contains("SendMessage では答えられません"), "a question with choices on Cloud is the user's to pick: {cloud}");
-    }
-
-    #[test]
-    fn a_cloud_subtask_asks_its_orchestrator_in_words() {
-        let p = cloud_subtask_prompt("本文");
-        assert!(p.starts_with("本文") && p.contains("AskUserQuestion を使わず"), "{p}");
     }
 }
