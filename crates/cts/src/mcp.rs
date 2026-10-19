@@ -203,17 +203,17 @@ impl Server {
         orchestra::start_subtask(a.todo_id, a.cloud, a.agent.as_deref(), a.model, a.effort)
     }
 
-    #[tool(description = "Send text into a subtask's herdr pane, as if typed and sent with Enter (an answer, or something to tell it). Read its pane first when it shows a question with choices. A Cloud subtask is not sent from here: send it with Claude Code's SendMessage (ListAgents names its session).")]
+    #[tool(description = "Send text to a subtask (an answer, or something to tell it): typed into its herdr pane and sent with Enter, or, on Cloud, sent to its session as the user's next message. Read a herdr pane first when it shows a question with choices; a Cloud subtask stopped on one is escalated instead (a message only waits behind it).")]
     async fn reply_to_subtask(&self, Parameters(a): Parameters<TextArgs>) -> Result<String, String> {
         orchestra::reply(a.todo_id, &a.text)
     }
 
-    #[tool(description = "Have a subtask's session fix its PR (the CI's failed checks, the changes a reviewer asked for). After two fixes the CI still failing goes to the user instead. For a Cloud subtask it gives back what to send it with SendMessage.")]
+    #[tool(description = "Have a subtask's session fix its PR (the CI's failed checks, the changes a reviewer asked for). After two fixes the CI still failing goes to the user instead. A Cloud subtask is sent it as a message.")]
     async fn fix_subtask(&self, Parameters(a): Parameters<IdArgs>) -> Result<String, String> {
         orchestra::fix(a.id)
     }
 
-    #[tool(description = "Hand a subtask to the user (it waits on them, and they are notified), with why: a choice the plan does not cover, money, permissions or deleting data, a CI still failing after two fixes, or a Cloud subtask stopped on a question with choices (SendMessage does not answer one: give your answer).")]
+    #[tool(description = "Hand a subtask to the user (it waits on them, and they are notified), with why: a choice the plan does not cover, money, permissions or deleting data, a CI still failing after two fixes, or a Cloud subtask stopped on a question with choices (a message does not answer one: give your answer).")]
     async fn escalate(&self, Parameters(a): Parameters<TextArgs>) -> Result<String, String> {
         orchestra::escalate(a.todo_id, &a.text)
     }
