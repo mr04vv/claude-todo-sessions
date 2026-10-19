@@ -5898,10 +5898,12 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
     if (!manual) onSort("manual");
   };
   const { dragging, start: dragRow } = useDragMove("data-row", moveRow);
-  const rows: WorkRow[] = [...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })), ...workRows];
+  const waitRows: WorkRow[] = shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session }));
+  const rows: WorkRow[] = [...waitRows, ...workRows];
   const open = (r: WorkRow) => (r.todo ? onPick({ todo: r.todo.id }) : r.session ? onPick({ session: r.session.session_id }) : undefined);
+  // In the order shown: the review requests' row closes あなた待ち, above the work.
   const { cursorId, setCursor, list } = useRowCursor(
-    [QUICK_ROW, ...rows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : [])],
+    [QUICK_ROW, ...waitRows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : []), ...workRows.map((r) => r.key)],
     (id) => {
       if (id === QUICK_ROW) return onQuick();
       if (id === ASKS_ROW) return onShowPrs();
