@@ -18,6 +18,8 @@ const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
 pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>) -> Result<Value, String> {
     let mut cmd = crate::cli("claude");
     cmd.args(["-p", "--output-format", "json", "--tools", "", "--no-session-persistence"]);
+    // Without the hooks: the todo-sessions plugin's would record each ask as a session of the lists.
+    cmd.args(["--settings", r#"{"disableAllHooks": true}"#]);
     if let Some(schema) = schema {
         cmd.args(["--json-schema", &schema.to_string()]);
     }
