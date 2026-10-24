@@ -11,6 +11,11 @@ use crate::err;
 /// How long one answer may take.
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// Where the one-shot asks run (beside the database), so they are told apart from sessions.
+pub fn ask_dir() -> std::path::PathBuf {
+    crate::db_path().parent().map(|d| d.join("ask")).unwrap_or_else(|| std::env::temp_dir().join("shosai-ask"))
+}
+
 /// Asks Claude once, without a session or the built-in tools, for an answer
 /// in `schema` (its structured output), or without one for its text (a
 /// string). The prompt goes in on stdin (a long one would not fit in an
@@ -30,7 +35,10 @@ pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort:
     if let Some(effort) = effort {
         cmd.args(["--effort", effort]);
     }
-    cmd.current_dir(crate::home()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // In a folder of its own: the app's discovery (claude agents) leaves runs there out of the lists.
+    let dir = ask_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cmd.current_dir(&dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("claude を起動できません: {e}"))?;
     let mut stdin = child.stdin.take().ok_or("claude の入力を開けません")?;
     let prompt = prompt.to_string();

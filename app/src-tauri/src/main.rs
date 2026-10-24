@@ -2617,7 +2617,9 @@ fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    for s in &live {
+    // The app's own one-shot asks (a card's summary, the model picked) are not sessions.
+    let asks = ask::ask_dir().to_string_lossy().into_owned();
+    for s in live.iter().filter(|s| s.cwd != asks) {
         let known = db.get_session(&s.session_id).map_err(err)?;
         // Hooks report state faster and more precisely; only fill in what they missed.
         let stale = known.as_ref().is_none_or(|k| k.state != s.state && now - k.state_at > DISCOVER_GRACE_SECS);
