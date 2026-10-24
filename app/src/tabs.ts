@@ -38,10 +38,17 @@ export function nextAfterClose<T extends { id: string }>(tabs: T[], closed: stri
   return tabs[i + 1] ?? tabs[i - 1] ?? null;
 }
 
+/// A page opened beside a session in 作業 (a terminal's link): a tab of
+/// 作業's that is no session's page or terminal.
+export const isWorkPage = (t: { area?: string; session?: string; term?: unknown }) => t.area === "work" && !t.session && !t.term;
+
 /// Whether tab `id` is a split view's right: one of `rights` (学習's pages to
-/// ask), or a page of `rightSession` (the session on 作業's right).
-export function isSplitRight<T extends { id: string; session?: string }>(tabs: T[], id: string, rights: string[], rightSession: string | undefined): boolean {
-  return rights.includes(id) || (rightSession !== undefined && tabs.find((t) => t.id === id)?.session === rightSession);
+/// ask), a page of `rightSession` (the session on 作業's right), or a page
+/// opened beside a session in 作業.
+export function isSplitRight<T extends { id: string; area?: string; session?: string; term?: unknown }>(tabs: T[], id: string, rights: string[], rightSession: string | undefined): boolean {
+  if (rights.includes(id)) return true;
+  const tab = tabs.find((t) => t.id === id);
+  return !!tab && ((rightSession !== undefined && tab.session === rightSession) || isWorkPage(tab));
 }
 
 /// `tabs` with `tab` put right after `after` (the tab it was opened from), or last.

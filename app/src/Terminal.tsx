@@ -133,11 +133,11 @@ interface MarkedLink {
 const MARKED_LINKS = 200;
 const entries = new Map<string, Entry>();
 
-/// Opens a link from a terminal in the browser, in front (`front`) or behind.
-let linkOpener: ((url: string, front: boolean) => void) | null = null;
+/// Opens a link from a terminal: beside it (作業's right), or in the browser space (`browser`).
+let linkOpener: ((url: string, browser: boolean) => void) | null = null;
 export const setTerminalLinkOpener = (open: typeof linkOpener) => void (linkOpener = open);
-/// ⌘-click opens a link in a new tab behind, ⌘⇧-click in front, as a browser
-/// does; with ctrl too, in the default browser.
+/// ⌘-click opens a link beside the terminal, ⌘⇧-click in the browser space;
+/// with ctrl too, in the default browser.
 const openClicked = (ev: MouseEvent, url: string) => {
   if (!ev.metaKey) return;
   const open = () => linkOpener?.(url, ev.shiftKey);

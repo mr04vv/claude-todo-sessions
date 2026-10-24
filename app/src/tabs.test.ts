@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressToUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, sameObject } from "./tabs.ts";
+import { addressToUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, sameObject } from "./tabs.ts";
 
 const tabs = (...ids: string[]) => ids.map((id) => ({ id }));
 
@@ -67,4 +67,16 @@ test("a split view's right is a pinned page to ask, or the page of the session o
   assert.equal(isSplitRight(split, "wa", ["pinchatgpt"], "b"), false);
   // With no session on the right, a reading's page (which has none) is still the left.
   assert.equal(isSplitRight(split, "r1", ["pinchatgpt"], undefined), false);
+});
+
+test("a page opened beside a session in 作業 is the right, a session's page or terminal is not", () => {
+  const page = { id: "p1", area: "work" as const };
+  const cloud = { id: "wa", area: "work" as const, session: "a" };
+  const herdr = { id: "wh1", area: "work" as const, term: {} };
+  const reading = { id: "r1", area: "study" as const };
+  assert.equal(isWorkPage(page), true);
+  assert.equal(isWorkPage(cloud), false);
+  assert.equal(isWorkPage(herdr), false);
+  assert.equal(isWorkPage(reading), false);
+  assert.equal(isSplitRight([page, cloud], "p1", [], undefined), true);
 });

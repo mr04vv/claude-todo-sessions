@@ -22,6 +22,7 @@ export type Action =
   | "spaceBrowser"
   | "focusUrl"
   | "terminalLinks"
+  | "workRight"
   | "back"
   | "forward"
   | "zoomIn"
@@ -100,6 +101,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["reload", "今の画面を取り直す（ページでは再読み込み）"],
       ["sideApp", "入力先を左へ（ページから一覧、一覧から管理のサイドバー・学習の絞り込み、いちばん左は場のアイコン）"],
       ["sidePane", "入力先を右へ（ページ、作業・学習では右のページ）"],
+      ["workRight", "作業の右側（サブタスクと、横に開いたページ）を隠す・出す"],
     ],
   },
   {
@@ -110,7 +112,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["prevTab", "前のタブ（作業・学習では入力先の側のタブ、Todo では前のレーン）"],
       ["nextTab", "次のタブ（作業・学習では入力先の側のタブ、Todo では次のレーン）"],
       ["focusUrl", "アドレス欄へ"],
-      ["terminalLinks", "ターミナルに出ているリンクを選んで開く（⌘ クリックで後ろのタブ、⌘⇧ クリックで前に開く）"],
+      ["terminalLinks", "ターミナルに出ているリンクを選んで開く（Enter で横に、⌘Enter でブラウザに。⌘ クリックと ⌘⇧ クリックも同じ）"],
       ["back", "戻る"],
       ["forward", "進む"],
       ["zoomIn", "拡大"],
@@ -237,6 +239,7 @@ const KEYS: Record<Action, string> = {
   spaceBrowser: "cmd+4",
   focusUrl: "cmd+l",
   terminalLinks: "cmd+shift+l",
+  workRight: "cmd+shift+e",
   back: "cmd+[",
   forward: "cmd+]",
   zoomIn: "cmd+=",

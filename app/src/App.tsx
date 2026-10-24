@@ -94,7 +94,7 @@ import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
-import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
+import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
 import { ageGroup, arrange, inWorkOrder, moveTo, type WorkSort } from "./order";
@@ -4691,6 +4691,8 @@ interface Command {
   label: string;
   hint?: string;
   run: () => void;
+  /// Another way to run it, picked with ⌘Enter.
+  alt?: () => void;
   /// Shown before the label (a session's state).
   icon?: React.ReactNode;
   /// Words it is also found by.
@@ -4781,13 +4783,13 @@ function CommandPalette({ commands, todos, readings, start, onOpenTodo, onRead, 
   useEffect(() => {
     list.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }, [active]);
-  const pick = (c: Command) => {
+  const pick = (c: Command, alt = false) => {
     if (c.items) {
       setStack((s) => [...s, c]);
       return setQuery("");
     }
     onClose();
-    c.run();
+    (alt && c.alt ? c.alt : c.run)();
   };
   return (
     <div className="modal-backdrop palette-backdrop" onClick={onClose}>
@@ -4820,7 +4822,7 @@ function CommandPalette({ commands, todos, readings, start, onOpenTodo, onRead, 
               setActive((a) => Math.max(a - 1, 0));
             } else if (isEnter(e)) {
               e.preventDefault();
-              if (items[active]) pick(items[active]);
+              if (items[active]) pick(items[active], e.metaKey);
             } else if (e.key === "Escape") {
               if (page) back();
               else onClose();
@@ -5719,6 +5721,8 @@ interface WorkState {
   child: number | null;
 }
 const WORK_KEY = "work";
+/// Whether 作業's right side (the subtasks, the pages opened beside) is hidden.
+const WORK_RIGHT_HIDDEN_KEY = "workRightHidden";
 /// A session's page or terminal in 作業 (ids are letters and digits only).
 const workTabId = (sessionId: string) => `w${sessionId.replace(/[^A-Za-z0-9]/g, "")}`;
 /// The session a todo is worked in: the latest live one, else the latest.
@@ -6261,6 +6265,7 @@ export default function App() {
     const parent = todo?.parent_id != null ? todos.find((t) => t.id === todo.parent_id) : undefined;
     const next: WorkState = parent ? { pick: `t${parent.id}`, child: todo!.id } : todo ? { pick: `t${todo.id}`, child: work.child } : "session" in at ? { pick: `s${at.session}`, child: null } : work;
     setWork(next);
+    if (parent) setWorkPage(null);
     setSpace("work");
     const view = workViewOf(board, next);
     const side = parent ? view.right : view.left;
@@ -6271,9 +6276,68 @@ export default function App() {
   };
   const openWorkRef = useRef(openWork);
   openWorkRef.current = openWork;
+  // 作業's right side also shows pages opened beside the session (a
+  // terminal's link, ⌘-click): tabs of 作業's own, after the subtasks, until
+  // closed (not kept over a restart). `workPage` is the one shown instead of
+  // the subtask; the side can be hidden (⌘⇧E), kept over restarts.
+  const workPages = tabs.filter(isWorkPage);
+  const [workPage, setWorkPage] = useState<string | null>(null);
+  const workPageTab = workPages.find((t) => t.id === workPage);
+  const [workRightHidden, setWorkRightHiddenState] = useState(() => loadJson<boolean>(WORK_RIGHT_HIDDEN_KEY, false));
+  const setWorkRightHidden = (hidden: boolean) => {
+    remember(WORK_RIGHT_HIDDEN_KEY, JSON.stringify(hidden));
+    setWorkRightHiddenState(hidden);
+  };
+  const workRightShown = (workView.children.length > 0 || workPages.length > 0) && !workRightHidden;
+  const workLeftTab = workTab(workView.left);
+  const workRightTab = workPageTab ?? workTab(workView.right);
+  /// Shows page `id` on 作業's right; it takes the keyboard.
+  const showWorkPage = (id: string) => {
+    setWorkPage(id);
+    setWorkRightHidden(false);
+    setFocusTyping("right");
+    const tab = workPages.find((t) => t.id === id);
+    if (tab) keysToTab(tab, workRightTab?.id, report);
+  };
+  /// Opens `url` beside the session, on 作業's right (a page there opened for
+  /// it comes to the front); it takes the keyboard.
+  const openBeside = (url: string) => {
+    const open = findTabFor(workPages, url);
+    if (open) return showWorkPage(open.id);
+    const id = `p${nextTab.current++}`;
+    setTabs((prev) => [...prev, { id, url, openedFor: url, title: null, loading: true, nav: 0, area: "work" }]);
+    setWorkPage(id);
+    setWorkRightHidden(false);
+    setFocusTyping("right");
+    focusSoon(id);
+  };
+  /// Closes a page opened beside: the next page is shown, else the subtask
+  /// again, else the right side goes and the keyboard with it to the left.
+  const closeWorkPage = (id: string) => {
+    if (!workPages.some((t) => t.id === id)) return;
+    const next = nextAfterClose(workPages, id);
+    api.browserClose(id).catch(report);
+    setTabs((prev) => prev.filter((t) => t.id !== id));
+    if (workPage !== id) return;
+    setWorkPage(next?.id ?? null);
+    if (next) keysToTab(next, id, report);
+    else if (workView.right) keysToTab(workTab(workView.right) ?? null, id, report);
+    else if (focusTyping === "right") focusSide(false, "right");
+  };
+  const closeWorkPageRef = useRef(closeWorkPage);
+  closeWorkPageRef.current = closeWorkPage;
+  /// ⌘⇧E: hides 作業's right side, or shows it again; hidden, the keyboard it had goes left.
+  const toggleWorkRight = () => {
+    if (space !== "work" || (workView.children.length === 0 && workPages.length === 0)) return;
+    setWorkRightHidden(!workRightHidden);
+    if (!workRightHidden && focusTyping === "right") focusSide(false, "right");
+  };
+  const toggleWorkRightRef = useRef(toggleWorkRight);
+  toggleWorkRightRef.current = toggleWorkRight;
   /// Picks a subtask on 作業's right; its session takes the keyboard.
   const pickChild = (id: number) => {
     setWork({ ...work, child: id });
+    setWorkPage(null);
     const child = (board?.todos ?? []).find((t) => t.id === id);
     const session = child && mainSession(child);
     const tab = workTab(session);
@@ -6288,10 +6352,10 @@ export default function App() {
   const splitRef = useRef(split);
   splitRef.current = split;
   const splitLeft = space === "work" ? workTab(workView.left) : studyReading ? studyLeft : undefined;
-  const splitRight = space === "work" ? workTab(workView.right) : studyReading ? studyRightTab : undefined;
+  const splitRight = space === "work" ? (workRightShown ? workRightTab : undefined) : studyReading ? studyRightTab : undefined;
   const [focusTyping, setFocusTyping] = useState<"left" | "right" | null>(null);
   /// ⌘⇧[ ⌘⇧] in a split view: the previous or next tab of the side that has
-  /// the keyboard: 学習's readings or LLMs, 作業's subtasks.
+  /// the keyboard: 学習's readings or LLMs, 作業's subtasks and pages opened beside.
   const switchSplitTab = (right: boolean, delta: number) => {
     setFocusTyping(right ? "right" : "left");
     const step = <T,>(list: T[], at: number) => list[(at + delta + list.length) % list.length];
@@ -6302,7 +6366,12 @@ export default function App() {
       setStudy((s) => ({ ...s, active: next.id }));
       return keysToTab(next, studyLeft?.id, report);
     }
-    if (right && workView.children.length > 0) pickChild(step(workView.children, workView.child ? workView.children.indexOf(workView.child) : -1).id);
+    if (!right || !workRightShown) return;
+    const entries = [...workView.children.map((c) => ({ child: c.id })), ...workPages.map((p) => ({ page: p.id }))];
+    const at = workPageTab ? workView.children.length + workPages.indexOf(workPageTab) : workView.child ? workView.children.indexOf(workView.child) : -1;
+    const next = step(entries, at);
+    if ("page" in next) showWorkPage(next.page);
+    else pickChild(next.child);
   };
   const switchSplitTabRef = useRef(switchSplitTab);
   switchSplitTabRef.current = switchSplitTab;
@@ -6335,9 +6404,10 @@ export default function App() {
     const site = activeTab && !activeTab.term ? hostOf(activeTab.url) : null;
     if (site) api.forgetLogin(site).catch(report);
   };
-  // A terminal's links open in a new tab of the browser space, in front
-  // (with the keyboard) or behind.
-  const openTerminalLink = (url: string, front: boolean) => (opensOutside() ? openOutside(url) : openInBrowser(url, front, !front));
+  // A terminal's links open beside it on 作業's right (⌘-click, Enter in
+  // ⌘⇧L's list), or in the browser space (⌘⇧-click, ⌘Enter; a terminal
+  // outside 作業 too); with ctrl, in the default browser.
+  const openTerminalLink = (url: string, browser: boolean) => (browser || space !== "work" || opensOutside() ? openInBrowser(url) : openBeside(url));
   const openTerminalLinkRef = useRef(openTerminalLink);
   openTerminalLinkRef.current = openTerminalLink;
   useEffect(() => {
@@ -6351,7 +6421,7 @@ export default function App() {
     const links = terminalLinks(id);
     setPaletteStart({
       terminal: id,
-      command: { key: "terminalLinks", label: "ターミナルのリンク", run: () => {}, items: () => links.map(({ url, text }) => ({ key: url, label: text ?? url, hint: text && url, run: () => openTerminalLink(url, true) })) },
+      command: { key: "terminalLinks", label: "ターミナルのリンク", run: () => {}, items: () => links.map(({ url, text }) => ({ key: url, label: text ?? url, hint: text && url, run: () => openTerminalLink(url, false), alt: () => openTerminalLink(url, true) })) },
     });
     setDialog("palette");
   };
@@ -6421,6 +6491,10 @@ export default function App() {
   const closeShown = () => {
     if (studyReading) {
       if (focusTyping !== "right" && studyLeft) closeStudyTab(studyLeft.id);
+      return true;
+    }
+    if (space === "work") {
+      if (focusTyping === "right" && workRightShown && workPageTab) closeWorkPage(workPageTab.id);
       return true;
     }
     if (!browserShown) return false;
@@ -6756,7 +6830,8 @@ export default function App() {
       listen<{ tab: string; delta: number }>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) =>
         splitRef.current ? switchSplitTabRef.current(onSplitRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
       ),
-      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, ({ payload }) => !(splitRef.current && onSplitRightRef.current(payload.tab)) && closeShownRef.current()),
+      // ⌘W in a page: the browser space's page shown, or a page opened beside in 作業 (a split view's other right pages stay).
+      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, ({ payload }) => (splitRef.current && onSplitRightRef.current(payload.tab) ? closeWorkPageRef.current(payload.tab) : closeShownRef.current())),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => archiveShownRef.current()),
       listen(OPEN_PALETTE_EVENT, () => {
         dialogFromPage.current = true;
@@ -7100,6 +7175,7 @@ export default function App() {
         ["palette", () => setDialog((d) => (d === "palette" ? null : "palette"))],
         ["newTab", () => openNewTab()],
         ["closeTab", () => closeShownRef.current()],
+        ["workRight", () => toggleWorkRightRef.current()],
         // The side with the typing: this one takes its data again, a page
         // reloads (a page with the keyboard reloads itself).
         ["reload", () => (typingSideRef.current === "pane" || t.closest(".tab-list, .browser-main") ? reloadShownRef.current() : reloadRef.current())],
@@ -7193,7 +7269,7 @@ export default function App() {
   /// A terminal's title: the session it shows, as the session list names it.
   const sessionTitle = (id: string) => (board ? (sessionItemsOf(board).find((i) => i.session.session_id === id)?.session.title ?? null) : null);
   // A session shown in 作業 (the app in front) is looked at.
-  const watchedSession = space === "work" && typingSide !== null ? ((focusTyping === "right" ? workView.right : workView.left)?.session_id ?? null) : null;
+  const watchedSession = space === "work" && typingSide !== null ? ((focusTyping === "right" ? (workPageTab ? undefined : workView.right) : workView.left)?.session_id ?? null) : null;
   const watchedUnread = !!watchedSession && allSessions.some((s) => s.session_id === watchedSession && s.unread);
   useEffect(() => {
     if (watchedSession && watchedUnread && pageVisible()) api.markSessionSeen(watchedSession).then(refresh, report);
@@ -7561,8 +7637,6 @@ export default function App() {
       </div>
     );
   };
-  const workLeftTab = workTab(workView.left);
-  const workRightTab = workTab(workView.right);
   /// 学習's open readings' URLs, one a line, for NotebookLM's sources.
   const copyOpenUrls = () => {
     const urls = study.open.map((id) => readings.find((r) => r.id === id)?.url).filter((u): u is string => !!u);
@@ -7907,19 +7981,25 @@ export default function App() {
                           管理で見る <span className="kbd">{keyLabel(keyOf("showTodo"))}</span>
                         </button>
                       )}
+                      {(workView.children.length > 0 || workPages.length > 0) && (
+                        <button className="ghost small" title={`右側（${workView.children.length > 0 ? "サブタスク" : "横に開いたページ"}）を${workRightHidden ? "出す" : "隠す"}`} onClick={toggleWorkRight}>
+                          {workRightHidden ? "右を出す" : "右を隠す"} <span className="kbd">{keyLabel(keyOf("workRight"))}</span>
+                        </button>
+                      )}
                     </div>
-                    {pane(workLeftTab, workView.left, "left", workRightTab, workView.todo)}
+                    {pane(workLeftTab, workView.left, "left", workRightShown ? workRightTab : undefined, workView.todo)}
                   </section>
-                  {workView.children.length > 0 && (
+                  {workRightShown && (
                     <aside className="browser-dock focus-right">
                       <Resizer label="右側の幅" cssVar="--focus-right-w" width={focusRightW} min={DOCK_MIN_W} max={() => window.innerWidth - FOCUS_LEFT_MIN_W} onResize={setFocusRightW} />
-                      <section className="browser" aria-label="サブタスクのセッション">
-                        <div className="browser-tabs focus-head" role="tablist" aria-label="サブタスク">
+                      <section className="browser" aria-label={workView.children.length > 0 ? "サブタスクのセッション" : "横に開いたページ"}>
+                        <div className="browser-tabs focus-head" role="tablist" aria-label="サブタスクと横に開いたページ">
                           {workView.children.map((c) => {
                             const s = mainSession(c);
+                            const on = !workPageTab && c.id === workView.child?.id;
                             return (
-                              <span key={c.id} className={`browser-tab${c.id === workView.child?.id ? " on" : ""}`}>
-                                <button role="tab" aria-selected={c.id === workView.child?.id} className="browser-tab-main" title={c.title} onClick={() => pickChild(c.id)}>
+                              <span key={c.id} className={`browser-tab${on ? " on" : ""}`}>
+                                <button role="tab" aria-selected={on} className="browser-tab-main" title={c.title} onClick={() => pickChild(c.id)}>
                                   {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={c.status} />}
                                   <span className="mono">#{c.id}</span>
                                   <span className="ellipsis">{c.title}</span>
@@ -7927,10 +8007,21 @@ export default function App() {
                               </span>
                             );
                           })}
+                          {workPages.map((p) => (
+                            <span key={p.id} className={`browser-tab${p.id === workPageTab?.id ? " on" : ""}`}>
+                              <button role="tab" aria-selected={p.id === workPageTab?.id} className="browser-tab-main" title={p.url} onClick={() => showWorkPage(p.id)}>
+                                {p.loading && <span className="spinner" aria-label="読み込み中" />}
+                                <span className="ellipsis">{p.title || hostOf(p.url)}</span>
+                              </button>
+                              <button className="ghost icon browser-tab-close" aria-label={`${p.title || hostOf(p.url)} を閉じる`} onClick={() => closeWorkPage(p.id)}>
+                                <Icon name="close" size={11} />
+                              </button>
+                            </span>
+                          ))}
                           <span className="grow" />
                           <span className="kbd">{keyLabel(keyOf("nextTab"))}</span>
                         </div>
-                        {pane(workRightTab, workView.right, "right", workLeftTab, workView.child)}
+                        {pane(workRightTab, workPageTab ? undefined : workView.right, "right", workLeftTab, workView.child)}
                       </section>
                     </aside>
                   )}
