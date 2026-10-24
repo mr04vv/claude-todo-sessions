@@ -4332,13 +4332,19 @@ button.tab-row {
   background: var(--accent-soft);
 }
 
-/* The browser's own window: the browser space filling it. */
+/* The browser's own window: the main window's rail, then the browser space filling the rest. */
 .browser-window {
   position: relative;
   height: 100%;
   display: flex;
-  flex-direction: column;
   background: var(--bg);
+}
+
+.browser-window-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .browser-window-body {
@@ -4391,16 +4397,7 @@ button.tab-row {
   padding: 6px 12px;
 }
 
-.browser-window-bar {
-  display: flex;
-  align-items: center;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
-  background: var(--sidebar);
-}
-
-/* A session at work: its chip's dot breathes, and a light runs along the
-   card's foot, so what is moving shows at a glance. */
+/* A session at work: its chip's dot breathes, so what is moving shows at a glance. */
 .card-state.st-running {
   display: inline-flex;
   align-items: center;
@@ -4416,36 +4413,14 @@ button.tab-row {
   animation: running-pulse 1.4s ease-in-out infinite;
 }
 
-.row.work-card.running::after,
-.row.child-card.running::after {
-  content: "";
-  position: absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 0;
-  height: 2px;
-  border-radius: 1px;
-  background: linear-gradient(90deg, transparent, var(--running), transparent);
-  background-size: 40% 100%;
-  background-repeat: no-repeat;
-  animation: running-sweep 1.8s linear infinite;
-  opacity: 0.8;
-}
-
 @keyframes running-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.35; transform: scale(0.7); }
 }
 
-@keyframes running-sweep {
-  from { background-position: -40% 0; }
-  to { background-position: 140% 0; }
-}
 
 @media (prefers-reduced-motion: reduce) {
-  .card-state.st-running::before,
-  .row.work-card.running::after,
-  .row.child-card.running::after {
+  .card-state.st-running::before {
     animation: none;
   }
 }

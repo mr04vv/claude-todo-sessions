@@ -35,6 +35,7 @@ import {
   Resizer,
   restoreTabs,
   saveUserPins,
+  SpaceRail,
   TabView,
   TAB_LIST_DEFAULT_W,
   TAB_LIST_W_KEY,
@@ -275,11 +276,20 @@ export default function BrowserWindow() {
 
   return (
     <div className={`browser-window typing-${typing}`} style={{ "--tab-list-w": `${listW}px`, "--ask-w": `${askW}px` } as React.CSSProperties}>
-      <div className="browser-window-bar">
-        <button className="ghost small" title={`Shosai に戻る（${keyLabel(keyOf("spaceWork"))} で作業、${keyLabel(keyOf("spaceManage"))} で管理）`} onClick={() => api.mainWindowShow().catch(report)}>
-          ← Shosai に戻る <span className="kbd">{keyLabel(keyOf("spaceManage"))}–{keyLabel(keyOf("spaceArtifacts"))}</span>
-        </button>
-      </div>
+      {/* The main window's rail: its spaces bring it forward there (this one, ブラウザ, is here). */}
+      <SpaceRail
+        space="browser"
+        waiting={0}
+        slackUnread={0}
+        limits={null}
+        jev={undefined}
+        jevLeft={null}
+        onSpace={(sp) => sp !== "browser" && void api.mainWindowShow(sp).catch(report)}
+        onUsage={() => void api.mainWindowShow().catch(report)}
+        onSearch={() => void api.mainWindowShow().catch(report)}
+        onSettings={() => void api.mainWindowShow().catch(report)}
+      />
+      <div className="browser-window-main">
       {error && (
         <div className="error browser-window-error">
           <span className="grow">{error}</span>
@@ -335,6 +345,7 @@ export default function BrowserWindow() {
           </section>
         </aside>
       )}
+      </div>
       </div>
       {ask && (
         <PageDialog
