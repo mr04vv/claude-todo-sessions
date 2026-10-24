@@ -3946,6 +3946,12 @@ button.tab-row {
   box-shadow: inset 4px 0 0 var(--accent);
 }
 
+/* The parent of the subtask picked: only its bar, so one card stands out. */
+.row.work-card.selected-group {
+  border-color: var(--accent-line);
+  box-shadow: inset 4px 0 0 var(--accent-line);
+}
+
 /* Under the keyboard's cursor (j k): a bright ring outside it. */
 .row.work-card.cursor,
 .row.child-card.cursor {

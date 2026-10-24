@@ -6275,12 +6275,14 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
     const s = mainSession(t);
     const sum = subtaskSummary(children);
     const opened = isOpen(t.id);
+    // A subtask of it shown on the right, unfolded inside it: that card is the picked one, this only its group.
+    const shownInside = opened && children.some((c) => c.id === child);
     const said = saidOf(s);
     const meta = metaOf(s, t, true);
     const made = artifactsOf([t.id, ...children.map((c) => c.id)], s);
     const chips = chipsOf(s, t, children.length > 0 ? 0 : made);
     return (
-      <li key={key} data-row={key} className={`row work-card${s?.state === "needs_input" ? " asking" : ""}${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
+      <li key={key} data-row={key} className={`row work-card${s?.state === "needs_input" ? " asking" : ""}${key === cursorId ? " cursor" : ""}${pick === key ? (shownInside ? " selected-group" : " selected") : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
         {cardHead(s, t, t.title, children.length > 0)}
         {t.escalation && <span className="card-esc">指揮役から：{t.escalation}</span>}
         {said && <span className={said.ask ? "card-ask" : "card-last"}>{said.text}</span>}
