@@ -2136,7 +2136,12 @@ fn browser_window_open(app: AppHandle, state: State<'_, AppState>, url: Option<S
         }
     };
     window.show().map_err(err)?;
-    window.set_focus().map_err(err)
+    window.set_focus().map_err(err)?;
+    // The window in front is not enough: its page takes the keys (a tab asked for takes them from it as it comes).
+    match app.get_webview(BROWSER_WINDOW) {
+        Some(page) => page.set_focus().map_err(err),
+        None => Ok(()),
+    }
 }
 
 /// From the browser's window: the main window comes forward, at `space` (⌘1–⌘6) if one is named.

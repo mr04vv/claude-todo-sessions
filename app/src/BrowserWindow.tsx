@@ -194,6 +194,9 @@ export default function BrowserWindow() {
   now.current = { open, close, step, setUrl, active, askAbout };
 
   useEffect(() => {
+    // The page takes the keys as it comes up (the window made in front does not give them).
+    noteFocusRequest();
+    api.focusAppPage().catch(report);
     // What was asked before this page was up.
     api.browserWindowTake().then((urls) => urls.forEach((u) => now.current.open(u)), report);
     const update = (id: string, f: (t: BrowserTab) => BrowserTab) => setTabs((prev) => prev.map((t) => (t.id === id ? f(t) : t)));
