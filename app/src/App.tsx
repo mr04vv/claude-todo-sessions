@@ -6046,7 +6046,8 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
   ];
   const open = (r: WorkRow) => (r.todo ? onPick({ todo: r.todo.id }) : r.session ? onPick({ session: r.session.session_id }) : undefined);
   const { cursorId, setCursor, list } = useRowCursor(
-    [QUICK_ROW, ...rows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : [])],
+    // In the order shown: あなた待ち (the review requests not started last in it), then the work.
+    [QUICK_ROW, ...shownWaits.map((w) => `w:${w.key}`), ...(asks > 0 ? [ASKS_ROW] : []), ...rows.filter((r) => !r.key.startsWith("w:")).map((r) => r.key)],
     (id) => {
       if (id === QUICK_ROW) return onQuick();
       if (id === ASKS_ROW) return onShowPrs();
