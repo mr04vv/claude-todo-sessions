@@ -26,6 +26,7 @@ export type Action =
   | "focusUrl"
   | "terminalLinks"
   | "workRight"
+  | "workArtifacts"
   | "back"
   | "forward"
   | "zoomIn"
@@ -107,6 +108,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["sideApp", "入力先を左へ（ページから一覧、一覧から管理のサイドバー・学習の絞り込み、いちばん左は場のアイコン）"],
       ["sidePane", "入力先を右へ（ページ、作業・学習では右のページ）"],
       ["workRight", "作業の右側（サブタスクと、横に開いたページ）を隠す・出す"],
+      ["workArtifacts", "作業の右側に、このセッション（サブタスクも）の成果物を出す・戻す（j k で選んで Enter で横に、⌘Enter でブラウザに）"],
     ],
   },
   {
@@ -248,6 +250,7 @@ const KEYS: Record<Action, string> = {
   focusUrl: "cmd+l",
   terminalLinks: "cmd+shift+l",
   workRight: "cmd+shift+e",
+  workArtifacts: "cmd+shift+o",
   back: "cmd+[",
   forward: "cmd+]",
   zoomIn: "cmd+=",

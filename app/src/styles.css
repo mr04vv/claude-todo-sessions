@@ -4024,3 +4024,38 @@ button.tab-row {
 .work-row.work-child.off .row-title {
   color: var(--text-3);
 }
+
+/* 作業's right as the artifacts made there (⌘⇧O). */
+.work-artifacts {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.work-artifact-list {
+  flex: 1;
+  overflow: auto;
+  padding: 8px;
+  list-style: none;
+  margin: 0;
+}
+
+.artifact-pick {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  text-align: left;
+}
+
+.artifact-pick:focus-visible,
+.artifact-pick:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}

@@ -5847,6 +5847,80 @@ function workListOf(board: Board, waiting: WaitItem[], sort: WorkSort, order: st
   return { todos, waits, asks: waiting.length - waits.length, work, timeOf, endedCount: board.inbox.filter((s) => !live(s) && listed(s)).length };
 }
 
+/// 作業's right as the artifacts the todo shown (its subtasks too) or its
+/// sessions made, newest first: j k pick one, Enter opens it beside the
+/// session, ⌘Enter in the browser. Its list is a menu, so 作業's list keeps
+/// its own keys.
+function WorkArtifactsPanel({ artifacts, todos, title, onBeside, onBrowser, onClose }: {
+  artifacts: Artifact[];
+  todos: Todo[];
+  title: string;
+  onBeside: (a: Artifact) => void;
+  onBrowser: (a: Artifact) => void;
+  onClose: () => void;
+}) {
+  const list = useRef<HTMLUListElement>(null);
+  useEffect(() => list.current?.querySelector<HTMLButtonElement>("button")?.focus(), []);
+  const onKey = (e: React.KeyboardEvent) => {
+    const items = [...(list.current?.querySelectorAll<HTMLButtonElement>("button.artifact-pick") ?? [])];
+    const at = items.indexOf(document.activeElement as HTMLButtonElement);
+    const step = stepOf(e.nativeEvent);
+    if (step) {
+      e.preventDefault();
+      items[Math.min(Math.max(at + step, 0), items.length - 1)]?.focus();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      onClose();
+    }
+  };
+  return (
+    <section className="browser work-artifacts" aria-label={`${title} の成果物`}>
+      <div className="browser-tabs focus-head">
+        <Icon name="open" size={13} />
+        <b className="ellipsis">{title} の成果物</b>
+        <span className="muted small-text">サブタスクの分も</span>
+        <span className="grow" />
+        <button className="ghost small" onClick={onClose}>
+          戻る <span className="kbd">{keyLabel(keyOf("workArtifacts"))}</span>
+        </button>
+      </div>
+      {artifacts.length === 0 ? (
+        <p className="muted hint">まだ成果物はありません。セッションが Doc や Artifact を作ると、ここに並び、横に開きます。</p>
+      ) : (
+        <ul className="rows work-artifact-list" role="menu" aria-label="成果物" ref={list} onKeyDown={onKey}>
+          {artifacts.map((a) => {
+            const todo = todos.find((t) => t.id === a.todo_id);
+            return (
+              <li key={a.id}>
+                <button
+                  role="menuitem"
+                  className="artifact-pick"
+                  title={a.url}
+                  onClick={(e) => (e.metaKey ? onBrowser(a) : onBeside(a))}
+                  onKeyDown={(e) => {
+                    if (!isEnter(e)) return;
+                    e.preventDefault();
+                    (e.metaKey ? onBrowser : onBeside)(a);
+                  }}
+                >
+                  <span className="tag">{ARTIFACT_KIND[a.kind]}</span>
+                  <span className="row-title ellipsis">{artifactName(a)}</span>
+                  <span className="grow" />
+                  {todo && <span className="muted small-text">#{todo.id}</span>}
+                  <span className="muted small-text">{ago(a.created_at)}</span>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+      <span className="muted small-text rail-hint">
+        {keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選ぶ · Enter で横に開く · ⌘Enter でブラウザに · Esc で戻る
+      </span>
+    </section>
+  );
+}
+
 /// The peeks fetched (last reply, model, context), by session, with the
 /// state_at they were read at: read again only when a session's state moves.
 const peekCache = new Map<string, { at: number; peek: Peek | undefined }>();
@@ -6479,9 +6553,16 @@ export default function App() {
     remember(WORK_RIGHT_HIDDEN_KEY, JSON.stringify(hidden));
     setWorkRightHiddenState(hidden);
   };
-  const workRightShown = (workView.children.length > 0 || workPages.length > 0) && !workRightHidden;
+  // ⌘⇧O: the right shows what the todo (its subtasks too) and its sessions made, in place of its tabs.
+  const [workArtifactsOpen, setWorkArtifactsOpen] = useState(false);
+  const workTodoIds = [workView.todo, ...workView.children].filter((t): t is Todo => !!t).map((t) => t.id);
+  const workSessionIds = [workView.left, workView.right].filter((x): x is Session => !!x).map((x) => x.session_id);
+  const workMade = (board?.artifacts ?? []).filter((a) => (a.todo_id !== null && workTodoIds.includes(a.todo_id)) || (a.session_id !== null && workSessionIds.includes(a.session_id))).sort((a, b) => b.created_at - a.created_at);
+  const workRightShown = (workArtifactsOpen || workView.children.length > 0 || workPages.length > 0) && !workRightHidden;
   const workLeftTab = workTab(workView.left);
   const workRightTab = workPageTab ?? workTab(workView.right);
+  /// The right's page (none while the artifacts are shown in its place).
+  const workRightPage = workRightShown && !workArtifactsOpen ? workRightTab : undefined;
   /// Shows page `id` on 作業's right; it takes the keyboard.
   const showWorkPage = (id: string) => {
     setWorkPage(id);
@@ -6517,7 +6598,7 @@ export default function App() {
     const sessions = [workView.left, workView.right].filter((x): x is Session => !!x).map((x) => x.session_id);
     for (const a of board.artifacts) {
       if (seen.has(a.id) || !((a.session_id && sessions.includes(a.session_id)) || (a.todo_id !== null && todos.includes(a.todo_id)))) continue;
-      openBeside(a.kind === "file" && !/^https?:/.test(a.url) ? fileUrl(a.url) : a.url, false);
+      openBeside(artifactUrl(a), false);
     }
   }, [board?.artifacts]); // eslint-disable-line react-hooks/exhaustive-deps
   /// Closes a page opened beside: the next page is shown, else the subtask
@@ -6541,6 +6622,29 @@ export default function App() {
   };
   const toggleWorkRightRef = useRef(toggleWorkRight);
   toggleWorkRightRef.current = toggleWorkRight;
+  /// ⌘⇧O: shows the artifacts on the right (the list takes the keyboard), or the right's tabs again.
+  const toggleWorkArtifacts = () => {
+    if (space !== "work" || !(workView.left || workView.todo)) return;
+    if (workArtifactsOpen) {
+      setWorkArtifactsOpen(false);
+      const tab = workRightShown ? workRightTab : undefined;
+      return tab ? keysToTab(tab, undefined, report) : focusSide(false, "right");
+    }
+    setWorkArtifactsOpen(true);
+    setWorkRightHidden(false);
+    setFocusTyping("right");
+    api.focusAppPage().catch(report);
+  };
+  const toggleWorkArtifactsRef = useRef(toggleWorkArtifacts);
+  toggleWorkArtifactsRef.current = toggleWorkArtifacts;
+  /// Where an artifact opens: its claude.ai page, or the file on the Mac.
+  const artifactUrl = (a: Artifact) => (a.kind === "file" && !/^https?:/.test(a.url) ? fileUrl(a.url) : a.url);
+  /// An artifact from the panel, beside the session (the panel gives way to it).
+  const openMadeBeside = (a: Artifact) => {
+    setWorkArtifactsOpen(false);
+    openBeside(artifactUrl(a));
+  };
+  const openArtifactInBrowser = (a: Artifact) => openInBrowser(artifactUrl(a));
   /// Picks a subtask on 作業's right; its session takes the keyboard.
   const pickChild = (id: number, closed = work.closed) => {
     setWork({ ...work, child: id, closed });
@@ -6580,7 +6684,7 @@ export default function App() {
   const splitRef = useRef(split);
   splitRef.current = split;
   const splitLeft = space === "work" ? workTab(workView.left) : studyReading ? studyLeft : undefined;
-  const splitRight = space === "work" ? (workRightShown ? workRightTab : undefined) : studyReading ? studyRightTab : undefined;
+  const splitRight = space === "work" ? workRightPage : studyReading ? studyRightTab : undefined;
   const [focusTyping, setFocusTyping] = useState<"left" | "right" | null>(null);
   /// ⌘⇧[ ⌘⇧] in a split view: the previous or next tab of the side that has
   /// the keyboard: 学習's readings or LLMs, 作業's subtasks and pages opened beside.
@@ -6722,7 +6826,8 @@ export default function App() {
       return true;
     }
     if (space === "work") {
-      if (focusTyping === "right" && workRightShown) closeRight();
+      if (focusTyping === "right" && workArtifactsOpen) toggleWorkArtifacts();
+      else if (focusTyping === "right" && workRightShown) closeRight();
       return true;
     }
     if (!browserShown) return false;
@@ -7404,6 +7509,7 @@ export default function App() {
         ["newTab", () => openNewTab()],
         ["closeTab", () => closeShownRef.current()],
         ["workRight", () => toggleWorkRightRef.current()],
+        ["workArtifacts", () => toggleWorkArtifactsRef.current()],
         // The side with the typing: this one takes its data again, a page
         // reloads (a page with the keyboard reloads itself).
         ["reload", () => (typingSideRef.current === "pane" || t.closest(".tab-list, .browser-main") ? reloadShownRef.current() : reloadRef.current())],
@@ -8189,17 +8295,30 @@ export default function App() {
                           管理で見る <span className="kbd">{keyLabel(keyOf("showTodo"))}</span>
                         </button>
                       )}
+                      <button className={`ghost small${workArtifactsOpen ? " on" : ""}`} aria-pressed={workArtifactsOpen} title="このセッション（サブタスクも）の成果物を右に出す" onClick={toggleWorkArtifacts}>
+                        <Icon name="open" size={12} /> 成果物 {workMade.length} <span className="kbd">{keyLabel(keyOf("workArtifacts"))}</span>
+                      </button>
                       {(workView.children.length > 0 || workPages.length > 0) && (
                         <button className="ghost small" title={`右側（${workView.children.length > 0 ? "サブタスク" : "横に開いたページ"}）を${workRightHidden ? "出す" : "隠す"}`} onClick={toggleWorkRight}>
                           {workRightHidden ? "右を出す" : "右を隠す"} <span className="kbd">{keyLabel(keyOf("workRight"))}</span>
                         </button>
                       )}
                     </div>
-                    {pane(workLeftTab, workView.left, "left", workRightShown ? workRightTab : undefined, workView.todo)}
+                    {pane(workLeftTab, workView.left, "left", workRightPage, workView.todo)}
                   </section>
                   {workRightShown && (
                     <aside className="browser-dock focus-right">
                       <Resizer label="右側の幅" cssVar="--focus-right-w" width={focusRightW} min={DOCK_MIN_W} max={() => window.innerWidth - FOCUS_LEFT_MIN_W} onResize={setFocusRightW} />
+                      {workArtifactsOpen ? (
+                        <WorkArtifactsPanel
+                          artifacts={workMade}
+                          todos={allTodos}
+                          title={workView.todo ? `#${workView.todo.id}` : (workView.title ?? "セッション")}
+                          onBeside={openMadeBeside}
+                          onBrowser={(a) => (setWorkArtifactsOpen(false), openArtifactInBrowser(a))}
+                          onClose={toggleWorkArtifacts}
+                        />
+                      ) : (
                       <section className="browser" aria-label={workView.children.length > 0 ? "サブタスクのセッション" : "横に開いたページ"}>
                         <div className="browser-tabs focus-head" role="tablist" aria-label="サブタスクと横に開いたページ">
                           {workView.children.map((c) => {
@@ -8234,6 +8353,7 @@ export default function App() {
                         </div>
                         {pane(workRightTab, workPageTab ? undefined : workView.right, "right", workLeftTab, workView.child)}
                       </section>
+                      )}
                     </aside>
                   )}
                 </>
