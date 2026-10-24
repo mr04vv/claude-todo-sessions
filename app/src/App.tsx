@@ -2803,10 +2803,12 @@ const slackMemo = (i: SlackItem) => `Slack #${i.channelName} の ${i.userName}�
 /// groups, and the threads they are in with new replies, newest first. One
 /// is read once opened (it leaves the unread when another is) or Done (e);
 /// 既読 shows the read rows.
-function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
+function SlackPage({ slack, pick, onPicked, run, report, onSettings, onTodo }: {
   slack: SlackView;
   /// A mention to show (a notification's click), by mentionKey.
   pick: string | null;
+  /// The pick shown: it is let go, so coming back to Slack does not show it again.
+  onPicked: () => void;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   onSettings: () => void;
@@ -2820,7 +2822,9 @@ function SlackPage({ slack, pick, run, report, onSettings, onTodo }: {
   const rowOf = (mention: string | null) => items.find((i) => i.mentions.some((m) => mentionKey(m) === mention))?.key ?? null;
   const [selected, setSelected] = useState<string | null>(() => rowOf(pick));
   useEffect(() => {
-    if (pick) open(rowOf(pick));
+    if (!pick) return;
+    open(rowOf(pick));
+    onPicked();
   }, [pick]); // eslint-disable-line react-hooks/exhaustive-deps
   const [width, setWidth] = useState(() => loadJson<number>(SLACK_LIST_KEY, SLACK_LIST_WIDTH.initial));
   // The right side: a new message being written, or the one just posted.
@@ -7993,6 +7997,7 @@ export default function App() {
                   <SlackPage
                     slack={board.slack}
                     pick={slackPick}
+                    onPicked={() => setSlackPick(null)}
                     run={run}
                     report={report}
                     onSettings={() => setDialog("settings")}
