@@ -21,7 +21,7 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool};
 use objc2::{define_class, extern_methods, msg_send, DefinedClass, MainThreadMarker};
 use objc2_app_kit::{NSApplication, NSEvent, NSView};
-use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
+use objc2_foundation::{NSPoint, NSRect, NSSize};
 use tauri::{AppHandle, Manager};
 
 use crate::err;
@@ -758,84 +758,6 @@ pub fn create(app: &AppHandle, tab: &str, url: &str, rect: PageRect) -> Result<(
         let browser = browser_host_create_browser_sync(Some(&info), Some(&mut client), Some(&cef_string(&url)), Some(&BrowserSettings::default()), None, None)
             .ok_or("ブラウザを作れませんでした")?;
         TABS.with(|t| t.borrow_mut().insert(tab, browser));
-        Ok(())
-    })?
-}
-
-/// A page in a window of its own (the setting's 別ウィンドウ): Chromium's own
-/// window, apart from the app's tabs; ⌘W closes it.
-const WINDOW_W: i32 = 1280;
-const WINDOW_H: i32 = 860;
-
-wrap_client! {
-    struct WindowClient {
-        app: AppHandle,
-    }
-
-    impl Client {
-        fn life_span_handler(&self) -> Option<LifeSpanHandler> {
-            Some(PopupLifeSpan::new())
-        }
-
-        fn permission_handler(&self) -> Option<PermissionHandler> {
-            Some(PagePermission::new(self.app.clone()))
-        }
-
-        fn keyboard_handler(&self) -> Option<KeyboardHandler> {
-            Some(WindowKeys::new())
-        }
-
-        fn display_handler(&self) -> Option<DisplayHandler> {
-            Some(WindowTitle::new())
-        }
-    }
-}
-
-wrap_keyboard_handler! {
-    struct WindowKeys;
-
-    impl KeyboardHandler {
-        // ⌘W the page did not take closes the window (the app's menu has no Close Window).
-        fn on_key_event(&self, browser: Option<&mut Browser>, event: Option<&KeyEvent>, _os_event: *mut u8) -> ::std::os::raw::c_int {
-            let close = event.is_some_and(|e| e.type_ == KeyEventType::RAWKEYDOWN && e.modifiers & COMMAND_DOWN != 0 && e.windows_key_code == KEY_W);
-            if close {
-                if let Some(host) = browser.and_then(|b| b.host()) {
-                    host.close_browser(0);
-                }
-            }
-            i32::from(close)
-        }
-    }
-}
-
-wrap_display_handler! {
-    struct WindowTitle;
-
-    impl DisplayHandler {
-        fn on_title_change(&self, browser: Option<&mut Browser>, title: Option<&CefString>) {
-            let (Some(view), Some(title)) = (browser.and_then(|b| view_of(b)), title) else { return };
-            if let Some(window) = view.window() {
-                window.setTitle(&NSString::from_str(&title.to_string()));
-            }
-        }
-    }
-}
-
-/// Opens `url` in a window of its own.
-pub fn open_window(app: &AppHandle, url: &str) -> Result<(), String> {
-    if !available() {
-        return Err("ブラウザ（Chromium）が入っていません。.app として起動してください".into());
-    }
-    let (url, handle) = (url.to_string(), app.clone());
-    on_main(app, move || {
-        wait_ready()?;
-        let info = WindowInfo { runtime_style: RuntimeStyle::ALLOY, window_name: cef_string(&url), bounds: Rect { x: 0, y: 0, width: WINDOW_W, height: WINDOW_H }, ..Default::default() };
-        let mut client = WindowClient::new(handle);
-        let browser = browser_host_create_browser_sync(Some(&info), Some(&mut client), Some(&cef_string(&url)), Some(&BrowserSettings::default()), None, None)
-            .ok_or("ウインドウを開けませんでした")?;
-        if let Some(window) = view_of(&browser).and_then(|v| v.window()) {
-            window.center();
-        }
         Ok(())
     })?
 }

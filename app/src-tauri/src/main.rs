@@ -83,6 +83,8 @@ struct AppState {
     page_keys: Mutex<String>,
     /// Tabs whose page should focus its text box once it loads, and since when.
     focus_input: Mutex<HashMap<String, std::time::Instant>>,
+    /// Pages asked of the browser window while its page was still starting (it takes them once up).
+    browser_queue: Mutex<Vec<String>>,
     /// Held while a browser tab is shown or created.
     browser_lock: Mutex<()>,
     /// CLI session ids archived in Desktop. Reading every Desktop record is
@@ -2092,13 +2094,47 @@ fn browser_hide(app: AppHandle, webview: tauri::Webview, tab: Option<String>) ->
     cef_browser::set_hidden(&app, webview.label(), only.as_deref(), &[], true)
 }
 
-/// Opens a page in a window of its own, apart from the app's tabs.
+/// The browser's own window (its tabs, pins and address bar), apart from the main one.
+const BROWSER_WINDOW: &str = "browser";
+const BROWSER_WINDOW_SIZE: (f64, f64) = (1280.0, 860.0);
+/// `url` to open as a tab in the browser window.
+const BROWSER_WINDOW_OPEN_EVENT: &str = "browser-window-open";
+
+/// Brings the browser window forward (made the first time; closing it only
+/// hides it, its tabs kept), with `url` opened as a tab there.
 #[tauri::command(async)]
-fn browser_window(app: AppHandle, url: String) -> Result<(), String> {
-    if !is_web_url(&url) {
-        return Err(format!("開けない URL です: {url}"));
+fn browser_window_open(app: AppHandle, state: State<'_, AppState>, url: Option<String>) -> Result<(), String> {
+    if let Some(url) = &url {
+        if !is_web_url(url) && !url.starts_with("file://") {
+            return Err(format!("開けない URL です: {url}"));
+        }
     }
-    cef_browser::open_window(&app, &url)
+    let window = match app.get_webview_window(BROWSER_WINDOW) {
+        Some(w) => {
+            if let Some(url) = url {
+                app.emit_to(BROWSER_WINDOW, BROWSER_WINDOW_OPEN_EVENT, url).map_err(err)?;
+            }
+            w
+        }
+        None => {
+            // Its page is not up to listen yet: it takes these once it is.
+            state.browser_queue.lock().map_err(err)?.extend(url);
+            let (width, height) = BROWSER_WINDOW_SIZE;
+            tauri::WebviewWindowBuilder::new(&app, BROWSER_WINDOW, tauri::WebviewUrl::App("index.html".into()))
+                .title("Shosai ブラウザ")
+                .inner_size(width, height)
+                .build()
+                .map_err(err)?
+        }
+    };
+    window.show().map_err(err)?;
+    window.set_focus().map_err(err)
+}
+
+/// The pages asked of the browser window before its page was up.
+#[tauri::command]
+fn browser_window_take(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(std::mem::take(&mut *state.browser_queue.lock().map_err(err)?))
 }
 
 #[tauri::command(async)]
@@ -2867,6 +2903,7 @@ fn main() {
             herdr_workspaces: Mutex::new(HashMap::new()),
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
+            browser_queue: Mutex::new(Vec::new()),
             focus_mode: AtomicBool::new(false),
             studying: AtomicBool::new(false),
             logins: Mutex::new(HashMap::new()),
@@ -3001,7 +3038,8 @@ fn main() {
             usage,
             gh_prs,
             browser_open,
-            browser_window,
+            browser_window_open,
+            browser_window_take,
             session_peeks,
             session_summary,
             browser_bounds,
