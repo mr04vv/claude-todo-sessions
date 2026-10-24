@@ -410,9 +410,9 @@ const TAB_LIST_MIN_W = 180;
 const TAB_LIST_MAX_W = 420;
 /// The work space's list of what runs: its width.
 const WORK_RAIL_W_KEY = "workRailWidth";
-const WORK_RAIL_DEFAULT_W = 300;
+const WORK_RAIL_DEFAULT_W = 420;
 const RAIL_MIN_W = 200;
-const RAIL_MAX_W = 480;
+const RAIL_MAX_W = 600;
 /// How often a parent's 経過 is read again while its sheet is open.
 const EVENTS_REFRESH_MS = 5000;
 /// How long a short note at the bottom ("読みものに入れました") stays.
@@ -6101,58 +6101,73 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
   // What the cards read from the sessions' messages: last reply, model, context.
   const peekOf = usePeeks(rows.flatMap((r) => [r.session ?? (r.todo && mainSession(r.todo))].filter((x): x is Session => !!x)), report);
   const artifactsOf = (todoIds: number[], session?: Session) => board.artifacts.filter((a) => (a.todo_id !== null && todoIds.includes(a.todo_id)) || (!!session && a.session_id === session.session_id)).length;
-  /// A card's lines under its head: what 指揮役 sent back, what it asks or last
-  /// said, where it runs (repo, place, model, context size), and its chips.
-  const cardBody = (s: Session | undefined, t: Todo | undefined, made: number, withRepo = true) => {
+  /// Where a card's session runs: Local (herdr, Codex, Desktop) or Cloud.
+  const placeShort = (s: Session) => (isCloud(s) ? "Cloud" : s.desktop ? "Desktop" : `Local · ${s.agent === "codex" ? "Codex" : "herdr"}`);
+  /// A card's head: its state (else the todo's), 指揮役, unread, number, title, when.
+  const cardHead = (s: Session | undefined, t: Todo | undefined, title: string, lead = false) => (
+    <span className="card-head">
+      {s ? <span className={`card-state st-${s.state}`}>{STATE_LABEL[s.state]}</span> : <span className="card-state st-none">未着手</span>}
+      {lead && <span className="card-lead">指揮役</span>}
+      {s?.unread && <span className="card-unread" aria-label="未読" />}
+      {t && <span className="card-id">#{t.id}</span>}
+      <span className="card-title">{title}</span>
+      {s && <span className="card-ago">{ago(s.state_at)}</span>}
+    </span>
+  );
+  /// Where it runs: repo, place, model, context size.
+  const metaOf = (s: Session | undefined, t: Todo | undefined, withRepo: boolean) => {
     const p = s ? peekOf(s) : undefined;
     const repos = t?.repos.length ? t.repos : (s?.repos ?? []);
-    const meta = [withRepo && repos.length ? (repos.length > 1 ? `${repos[0]} ほか ${repos.length - 1}` : repos[0]) : null, s ? placeOf(s) : null, p?.model ? modelLabel(p.model) : null, p?.context_tokens ? sizeLabel(p.context_tokens) : null].filter(Boolean);
-    const said = s?.state === "needs_input" && s.question ? s.question : p?.last;
-    return (
-      <>
-        {t?.escalation && <span className="card-esc">指揮役から：{t.escalation}</span>}
-        {said && <span className={s?.state === "needs_input" && s.question ? "card-ask" : "card-last"}>{said}</span>}
-        {meta.length > 0 && <span className="card-meta">{meta.join(" · ")}</span>}
-        {(t?.pr_state || t?.ci_state === "failure" || s?.review_url || made > 0) && (
-          <span className="card-chips">
-            {t?.pr_state && <span className={`gh gh-pr-${t.pr_state}`}>{PR_LABEL[t.pr_state]}</span>}
-            {t?.ci_state === "failure" && <span className="chip-ci">CI 失敗{t.ci_failed.length > 0 ? `：${t.ci_failed.join("・")}` : ""}</span>}
-            {s?.review_url && <span className="gh gh-pr-review_requested">レビュー対象 {prRef(s.review_url)}</span>}
-            {made > 0 && <span className="chip-made">成果物 {made}</span>}
-          </span>
-        )}
-      </>
-    );
+    return [withRepo && repos.length ? (repos.length > 1 ? `${repos[0]} ほか ${repos.length - 1}` : repos[0]) : null, s ? placeShort(s) : null, p?.model ? modelLabel(p.model) : null, p?.context_tokens ? sizeLabel(p.context_tokens) : null].filter(Boolean).join(" · ");
   };
-  const childRow = (c: Todo) => {
+  /// What it asks (waiting), else what it last said.
+  const saidOf = (s: Session | undefined) => (s?.state === "needs_input" && s.question ? { ask: true, text: s.question } : s && peekOf(s)?.last ? { ask: false, text: peekOf(s)!.last! } : null);
+  const chipsOf = (s: Session | undefined, t: Todo | undefined, made: number) => [
+    t?.pr_state && <span key="pr" className={`card-chip ${t.pr_state === "merged" ? "chip-ok" : "chip-pr"}`}>{t.pr_state === "merged" ? `PR マージ` : `PR ${PR_LABEL[t.pr_state]}`}</span>,
+    t?.ci_state === "failure" && <span key="ci" className="card-chip chip-ci">CI 失敗{t.ci_failed.length > 0 ? `：${t.ci_failed.join("・")}` : ""}</span>,
+    s?.review_url && <span key="rv" className="card-chip chip-pr" title={prRef(s.review_url)}>レビュー対象 #{s.review_url.match(/\/pull\/(\d+)/)?.[1] ?? ""}</span>,
+    made > 0 && <span key="made" className="card-chip chip-made">成果物 {made}</span>,
+  ].filter(Boolean);
+  const childCard = (c: Todo) => {
     const key = childKey(c);
     const s = mainSession(c);
     const off = closed.includes(c.id);
-    const cls = `row work-row work-card work-child${key === cursorId ? " cursor" : ""}${pick === `t${c.parent_id}` && child === c.id ? " selected" : ""}${off ? " off" : ""}`;
-    // Done, or not started: one faint line.
-    if (c.status === "done" || !s)
+    const on = pick === `t${c.parent_id}` && child === c.id;
+    const base = `row child-card${key === cursorId ? " cursor" : ""}${on ? " selected" : ""}${off ? " off" : ""}`;
+    const go = (e: React.MouseEvent) => (e.stopPropagation(), onPick({ todo: c.id }));
+    if (c.status === "done")
       return (
-        <li key={key} data-row={key} className={`${cls} ${c.status === "done" ? "done" : "not-started"}`} onClick={() => onPick({ todo: c.id })}>
-          <span className="work-line">
-            {c.status === "done" ? <span className="card-done">✓</span> : <StatusIcon status={c.status} />}
-            <span className="mono muted">#{c.id}</span>
-            <span className="row-title ellipsis">{c.title}</span>
-            <span className="grow" />
-            <span className="muted small-text">{c.status === "done" ? (c.pr_state ? PR_LABEL[c.pr_state] : "Done") : "未着手"}</span>
-          </span>
+        <li key={key} data-row={key} className={`${base} done`} onPointerDown={stop} onClick={go}>
+          <span className="card-done">✓</span>
+          <span className="card-id">#{c.id}</span>
+          <span className="card-title">{c.title}</span>
+          <span className="card-end">{c.pr_state === "merged" ? "PR マージ" : "Done"}</span>
         </li>
       );
+    if (!s)
+      return (
+        <li key={key} data-row={key} className={`${base} not-started`} onPointerDown={stop} onClick={go}>
+          <span className="card-ring" />
+          <span className="card-id">#{c.id}</span>
+          <span className="card-title">{c.title}</span>
+          <span className="card-end">未着手</span>
+        </li>
+      );
+    const said = saidOf(s);
+    const meta = metaOf(s, c, false);
+    const chips = chipsOf(s, c, 0);
     return (
-      <li key={key} data-row={key} className={`${cls}${s.state === "needs_input" ? " asking" : ""}`} onClick={() => onPick({ todo: c.id })}>
-        <span className="work-line">
-          <StateBadge state={s.state} unread={s.unread} />
-          <span className="mono muted">#{c.id}</span>
-          <span className="row-title ellipsis">{c.title}</span>
-          <span className="grow" />
-          {off && <span className="muted small-text">右から外している</span>}
-          <span className="muted small-text">{ago(s.state_at)}</span>
-        </span>
-        {cardBody(s, c, 0, false)}
+      <li key={key} data-row={key} className={`${base}${s.state === "needs_input" ? " asking" : ""}`} onPointerDown={stop} onClick={go}>
+        {cardHead(s, c, c.title)}
+        {c.escalation && <span className="child-esc">指揮役から：{c.escalation}</span>}
+        {said && <span className={said.ask ? "child-ask" : "child-last"}>{said.text}</span>}
+        {(meta || chips.length > 0) && (
+          <span className="child-meta">
+            {meta && <span>{meta}</span>}
+            {chips}
+          </span>
+        )}
+        {off && <span className="card-end">右から外している</span>}
       </li>
     );
   };
@@ -6160,58 +6175,63 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
     const children = subtasksOf(t.id);
     const key = `t${t.id}`;
     const s = mainSession(t);
-    const under = waiting.filter((w) => w.todo && (w.todo.id === t.id || w.todo.parent_id === t.id)).length;
     const sum = subtaskSummary(children);
-    const open = isOpen(t.id);
+    const opened = isOpen(t.id);
+    const said = saidOf(s);
+    const meta = metaOf(s, t, true);
+    const made = artifactsOf([t.id, ...children.map((c) => c.id)], s);
+    const chips = chipsOf(s, t, children.length > 0 ? 0 : made);
     return (
-      <li key={key} data-row={key} className={`row work-row work-card${s?.state === "needs_input" ? " asking" : ""}${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
-        <span className="work-line">
-          {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={t.status} />}
-          {children.length > 0 && <span className="card-lead">指揮役</span>}
-          <span className="mono muted">#{t.id}</span>
-          <span className="row-title ellipsis">{t.title}</span>
-          <span className="grow" />
-          {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
-          {s && <span className="muted small-text">{ago(s.state_at)}</span>}
-        </span>
-        {cardBody(s, t, artifactsOf([t.id, ...children.map((c) => c.id)], s))}
+      <li key={key} data-row={key} className={`row work-card${s?.state === "needs_input" ? " asking" : ""}${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
+        {cardHead(s, t, t.title, children.length > 0)}
+        {t.escalation && <span className="card-esc">指揮役から：{t.escalation}</span>}
+        {said && <span className={said.ask ? "card-ask" : "card-last"}>{said.text}</span>}
+        {meta && <span className="card-meta">{meta}</span>}
+        {chips.length > 0 && <span className="card-chips">{chips}</span>}
         {children.length > 0 && (
-          <span className="card-subtasks">
-            <button
-              className="ghost small"
-              aria-expanded={open}
-              title={`サブタスクを${open ? "畳む" : "開く"}（${keyLabel(keyOf(open ? "left" : "right"))}）`}
-              onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => (e.stopPropagation(), fold(t.id, !open))}
-            >
-              {open ? "▾" : "▸"} サブタスク <span className="kbd">{keyLabel(keyOf(open ? "left" : "right"))}</span>
-            </button>
-            <span className="subtask-bar" aria-hidden="true">
-              <i className="done" style={{ flexGrow: sum.done }} />
-              <i className="running" style={{ flexGrow: sum.running }} />
-              <i className="asking" style={{ flexGrow: sum.asking }} />
-              <i style={{ flexGrow: sum.other }} />
+          <>
+            <span className="card-subtasks">
+              <button
+                className="card-fold"
+                aria-expanded={opened}
+                title={`サブタスクを${opened ? "畳む" : "開く"}（${keyLabel(keyOf(opened ? "left" : "right"))}）`}
+                onPointerDown={stop}
+                onClick={(e) => (e.stopPropagation(), fold(t.id, !opened))}
+              >
+                {opened ? "▾" : "▸"} サブタスク
+              </button>
+              <span className="subtask-bar" title={`Done ${sum.done} · 作業中 ${sum.running} · 返事待ち ${sum.asking} · ほか ${sum.other}`}>
+                <i className="done" style={{ flexGrow: sum.done }} />
+                <i className="running" style={{ flexGrow: sum.running }} />
+                <i className="asking" style={{ flexGrow: sum.asking }} />
+                <i style={{ flexGrow: sum.other }} />
+              </span>
+              <span className="card-sum">
+                {sum.done}/{sum.total} Done
+              </span>
+              {sum.asking > 0 && <span className="card-sum asking">· 返事待ち {sum.asking}</span>}
+              <span className="grow" />
+              {made > 0 && <span className="card-chip chip-made">成果物 {made}</span>}
             </span>
-            <span className="muted small-text">
-              {sum.done}/{sum.total} Done
-            </span>
-            {sum.asking > 0 && <span className="small-text waiting-text">入力待ち {sum.asking}</span>}
-          </span>
+            {opened && <ul className="card-children">{children.map(childCard)}</ul>}
+          </>
         )}
       </li>
     );
   };
-  const sessionRow = (r: WorkRow, s: Session) => (
-    <li key={r.key} data-row={r.key} className={`row work-row work-card${s.state === "needs_input" ? " asking" : ""}${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
-      <span className="work-line">
-        <StateBadge state={s.state} unread={s.unread} />
-        <span className="row-title ellipsis">{sessionLabel(s)}</span>
-        <span className="grow" />
-        <span className="muted small-text">{ago(s.state_at)}</span>
-      </span>
-      {cardBody(s, undefined, artifactsOf([], s))}
-    </li>
-  );
+  const sessionRow = (r: WorkRow, s: Session) => {
+    const said = saidOf(s);
+    const meta = metaOf(s, undefined, true);
+    const chips = chipsOf(s, undefined, artifactsOf([], s));
+    return (
+      <li key={r.key} data-row={r.key} className={`row work-card${s.state === "needs_input" ? " asking" : ""}${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
+        {cardHead(s, undefined, sessionLabel(s))}
+        {said && <span className={said.ask ? "card-ask" : "card-last"}>{said.text}</span>}
+        {meta && <span className="card-meta">{meta}</span>}
+        {chips.length > 0 && <span className="card-chips">{chips}</span>}
+      </li>
+    );
+  };
   return (
     <nav className="split-rail work-rail" aria-label="作業の一覧" ref={list}>
       <div className="rail-head">
@@ -6284,12 +6304,12 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
         <section>
           <div className="section-title">作業中</div>
           {workRows.length === 0 && <p className="muted hint">動いているセッションはありません。管理で todo を任せるか、ちょっと Claude で始めると、ここに並びます。</p>}
-          <ul className="rows compact">
+          <ul className="rows work-cards">
             {workRows.flatMap((r, i) => {
               // Heads where the span changes, the list ordered by a time.
               const group = groupOf(r);
               const head = group && (i === 0 || groupOf(workRows[i - 1]) !== group) ? [<li key={`g:${group}`} className="row-group">{group}</li>] : [];
-              return [...head, r.todo ? todoRow(r.todo) : r.session ? sessionRow(r, r.session) : null, ...shownChildren(r).map(childRow)];
+              return [...head, r.todo ? todoRow(r.todo) : r.session ? sessionRow(r, r.session) : null];
             })}
           </ul>
         </section>

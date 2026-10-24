@@ -3894,44 +3894,138 @@ button.tab-row {
 }
 
 /* 作業's list: a parent's subtasks, unfolded under it. */
-/* 作業's cards: a session (or a todo's) with what it says and where it runs. */
-.work-row.work-card {
-  gap: 6px;
-  padding: 9px 10px;
-  margin-bottom: 6px;
+/* 作業's cards (the design's 案A): a session, or a todo's, with what it asks
+   or last said, where it runs, and its chips; a parent's subtasks inside it. */
+.work-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 8px;
+  margin: 0;
+  list-style: none;
+}
+
+.row.work-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
+  min-height: 0;
+  padding: 10px 12px;
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--bg);
 }
 
-.work-row.work-card.asking {
+.row.work-card:hover {
+  background: var(--card);
+}
+
+.row.work-card.asking {
   border-color: var(--waiting-line);
+  background: rgba(255, 157, 97, 0.06);
+}
+
+.row.work-card.selected,
+.row.child-card.selected {
+  border-color: var(--accent);
+  background: rgba(147, 165, 255, 0.08);
+  box-shadow: none;
+}
+
+.row.work-card.cursor,
+.row.child-card.cursor {
+  box-shadow: 0 0 0 1px var(--accent-line);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.card-state {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.card-state.st-running {
+  color: var(--running-text);
+  background: var(--running-soft);
+}
+
+.card-state.st-needs_input {
+  color: var(--waiting-text);
   background: var(--waiting-soft);
 }
 
-.work-row.work-card.selected {
-  border-color: var(--accent-line);
+.card-state.st-idle,
+.card-state.st-none {
+  color: var(--text-2);
+  background: var(--card-hover);
+}
+
+.card-state.st-ended {
+  color: var(--text-3);
+  background: none;
+  border: 1px solid var(--border);
 }
 
 .card-lead {
+  flex-shrink: 0;
   padding: 0 5px;
-  border: 1px solid var(--accent-line);
+  border: 1px solid var(--accent-fill);
   border-radius: 4px;
   color: var(--accent);
   font-size: 10px;
   font-weight: 600;
 }
 
+.card-unread {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.card-id {
+  flex-shrink: 0;
+  font-family: var(--mono-font);
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.card-title {
+  flex: 1 1 0;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-ago,
+.card-end {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
 .card-esc {
-  padding: 4px 8px;
+  padding: 5px 8px;
   border: 1px solid var(--waiting-line);
   border-radius: 6px;
+  background: rgba(255, 157, 97, 0.1);
   color: var(--waiting-text);
   font-size: 12px;
 }
 
 .card-ask {
-  padding: 5px 8px;
+  padding: 6px 8px;
   border: 1px solid var(--waiting-line);
   border-radius: 6px;
   background: var(--bg);
@@ -3951,7 +4045,7 @@ button.tab-row {
 
 .card-meta {
   font-size: 11px;
-  color: var(--text-3);
+  color: var(--text-2);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -3961,39 +4055,66 @@ button.tab-row {
   display: flex;
   flex-wrap: wrap;
   gap: 4px;
+}
+
+.card-chip {
+  padding: 1px 6px;
+  border-radius: 4px;
   font-size: 11px;
+  white-space: nowrap;
+}
+
+.chip-pr {
+  color: var(--review-text);
+  background: var(--review-soft);
 }
 
 .chip-ci {
-  padding: 0 6px;
-  border-radius: 4px;
   color: var(--danger);
   background: var(--danger-soft);
 }
 
-.chip-made {
-  padding: 0 6px;
-  border: 1px solid var(--running-soft);
-  border-radius: 4px;
+.chip-ok {
   color: var(--running-text);
+  background: var(--running-soft);
 }
 
-/* A parent's subtasks in one line: unfold, how they stand, what asks. */
+.chip-made {
+  color: var(--running-text);
+  border: 1px solid rgba(98, 212, 145, 0.4);
+}
+
+/* A parent's subtasks in one line: unfold, how they stand, what asks, what they made. */
 .card-subtasks {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--border);
 }
 
+.card-fold {
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.card-fold:hover:not(:disabled) {
+  background: none;
+  text-decoration: underline;
+}
+
 .subtask-bar {
-  display: flex;
-  width: 84px;
+  display: inline-flex;
+  width: 96px;
   height: 6px;
   border-radius: 3px;
   overflow: hidden;
-  background: var(--border-2);
+  background: var(--border);
 }
 
 .subtask-bar i.done {
@@ -4008,33 +4129,121 @@ button.tab-row {
   background: var(--waiting);
 }
 
-.waiting-text {
+.card-sum {
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+.card-sum.asking {
   color: var(--waiting-text);
 }
 
-/* A subtask's card: a step in, on its parent's guide. */
-.work-row.work-child {
-  margin-left: 14px;
-  padding-left: 10px;
-  border-left: 2px solid var(--border-2);
-  border-radius: 0 8px 8px 0;
+/* The subtasks, inside their parent's card on its guide. */
+.card-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 0 6px;
+  padding: 0 0 0 12px;
+  border-left: 2px solid var(--border);
+  list-style: none;
 }
 
-.work-row.work-child.not-started {
+.row.child-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  min-height: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.row.child-card.asking {
+  border-color: var(--waiting-line);
+  background: rgba(255, 157, 97, 0.06);
+}
+
+.row.child-card .card-state {
+  font-size: 10.5px;
+  padding: 0 5px;
+}
+
+.row.child-card .card-title {
+  font-weight: 400;
+}
+
+.row.child-card.not-started,
+.row.child-card.done {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  color: var(--text-2);
+}
+
+.row.child-card.not-started {
   border-style: dashed;
-  border-left-style: solid;
+  border-color: var(--border-2);
   background: none;
 }
 
-.work-row.work-child.done {
+.row.child-card.done {
   border-color: transparent;
-  border-left-color: var(--border-2);
   background: none;
-  opacity: 0.6;
+  opacity: 0.75;
+}
+
+.row.child-card.off .card-title {
+  color: var(--text-3);
+}
+
+.card-ring {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--text-3);
 }
 
 .card-done {
   color: var(--running);
+  font-size: 12px;
+}
+
+.child-esc {
+  font-size: 11px;
+  color: var(--waiting-text);
+}
+
+.child-ask {
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.child-last {
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.child-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 11px;
+  color: var(--text-2);
 }
 
 .work-row.work-child.off .row-title {
