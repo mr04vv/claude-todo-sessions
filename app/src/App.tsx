@@ -4119,7 +4119,10 @@ const REVIEW_CLS: Partial<Record<Review["state"], string>> = { requested: "gh-pr
 /// The PRs on the left (review requests, then the user's own), the picked
 /// one on the right: a request's description and how its review starts, or
 /// an own PR's stage, checks, reviews and what to do next.
-function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, run, report, onRefresh, onOpenTodo }: {
+/// A PR's own page in the PR page's right (ids are letters and digits only).
+const prTabId = (url: string) => `gh${url.replace(/^https:\/\/github\.com\//, "").replace(/[^A-Za-z0-9]/g, "")}`;
+
+function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, covered, run, report, onRefresh, onOpenTodo }: {
   prs: PrLists | null;
   /// While the PRs are being taken again, so ↻ turns.
   prsLoading: boolean;
@@ -4130,11 +4133,17 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   /// Reviews that went in since the PRs were taken: their verdicts by URL.
   submitted: Map<string, string>;
   local: LocalRepo[];
+  /// A dialog is up over the page (a PR's GitHub page steps aside).
+  covered: boolean;
   run: (f: () => Promise<unknown>) => void;
   report: (e: unknown) => void;
   onRefresh: () => void;
   onOpenTodo: (id: number) => void;
 }) {
+  // Each PR's GitHub page, opened in the right in place of its detail, kept
+  // as its own (where it was left) while the app runs; by URL.
+  const [githubPages, setGithubPages] = useState<Record<string, BrowserTab>>({});
+  const [githubShown, setGithubShown] = useState(false);
   // Review requests first: they are what waits on the user.
   const [filter, setFilter] = useState<PrFilter>("review");
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
@@ -4204,14 +4213,37 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   const workSession = standing?.session ?? (todo && todo.sessions.length > 0 ? latest : undefined);
   // What the detail's buttons (and their keys) do; each does nothing when it is not there.
   const actions = {
-    github: () => pickedPr && openInBrowser?.(pickedPr.url),
+    // The PR's own GitHub page in the right, or its detail again.
+    github: () => {
+      if (!pickedPr) return;
+      if (githubShown) return setGithubShown(false);
+      const url = pickedPr.url;
+      setGithubPages((prev) => (prev[url] ? prev : { ...prev, [url]: { id: prTabId(url), url, openedFor: url, title: null, loading: true, nav: 0 } }));
+      setGithubShown(true);
+    },
     work: () => workSession && openWork?.(todo ? { todo: todo.id } : { session: workSession.session_id }),
     fix: () => canFix && fix!(latest!, todo!),
     todo: () => todo && onOpenTodo(todo.id),
   };
   const reviewerLabel = (reviews: Review[]) => (reviews.length === 0 ? "レビュー未依頼" : `${reviews.slice(0, 2).map((r) => r.who).join("・")}${reviews.length > 2 ? ` ほか ${reviews.length - 2}` : ""}`);
   const kbd = (action: Action) => <span className="kbd">{keyLabel(keyOf(action))}</span>;
-  const githubButton = <button onClick={actions.github}>GitHub で見る {kbd("start")}</button>;
+  const githubButton = <button onClick={actions.github}>GitHub で見る（ここで） {kbd("start")}</button>;
+  const githubPage = githubShown && pickedPr ? githubPages[pickedPr.url] : undefined;
+  // Moving to another PR with GitHub shown: that PR's own page (made the first time).
+  useEffect(() => {
+    if (!githubShown || !pickedPr || githubPages[pickedPr.url]) return;
+    const url = pickedPr.url;
+    setGithubPages((prev) => ({ ...prev, [url]: { id: prTabId(url), url, openedFor: url, title: null, loading: true, nav: 0 } }));
+  }, [githubShown, pickedPr?.url]); // eslint-disable-line react-hooks/exhaustive-deps
+  // The pages' loads and titles, for their own (not the app's) tabs.
+  useEffect(() => {
+    const update = (id: string, f: (t: BrowserTab) => BrowserTab) => setGithubPages((prev) => Object.fromEntries(Object.entries(prev).map(([u, t]) => [u, t.id === id ? f(t) : t])));
+    const offs = [
+      listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) => update(payload.tab, (t) => ({ ...t, url: payload.url, loading: payload.loading }))),
+      listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => update(payload.tab, (t) => ({ ...t, title: payload.title }))),
+    ];
+    return () => offs.forEach((off) => off.then((f) => f()));
+  }, []);
   const workButton = workSession && openWork && <button onClick={actions.work}>作業で開く {kbd("session")}</button>;
   let detail: React.ReactNode = <p className="muted pad">{prs ? "PR を選んでください。" : ""}</p>;
   if (pickedReview && standing) {
@@ -4474,7 +4506,32 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
             </section>
           )}
         </div>
-        <div className="pr-detail">{detail}</div>
+        {githubPage && pickedPr ? (
+          <section className="browser pr-github" aria-label={`${pickedPr.title} の GitHub`}>
+            <div className="browser-tabs pr-github-head">
+              <button className="ghost small" onClick={() => setGithubShown(false)}>
+                ← 詳細に戻る {kbd("start")}
+              </button>
+              <span className="mono muted">
+                {repoName(pickedPr.repo)}#{pickedPr.number}
+              </span>
+              <b className="ellipsis">{pickedPr.title}</b>
+              <span className="grow" />
+              <button className="ghost small" title="ブラウザのウインドウで開く" onClick={() => openInBrowser?.(pickedPr.url)}>
+                ブラウザで開く
+              </button>
+            </div>
+            <TabView
+              key={githubPage.id}
+              tab={githubPage}
+              covered={covered}
+              report={report}
+              onAddress={(url) => setGithubPages((prev) => ({ ...prev, [pickedPr.url]: { ...githubPage, url } }))}
+            />
+          </section>
+        ) : (
+          <div className="pr-detail">{detail}</div>
+        )}
       </div>
     </>
   );
@@ -8269,6 +8326,7 @@ export default function App() {
                     sessions={board?.inbox ?? []}
                     submitted={submittedReviews}
                     local={local}
+                    covered={covered}
                     run={run}
                     report={report}
                     onRefresh={loadPrs}
