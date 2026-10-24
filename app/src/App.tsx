@@ -4144,6 +4144,8 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   // as its own (where it was left) while the app runs; by URL.
   const [githubPages, setGithubPages] = useState<Record<string, BrowserTab>>({});
   const [githubShown, setGithubShown] = useState(false);
+  // The page shown, for the list's keys (set below, once the PR picked is known).
+  const githubShownRef = useRef<BrowserTab | undefined>(undefined);
   // Review requests first: they are what waits on the user.
   const [filter, setFilter] = useState<PrFilter>("review");
   const [repoFilter, setRepoFilter] = useState<string | null>(null);
@@ -4192,6 +4194,10 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
     },
     (e) => {
       if (matches(e, "prFilter")) return (setFilter(PR_FILTERS[(PR_FILTERS.indexOf(filter) + 1) % PR_FILTERS.length]), true);
+      // With a PR's GitHub page shown: ⌃l gives it the keyboard (⌃h there comes back), Esc goes back to the detail.
+      const page = githubShownRef.current;
+      if (page && matches(e, "sidePane")) return (keysToTab(page, page.id, report), true);
+      if (page && e.key === "Escape") return (setGithubShown(false), true);
       const act = matches(e, "start") ? actions.github : matches(e, "session") ? actions.work : matches(e, "showTodo") ? actions.todo : undefined;
       if (act) return (act(), true);
       if (!pickedReview) return false;
@@ -4229,6 +4235,7 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   const kbd = (action: Action) => <span className="kbd">{keyLabel(keyOf(action))}</span>;
   const githubButton = <button onClick={actions.github}>GitHub で見る（ここで） {kbd("start")}</button>;
   const githubPage = githubShown && pickedPr ? githubPages[pickedPr.url] : undefined;
+  githubShownRef.current = githubPage;
   // Moving to another PR with GitHub shown: that PR's own page (made the first time).
   useEffect(() => {
     if (!githubShown || !pickedPr || githubPages[pickedPr.url]) return;
@@ -4510,8 +4517,11 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
           <section className="browser pr-github" aria-label={`${pickedPr.title} の GitHub`}>
             <div className="browser-tabs pr-github-head">
               <button className="ghost small" onClick={() => setGithubShown(false)}>
-                ← 詳細に戻る {kbd("start")}
+                ← 詳細に戻る <span className="kbd">Esc</span>
               </button>
+              <span className="muted small-text">
+                {keyLabel(keyOf("sidePane"))} でページへ · {keyLabel(keyOf("sideApp"))} で一覧へ
+              </span>
               <span className="mono muted">
                 {repoName(pickedPr.repo)}#{pickedPr.number}
               </span>
