@@ -612,6 +612,8 @@ export const api = {
   browserWindowOpen: (url?: string) => invoke<void>("browser_window_open", { url: url ?? null }),
   /** The pages asked of the browser window before its page was up. */
   browserWindowTake: () => invoke<string[]>("browser_window_take"),
+  /** From the browser's window: the main window forward, at `space` if named. */
+  mainWindowShow: (space?: string) => invoke<void>("main_window_show", { space: space ?? null }),
   /** Each session's last reply, model and context (the ones that could be read). */
   sessionPeeks: (ids: string[]) => invoke<Record<string, Peek>>("session_peeks", { ids }),
   /** Where a session stands, in one line Claude writes (none when nothing can be said yet). */

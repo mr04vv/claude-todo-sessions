@@ -2132,6 +2132,16 @@ fn browser_window_open(app: AppHandle, state: State<'_, AppState>, url: Option<S
     window.set_focus().map_err(err)
 }
 
+/// From the browser's window: the main window comes forward, at `space` (⌘1–⌘6) if one is named.
+#[tauri::command]
+fn main_window_show(app: AppHandle, space: Option<String>) -> Result<(), String> {
+    show_window(&app);
+    match space {
+        Some(space) => app.emit_to(MAIN_WINDOW, SPACE_EVENT, SpaceAsk { space }).map_err(err),
+        None => Ok(()),
+    }
+}
+
 /// The pages asked of the browser window before its page was up.
 #[tauri::command]
 fn browser_window_take(state: State<'_, AppState>) -> Result<Vec<String>, String> {
@@ -3041,6 +3051,7 @@ fn main() {
             browser_open,
             browser_window_open,
             browser_window_take,
+            main_window_show,
             session_peeks,
             session_summary,
             browser_bounds,

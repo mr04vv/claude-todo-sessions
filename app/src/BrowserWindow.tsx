@@ -42,9 +42,18 @@ import {
   type SavedTabs,
 } from "./App";
 import { focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
-import { matches } from "./keymap";
+import { keyLabel, keyOf, matches, type Action } from "./keymap";
 import { findTabFor, insertAfter, newPin, nextAfterClose } from "./tabs";
 import { listenHere as listen } from "./windowEvents";
+
+/// The main window's spaces, by their keys, which bring it forward from here.
+const MAIN_SPACES: [Action, string][] = [
+  ["spaceManage", "manage"],
+  ["spaceWork", "work"],
+  ["spaceStudy", "study"],
+  ["spaceSlack", "slack"],
+  ["spaceArtifacts", "artifacts"],
+];
 
 /// The number after a tab id's letter (`t12`), for the next id.
 const idNumber = (id: string) => Number(/^t(\d+)$/.exec(id)?.[1] ?? 0);
@@ -208,6 +217,8 @@ export default function BrowserWindow() {
         [matches(e, "prevTab"), () => step(-1)],
         [matches(e, "nextTab"), () => step(1)],
         [matches(e, "sidePane"), () => active && keysToTab(active, active.id, report)],
+        // ⌘1–⌘6 (but ⌘4, this window): the main window, at that space.
+        ...MAIN_SPACES.map(([action, space]): [boolean, () => void] => [matches(e, action), () => void api.mainWindowShow(space).catch(report)]),
       ];
       const found = hit.find(([yes]) => yes);
       if (!found) return;
@@ -220,6 +231,11 @@ export default function BrowserWindow() {
 
   return (
     <div className="browser-window" style={{ "--tab-list-w": `${listW}px` } as React.CSSProperties}>
+      <div className="browser-window-bar">
+        <button className="ghost small" title={`Shosai に戻る（${keyLabel(keyOf("spaceWork"))} で作業、${keyLabel(keyOf("spaceManage"))} で管理）`} onClick={() => api.mainWindowShow().catch(report)}>
+          ← Shosai に戻る <span className="kbd">{keyLabel(keyOf("spaceManage"))}–{keyLabel(keyOf("spaceArtifacts"))}</span>
+        </button>
+      </div>
       {error && (
         <div className="error browser-window-error">
           <span className="grow">{error}</span>
