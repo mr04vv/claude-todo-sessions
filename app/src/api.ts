@@ -600,6 +600,8 @@ export const api = {
   /// Hides `tab`, or every tab.
   browserHide: (tab?: string) => invoke<void>("browser_hide", { tab: tab ?? null }),
   browserClose: (tab: string) => invoke<void>("browser_close", { tab }),
+  /** Opens a page in a window of its own, apart from the app's tabs. */
+  browserWindow: (url: string) => invoke<void>("browser_window", { url }),
   /// With `input`, the page's text box takes the typing too.
   browserFocus: (tab: string, input?: boolean, text?: string) => invoke<void>("browser_focus", { tab, input: input ?? null, text: text ?? null }),
   browserUrl: (tab: string) => invoke<string | null>("browser_url", { tab }),

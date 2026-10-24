@@ -190,6 +190,9 @@ const WorkContext = createContext<OpenWork | null>(null);
 /// Where "開く" takes a cloud session: its page in the work space, or Claude Desktop.
 type CloudTarget = "web" | "desktop";
 const CLOUD_TARGET_KEY = "cloudTarget";
+/// Where the links the browser space would open go: its tabs, or a window of their own each.
+type BrowserTarget = "app" | "window";
+const BROWSER_TARGET_KEY = "browserTarget";
 const OpenCloudContext = createContext<((sessionId: string) => void) | null>(null);
 
 /// 「再開して直させる」: sends the todo's session what to fix in its PR.
@@ -5033,9 +5036,11 @@ const FIXED_KEYS: [string, string][] = [
 /// Where things open and run, and what the browser keeps for sites: the
 /// logins (their sites and users), the sites not asked about, and the
 /// microphone and camera answers.
-function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, jevCredit, run, report, onClose }: {
+function SettingsDialog({ cloudTarget, onCloudTarget, browserTarget, onBrowserTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, jevCredit, run, report, onClose }: {
   cloudTarget: CloudTarget;
   onCloudTarget: (t: CloudTarget) => void;
+  browserTarget: BrowserTarget;
+  onBrowserTarget: (t: BrowserTarget) => void;
   terminalTarget: TerminalTarget;
   onTerminalTarget: (t: TerminalTarget) => void;
   herdr: HerdrSessions | null;
@@ -5078,6 +5083,16 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
               {(["web", "desktop"] as const).map((t) => (
                 <button key={t} className={cloudTarget === t ? "on" : ""} aria-pressed={cloudTarget === t} onClick={() => onCloudTarget(t)}>
                   {t === "web" ? "Web（アプリ内）" : "Claude Desktop"}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="setting-row">
+            <span className="grow">ブラウザ（リンクやページを開く場所）</span>
+            <div className="segmented" role="group" aria-label="ブラウザ">
+              {(["app", "window"] as const).map((t) => (
+                <button key={t} className={browserTarget === t ? "on" : ""} aria-pressed={browserTarget === t} onClick={() => onBrowserTarget(t)}>
+                  {t === "app" ? "アプリ内" : "別ウィンドウ"}
                 </button>
               ))}
             </div>
@@ -6123,6 +6138,11 @@ export default function App() {
     setNewTab(true);
   };
   const [cloudTarget, setCloudTargetState] = useState<CloudTarget>(() => load(CLOUD_TARGET_KEY, ["web", "desktop"] as const, "web"));
+  const [browserTarget, setBrowserTargetState] = useState<BrowserTarget>(() => load(BROWSER_TARGET_KEY, ["app", "window"] as const, "app"));
+  const setBrowserTarget = (t: BrowserTarget) => {
+    remember(BROWSER_TARGET_KEY, t);
+    setBrowserTargetState(t);
+  };
   const setCloudTarget = (t: CloudTarget) => {
     remember(CLOUD_TARGET_KEY, t);
     setCloudTargetState(t);
@@ -6140,6 +6160,7 @@ export default function App() {
   };
   const openInBrowser = (url: string, keys = true, behind = false, text?: string) => {
     if (opensOutside() || SLACK_PERMALINK.test(url)) return openOutside(url);
+    if (browserTarget === "window" && /^https?:\/\//.test(url)) return void api.browserWindow(url).catch(report);
     const open = findTabFor(normalTabs.filter((t) => !t.term), url);
     if (open) {
       if (behind) return;
@@ -6158,6 +6179,7 @@ export default function App() {
   /// A link a page opens in a new window: a new tab right after that page's
   /// tab, in front with the keyboard (the user clicked it), or `behind` (⌘-click).
   const openFromPage = (url: string, from: string, behind: boolean) => {
+    if (browserTarget === "window" && /^https?:\/\//.test(url)) return void api.browserWindow(url).catch(report);
     const id = `t${nextTab.current++}`;
     if (!behind) focusSoon(id);
     setTabs((prev) => insertAfter(prev, { id, url, title: null, loading: true, nav: 0 }, prev.some((t) => t.id === from && !t.pinned && !t.area) ? from : (activeTab?.id ?? null)));
@@ -8302,6 +8324,8 @@ export default function App() {
           <SettingsDialog
             cloudTarget={cloudTarget}
             onCloudTarget={setCloudTarget}
+            browserTarget={browserTarget}
+            onBrowserTarget={setBrowserTarget}
             terminalTarget={terminalTarget}
             onTerminalTarget={setTerminalTarget}
             herdr={herdr}

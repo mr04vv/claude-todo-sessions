@@ -2035,6 +2035,15 @@ fn browser_hide(app: AppHandle, tab: Option<String>) -> Result<(), String> {
     cef_browser::set_hidden(&app, only, &[], true)
 }
 
+/// Opens a page in a window of its own, apart from the app's tabs.
+#[tauri::command(async)]
+fn browser_window(app: AppHandle, url: String) -> Result<(), String> {
+    if !is_web_url(&url) {
+        return Err(format!("開けない URL です: {url}"));
+    }
+    cef_browser::open_window(&app, &url)
+}
+
 #[tauri::command(async)]
 fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
     cef_browser::close(&app, tab_id(&tab)?)
@@ -2929,6 +2938,7 @@ fn main() {
             usage,
             gh_prs,
             browser_open,
+            browser_window,
             browser_bounds,
             browser_hide,
             browser_close,
