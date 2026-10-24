@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressToUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, sameObject } from "./tabs.ts";
+import { addressToUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, rightChildren, sameObject } from "./tabs.ts";
 
 const tabs = (...ids: string[]) => ids.map((id) => ({ id }));
 
@@ -79,4 +79,17 @@ test("a page opened beside a session in 作業 is the right, a session's page or
   assert.equal(isWorkPage(herdr), false);
   assert.equal(isWorkPage(reading), false);
   assert.equal(isSplitRight([page, cloud], "p1", [], undefined), true);
+});
+
+test("作業's right shows the subtasks not closed there, and the one asked for among them, else one asking, else one at work, else the first", () => {
+  const kids = [{ id: 1, state: "idle" }, { id: 2, state: "needs_input" }, { id: 3, state: "running" }];
+  const asks = (c: { state: string }) => c.state === "needs_input";
+  const runs = (c: { state: string }) => c.state === "running";
+  const shown = rightChildren(kids, [2], 3, asks, runs);
+  assert.deepEqual(shown.children.map((c) => c.id), [1, 3]);
+  assert.equal(shown.child?.id, 3);
+  assert.equal(rightChildren(kids, [], null, asks, runs).child?.id, 2);
+  assert.equal(rightChildren(kids, [2], 2, asks, runs).child?.id, 3);
+  assert.equal(rightChildren(kids, [2, 3], null, asks, runs).child?.id, 1);
+  assert.equal(rightChildren(kids, [1, 2, 3], 1, asks, runs).child, undefined);
 });

@@ -3819,3 +3819,12 @@ button.tab-row {
   flex-wrap: wrap;
   gap: 8px;
 }
+
+/* 作業's list: a parent's subtasks, unfolded under it. */
+.work-row.work-child {
+  padding-left: 24px;
+}
+
+.work-row.work-child.off .row-title {
+  color: var(--text-3);
+}

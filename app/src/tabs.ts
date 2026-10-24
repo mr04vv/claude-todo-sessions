@@ -52,6 +52,13 @@ export function isSplitRight<T extends { id: string; area?: string; session?: st
 }
 
 /// `tabs` with `tab` put right after `after` (the tab it was opened from), or last.
+/// 作業's right: the subtasks not closed there, and the one shown: the one
+/// asked for, else one asking, else one at work, else the first.
+export function rightChildren<T extends { id: number }>(children: T[], closed: number[], asked: number | null, asks: (c: T) => boolean, runs: (c: T) => boolean) {
+  const shown = children.filter((c) => !closed.includes(c.id));
+  return { children: shown, child: shown.find((c) => c.id === asked) ?? shown.find(asks) ?? shown.find(runs) ?? shown[0] };
+}
+
 export function insertAfter<T extends { id: string }>(tabs: T[], tab: T, after: string | null): T[] {
   const i = after === null ? -1 : tabs.findIndex((t) => t.id === after);
   if (i < 0) return [...tabs, tab];

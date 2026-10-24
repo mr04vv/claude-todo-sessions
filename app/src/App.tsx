@@ -94,7 +94,7 @@ import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
-import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, pathOfFileUrl, SEARCH_URL } from "./tabs";
+import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, pathOfFileUrl, rightChildren, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
 import { ageGroup, arrange, inWorkOrder, moveTo, type WorkSort } from "./order";
@@ -5715,10 +5715,12 @@ function StudyRail({ reading, readings, opened, run, onRead, onChapter, onCopy, 
 }
 
 /// What 作業 keeps across restarts: what is picked in its list (`t<todo id>`
-/// or `s<session id>`) and the subtask shown on the right.
+/// or `s<session id>`), the subtask shown on the right, and the subtasks
+/// closed there (opened again from the list).
 interface WorkState {
   pick: string | null;
   child: number | null;
+  closed?: number[];
 }
 const WORK_KEY = "work";
 /// Whether 作業's right side (the subtasks, the pages opened beside) is hidden.
@@ -5735,6 +5737,8 @@ function mainSession(todo: Todo): Session | undefined {
 interface WorkView {
   title: string | null;
   todo?: Todo;
+  /// Whether the todo has subtasks (shown on the right or closed there).
+  parent?: boolean;
   children: Todo[];
   child?: Todo;
   left?: Session;
@@ -5752,11 +5756,10 @@ function workViewOf(board: Board | null, work: WorkState): WorkView {
   if (!todo) return none;
   const children = board.todos.filter((t) => t.parent_id === todo.id);
   if (children.length === 0 && !todo.plan) return { title: todo.title, todo, children, left: mainSession(todo) };
-  // The subtask asked for, else one that asks, else one at work, else the first.
   const asks = (t: Todo) => t.sessions.some((s) => s.state === "needs_input");
   const runs = (t: Todo) => t.sessions.some((s) => s.state === "running");
-  const child = children.find((c) => c.id === work.child) ?? children.find(asks) ?? children.find(runs) ?? children[0];
-  return { title: todo.title, todo, children, child, left: mainSession(todo), right: child && mainSession(child) };
+  const shown = rightChildren(children, work.closed ?? [], work.child, asks, runs);
+  return { title: todo.title, todo, parent: children.length > 0, children: shown.children, child: shown.child, left: mainSession(todo), right: shown.child && mainSession(shown.child) };
 }
 
 /// A row of 作業's list: a todo at work (a parent with its subtasks' state)
@@ -5792,13 +5795,16 @@ function workListOf(board: Board, waiting: WaitItem[], sort: WorkSort, order: st
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
 /// then the work in one list (the todos at work, the reviews and the sessions
 /// of no todo), in the order chosen. j k move, Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
-function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, onSort, onOrder, run }: {
+function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, onSort, onOrder, run }: {
   board: Board;
   /// How the work is ordered (as ⌘K's sessions are), and the order the user put it in.
   sort: WorkSort;
   order: string[];
   waiting: WaitItem[];
   pick: string | null;
+  /// The subtask shown on 作業's right, and those closed there.
+  child: number | null;
+  closed: number[];
   width: number;
   onResize: (w: number) => void;
   /// Shows a row's work: a todo (a subtask's at its parent) or a session.
@@ -5832,7 +5838,22 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
     if (!manual) onSort("manual");
   };
   const { dragging, start: dragRow } = useDragMove("data-row", moveRow);
-  const rows: WorkRow[] = [...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })), ...workRows];
+  // A parent's subtasks, under it while unfolded (▸, l; h folds).
+  const [unfolded, setUnfolded] = useState<Set<number>>(new Set());
+  const fold = (id: number, open: boolean) =>
+    setUnfolded((prev) => {
+      const next = new Set(prev);
+      if (open) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  const subtasksOf = (id: number) => todos.filter((c) => c.parent_id === id);
+  const childKey = (c: Todo) => `c${c.id}`;
+  const shownChildren = (r: WorkRow) => (r.todo && unfolded.has(r.todo.id) ? subtasksOf(r.todo.id) : []);
+  const rows: WorkRow[] = [
+    ...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })),
+    ...workRows.flatMap((r) => [r, ...shownChildren(r).map((c): WorkRow => ({ key: childKey(c), todo: c }))]),
+  ];
   const open = (r: WorkRow) => (r.todo ? onPick({ todo: r.todo.id }) : r.session ? onPick({ session: r.session.session_id }) : undefined);
   const { cursorId, setCursor, list } = useRowCursor(
     [QUICK_ROW, ...rows.map((r) => r.key), ...(asks > 0 ? [ASKS_ROW] : [])],
@@ -5844,6 +5865,14 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
     },
     (e, id) => {
       if (matches(e, "workEnded")) return (setShowEnded((v) => !v), true);
+      // h l: fold or unfold the subtasks of the todo under the cursor (h on a subtask: of its parent, the cursor going up to it).
+      const under = rows.find((x) => x.key === id)?.todo;
+      const parentId = under?.parent_id ?? under?.id;
+      if ((matches(e, "left") || matches(e, "right")) && parentId != null && subtasksOf(parentId).length > 0) {
+        fold(parentId, matches(e, "right"));
+        if (under?.parent_id != null) setCursor(`t${under.parent_id}`);
+        return true;
+      }
       if (matches(e, "workSort")) return (onSort(WORK_SORTS[(WORK_SORTS.indexOf(sort) + 1) % WORK_SORTS.length]), true);
       // ⇧j ⇧k: the row under the cursor a place down or up in the work.
       const shift = matches(e, "workMoveDown") ? 1 : matches(e, "workMoveUp") ? -1 : 0;
@@ -5879,6 +5908,21 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
   // The cursor starts on the first of the work, not on ちょっと Claude above it.
   useEffect(() => void (rows[0] && setCursor(rows[0].key)), []); // eslint-disable-line react-hooks/exhaustive-deps
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
+  const childRow = (c: Todo) => {
+    const key = childKey(c);
+    const s = mainSession(c);
+    const off = closed.includes(c.id);
+    return (
+      <li key={key} data-row={key} className={`row work-row work-child${key === cursorId ? " cursor" : ""}${pick === `t${c.parent_id}` && child === c.id ? " selected" : ""}${off ? " off" : ""}`} onClick={() => onPick({ todo: c.id })}>
+        <span className="work-line">
+          {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={c.status} />}
+          <span className="mono muted">#{c.id}</span>
+          <span className="row-title ellipsis">{c.title}</span>
+          {off && <span className="muted small-text">右から外している</span>}
+        </span>
+      </li>
+    );
+  };
   const todoRow = (t: Todo) => {
     const children = todos.filter((c) => c.parent_id === t.id);
     const key = `t${t.id}`;
@@ -5893,9 +5937,15 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
         </span>
         <span className="work-line muted small-text">
           {children.length > 0 && (
-            <span>
-              サブタスク {board.todos.filter((c) => c.parent_id === t.id && c.status === "done").length}/{board.todos.filter((c) => c.parent_id === t.id).length}
-            </span>
+            <button
+              className="ghost small"
+              aria-expanded={unfolded.has(t.id)}
+              title={`サブタスクを${unfolded.has(t.id) ? "畳む" : "開く"}（${keyLabel(keyOf(unfolded.has(t.id) ? "left" : "right"))}）`}
+              onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => (e.stopPropagation(), fold(t.id, !unfolded.has(t.id)))}
+            >
+              {unfolded.has(t.id) ? "▾" : "▸"} サブタスク {board.todos.filter((c) => c.parent_id === t.id && c.status === "done").length}/{board.todos.filter((c) => c.parent_id === t.id).length}
+            </button>
           )}
           {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
           {s && <span className="ellipsis">{placeOf(s)} · {ago(s.state_at)}</span>}
@@ -5992,7 +6042,7 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
               // Heads where the span changes, the list ordered by a time.
               const group = groupOf(r);
               const head = group && (i === 0 || groupOf(workRows[i - 1]) !== group) ? [<li key={`g:${group}`} className="row-group">{group}</li>] : [];
-              return [...head, r.todo ? todoRow(r.todo) : r.session ? sessionRow(r, r.session) : null];
+              return [...head, r.todo ? todoRow(r.todo) : r.session ? sessionRow(r, r.session) : null, ...shownChildren(r).map(childRow)];
             })}
           </ul>
         </section>
@@ -6263,9 +6313,13 @@ export default function App() {
     const todos = board?.todos ?? [];
     const todo = "todo" in at ? todos.find((t) => t.id === at.todo) : todos.find((t) => t.sessions.some((s) => s.session_id === at.session));
     const parent = todo?.parent_id != null ? todos.find((t) => t.id === todo.parent_id) : undefined;
-    const next: WorkState = parent ? { pick: `t${parent.id}`, child: todo!.id } : todo ? { pick: `t${todo.id}`, child: work.child } : "session" in at ? { pick: `s${at.session}`, child: null } : work;
+    const closed = (work.closed ?? []).filter((id) => id !== todo?.id);
+    const next: WorkState = parent ? { pick: `t${parent.id}`, child: todo!.id, closed } : todo ? { pick: `t${todo.id}`, child: work.child, closed } : "session" in at ? { pick: `s${at.session}`, child: null, closed } : work;
     setWork(next);
-    if (parent) setWorkPage(null);
+    if (parent) {
+      setWorkPage(null);
+      setWorkRightHidden(false);
+    }
     setSpace("work");
     const view = workViewOf(board, next);
     const side = parent ? view.right : view.left;
@@ -6324,8 +6378,6 @@ export default function App() {
     else if (workView.right) keysToTab(workTab(workView.right) ?? null, id, report);
     else if (focusTyping === "right") focusSide(false, "right");
   };
-  const closeWorkPageRef = useRef(closeWorkPage);
-  closeWorkPageRef.current = closeWorkPage;
   /// ⌘⇧E: hides 作業's right side, or shows it again; hidden, the keyboard it had goes left.
   const toggleWorkRight = () => {
     if (space !== "work" || (workView.children.length === 0 && workPages.length === 0)) return;
@@ -6335,8 +6387,8 @@ export default function App() {
   const toggleWorkRightRef = useRef(toggleWorkRight);
   toggleWorkRightRef.current = toggleWorkRight;
   /// Picks a subtask on 作業's right; its session takes the keyboard.
-  const pickChild = (id: number) => {
-    setWork({ ...work, child: id });
+  const pickChild = (id: number, closed = work.closed) => {
+    setWork({ ...work, child: id, closed });
     setWorkPage(null);
     const child = (board?.todos ?? []).find((t) => t.id === id);
     const session = child && mainSession(child);
@@ -6345,6 +6397,27 @@ export default function App() {
     else if (session) focusSoon(workTabId(session.session_id));
     setFocusTyping("right");
   };
+
+  /// Takes subtask `id` off 作業's right (its session runs on; the list opens
+  /// it again): the next subtask is shown, else a page opened beside, else
+  /// the right side goes and the keyboard with it to the left.
+  const closeChild = (id: number) => {
+    const closed = [...(work.closed ?? []), id];
+    if (workView.child?.id !== id) return setWork({ ...work, closed });
+    const next = nextAfterClose(workView.children.map((c) => ({ id: `${c.id}` })), `${id}`);
+    if (next) return pickChild(Number(next.id), closed);
+    setWork({ ...work, closed });
+    if (workPages[0]) showWorkPage(workPages[0].id);
+    else if (focusTyping === "right") focusSide(false, "right");
+  };
+  /// ⌘W or × on 作業's right: closes the page shown, else takes the subtask off.
+  const closeRight = (tab?: string) => {
+    if (tab && workPages.some((t) => t.id === tab)) return closeWorkPage(tab);
+    if (workPageTab) return closeWorkPage(workPageTab.id);
+    if (workView.child) closeChild(workView.child.id);
+  };
+  const closeRightRef = useRef(closeRight);
+  closeRightRef.current = closeRight;
 
   // A split view (作業, or 学習 while reading): its left and right, and which
   // of them has the keyboard (null: the list on its left, or another app).
@@ -6494,7 +6567,7 @@ export default function App() {
       return true;
     }
     if (space === "work") {
-      if (focusTyping === "right" && workRightShown && workPageTab) closeWorkPage(workPageTab.id);
+      if (focusTyping === "right" && workRightShown) closeRight();
       return true;
     }
     if (!browserShown) return false;
@@ -6831,7 +6904,7 @@ export default function App() {
         splitRef.current ? switchSplitTabRef.current(onSplitRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
       ),
       // ⌘W in a page: the browser space's page shown, or a page opened beside in 作業 (a split view's other right pages stay).
-      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, ({ payload }) => (splitRef.current && onSplitRightRef.current(payload.tab) ? closeWorkPageRef.current(payload.tab) : closeShownRef.current())),
+      listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, ({ payload }) => (splitRef.current && onSplitRightRef.current(payload.tab) ? closeRightRef.current(payload.tab) : closeShownRef.current())),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => archiveShownRef.current()),
       listen(OPEN_PALETTE_EVENT, () => {
         dialogFromPage.current = true;
@@ -7953,6 +8026,8 @@ export default function App() {
                 board={board}
                 waiting={waiting}
                 pick={work.pick}
+                child={workView.child?.id ?? null}
+                closed={work.closed ?? []}
                 sort={workSort}
                 order={workOrder}
                 width={railW}
@@ -7968,11 +8043,11 @@ export default function App() {
               />
               {workView.left || workView.todo ? (
                 <>
-                  <section className="focus-left browser" aria-label={workView.right || workView.children.length > 0 ? "指揮役のセッション" : "セッション"}>
+                  <section className="focus-left browser" aria-label={workView.parent ? "指揮役のセッション" : "セッション"}>
                     <div className="browser-tabs work-head">
                       {workView.todo && <span className="mono muted">#{workView.todo.id}</span>}
                       <b className="ellipsis">{workView.title}</b>
-                      {workView.children.length > 0 && <span className="muted small-text">指揮役</span>}
+                      {workView.parent && <span className="muted small-text">指揮役</span>}
                       {workView.left && <StateBadge state={workView.left.state} unread={workView.left.unread} />}
                       <span className="grow" />
                       {workView.left && <span className="muted small-text">{placeOf(workView.left)}</span>}
@@ -8003,6 +8078,9 @@ export default function App() {
                                   {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={c.status} />}
                                   <span className="mono">#{c.id}</span>
                                   <span className="ellipsis">{c.title}</span>
+                                </button>
+                                <button className="ghost icon browser-tab-close" aria-label={`#${c.id} を右から外す`} title="右から外す（セッションは動いたまま。左の一覧で開くと戻ります）" onClick={() => closeChild(c.id)}>
+                                  <Icon name="close" size={11} />
                                 </button>
                               </span>
                             );
