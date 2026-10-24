@@ -2476,10 +2476,21 @@ body.resizing {
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
-/* A split view's sides: on their tab strips, which their pages do not cover. */
+/* A split view's sides: on their tab strips, which their pages do not cover.
+   The side with the keyboard is tinted with a thicker bar; the others dim. */
 .app.typing-left .focus-left > .browser-tabs,
 .app.typing-right .focus-right .focus-head {
-  box-shadow: inset 0 3px 0 var(--accent);
+  background: var(--accent-soft);
+  box-shadow: inset 0 4px 0 var(--accent);
+}
+
+.app.split-shown:not(.typing-left) .focus-left > .browser-tabs > *,
+.app.split-shown:not(.typing-right) .focus-right .focus-head > * {
+  opacity: 0.5;
+}
+
+.app.split-shown.typing-app:not([data-zone]) .split-rail .rail-head {
+  background: var(--accent-soft);
 }
 
 /* A split view's sides: the left page, and the right one at its width. */
