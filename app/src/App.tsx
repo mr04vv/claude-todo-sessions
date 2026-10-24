@@ -465,7 +465,8 @@ export function Resizer({ label, cssVar, width, min, max, onResize, edge = "left
   const grow = edge === "left" ? -1 : 1;
   const onPointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
-    const app = (e.currentTarget as HTMLElement).closest<HTMLElement>(".app");
+    // The window's root, which holds the sizes (the main window's, the browser window's).
+    const app = (e.currentTarget as HTMLElement).closest<HTMLElement>(".app, .browser-window");
     const startX = e.clientX;
     let next = width;
     let frame = 0;

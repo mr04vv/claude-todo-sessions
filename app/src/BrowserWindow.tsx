@@ -274,7 +274,7 @@ export default function BrowserWindow() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className={`browser-window typing-${typing}`} style={{ "--tab-list-w": `${listW}px` } as React.CSSProperties}>
+    <div className={`browser-window typing-${typing}`} style={{ "--tab-list-w": `${listW}px`, "--ask-w": `${askW}px` } as React.CSSProperties}>
       <div className="browser-window-bar">
         <button className="ghost small" title={`Shosai に戻る（${keyLabel(keyOf("spaceWork"))} で作業、${keyLabel(keyOf("spaceManage"))} で管理）`} onClick={() => api.mainWindowShow().catch(report)}>
           ← Shosai に戻る <span className="kbd">{keyLabel(keyOf("spaceManage"))}–{keyLabel(keyOf("spaceArtifacts"))}</span>
@@ -320,7 +320,7 @@ export default function BrowserWindow() {
         onMove={move}
       />
       {askOpen && askTab && (
-        <aside className="browser-dock ask-dock" style={{ "--ask-w": `${askW}px` } as React.CSSProperties} aria-label="ChatGPT の解説">
+        <aside className="browser-dock ask-dock" aria-label="ChatGPT の解説">
           <Resizer label="ChatGPT の幅" cssVar="--ask-w" width={askW} min={ASK_W.min} max={() => ASK_W.max} onResize={setAskW} />
           <section className="browser">
             <div className="browser-tabs ask-head">
