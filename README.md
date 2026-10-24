@@ -79,7 +79,7 @@ pkill -x todo-sessions-app; sleep 1; rm -rf "/Applications/Todo Sessions.app" "/
   - キーボードだけで操作できます。j k で移動（カンバンは h l で左右の列、リストは h l でレーンの開閉）、Enter で todo のシート（e でタイトル、m でメモ、a でサブタスク）、s でステータス、⇧h ⇧l でカードを左右の列へ、⌘⇧[ ⌘⇧] で前・次のレーン、o で作業で開く（セッションがなければ起動シート）、⌘Enter で起動シート、p で PR / issue、u で親の todo、c でその場所に todo を追加、/ で絞り込み欄へ
   - 「絞り込み」と「フィルター」はカンバンとリストで別々に持ち、アプリを閉じても残ります。「保存…」で名前を付けると、ビューとして呼び出せます
 - todo のシート：タイトル・ステータス・場所・親・issue / PR・フォルダ・メモ・リンクをその場で編集できます
-  - 「セッションを始める」（⌘Enter）で起動シートを開き、最初のプロンプト・スキル・起動先（Cloud か herdr）・Claude か Codex・モデルと effort を選んで始めます。リポジトリが2つ以上の todo は計画用で、Local の指揮役が計画を立ててサブタスクを作ります
+  - 「セッションを始める」（⌘Enter）で起動シートを開き、最初のプロンプト・スキル・起動先（Cloud か herdr）・Claude か Codex・モデルと effort を選んで始めます。モデルの既定は「自動」で、始めるときに todo の内容から Claude（haiku）がモデルと effort を選びます（選んだものと理由が下に出ます。effort を選んでいればそちらを使います）。リポジトリが2つ以上の todo は計画用で、Local の指揮役が計画を立ててサブタスクを作ります
   - Codex は herdr の中だけで動き、最初のプロンプトの `[todo:N]` で todo に紐づきます。閉じたものは `codex resume` で再開します
 - PR：自分へのレビュー依頼（`gh search prs --review-requested @me`）と自分の PR（`--author @me`）を並べます。f ですべて・レビュー依頼・自分の PR を切り替えます
   - レビュー依頼で Enter を押すと、todo を作らずにレビューのセッションを始めます。エージェント（Claude / Codex）、提出（提出前に確認する / 自動で提出する）、動く場所（Cloud / herdr）は上で選びます
