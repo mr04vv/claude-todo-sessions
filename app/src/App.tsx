@@ -80,6 +80,7 @@ import {
   type SlackThreadMessage,
   type SlackView,
   SLACK_POSTED_EVENT,
+  type Peek,
   type Session,
   type SessionState,
   type StartOptions,
@@ -98,6 +99,7 @@ import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, isWorkPag
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
 import { ageGroup, arrange, inWorkOrder, moveTo, type WorkSort } from "./order";
+import { modelLabel, sizeLabel, subtaskSummary } from "./workCards";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
 import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
@@ -5845,10 +5847,31 @@ function workListOf(board: Board, waiting: WaitItem[], sort: WorkSort, order: st
   return { todos, waits, asks: waiting.length - waits.length, work, timeOf, endedCount: board.inbox.filter((s) => !live(s) && listed(s)).length };
 }
 
+/// The peeks fetched (last reply, model, context), by session, with the
+/// state_at they were read at: read again only when a session's state moves.
+const peekCache = new Map<string, { at: number; peek: Peek | undefined }>();
+/// The peeks of `sessions` (Claude's), fetched for those not read at their state yet.
+function usePeeks(sessions: Session[], report: (e: unknown) => void) {
+  const [, bump] = useState(0);
+  const want = sessions.filter((s) => s.agent !== "codex" && peekCache.get(s.session_id)?.at !== s.state_at);
+  const key = want.map((s) => `${s.session_id}:${s.state_at}`).join(",");
+  useEffect(() => {
+    if (want.length === 0) return;
+    const ats = new Map(want.map((s) => [s.session_id, s.state_at]));
+    // Asked ones are noted at once, so a slow answer is not asked for again.
+    for (const [id, at] of ats) peekCache.set(id, { at, peek: peekCache.get(id)?.peek });
+    api.sessionPeeks([...ats.keys()]).then((got) => {
+      for (const [id, at] of ats) peekCache.set(id, { at, peek: got[id] });
+      bump((n) => n + 1);
+    }, report);
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (s: Session) => peekCache.get(s.session_id)?.peek;
+}
+
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
 /// then the work in one list (the todos at work, the reviews and the sessions
 /// of no todo), in the order chosen. j k move, Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
-function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, onSort, onOrder, run }: {
+function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, onSort, onOrder, run, report }: {
   board: Board;
   /// How the work is ordered (as ⌘K's sessions are), and the order the user put it in.
   sort: WorkSort;
@@ -5871,6 +5894,7 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
   onSort: (s: WorkSort) => void;
   onOrder: (f: (prev: string[]) => string[]) => void;
   run: (f: () => Promise<unknown>) => void;
+  report: (e: unknown) => void;
 }) {
   const fix = useContext(FixContext);
   const [showEnded, setShowEnded] = useState(false);
@@ -5891,18 +5915,14 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
     if (!manual) onSort("manual");
   };
   const { dragging, start: dragRow } = useDragMove("data-row", moveRow);
-  // A parent's subtasks, under it while unfolded (▸, l; h folds).
-  const [unfolded, setUnfolded] = useState<Set<number>>(new Set());
-  const fold = (id: number, open: boolean) =>
-    setUnfolded((prev) => {
-      const next = new Set(prev);
-      if (open) next.add(id);
-      else next.delete(id);
-      return next;
-    });
-  const subtasksOf = (id: number) => todos.filter((c) => c.parent_id === id);
+  // A parent's subtasks, under it while unfolded (▸, l; h folds): as the
+  // user left it, else unfolded while one of them asks. Done ones too (faint).
+  const [folds, setFolds] = useState<Record<number, boolean>>({});
+  const fold = (id: number, open: boolean) => setFolds((prev) => ({ ...prev, [id]: open }));
+  const subtasksOf = (id: number) => board.todos.filter((c) => c.parent_id === id);
+  const isOpen = (id: number) => folds[id] ?? subtasksOf(id).some((c) => c.status !== "done" && c.sessions.some((x) => x.state === "needs_input"));
   const childKey = (c: Todo) => `c${c.id}`;
-  const shownChildren = (r: WorkRow) => (r.todo && unfolded.has(r.todo.id) ? subtasksOf(r.todo.id) : []);
+  const shownChildren = (r: WorkRow) => (r.todo && isOpen(r.todo.id) ? subtasksOf(r.todo.id) : []);
   const rows: WorkRow[] = [
     ...shownWaits.map((w) => ({ key: `w:${w.key}`, todo: w.todo, session: w.session })),
     ...workRows.flatMap((r) => [r, ...shownChildren(r).map((c): WorkRow => ({ key: childKey(c), todo: c }))]),
@@ -5961,61 +5981,118 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
   // The cursor starts on the first of the work, not on ちょっと Claude above it.
   useEffect(() => void (rows[0] && setCursor(rows[0].key)), []); // eslint-disable-line react-hooks/exhaustive-deps
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
+  // What the cards read from the sessions' messages: last reply, model, context.
+  const peekOf = usePeeks(rows.flatMap((r) => [r.session ?? (r.todo && mainSession(r.todo))].filter((x): x is Session => !!x)), report);
+  const artifactsOf = (todoIds: number[], session?: Session) => board.artifacts.filter((a) => (a.todo_id !== null && todoIds.includes(a.todo_id)) || (!!session && a.session_id === session.session_id)).length;
+  /// A card's lines under its head: what 指揮役 sent back, what it asks or last
+  /// said, where it runs (repo, place, model, context size), and its chips.
+  const cardBody = (s: Session | undefined, t: Todo | undefined, made: number, withRepo = true) => {
+    const p = s ? peekOf(s) : undefined;
+    const repos = t?.repos.length ? t.repos : (s?.repos ?? []);
+    const meta = [withRepo && repos.length ? (repos.length > 1 ? `${repos[0]} ほか ${repos.length - 1}` : repos[0]) : null, s ? placeOf(s) : null, p?.model ? modelLabel(p.model) : null, p?.context_tokens ? sizeLabel(p.context_tokens) : null].filter(Boolean);
+    const said = s?.state === "needs_input" && s.question ? s.question : p?.last;
+    return (
+      <>
+        {t?.escalation && <span className="card-esc">指揮役から：{t.escalation}</span>}
+        {said && <span className={s?.state === "needs_input" && s.question ? "card-ask" : "card-last"}>{said}</span>}
+        {meta.length > 0 && <span className="card-meta">{meta.join(" · ")}</span>}
+        {(t?.pr_state || t?.ci_state === "failure" || s?.review_url || made > 0) && (
+          <span className="card-chips">
+            {t?.pr_state && <span className={`gh gh-pr-${t.pr_state}`}>{PR_LABEL[t.pr_state]}</span>}
+            {t?.ci_state === "failure" && <span className="chip-ci">CI 失敗{t.ci_failed.length > 0 ? `：${t.ci_failed.join("・")}` : ""}</span>}
+            {s?.review_url && <span className="gh gh-pr-review_requested">レビュー対象 {prRef(s.review_url)}</span>}
+            {made > 0 && <span className="chip-made">成果物 {made}</span>}
+          </span>
+        )}
+      </>
+    );
+  };
   const childRow = (c: Todo) => {
     const key = childKey(c);
     const s = mainSession(c);
     const off = closed.includes(c.id);
+    const cls = `row work-row work-card work-child${key === cursorId ? " cursor" : ""}${pick === `t${c.parent_id}` && child === c.id ? " selected" : ""}${off ? " off" : ""}`;
+    // Done, or not started: one faint line.
+    if (c.status === "done" || !s)
+      return (
+        <li key={key} data-row={key} className={`${cls} ${c.status === "done" ? "done" : "not-started"}`} onClick={() => onPick({ todo: c.id })}>
+          <span className="work-line">
+            {c.status === "done" ? <span className="card-done">✓</span> : <StatusIcon status={c.status} />}
+            <span className="mono muted">#{c.id}</span>
+            <span className="row-title ellipsis">{c.title}</span>
+            <span className="grow" />
+            <span className="muted small-text">{c.status === "done" ? (c.pr_state ? PR_LABEL[c.pr_state] : "Done") : "未着手"}</span>
+          </span>
+        </li>
+      );
     return (
-      <li key={key} data-row={key} className={`row work-row work-child${key === cursorId ? " cursor" : ""}${pick === `t${c.parent_id}` && child === c.id ? " selected" : ""}${off ? " off" : ""}`} onClick={() => onPick({ todo: c.id })}>
+      <li key={key} data-row={key} className={`${cls}${s.state === "needs_input" ? " asking" : ""}`} onClick={() => onPick({ todo: c.id })}>
         <span className="work-line">
-          {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={c.status} />}
+          <StateBadge state={s.state} unread={s.unread} />
           <span className="mono muted">#{c.id}</span>
           <span className="row-title ellipsis">{c.title}</span>
+          <span className="grow" />
           {off && <span className="muted small-text">右から外している</span>}
+          <span className="muted small-text">{ago(s.state_at)}</span>
         </span>
+        {cardBody(s, c, 0, false)}
       </li>
     );
   };
   const todoRow = (t: Todo) => {
-    const children = todos.filter((c) => c.parent_id === t.id);
+    const children = subtasksOf(t.id);
     const key = `t${t.id}`;
     const s = mainSession(t);
     const under = waiting.filter((w) => w.todo && (w.todo.id === t.id || w.todo.parent_id === t.id)).length;
+    const sum = subtaskSummary(children);
+    const open = isOpen(t.id);
     return (
-      <li key={key} data-row={key} className={`row work-row${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
+      <li key={key} data-row={key} className={`row work-row work-card${s?.state === "needs_input" ? " asking" : ""}${key === cursorId ? " cursor" : ""}${pick === key ? " selected" : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
         <span className="work-line">
           {s ? <StateBadge state={s.state} unread={s.unread} /> : <StatusIcon status={t.status} />}
+          {children.length > 0 && <span className="card-lead">指揮役</span>}
           <span className="mono muted">#{t.id}</span>
           <span className="row-title ellipsis">{t.title}</span>
+          <span className="grow" />
+          {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
+          {s && <span className="muted small-text">{ago(s.state_at)}</span>}
         </span>
-        <span className="work-line muted small-text">
-          {children.length > 0 && (
+        {cardBody(s, t, artifactsOf([t.id, ...children.map((c) => c.id)], s))}
+        {children.length > 0 && (
+          <span className="card-subtasks">
             <button
               className="ghost small"
-              aria-expanded={unfolded.has(t.id)}
-              title={`サブタスクを${unfolded.has(t.id) ? "畳む" : "開く"}（${keyLabel(keyOf(unfolded.has(t.id) ? "left" : "right"))}）`}
+              aria-expanded={open}
+              title={`サブタスクを${open ? "畳む" : "開く"}（${keyLabel(keyOf(open ? "left" : "right"))}）`}
               onPointerDown={(e) => e.stopPropagation()}
-              onClick={(e) => (e.stopPropagation(), fold(t.id, !unfolded.has(t.id)))}
+              onClick={(e) => (e.stopPropagation(), fold(t.id, !open))}
             >
-              {unfolded.has(t.id) ? "▾" : "▸"} サブタスク {board.todos.filter((c) => c.parent_id === t.id && c.status === "done").length}/{board.todos.filter((c) => c.parent_id === t.id).length}
+              {open ? "▾" : "▸"} サブタスク <span className="kbd">{keyLabel(keyOf(open ? "left" : "right"))}</span>
             </button>
-          )}
-          {under > 0 && <span className="pill waiting">あなた待ち {under}</span>}
-          {s && <span className="ellipsis">{placeOf(s)} · {ago(s.state_at)}</span>}
-        </span>
+            <span className="subtask-bar" aria-hidden="true">
+              <i className="done" style={{ flexGrow: sum.done }} />
+              <i className="running" style={{ flexGrow: sum.running }} />
+              <i className="asking" style={{ flexGrow: sum.asking }} />
+              <i style={{ flexGrow: sum.other }} />
+            </span>
+            <span className="muted small-text">
+              {sum.done}/{sum.total} Done
+            </span>
+            {sum.asking > 0 && <span className="small-text waiting-text">入力待ち {sum.asking}</span>}
+          </span>
+        )}
       </li>
     );
   };
   const sessionRow = (r: WorkRow, s: Session) => (
-    <li key={r.key} data-row={r.key} className={`row work-row${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
+    <li key={r.key} data-row={r.key} className={`row work-row work-card${s.state === "needs_input" ? " asking" : ""}${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
       <span className="work-line">
         <StateBadge state={s.state} unread={s.unread} />
         <span className="row-title ellipsis">{sessionLabel(s)}</span>
+        <span className="grow" />
+        <span className="muted small-text">{ago(s.state_at)}</span>
       </span>
-      <span className="muted small-text ellipsis">
-        {s.review_url ? `${prRef(s.review_url)} · ` : ""}
-        {placeOf(s)} · {ago(s.state_at)}
-      </span>
+      {cardBody(s, undefined, artifactsOf([], s))}
     </li>
   );
   return (
@@ -8095,6 +8172,7 @@ export default function App() {
                 onSort={setWorkSort}
                 onOrder={setWorkOrder}
                 run={run}
+                report={report}
               />
               {workView.left || workView.todo ? (
                 <>

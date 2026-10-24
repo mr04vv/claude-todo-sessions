@@ -3878,8 +3878,147 @@ button.tab-row {
 }
 
 /* 作業's list: a parent's subtasks, unfolded under it. */
+/* 作業's cards: a session (or a todo's) with what it says and where it runs. */
+.work-row.work-card {
+  gap: 6px;
+  padding: 9px 10px;
+  margin-bottom: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+
+.work-row.work-card.asking {
+  border-color: var(--waiting-line);
+  background: var(--waiting-soft);
+}
+
+.work-row.work-card.selected {
+  border-color: var(--accent-line);
+}
+
+.card-lead {
+  padding: 0 5px;
+  border: 1px solid var(--accent-line);
+  border-radius: 4px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.card-esc {
+  padding: 4px 8px;
+  border: 1px solid var(--waiting-line);
+  border-radius: 6px;
+  color: var(--waiting-text);
+  font-size: 12px;
+}
+
+.card-ask {
+  padding: 5px 8px;
+  border: 1px solid var(--waiting-line);
+  border-radius: 6px;
+  background: var(--bg);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.card-last {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.card-meta {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  font-size: 11px;
+}
+
+.chip-ci {
+  padding: 0 6px;
+  border-radius: 4px;
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.chip-made {
+  padding: 0 6px;
+  border: 1px solid var(--running-soft);
+  border-radius: 4px;
+  color: var(--running-text);
+}
+
+/* A parent's subtasks in one line: unfold, how they stand, what asks. */
+.card-subtasks {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.subtask-bar {
+  display: flex;
+  width: 84px;
+  height: 6px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border-2);
+}
+
+.subtask-bar i.done {
+  background: var(--ended);
+}
+
+.subtask-bar i.running {
+  background: var(--running);
+}
+
+.subtask-bar i.asking {
+  background: var(--waiting);
+}
+
+.waiting-text {
+  color: var(--waiting-text);
+}
+
+/* A subtask's card: a step in, on its parent's guide. */
 .work-row.work-child {
-  padding-left: 24px;
+  margin-left: 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border-2);
+  border-radius: 0 8px 8px 0;
+}
+
+.work-row.work-child.not-started {
+  border-style: dashed;
+  border-left-style: solid;
+  background: none;
+}
+
+.work-row.work-child.done {
+  border-color: transparent;
+  border-left-color: var(--border-2);
+  background: none;
+  opacity: 0.6;
+}
+
+.card-done {
+  color: var(--running);
 }
 
 .work-row.work-child.off .row-title {
