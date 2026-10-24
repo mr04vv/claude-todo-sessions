@@ -70,3 +70,19 @@ export const fileUrl = (path: string) => `file://${path.split("/").map(encodeURI
 
 /// The path a file URL stands for (null for any other URL).
 export const pathOfFileUrl = (url: string) => (url.startsWith("file://") ? decodeURIComponent(url.slice("file://".length)) : null);
+
+/// Letters a pinned page's mark shows.
+const PIN_MARK_LETTERS = 2;
+/// The prefix of the ids of pages the user pinned (the app's own are `pin<name>`).
+const USER_PIN = "pinu";
+
+/// A page the user pins (a tab dragged onto the pins): an id not taken, its
+/// title for a name (else its site), and the name's first letters for a mark.
+export function newPin(pins: { id: string }[], url: string, title: string | null) {
+  const taken = new Set(pins.map((p) => p.id));
+  let n = 1;
+  while (taken.has(`${USER_PIN}${n}`)) n++;
+  const label = title?.trim() || new URL(url).hostname.replace(/^www\./, "");
+  const short = label.slice(0, PIN_MARK_LETTERS);
+  return { id: `${USER_PIN}${n}`, label, short: short.charAt(0).toUpperCase() + short.slice(1), url };
+}

@@ -3540,6 +3540,22 @@ button.slack-reaction:hover {
   background: var(--accent-soft);
 }
 
+/* A tab being dragged: the pins take it, where the dashed tile shows. */
+.pin.pin-drop {
+  display: flex;
+  align-items: center;
+  border: 1.5px dashed var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 11px;
+}
+
+.pin.pin-drop .pin-mark {
+  background: none;
+  color: var(--accent);
+  font-size: 16px;
+}
+
 .pin-mark {
   width: 26px;
   height: 26px;

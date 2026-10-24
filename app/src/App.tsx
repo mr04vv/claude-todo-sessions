@@ -95,7 +95,7 @@ import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
-import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, pathOfFileUrl, rightChildren, SEARCH_URL } from "./tabs";
+import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, newPin, nextAfterClose, pathOfFileUrl, rightChildren, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
 import { ageGroup, arrange, inWorkOrder, moveTo, type WorkSort } from "./order";
@@ -1663,9 +1663,9 @@ function restoreTabs(): { tabs: BrowserTab[]; active: string | null } {
   const saved = loadJson<SavedTabs>(PANE_TABS_KEY, { tabs: [], active: -1 });
   let n = 1;
   const tabs = saved.tabs
-    .filter((t) => !t.pinned || PINNED_PAGES.some((p) => p.id === t.pinned))
+    .filter((t) => !t.pinned || pinnedPages().some((p) => p.id === t.pinned))
     .map((t): BrowserTab => {
-      const pinned = PINNED_PAGES.find((p) => p.id === t.pinned);
+      const pinned = pinnedPages().find((p) => p.id === t.pinned);
       return { id: pinned?.id ?? `t${n++}`, url: t.url, openedFor: t.openedFor, title: t.title, loading: false, nav: 0, pinned: pinned ? true : undefined };
     });
   return { tabs, active: tabs[saved.active]?.id ?? null };
@@ -1690,8 +1690,21 @@ const PINNED_PAGES: { id: string; label: string; short: string; url: string }[] 
   { id: "pinchatgpt", label: "ChatGPT", short: "GP", url: "https://chatgpt.com/" },
   { id: "pinclaude", label: "Claude", short: "Cl", url: "https://claude.ai/new" },
 ];
+type PinnedPage = (typeof PINNED_PAGES)[number];
+const USER_PINS_KEY = "userPins";
+/// The pages the user pinned (a tab dragged onto the pins), kept across restarts.
+let userPins: PinnedPage[] = loadJson<PinnedPage[]>(USER_PINS_KEY, []);
+/// The pinned pages: the app's own, then the user's.
+const pinnedPages = (): PinnedPage[] => [...PINNED_PAGES, ...userPins];
+const isUserPin = (id: string) => userPins.some((p) => p.id === id);
+function saveUserPins(pins: PinnedPage[]) {
+  userPins = pins;
+  remember(USER_PINS_KEY, JSON.stringify(pins));
+}
+/// The drop target that pins a dragged tab (the pins' row).
+const PIN_DROP = "pin-drop";
 /// Where a pinned page opens (OneLogin's portal is the user's own).
-const pinnedUrl = (id: string) => (id === "pinonelogin" ? loadText(ONELOGIN_URL_KEY) || ONELOGIN_DEFAULT_URL : (PINNED_PAGES.find((p) => p.id === id)?.url ?? ""));
+const pinnedUrl = (id: string) => (id === "pinonelogin" ? loadText(ONELOGIN_URL_KEY) || ONELOGIN_DEFAULT_URL : (pinnedPages().find((p) => p.id === id)?.url ?? ""));
 /// The pinned pages 学習 keeps on its right, to ask while reading.
 const STUDY_RIGHT = ["pinnotebooklm", "pinchatgpt", "pinclaude"];
 /// Pinned pages whose text box takes the typing when the keyboard comes over
@@ -1702,23 +1715,27 @@ const CHAT_PAGES = ["pinchatgpt", "pinclaude", "pinnotebooklm"];
 /// the item under it takes the dragged one's place, as `onMove(id, to)`.
 /// (Pointer events rather than HTML drag and drop, which the webview's file
 /// drop handling can swallow.)
-function useDragMove(attr: string, onMove: (id: string, to: string) => void) {
+/// With `onDrop`, the item the pointer is let go over is told too.
+function useDragMove(attr: string, onMove: (id: string, to: string) => void, onDrop?: (id: string, on: string | null) => void) {
   const [dragging, setDragging] = useState<string | null>(null);
   const start = (e: React.PointerEvent, id: string) => {
     if (e.button !== 0) return;
     const startY = e.clientY;
     let moved = false;
+    let last: string | null = null;
     const move = (ev: PointerEvent) => {
       if (!moved && Math.abs(ev.clientY - startY) < DRAG_START_PX) return;
       moved = true;
       setDragging(id);
       const over = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(`[${attr}]`)?.getAttribute(attr);
+      last = over ?? null;
       if (over && over !== id) onMove(id, over);
     };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
       setDragging(null);
+      if (moved) onDrop?.(id, last);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -1733,7 +1750,7 @@ const NEW_TAB_ROW = "new-tab";
 /// then the tabs, which move by dragging), and the page shown, or a new tab
 /// page when no tab is picked. While the list has the keyboard, j k move over
 /// its rows and Enter shows the page under the cursor.
-function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize, onSelect, onPinned, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
+function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize, onSelect, onPinned, onPin, onUnpin, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
   /// The tabs, apart from the pinned pages.
   tabs: BrowserTab[];
   active: BrowserTab | null;
@@ -1747,6 +1764,9 @@ function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize
   onSelect: (id: string) => void;
   /// Shows a pinned page, opening it the first time.
   onPinned: (id: string) => void;
+  /// Pins tab `id` (dragged onto the pins), and takes a page the user pinned off them.
+  onPin: (id: string) => void;
+  onUnpin: (id: string) => void;
   onClose: (id: string) => void;
   onNewTab: () => void;
   /// Opens what was typed on the new tab page, in a new tab with the keyboard.
@@ -1762,10 +1782,15 @@ function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize
   onStrip: () => void;
 }) {
   // Tabs move by dragging with the pointer.
-  const { dragging, start: dragTab } = useDragMove("data-tab", onMove);
+  // Onto the pins, a tab is pinned when let go there.
+  const { dragging, start: dragTab } = useDragMove(
+    "data-tab",
+    (id, to) => to !== PIN_DROP && onMove(id, to),
+    (id, on) => on === PIN_DROP && onPin(id),
+  );
   const { cursorId, setCursor, list } = useRowCursor(
-    [...PINNED_PAGES.map((p) => p.id), NEW_TAB_ROW, ...tabs.map((t) => t.id)],
-    (id) => (id === NEW_TAB_ROW ? onNewTab() : PINNED_PAGES.some((p) => p.id === id) ? onPinned(id) : onSelect(id)),
+    [...pinnedPages().map((p) => p.id), NEW_TAB_ROW, ...tabs.map((t) => t.id)],
+    (id) => (id === NEW_TAB_ROW ? onNewTab() : pinnedPages().some((p) => p.id === id) ? onPinned(id) : onSelect(id)),
     // d: closes the tab under the cursor (shown or not), the cursor going to its neighbour.
     (e, id) => {
       if (!matches(e, "closeRow") || !id || !tabs.some((t) => t.id === id)) return false;
@@ -1781,15 +1806,33 @@ function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize
   return (
     <div className="browser-space">
       <nav className="tab-list" aria-label="タブ" ref={list} onMouseDown={(e) => !(e.target as HTMLElement).closest("button, input") && onStrip()}>
-        <div className="pins" role="group" aria-label="固定のページ">
-          {PINNED_PAGES.map((p) => (
-            <button key={p.id} data-row={p.id} className={`pin${p.id === active?.id ? " on" : ""}${cursor(p.id)}`} aria-pressed={p.id === active?.id} title={p.label} onClick={() => onPinned(p.id)}>
+        <div className={`pins${dragging ? " dropping" : ""}`} role="group" aria-label="固定のページ" data-tab={PIN_DROP}>
+          {pinnedPages().map((p) => (
+            <button
+              key={p.id}
+              data-row={p.id}
+              className={`pin${p.id === active?.id ? " on" : ""}${cursor(p.id)}`}
+              aria-pressed={p.id === active?.id}
+              title={isUserPin(p.id) ? `${p.label}（右クリックで固定を外す）` : p.label}
+              onClick={() => onPinned(p.id)}
+              onContextMenu={(e) => {
+                if (!isUserPin(p.id)) return;
+                e.preventDefault();
+                onUnpin(p.id);
+              }}
+            >
               <span className="pin-mark" data-pin={p.id} aria-hidden="true">
                 {p.short}
               </span>
               <span className="pin-label ellipsis">{p.label}</span>
             </button>
           ))}
+          {dragging && (
+            <span className="pin pin-drop" aria-hidden="true">
+              <span className="pin-mark">＋</span>
+              <span className="pin-label ellipsis">ここに離すと固定</span>
+            </span>
+          )}
         </div>
         <button data-row={NEW_TAB_ROW} className={`tab-row new-tab-row${!active ? " on" : ""}${cursor(NEW_TAB_ROW)}`} onClick={onNewTab}>
           <Icon name="plus" size={13} />
@@ -1810,7 +1853,7 @@ function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize
           ))}
         </ul>
         <span className="muted small-text tab-list-hint">
-          {keyLabel(keyOf("sideApp"))} でここへ、{keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選んで Enter で開く · {keyLabel(keyOf("prevTab"))} {keyLabel(keyOf("nextTab"))} で移る · {keyLabel(keyOf("closeTab"))} で閉じる（固定のページは閉じない） · {keyLabel(keyOf("closeRow"))} でカーソルのタブを閉じる
+          {keyLabel(keyOf("sideApp"))} でここへ、{keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選んで Enter で開く · {keyLabel(keyOf("prevTab"))} {keyLabel(keyOf("nextTab"))} で移る · {keyLabel(keyOf("closeTab"))} で閉じる（固定のページは閉じない） · {keyLabel(keyOf("closeRow"))} でカーソルのタブを閉じる · タブを上の固定へドラッグで固定（右クリックで外す）
         </span>
         <Resizer label="タブの一覧の幅" cssVar="--tab-list-w" edge="right" width={width} min={TAB_LIST_MIN_W} max={() => TAB_LIST_MAX_W} onResize={onResize} />
       </nav>
@@ -6298,11 +6341,11 @@ export default function App() {
   /// The previous (-1) or next (1) tab, wrapping around (⌘⇧[ ⌘⇧]), in the order
   /// of the tab list: the pinned pages (a page not opened yet opens), then the others.
   const switchTab = (delta: number) => {
-    const shown = [...PINNED_PAGES.map((p) => p.id), ...normalTabs.map((t) => t.id)];
+    const shown = [...pinnedPages().map((p) => p.id), ...normalTabs.map((t) => t.id)];
     if (!browserShown) return;
     const i = activeTab ? shown.indexOf(activeTab.id) : delta > 0 ? -1 : shown.length;
     const nextId = shown[(i + delta + shown.length) % shown.length];
-    if (PINNED_PAGES.some((p) => p.id === nextId)) return showPinned(nextId);
+    if (pinnedPages().some((p) => p.id === nextId)) return showPinned(nextId);
     const next = tabs.find((t) => t.id === nextId) ?? null;
     keysToTab(next, activeTab?.id, report);
     setActiveTabId(nextId);
@@ -6397,7 +6440,7 @@ export default function App() {
   const studyRightTab = tabs.find((t) => t.id === study.right);
   /// A pinned page, made (not shown) when it is not yet.
   const ensurePinned = (id: string) =>
-    setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [{ id, url: pinnedUrl(id), title: PINNED_PAGES.find((p) => p.id === id)?.label ?? null, loading: true, nav: 0, pinned: true }, ...prev]));
+    setTabs((prev) => (prev.some((t) => t.id === id) ? prev : [{ id, url: pinnedUrl(id), title: pinnedPages().find((p) => p.id === id)?.label ?? null, loading: true, nav: 0, pinned: true }, ...prev]));
   /// Readings' tabs, made where missing (a book's at its first chapter not read).
   const readingTabs = (list: Reading[]) =>
     setTabs((prev) => [
@@ -6764,8 +6807,29 @@ export default function App() {
   paletteRef.current = togglePalette;
   /// Brings up a pinned page in the browser space, opening its tab the first
   /// time, with its text box ready for typing.
+  // The user's pins live outside React (restoring tabs reads them); a change shows by this.
+  const [, setPinsVersion] = useState(0);
+  /// Pins tab `id` (dragged onto the pins): it becomes a pinned page, shown.
+  const pinTab = (id: string) => {
+    const tab = normalTabs.find((t) => t.id === id);
+    if (!tab || !/^https?:\/\//.test(tab.url)) return;
+    const pin = newPin(pinnedPages(), tab.url, tab.title);
+    saveUserPins([...userPins, pin]);
+    setPinsVersion((n) => n + 1);
+    closeTab(id);
+    showPinned(pin.id);
+  };
+  /// Takes a page the user pinned off the pins (its page closes).
+  const unpin = (id: string) => {
+    saveUserPins(userPins.filter((p) => p.id !== id));
+    setPinsVersion((n) => n + 1);
+    if (!tabs.some((t) => t.id === id)) return;
+    api.browserClose(id).catch(report);
+    setTabs((prev) => prev.filter((t) => t.id !== id));
+    if (activeTab?.id === id) setNewTab(true);
+  };
   const showPinned = (id: string) => {
-    if (!PINNED_PAGES.some((p) => p.id === id)) return;
+    if (!pinnedPages().some((p) => p.id === id)) return;
     focusSoon(id, true);
     ensurePinned(id);
     setSpace("browser");
@@ -7850,7 +7914,7 @@ export default function App() {
     ...SPACES.map((sp) => ({ key: `space:${sp.key}`, label: sp.label, hint: keyLabel(keyOf(sp.action)), run: () => goSpace(sp.key) })),
     ...nav.map((n) => ({ key: `nav:${n.key}`, label: `管理：${n.label}`, run: n.go })),
     { key: "nav:doing", label: "管理：Doing", run: () => setView("doing") },
-    ...PINNED_PAGES.map((p) => ({ key: p.id, label: p.label, hint: "ブラウザ", run: () => showPinned(p.id) })),
+    ...pinnedPages().map((p) => ({ key: p.id, label: p.label, hint: "ブラウザ", run: () => showPinned(p.id) })),
     ...savedFilters.map((f) => ({ key: `filter:${f.id}`, label: `フィルター: ${f.name}`, run: () => applyFilter(f) })),
     { key: "shortcuts", label: "キーの一覧", hint: keyLabel(keyOf("help")), run: () => setDialog("keys") },
     { key: "settings", label: "設定（開く場所・ターミナル・herdr・TypeSafe・ログイン・サイトの許可）", run: () => setDialog("settings") },
@@ -8423,7 +8487,7 @@ export default function App() {
                     <div className="segmented" role="group" aria-label="右側で聞く相手">
                       {STUDY_RIGHT.map((id) => (
                         <button key={id} className={study.right === id ? "on" : ""} aria-pressed={study.right === id} onClick={() => setStudyRight(id)}>
-                          {PINNED_PAGES.find((p) => p.id === id)?.label}
+                          {pinnedPages().find((p) => p.id === id)?.label}
                         </button>
                       ))}
                     </div>
@@ -8479,6 +8543,8 @@ export default function App() {
               }}
               onStrip={() => activeTab && keysToTab(activeTab, activeTab.id, report)}
               onPinned={showPinned}
+              onPin={pinTab}
+              onUnpin={unpin}
               onArchive={() => archiveShownRef.current()}
               onBookmark={bookmarkShown}
               onClose={closeTab}

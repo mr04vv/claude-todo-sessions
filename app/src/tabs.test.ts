@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressToUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, rightChildren, sameObject } from "./tabs.ts";
+import { addressToUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, newPin, nextAfterClose, rightChildren, sameObject } from "./tabs.ts";
 
 const tabs = (...ids: string[]) => ids.map((id) => ({ id }));
 
@@ -92,4 +92,11 @@ test("作業's right shows the subtasks not closed there, and the one asked for 
   assert.equal(rightChildren(kids, [2], 2, asks, runs).child?.id, 3);
   assert.equal(rightChildren(kids, [2, 3], null, asks, runs).child?.id, 1);
   assert.equal(rightChildren(kids, [1, 2, 3], 1, asks, runs).child, undefined);
+});
+
+test("a page pinned by dragging gets an id not taken, its title for a name and two letters for a mark", () => {
+  const pin = newPin([{ id: "pinclaude" }, { id: "pinu1" }], "https://linear.app/team/issue/1", "Linear – Issue 1");
+  assert.deepEqual(pin, { id: "pinu2", label: "Linear – Issue 1", short: "Li", url: "https://linear.app/team/issue/1" });
+  assert.equal(newPin([], "https://www.figma.com/file/x", null).label, "figma.com");
+  assert.equal(newPin([], "https://www.figma.com/file/x", null).short, "Fi");
 });
