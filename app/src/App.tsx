@@ -6388,17 +6388,35 @@ export default function App() {
     if (tab) keysToTab(tab, workRightTab?.id, report);
   };
   /// Opens `url` beside the session, on 作業's right (a page there opened for
-  /// it comes to the front); it takes the keyboard.
-  const openBeside = (url: string) => {
+  /// it comes to the front); it takes the keyboard, unless not `take` (what
+  /// opens on its own, as a session's new artifact, leaves the typing where it is).
+  const openBeside = (url: string, take = true) => {
     const open = findTabFor(workPages, url);
-    if (open) return showWorkPage(open.id);
+    if (open && take) return showWorkPage(open.id);
+    if (open) return (setWorkPage(open.id), setWorkRightHidden(false));
     const id = `p${nextTab.current++}`;
     setTabs((prev) => [...prev, { id, url, openedFor: url, title: null, loading: true, nav: 0, area: "work" }]);
     setWorkPage(id);
     setWorkRightHidden(false);
+    if (!take) return;
     setFocusTyping("right");
     focusSoon(id);
   };
+  // A session shown in 作業 makes an artifact: it opens on the right, the typing
+  // staying where it is. What was there at launch (or made out of sight) does not.
+  const seenArtifacts = useRef<Set<number> | null>(null);
+  useEffect(() => {
+    if (!board) return;
+    const seen = seenArtifacts.current;
+    seenArtifacts.current = new Set(board.artifacts.map((a) => a.id));
+    if (!seen || space !== "work") return;
+    const todos = [workView.todo, ...workView.children].filter((t): t is Todo => !!t).map((t) => t.id);
+    const sessions = [workView.left, workView.right].filter((x): x is Session => !!x).map((x) => x.session_id);
+    for (const a of board.artifacts) {
+      if (seen.has(a.id) || !((a.session_id && sessions.includes(a.session_id)) || (a.todo_id !== null && todos.includes(a.todo_id)))) continue;
+      openBeside(a.kind === "file" && !/^https?:/.test(a.url) ? fileUrl(a.url) : a.url, false);
+    }
+  }, [board?.artifacts]); // eslint-disable-line react-hooks/exhaustive-deps
   /// Closes a page opened beside: the next page is shown, else the subtask
   /// again, else the right side goes and the keyboard with it to the left.
   const closeWorkPage = (id: string) => {
