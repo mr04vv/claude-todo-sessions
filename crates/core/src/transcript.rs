@@ -34,6 +34,33 @@ pub fn question<'a>(entries: impl IntoIterator<Item = &'a Value>) -> Option<Stri
     asked.map(|q| q.chars().take(QUESTION_MAX_CHARS).collect())
 }
 
+/// Characters kept of a session's last reply (a card's two lines).
+pub const LAST_MAX_CHARS: usize = 280;
+
+/// What a session's card shows of where it is: its last reply (in one line),
+/// the model answering, and how full its context is (tokens, as of its last turn).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Peek {
+    pub last: Option<String>,
+    pub model: Option<String>,
+    pub context_tokens: Option<u64>,
+}
+
+/// The peek of a session from its entries, oldest first.
+pub fn peek(entries: &[Value]) -> Peek {
+    let replies: Vec<&Value> = entries.iter().filter(|e| e["type"] == "assistant").collect();
+    let last = replies.iter().rev().find_map(|e| {
+        let text: Vec<&str> = e["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
+        let line = text.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+        (!line.is_empty()).then(|| line.chars().take(LAST_MAX_CHARS).collect())
+    });
+    let model = replies.iter().rev().find_map(|e| e["message"]["model"].as_str().map(String::from));
+    let context_tokens = replies.last().map(|e| &e["message"]["usage"]).filter(|u| u.is_object()).map(|u| {
+        ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"].iter().map(|k| u[k].as_u64().unwrap_or(0)).sum()
+    });
+    Peek { last, model, context_tokens }
+}
+
 const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
 /// How the Artifact tool reports a publish: "Published <file> at <url> (…".
 const PUBLISHED: &str = "Published ";
@@ -182,6 +209,28 @@ mod tests {
 
     fn assistant(content: Value, usage: Value) -> Value {
         json!({"type": "assistant", "message": {"model": "claude-opus-5-5", "content": content, "usage": usage}})
+    }
+
+    #[test]
+    fn a_peek_is_the_last_reply_its_model_and_the_context_it_fills() {
+        let entries = [
+            assistant(json!([{"type": "text", "text": "前の返事"}]), json!({"input_tokens": 10, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 5, "output_tokens": 7})),
+            json!({"type": "user", "message": {"content": "続けて"}}),
+            assistant(
+                json!([{"type": "text", "text": "\n  テストが通りました。\nPR を作ります。"}, {"type": "tool_use", "name": "Bash", "input": {}}]),
+                json!({"input_tokens": 3, "cache_read_input_tokens": 80_000, "cache_creation_input_tokens": 2_000, "output_tokens": 40}),
+            ),
+            assistant(json!([{"type": "tool_use", "name": "Bash", "input": {}}]), json!({"input_tokens": 1, "cache_read_input_tokens": 82_100, "cache_creation_input_tokens": 0, "output_tokens": 9})),
+        ];
+        let p = peek(&entries);
+        assert_eq!(p.last.as_deref(), Some("テストが通りました。 PR を作ります。"));
+        assert_eq!(p.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(p.context_tokens, Some(82_110));
+    }
+
+    #[test]
+    fn nothing_said_yet_peeks_nothing() {
+        assert_eq!(peek(&[json!({"type": "user", "message": {"content": "やって"}})]), Peek::default());
     }
 
     #[test]

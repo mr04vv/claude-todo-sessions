@@ -3,6 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 export type Status = "backlog" | "todo" | "doing" | "review" | "pending" | "done";
 export type SessionState = "running" | "needs_input" | "idle" | "ended";
 
+/** Where a session is, from its messages: its last reply (one line), model, and context in tokens. */
+export interface Peek {
+  last: string | null;
+  model: string | null;
+  context_tokens: number | null;
+}
+
 export interface Session {
   session_id: string;
   title: string | null;
@@ -602,6 +609,8 @@ export const api = {
   browserClose: (tab: string) => invoke<void>("browser_close", { tab }),
   /** Opens a page in a window of its own, apart from the app's tabs. */
   browserWindow: (url: string) => invoke<void>("browser_window", { url }),
+  /** Each session's last reply, model and context (the ones that could be read). */
+  sessionPeeks: (ids: string[]) => invoke<Record<string, Peek>>("session_peeks", { ids }),
   /// With `input`, the page's text box takes the typing too.
   browserFocus: (tab: string, input?: boolean, text?: string) => invoke<void>("browser_focus", { tab, input: input ?? null, text: text ?? null }),
   browserUrl: (tab: string) => invoke<string | null>("browser_url", { tab }),

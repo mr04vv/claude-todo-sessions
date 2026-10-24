@@ -1299,6 +1299,27 @@ fn session_question(session: &Session) -> Option<String> {
     cts_core::transcript::question(&entries)
 }
 
+/// What 作業's cards show of each session (Claude's, not Codex's): its last
+/// reply, model and context, from its transcript (local) or events (cloud).
+/// One that cannot be read is left out.
+#[tauri::command]
+async fn session_peeks(ids: Vec<String>) -> Result<std::collections::HashMap<String, cts_core::transcript::Peek>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ids.into_iter()
+            .filter_map(|id| {
+                let entries = if launch::is_cloud_session(&id) {
+                    cts_core::cloud::recent_entries(&id).map_err(|e| eprintln!("{e}")).ok()?
+                } else {
+                    cts_core::transcript::parse_jsonl(&transcript_tail(&id, TRANSCRIPT_TAIL_BYTES)?)
+                };
+                Some((id, cts_core::transcript::peek(&entries)))
+            })
+            .collect()
+    })
+    .await
+    .map_err(err)
+}
+
 #[tauri::command]
 async fn usage() -> Result<Vec<cts_core::usage::Limit>, String> {
     tauri::async_runtime::spawn_blocking(cts_core::cloud::usage).await.map_err(err)?
@@ -2939,6 +2960,7 @@ fn main() {
             gh_prs,
             browser_open,
             browser_window,
+            session_peeks,
             browser_bounds,
             browser_hide,
             browser_close,
