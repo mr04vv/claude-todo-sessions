@@ -3953,9 +3953,11 @@ button.tab-row {
   outline-offset: 2px;
 }
 
+/* Both: one thick edge, not a ring outside the picked one's. */
 .row.work-card.selected.cursor,
 .row.child-card.selected.cursor {
-  box-shadow: inset 4px 0 0 var(--accent), 0 0 0 1px var(--accent);
+  outline: none;
+  box-shadow: inset 4px 0 0 var(--accent), 0 0 0 2px var(--accent);
 }
 
 .card-head {
@@ -4318,9 +4320,47 @@ button.tab-row {
   background: var(--bg);
 }
 
-.browser-window > .browser-space {
+.browser-window-body {
   flex: 1;
   min-height: 0;
+  display: flex;
+}
+
+.browser-window-body > .browser-space {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Where the keyboard is in the browser's window: the tab list, the page,
+   or the ChatGPT beside it; its strip tinted with a bar, the others dimmed. */
+.browser-window.typing-app .tab-list {
+  box-shadow: inset 0 4px 0 var(--accent);
+  background: var(--accent-soft);
+}
+
+.browser-window.typing-pane .browser-main .browser-bar,
+.browser-window.typing-ask .ask-head {
+  background: var(--accent-soft);
+  box-shadow: inset 0 4px 0 var(--accent);
+}
+
+.browser-window:not(.typing-pane) .browser-main .browser-bar > *,
+.browser-window:not(.typing-ask) .ask-head > * {
+  opacity: 0.55;
+}
+
+/* The ChatGPT explaining the page (⌘⇧G), on the right. */
+.ask-dock {
+  position: relative;
+  width: var(--ask-w);
+  flex-shrink: 0;
+  border-left: 1px solid var(--border);
+}
+
+.ask-head {
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
 }
 
 .browser-window-error {

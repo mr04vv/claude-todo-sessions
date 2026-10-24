@@ -17,6 +17,7 @@ export type Action =
   | "sidePane"
   | "archive"
   | "bookmark"
+  | "askChatGpt"
   | "spaceManage"
   | "spaceWork"
   | "spaceStudy"
@@ -128,6 +129,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
       ["archive", "Cloud セッションのページをアーカイブ（作業の一覧では、行のセッションを片付ける）"],
       ["bookmark", "表示中のページを読みものに入れる（O'Reilly の本のページなら本として目次ごと）"],
+      ["askChatGpt", "ブラウザのウインドウで、表示中のページ（選んだ文があればその文）を右の ChatGPT に解説してもらう"],
     ],
   },
   {
@@ -241,6 +243,7 @@ const KEYS: Record<Action, string> = {
   archive: "cmd+shift+a",
   // As Safari's "Add to Reading List".
   bookmark: "cmd+shift+d",
+  askChatGpt: "cmd+shift+g",
   spaceManage: "cmd+1",
   spaceWork: "cmd+2",
   spaceStudy: "cmd+3",

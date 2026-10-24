@@ -1758,6 +1758,13 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
             }
             return;
         }
+        // ⌘⇧G: the page (or its selection) for ChatGPT to explain, in its window's right.
+        Some("ask-chatgpt") => {
+            let (win, id) = cef_browser::split(tab);
+            let ask = AskPage { tab: id.to_string(), url: param("u"), title: param("t"), text: param("x"), selected: param("s") == "1" };
+            let _ = app.emit_to(win, ASK_CHATGPT_EVENT, ask);
+            return;
+        }
         Some("translate") => return translate::on_blocks(app, tab, &param("b")),
         Some("translate-selection") => return translate::on_selection(app, tab, param("i").parse().unwrap_or(0), param("t")),
         Some("translated") => return translate::on_translated(app, tab, param("on") == "1"),
@@ -2140,6 +2147,30 @@ fn main_window_show(app: AppHandle, space: Option<String>) -> Result<(), String>
         Some(space) => app.emit_to(MAIN_WINDOW, SPACE_EVENT, SpaceAsk { space }).map_err(err),
         None => Ok(()),
     }
+}
+
+/// `{tab, url, title, text, selected}`: a page (or what is selected in it) for ChatGPT to explain.
+const ASK_CHATGPT_EVENT: &str = "ask-chatgpt";
+
+#[derive(Clone, Serialize)]
+struct AskPage {
+    tab: String,
+    url: String,
+    title: String,
+    text: String,
+    selected: bool,
+}
+
+/// ⌘⇧G from the app's side: the tab's page sends itself (or its selection) to be explained.
+#[tauri::command(async)]
+fn browser_ask(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<(), String> {
+    cef_browser::eval(&app, &tab_key(&webview, &tab)?, "window.__todoSessionsAskChatgpt?.(String(getSelection() ?? '').trim())")
+}
+
+/// Types `text` into ChatGPT's prompt box in tab `tab`, and sends it.
+#[tauri::command(async)]
+fn browser_ask_type(app: AppHandle, webview: tauri::Webview, tab: String, text: String) -> Result<(), String> {
+    cef_browser::eval(&app, &tab_key(&webview, &tab)?, &format!("window.__todoSessionsAsk?.({})", serde_json::to_string(&text).map_err(err)?))
 }
 
 /// The pages asked of the browser window before its page was up.
@@ -3052,6 +3083,8 @@ fn main() {
             browser_window_open,
             browser_window_take,
             main_window_show,
+            browser_ask,
+            browser_ask_type,
             session_peeks,
             session_summary,
             browser_bounds,

@@ -4,6 +4,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   api,
+  ASK_CHATGPT_EVENT,
   BROWSER_ADDRESS_EVENT,
   BROWSER_CLOSE_TAB_EVENT,
   BROWSER_NEW_TAB_EVENT,
@@ -31,8 +32,10 @@ import {
   pinnedUrl,
   recordVisit,
   remember,
+  Resizer,
   restoreTabs,
   saveUserPins,
+  TabView,
   TAB_LIST_DEFAULT_W,
   TAB_LIST_W_KEY,
   tabUrls,
@@ -55,6 +58,15 @@ const MAIN_SPACES: [Action, string][] = [
   ["spaceArtifacts", "artifacts"],
 ];
 
+/// The right's ChatGPT, which explains a page (⌘⇧G); a new chat each time.
+const ASK_TAB = "askgpt";
+const CHATGPT_NEW = "https://chatgpt.com/";
+const ASK_W_KEY = "askWidth";
+const ASK_W = { initial: 460, min: 320, max: 900 };
+/// What ChatGPT is asked about a page (or the part of it selected).
+const askPrompt = (a: { url: string; title: string; text: string; selected: boolean }) =>
+  `${a.selected ? "次のウェブページから選んだ部分" : "次のウェブページ"}を、日本語でわかりやすく解説してください。要点、背景、難しい用語の説明の順にまとめてください。\n\nタイトル: ${a.title}\nURL: ${a.url}\n\n${a.selected ? "選んだ部分" : "本文（抜粋）"}:\n${a.text}`;
+
 /// The number after a tab id's letter (`t12`), for the next id.
 const idNumber = (id: string) => Number(/^t(\d+)$/.exec(id)?.[1] ?? 0);
 
@@ -65,11 +77,21 @@ export default function BrowserWindow() {
   const [error, setError] = useState<string | null>(null);
   const [ask, setAsk] = useState<PageDialogAsk | null>(null);
   // Whether the keyboard is this page's (the tab list's cursor shows) or a tab's.
-  const [typing, setTyping] = useState<"app" | "pane">("app");
+  // Whether the keyboard is this page's (the tab list's cursor shows), the tab's, or the right ChatGPT's.
+  const [typing, setTyping] = useState<"app" | "pane" | "ask">("app");
   const [listW, setListWState] = useState(() => loadJson<number>(TAB_LIST_W_KEY, TAB_LIST_DEFAULT_W));
   const setListW = (w: number) => {
     remember(TAB_LIST_W_KEY, String(w));
     setListWState(w);
+  };
+  // ChatGPT on the right, explaining a page (⌘⇧G); what it is to be asked once its page is up.
+  const [askTab, setAskTab] = useState<BrowserTab | null>(null);
+  const [askOpen, setAskOpen] = useState(false);
+  const pendingAsk = useRef<string | null>(null);
+  const [askW, setAskWState] = useState(() => loadJson<number>(ASK_W_KEY, ASK_W.initial));
+  const setAskW = (w: number) => {
+    remember(ASK_W_KEY, String(w));
+    setAskWState(w);
   };
   // The user's pins live outside React; a change shows by this.
   const [, setPinsVersion] = useState(0);
@@ -159,9 +181,17 @@ export default function BrowserWindow() {
   };
   const setUrl = (id: string, url: string) => setTabs((prev) => prev.map((t) => (t.id === id && t.url !== url ? { ...t, url } : t)));
 
+  /// Asks ChatGPT on the right about a page: in a new chat (its page loading first), sent once it is up.
+  const askAbout = (prompt: string) => {
+    setAskOpen(true);
+    if (askTab && !askTab.loading && askTab.url === CHATGPT_NEW) return void api.browserAskType(ASK_TAB, prompt).catch(report);
+    pendingAsk.current = prompt;
+    setAskTab((t) => (t ? { ...t, url: CHATGPT_NEW, loading: true, nav: t.nav + 1 } : { id: ASK_TAB, url: CHATGPT_NEW, openedFor: CHATGPT_NEW, title: "ChatGPT", loading: true, nav: 0 }));
+  };
+
   // The handlers the listeners call, as they are now.
-  const now = useRef({ open, close, step, setUrl, active });
-  now.current = { open, close, step, setUrl, active };
+  const now = useRef({ open, close, step, setUrl, active, askAbout });
+  now.current = { open, close, step, setUrl, active, askAbout };
 
   useEffect(() => {
     // What was asked before this page was up.
@@ -170,6 +200,15 @@ export default function BrowserWindow() {
     const offs = [
       listen<string>(BROWSER_WINDOW_OPEN_EVENT, ({ payload }) => now.current.open(payload)),
       listen<{ tab: string; url: string; loading: boolean }>(BROWSER_URL_EVENT, ({ payload }) => {
+        if (payload.tab === ASK_TAB) {
+          setAskTab((t) => t && { ...t, url: payload.url, loading: payload.loading });
+          const prompt = pendingAsk.current;
+          if (!payload.loading && prompt) {
+            pendingAsk.current = null;
+            api.browserAskType(ASK_TAB, prompt).catch(report);
+          }
+          return;
+        }
         const wish = payload.loading ? takeFocusWish(payload.tab) : null;
         if (wish) api.browserFocus(payload.tab, wish.input || undefined, wish.text).catch(report);
         if (!payload.loading) {
@@ -192,9 +231,10 @@ export default function BrowserWindow() {
       listen<{ tab: string; delta: number }>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) => now.current.step(payload.delta)),
       listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, () => now.current.active && !now.current.active.pinned && now.current.close(now.current.active.id)),
       listen<PageDialogAsk>(PAGE_DIALOG_EVENT, ({ payload }) => setAsk(payload)),
-      listen<{ tab: string }>(PAGE_FOCUSED_EVENT, () => {
+      listen<{ tab: string; url: string; title: string; text: string; selected: boolean }>(ASK_CHATGPT_EVENT, ({ payload }) => now.current.askAbout(askPrompt(payload))),
+      listen<{ tab: string }>(PAGE_FOCUSED_EVENT, ({ payload }) => {
         userActed();
-        setTyping("pane");
+        setTyping(payload.tab === ASK_TAB ? "ask" : "pane");
       }),
       // ⌃h from a page: the tab list takes the keyboard.
       listen(FOCUS_APP_EVENT, () => {
@@ -217,6 +257,7 @@ export default function BrowserWindow() {
         [matches(e, "prevTab"), () => step(-1)],
         [matches(e, "nextTab"), () => step(1)],
         [matches(e, "sidePane"), () => active && keysToTab(active, active.id, report)],
+        [matches(e, "askChatGpt"), () => active && !active.pinned && void api.browserAsk(active.id).catch(report)],
         // ⌘1–⌘6 (but ⌘4, this window): the main window, at that space.
         ...MAIN_SPACES.map(([action, space]): [boolean, () => void] => [matches(e, action), () => void api.mainWindowShow(space).catch(report)]),
       ];
@@ -230,7 +271,7 @@ export default function BrowserWindow() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="browser-window" style={{ "--tab-list-w": `${listW}px` } as React.CSSProperties}>
+    <div className={`browser-window typing-${typing}`} style={{ "--tab-list-w": `${listW}px` } as React.CSSProperties}>
       <div className="browser-window-bar">
         <button className="ghost small" title={`Shosai に戻る（${keyLabel(keyOf("spaceWork"))} で作業、${keyLabel(keyOf("spaceManage"))} で管理）`} onClick={() => api.mainWindowShow().catch(report)}>
           ← Shosai に戻る <span className="kbd">{keyLabel(keyOf("spaceManage"))}–{keyLabel(keyOf("spaceArtifacts"))}</span>
@@ -244,10 +285,12 @@ export default function BrowserWindow() {
           </button>
         </div>
       )}
+      <div className="browser-window-body">
       <BrowserSpace
         tabs={normal}
         active={active}
         covered={ask !== null}
+        keep={askOpen && askTab ? ASK_TAB : undefined}
         listKeys={typing === "app"}
         width={listW}
         report={report}
@@ -273,6 +316,23 @@ export default function BrowserWindow() {
         onAddress={setUrl}
         onMove={move}
       />
+      {askOpen && askTab && (
+        <aside className="browser-dock ask-dock" style={{ "--ask-w": `${askW}px` } as React.CSSProperties} aria-label="ChatGPT の解説">
+          <Resizer label="ChatGPT の幅" cssVar="--ask-w" width={askW} min={ASK_W.min} max={() => ASK_W.max} onResize={setAskW} />
+          <section className="browser">
+            <div className="browser-tabs ask-head">
+              <b>ChatGPT の解説</b>
+              <span className="grow" />
+              <span className="kbd">{keyLabel(keyOf("askChatGpt"))}</span>
+              <button className="ghost icon" aria-label="ChatGPT を閉じる" onClick={() => setAskOpen(false)}>
+                ×
+              </button>
+            </div>
+            <TabView tab={askTab} covered={ask !== null} keep={active?.id} report={report} onAddress={(url) => setAskTab((t) => t && { ...t, url })} />
+          </section>
+        </aside>
+      )}
+      </div>
       {ask && (
         <PageDialog
           ask={ask}

@@ -36,6 +36,7 @@
   const SPACE = "todo-sessions://space";
   const CLOSE_TAB = "todo-sessions://close-tab";
   const BOOKMARK = "todo-sessions://bookmark";
+  const ASK_CHATGPT = "todo-sessions://ask-chatgpt";
   const CHAPTER_READ = "todo-sessions://chapter-read";
   const X_POST = "todo-sessions://x-post";
   const NEW_TODO = "todo-sessions://new-todo";
@@ -98,6 +99,7 @@
     ["nextTab", () => send(NEXT_TAB)],
     ["archive", () => send(ARCHIVE)],
     ["bookmark", () => window.__todoSessionsBookmark?.()],
+    ["askChatGpt", (selected) => window.__todoSessionsAskChatgpt?.(selected)],
     ["zoomIn", () => send(ZOOM_IN)],
     ["zoomOut", () => send(ZOOM_OUT)],
     ["zoomReset", () => send(ZOOM_RESET)],
@@ -114,7 +116,8 @@
   // In a split view (作業・学習) the app shows which side has the keyboard; a
   // page (or one of its frames) taking it says so.
   const FOCUSED = "todo-sessions://page-focused";
-  window.addEventListener("focus", () => window.__todoSessionsFocusMode && send(FOCUSED));
+  // The browser's own window marks it always, so it is said always.
+  window.addEventListener("focus", () => send(FOCUSED));
 
   window.addEventListener(
     "keydown",
@@ -325,6 +328,27 @@
     const status = X_HOST.test(location.hostname) && location.pathname.match(X_STATUS);
     if (status) return keepPost(location.href.split("?")[0], status[1], document.querySelector('article [data-testid="tweetText"]')?.innerText, document.querySelector("article"));
     keep("article", location.href, document.title, meta("og:description") || meta("description"));
+  };
+  // ⌘⇧G (here, or from the app's side): the page (or what is selected in it)
+  // goes to the app, for ChatGPT on the right to explain.
+  const ASK_TEXT_MAX = 6000;
+  window.__todoSessionsAskChatgpt = (selected) => {
+    const text = (selected || document.body?.innerText || "").replace(/\n{3,}/g, "\n\n").slice(0, ASK_TEXT_MAX);
+    send(`${ASK_CHATGPT}?u=${enc(location.href)}&t=${enc(document.title)}&s=${selected ? 1 : 0}&x=${enc(text)}`);
+  };
+  // In ChatGPT's page: `text` typed into its prompt box and sent (its send
+  // button, once it takes it; left typed if the button never comes).
+  const SEND_BUTTON = 'button[data-testid="send-button"], #composer-submit-button';
+  const SEND_WAIT_MS = 5000;
+  window.__todoSessionsAsk = (text) => {
+    window.__todoSessionsFocusInput(text);
+    const until = Date.now() + INPUT_WAIT_MS + SEND_WAIT_MS;
+    const trySend = () => {
+      const button = document.querySelector(SEND_BUTTON);
+      if (button && !button.disabled && document.querySelector(INPUTS[0])?.textContent?.trim()) return button.click();
+      if (Date.now() < until) setTimeout(trySend, INPUT_RETRY_MS);
+    };
+    setTimeout(trySend, INPUT_RETRY_MS);
   };
   // ⌥ + click keeps the link to read instead of following it.
   window.addEventListener(

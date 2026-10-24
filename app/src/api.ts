@@ -614,6 +614,10 @@ export const api = {
   browserWindowTake: () => invoke<string[]>("browser_window_take"),
   /** From the browser's window: the main window forward, at `space` if named. */
   mainWindowShow: (space?: string) => invoke<void>("main_window_show", { space: space ?? null }),
+  /** ⌘⇧G: the tab's page sends itself (or its selection) to be explained (ASK_CHATGPT_EVENT). */
+  browserAsk: (tab: string) => invoke<void>("browser_ask", { tab }),
+  /** Types `text` into ChatGPT's prompt box in tab `tab`, and sends it. */
+  browserAskType: (tab: string, text: string) => invoke<void>("browser_ask_type", { tab, text }),
   /** Each session's last reply, model and context (the ones that could be read). */
   sessionPeeks: (ids: string[]) => invoke<Record<string, Peek>>("session_peeks", { ids }),
   /** Where a session stands, in one line Claude writes (none when nothing can be said yet). */
@@ -628,6 +632,8 @@ export const api = {
 /** `{tab, url}` after a tab navigates. */
 /** `url` (or `pin:<id>`) to open as a tab in the browser's own window. */
 export const BROWSER_WINDOW_OPEN_EVENT = "browser-window-open";
+/** `{tab, url, title, text, selected}`: a page (or its selection) for ChatGPT to explain. */
+export const ASK_CHATGPT_EVENT = "ask-chatgpt";
 export const BROWSER_URL_EVENT = "browser-url";
 /** `{tab, delta}` (-1 or 1) when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]). */
 export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";

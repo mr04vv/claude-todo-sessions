@@ -451,7 +451,7 @@ const RESIZING_CLASS = "resizing";
 /// dragging it (or the arrow keys) sets the pane's width, the CSS variable
 /// `cssVar` on the app. While dragging only that variable moves, once a
 /// frame; `onResize` (a re-render) runs on release.
-function Resizer({ label, cssVar, width, min, max, onResize, edge = "left" }: {
+export function Resizer({ label, cssVar, width, min, max, onResize, edge = "left" }: {
   label: string;
   cssVar: string;
   width: number;
@@ -1752,11 +1752,13 @@ const NEW_TAB_ROW = "new-tab";
 /// then the tabs, which move by dragging), and the page shown, or a new tab
 /// page when no tab is picked. While the list has the keyboard, j k move over
 /// its rows and Enter shows the page under the cursor.
-export function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize, onSelect, onPinned, onPin, onUnpin, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
+export function BrowserSpace({ tabs, active, covered, keep, listKeys, width, report, onResize, onSelect, onPinned, onPin, onUnpin, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
   /// The tabs, apart from the pinned pages.
   tabs: BrowserTab[];
   active: BrowserTab | null;
   covered: boolean;
+  /// A page shown beside the tab (the browser window's ChatGPT), left shown.
+  keep?: string;
   /// Whether the tab list has the keyboard (its cursor shows).
   listKeys: boolean;
   /// The tab list's.
@@ -1861,7 +1863,7 @@ export function BrowserSpace({ tabs, active, covered, listKeys, width, report, o
       </nav>
       <section className="browser browser-main" aria-label="ページ">
         {active ? (
-          <TabView tab={active} covered={covered} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} onBookmark={active.pinned ? undefined : onBookmark} />
+          <TabView tab={active} covered={covered} keep={keep} report={report} onAddress={(url) => onAddress(active.id, url)} onArchive={cloudIdOfPage(active.url) ? onArchive : undefined} onBookmark={active.pinned ? undefined : onBookmark} />
         ) : (
           <NewTabPage onOpen={onOpen} />
         )}
@@ -2077,7 +2079,7 @@ export function keysToTab(next: BrowserTab | null, shown: string | undefined, re
 /// with the same one leaves its page where the user moved it.
 const sentNav = new Map<string, number>();
 
-function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onBookmark, keep, keysOn = true }: {
+export function TabView({ tab: active, covered: dialogUp, report, onAddress, onArchive, onBookmark, keep, keysOn = true }: {
   /// Whether the browser's keys (⌘[ ⌘] ⌘L, zoom) are this tab's: in a split
   /// view, only the side that has the keyboard's.
   keysOn?: boolean;
