@@ -1756,8 +1756,16 @@ function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize
 }) {
   // Tabs move by dragging with the pointer.
   const { dragging, start: dragTab } = useDragMove("data-tab", onMove);
-  const { cursorId, setCursor, list } = useRowCursor([...PINNED_PAGES.map((p) => p.id), NEW_TAB_ROW, ...tabs.map((t) => t.id)], (id) =>
-    id === NEW_TAB_ROW ? onNewTab() : PINNED_PAGES.some((p) => p.id === id) ? onPinned(id) : onSelect(id),
+  const { cursorId, setCursor, list } = useRowCursor(
+    [...PINNED_PAGES.map((p) => p.id), NEW_TAB_ROW, ...tabs.map((t) => t.id)],
+    (id) => (id === NEW_TAB_ROW ? onNewTab() : PINNED_PAGES.some((p) => p.id === id) ? onPinned(id) : onSelect(id)),
+    // d: closes the tab under the cursor (shown or not), the cursor going to its neighbour.
+    (e, id) => {
+      if (!matches(e, "closeRow") || !id || !tabs.some((t) => t.id === id)) return false;
+      setCursor(nextAfterClose(tabs, id)?.id ?? NEW_TAB_ROW);
+      onClose(id);
+      return true;
+    },
   );
   // The cursor starts on the page shown, each time the list takes the keyboard.
   const activeRow = active?.id ?? NEW_TAB_ROW;
@@ -1795,7 +1803,7 @@ function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize
           ))}
         </ul>
         <span className="muted small-text tab-list-hint">
-          {keyLabel(keyOf("sideApp"))} でここへ、{keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選んで Enter で開く · {keyLabel(keyOf("prevTab"))} {keyLabel(keyOf("nextTab"))} で移る · {keyLabel(keyOf("closeTab"))} で閉じる（固定のページは閉じない）
+          {keyLabel(keyOf("sideApp"))} でここへ、{keyLabel(keyOf("down"))} {keyLabel(keyOf("up"))} で選んで Enter で開く · {keyLabel(keyOf("prevTab"))} {keyLabel(keyOf("nextTab"))} で移る · {keyLabel(keyOf("closeTab"))} で閉じる（固定のページは閉じない） · {keyLabel(keyOf("closeRow"))} でカーソルのタブを閉じる
         </span>
         <Resizer label="タブの一覧の幅" cssVar="--tab-list-w" edge="right" width={width} min={TAB_LIST_MIN_W} max={() => TAB_LIST_MAX_W} onResize={onResize} />
       </nav>

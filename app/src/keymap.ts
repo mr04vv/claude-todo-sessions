@@ -9,6 +9,7 @@ export type Action =
   | "newTodo"
   | "newTab"
   | "closeTab"
+  | "closeRow"
   | "prevTab"
   | "nextTab"
   | "reload"
@@ -109,6 +110,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     items: [
       ["newTab", "新しいタブ"],
       ["closeTab", "タブを閉じる"],
+      ["closeRow", "タブの一覧で、カーソルのあるタブを閉じる（開いていなくても）"],
       ["prevTab", "前のタブ（作業・学習では入力先の側のタブ、Todo では前のレーン）"],
       ["nextTab", "次のタブ（作業・学習では入力先の側のタブ、Todo では次のレーン）"],
       ["focusUrl", "アドレス欄へ"],
@@ -267,6 +269,7 @@ const KEYS: Record<Action, string> = {
   showTodo: "t",
   workFix: "f",
   workHandled: "d",
+  closeRow: "d",
   workEnded: "e",
   workLink: "l",
   workSort: "s",
