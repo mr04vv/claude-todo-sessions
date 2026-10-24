@@ -6278,7 +6278,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
     const meta = metaOf(s, c, false);
     const chips = chipsOf(s, c, 0);
     return (
-      <li key={key} data-row={key} className={`${base}${s.state === "needs_input" ? " asking" : ""}`} onPointerDown={stop} onClick={go}>
+      <li key={key} data-row={key} className={`${base}${s.state === "needs_input" ? " asking" : ""}${s.state === "running" ? " running" : ""}`} onPointerDown={stop} onClick={go}>
         {cardHead(s, c, c.title)}
         {c.escalation && <span className="child-esc">指揮役から：{c.escalation}</span>}
         {said && <span className={said.ask ? "child-ask" : "child-last"}>{said.text}</span>}
@@ -6305,7 +6305,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
     const made = artifactsOf([t.id, ...children.map((c) => c.id)], s);
     const chips = chipsOf(s, t, children.length > 0 ? 0 : made);
     return (
-      <li key={key} data-row={key} className={`row work-card${s?.state === "needs_input" ? " asking" : ""}${key === shownCursor ? " cursor" : ""}${pick === key ? (shownInside ? " selected-group" : " selected") : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
+      <li key={key} data-row={key} className={`row work-card${s?.state === "needs_input" ? " asking" : ""}${s?.state === "running" ? " running" : ""}${key === shownCursor ? " cursor" : ""}${pick === key ? (shownInside ? " selected-group" : " selected") : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
         {cardHead(s, t, t.title, children.length > 0)}
         {t.escalation && <span className="card-esc">指揮役から：{t.escalation}</span>}
         {said && <span className={said.ask ? "card-ask" : "card-last"}>{said.text}</span>}
@@ -6347,7 +6347,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
     const meta = metaOf(s, undefined, true);
     const chips = chipsOf(s, undefined, artifactsOf([], s));
     return (
-      <li key={r.key} data-row={r.key} className={`row work-card${s.state === "needs_input" ? " asking" : ""}${r.key === shownCursor ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
+      <li key={r.key} data-row={r.key} className={`row work-card${s.state === "needs_input" ? " asking" : ""}${s.state === "running" ? " running" : ""}${r.key === shownCursor ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
         {cardHead(s, undefined, sessionLabel(s))}
         {said && <span className={said.ask ? "card-ask" : "card-last"}>{said.text}</span>}
         {meta && <span className="card-meta">{meta}</span>}

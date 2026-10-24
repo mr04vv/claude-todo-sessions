@@ -4399,50 +4399,53 @@ button.tab-row {
   background: var(--sidebar);
 }
 
-/* The picked card (選択中) is alive: a light runs round its frame, and the
-   frame's glow breathes, so where the panes are shows at a glance. */
-@property --picked-angle {
-  syntax: "<angle>";
-  inherits: false;
-  initial-value: 0deg;
+/* A session at work: its chip's dot breathes, and a light runs along the
+   card's foot, so what is moving shows at a glance. */
+.card-state.st-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
 }
 
-.row.work-card.selected,
-.row.child-card.selected {
-  animation: picked-glow 2s ease-in-out infinite;
+.card-state.st-running::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--running);
+  animation: running-pulse 1.4s ease-in-out infinite;
 }
 
-.row.work-card.selected::after,
-.row.child-card.selected::after {
+.row.work-card.running::after,
+.row.child-card.running::after {
   content: "";
   position: absolute;
-  inset: -2px;
-  padding: 2px;
-  border-radius: 12px;
-  pointer-events: none;
-  background: conic-gradient(from var(--picked-angle), transparent 0deg 230deg, var(--accent) 300deg, #ffffff 330deg, var(--accent) 345deg, transparent 360deg);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask-composite: exclude;
-  animation: picked-spin 2.2s linear infinite;
+  left: 12px;
+  right: 12px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 1px;
+  background: linear-gradient(90deg, transparent, var(--running), transparent);
+  background-size: 40% 100%;
+  background-repeat: no-repeat;
+  animation: running-sweep 1.8s linear infinite;
+  opacity: 0.8;
 }
 
-@keyframes picked-spin {
-  to {
-    --picked-angle: 360deg;
-  }
+@keyframes running-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
 }
 
-@keyframes picked-glow {
-  0%, 100% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 0 rgba(147, 165, 255, 0); }
-  50% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 14px 3px rgba(147, 165, 255, 0.35); }
+@keyframes running-sweep {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .row.work-card.selected,
-  .row.child-card.selected,
-  .row.work-card.selected::after,
-  .row.child-card.selected::after {
+  .card-state.st-running::before,
+  .row.work-card.running::after,
+  .row.child-card.running::after {
     animation: none;
   }
 }
