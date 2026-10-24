@@ -6200,15 +6200,15 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
     },
   );
   // The cursor starts on the first of the work, not on ちょっと Claude above it.
-  // Each time the list takes the keyboard, the cursor starts on what is shown
-  // (the subtask on the right when it is unfolded here), else on the first of the work.
+  // While the keyboard is elsewhere, the cursor quietly follows what is shown
+  // (the subtask on the right when it is unfolded here, else the first of the
+  // work), so the list takes the keyboard already there, with no flicker.
+  const parentShown = pick?.startsWith("t") ? Number(pick.slice(1)) : null;
+  const shownKey = parentShown !== null && child !== null && isOpen(parentShown) ? `c${child}` : pick;
+  const restKey = shownKey && rows.some((r) => r.key === shownKey) ? shownKey : (rows[0]?.key ?? null);
   useEffect(() => {
-    if (!listKeys) return;
-    const parent = pick?.startsWith("t") ? Number(pick.slice(1)) : null;
-    const shown = parent !== null && child !== null && isOpen(parent) ? `c${child}` : pick;
-    const at = shown && rows.some((r) => r.key === shown) ? shown : rows[0]?.key;
-    if (at) setCursor(at);
-  }, [listKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!listKeys && restKey) setCursor(restKey);
+  }, [listKeys, restKey]); // eslint-disable-line react-hooks/exhaustive-deps
   /// The cursor as drawn: only while the list has the keyboard.
   const shownCursor = listKeys ? cursorId : null;
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
