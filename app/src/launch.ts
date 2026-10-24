@@ -3,6 +3,9 @@
 // apart for planning (splitting into subtasks) and for implementing.
 import type { Agent } from "./api";
 
+/** The launch sheet's 自動: the model (and effort) picked from the todo as the session starts. */
+export const AUTO_MODEL = "auto";
+
 export type LaunchRunner = "cloud" | "herdr";
 
 export interface Launch {
@@ -18,7 +21,8 @@ export interface LaunchPrefs {
   direct: Launch;
 }
 
-export const DEFAULT_LAUNCH: Launch = { runner: "cloud", agent: "claude", model: "", effort: "" };
+/// The model is picked from the todo as it starts (自動), unless one is chosen.
+export const DEFAULT_LAUNCH: Launch = { runner: "cloud", agent: "claude", model: AUTO_MODEL, effort: "" };
 
 /// What a start really uses: planning is Claude in herdr (it makes the
 /// subtasks through the Mac's MCP server, asking with AskUserQuestion), and

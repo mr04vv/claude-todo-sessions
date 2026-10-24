@@ -1320,6 +1320,23 @@ fn session_entries(id: &str) -> Option<Vec<serde_json::Value>> {
     }
 }
 
+/// The model that picks the model a session starts with (自動).
+const PICK_MODEL: &str = "haiku";
+
+/// 自動: the model and effort for todo `todo_id`'s session, from what it is to do.
+#[tauri::command]
+async fn pick_model(state: State<'_, AppState>, todo_id: i64, plan: bool, prompt: Option<String>) -> Result<cts_core::pick::Pick, String> {
+    let todo = state.db.lock().map_err(err)?.get_todo(todo_id).map_err(err)?.ok_or_else(|| format!("todo #{todo_id} がありません"))?;
+    let first = prompt.or(todo.prompt).unwrap_or_default();
+    let ask = cts_core::pick::prompt(&todo.title, todo.memo.as_deref().unwrap_or_default(), &first, plan);
+    tauri::async_runtime::spawn_blocking(move || {
+        let answer = ask::claude(&ask, Some(&cts_core::pick::schema()), Some(PICK_MODEL), None)?;
+        cts_core::pick::parse(&answer).ok_or_else(|| format!("モデルを選べませんでした: {answer}"))
+    })
+    .await
+    .map_err(err)?
+}
+
 /// The model that sums up where a session stands (one line, often).
 const SUMMARY_MODEL: &str = "haiku";
 
@@ -3092,6 +3109,7 @@ fn main() {
             browser_ask_type,
             session_peeks,
             session_summary,
+            pick_model,
             browser_bounds,
             browser_hide,
             browser_close,

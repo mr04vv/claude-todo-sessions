@@ -1,3 +1,4 @@
+import { AUTO_MODEL } from "./launch";
 import { invoke } from "@tauri-apps/api/core";
 
 export type Status = "backlog" | "todo" | "doing" | "review" | "pending" | "done";
@@ -454,6 +455,7 @@ export interface StartOptions {
 
 export const MODELS: { id: string; label: string }[] = [
   { id: "", label: "既定のモデル" },
+  { id: AUTO_MODEL, label: "自動（内容から選ぶ）" },
   { id: "claude-opus-5-5", label: "Opus 5.5" },
   { id: "claude-fable-5-1", label: "Fable 5.1" },
   { id: "claude-sonnet-5", label: "Sonnet 5" },
@@ -622,6 +624,8 @@ export const api = {
   sessionPeeks: (ids: string[]) => invoke<Record<string, Peek>>("session_peeks", { ids }),
   /** Where a session stands, in one line Claude writes (none when nothing can be said yet). */
   sessionSummary: (id: string) => invoke<string | null>("session_summary", { id }),
+  /** 自動: the model and effort for a todo's session, from what it is to do. */
+  pickModel: (todoId: number, plan: boolean, prompt?: string) => invoke<{ model: string; effort: string; reason: string }>("pick_model", { todoId, plan, prompt: prompt ?? null }),
   /// With `input`, the page's text box takes the typing too.
   browserFocus: (tab: string, input?: boolean, text?: string) => invoke<void>("browser_focus", { tab, input: input ?? null, text: text ?? null }),
   browserUrl: (tab: string) => invoke<string | null>("browser_url", { tab }),

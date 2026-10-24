@@ -101,7 +101,7 @@ import { shortMoney } from "./usage";
 import { ageGroup, arrange, inWorkOrder, moveTo, type WorkSort } from "./order";
 import { modelLabel, sizeLabel, subtaskSummary } from "./workCards";
 import { ciFailureLine, isFailedReview, isReviewAsk, nextStep, prRef, waitingOnYou, type WaitItem } from "./waiting";
-import { effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
+import { AUTO_MODEL, effectiveLaunch, launchPrefsFrom, planByDefault, type Launch, type LaunchPrefs } from "./launch";
 import { focusRequestCount, focusSoon, noteFocusRequest, takeFocusWish, userActed } from "./focus";
 import { closeTerminal, focusTerminal, SessionTitleContext, setTerminalLinkOpener, terminalLinks, terminalSelection, OPEN_LOCAL_EVENT, TERMINAL_TARGET_KEY, terminalApi, TerminalView, type TerminalRun, type TerminalTarget } from "./Terminal";
 
@@ -1508,8 +1508,19 @@ type StartTodo = (todoId: number, plan: boolean, launch: Launch) => Promise<void
 const StartTodoContext = createContext<StartTodo | null>(null);
 
 /// The kept settings (LAUNCH_KEY) for planning or implementing, and their setter.
+/// Set once 自動 came in: the default model kept before it becomes 自動, once (choosing 既定 again keeps it).
+const AUTO_MODEL_ONCE_KEY = "launchAutoModel";
+function withAutoOnce(prefs: LaunchPrefs): LaunchPrefs {
+  if (loadText(AUTO_MODEL_ONCE_KEY)) return prefs;
+  remember(AUTO_MODEL_ONCE_KEY, "1");
+  const auto = (l: Launch): Launch => (l.model === "" ? { ...l, model: AUTO_MODEL } : l);
+  const next = { plan: auto(prefs.plan), direct: auto(prefs.direct) };
+  remember(LAUNCH_KEY, JSON.stringify(next));
+  return next;
+}
+
 function useLaunchPrefs() {
-  const [prefs, setPrefsState] = useState<LaunchPrefs>(() => launchPrefsFrom(loadJson<Partial<LaunchPrefs> | null>(LAUNCH_KEY, null), loadJson(START_KEY, null)));
+  const [prefs, setPrefsState] = useState<LaunchPrefs>(() => withAutoOnce(launchPrefsFrom(loadJson<Partial<LaunchPrefs> | null>(LAUNCH_KEY, null), loadJson(START_KEY, null))));
   const setLaunch = (plan: boolean, patch: Partial<Launch>) => {
     const next = { ...prefs, [plan ? "plan" : "direct"]: { ...prefs[plan ? "plan" : "direct"], ...patch } };
     remember(LAUNCH_KEY, JSON.stringify(next));
@@ -7205,7 +7216,20 @@ export default function App() {
   /// Starts a todo's session behind (StartTodo): nothing moves; it shows in 作業.
   const startTodo: StartTodo = async (todoId, plan, launch) => {
     const e = effectiveLaunch(launch, plan);
-    const options: StartOptions = { plan, agent: e.agent, ...(e.agent === "claude" ? { model: e.model || undefined, effort: e.effort || undefined } : {}) };
+    // 自動: the model (and the effort, unless one is chosen) picked from the todo; else the default.
+    let { model, effort } = e;
+    if (e.agent === "claude" && model === AUTO_MODEL) {
+      model = "";
+      try {
+        const picked = await api.pickModel(todoId, plan);
+        model = picked.model;
+        effort ||= picked.effort;
+        showToast(`#${todoId} は ${MODELS.find((m) => m.id === picked.model)?.label ?? picked.model}・effort ${effort} で始めます（${picked.reason}）`);
+      } catch (err) {
+        report(`モデルを自動で選べなかったので、既定のモデルで始めます：${err}`);
+      }
+    }
+    const options: StartOptions = { plan, agent: e.agent, ...(e.agent === "claude" ? { model: model || undefined, effort: effort || undefined } : {}) };
     if (e.runner === "cloud") await api.startCloud(todoId, options);
     else if (inAppTerminal) inAppTerminal.open(await terminalApi.start(todoId, options));
     else await api.startTerminal(todoId, options);
