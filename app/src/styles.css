@@ -4287,3 +4287,24 @@ button.tab-row {
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+
+/* The browser's own window: the browser space filling it. */
+.browser-window {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+
+.browser-window > .browser-space {
+  flex: 1;
+  min-height: 0;
+}
+
+.browser-window-error {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+}

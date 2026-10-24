@@ -98,7 +98,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["spaceManage", "管理へ（Todo・PR・DB）"],
       ["spaceWork", "作業へ（セッション）"],
       ["spaceStudy", "学習へ（読みもの）"],
-      ["spaceBrowser", "ブラウザへ"],
+      ["spaceBrowser", "ブラウザのウインドウを前に出す（⌘T で新しいタブ、⌘W でタブを閉じる）"],
       ["spaceSlack", "Slack へ"],
       ["spaceArtifacts", "成果物へ（セッションが作った Doc・Artifact・ファイル）"],
       ["palette", "コマンド（⌘K のメニュー）"],

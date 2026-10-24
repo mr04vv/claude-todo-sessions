@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { listen } from "@tauri-apps/api/event";
+import { listenHere as listen } from "./windowEvents";
 import {
   DndContext,
   DragOverlay,
@@ -95,7 +95,7 @@ import { bookmarkItems, slackItems, type SlackItem } from "./slackItems";
 // The app's icon (src-tauri/icons/icon.svg), as the sidebar's logo too.
 import logoUrl from "../src-tauri/icons/icon.svg?url";
 import { ACTIONS, allKeys, keyLabel, keyOf, matches, type Action } from "./keymap";
-import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, newPin, nextAfterClose, pathOfFileUrl, rightChildren, SEARCH_URL } from "./tabs";
+import { addressToUrl, fileUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, nextAfterClose, pathOfFileUrl, rightChildren, SEARCH_URL } from "./tabs";
 import { opensOutside } from "./outside";
 import { shortMoney } from "./usage";
 import { ageGroup, arrange, inWorkOrder, moveTo, type WorkSort } from "./order";
@@ -194,9 +194,6 @@ const WorkContext = createContext<OpenWork | null>(null);
 /// Where "開く" takes a cloud session: its page in the work space, or Claude Desktop.
 type CloudTarget = "web" | "desktop";
 const CLOUD_TARGET_KEY = "cloudTarget";
-/// Where the links the browser space would open go: its tabs, or a window of their own each.
-type BrowserTarget = "app" | "window";
-const BROWSER_TARGET_KEY = "browserTarget";
 const OpenCloudContext = createContext<((sessionId: string) => void) | null>(null);
 
 /// 「再開して直させる」: sends the todo's session what to fix in its PR.
@@ -379,7 +376,7 @@ function loadText(key: string): string {
   }
 }
 
-function loadJson<T>(key: string, fallback: T): T {
+export function loadJson<T>(key: string, fallback: T): T {
   try {
     const v = localStorage.getItem(key);
     return v === null ? fallback : (JSON.parse(v) as T);
@@ -389,7 +386,7 @@ function loadJson<T>(key: string, fallback: T): T {
 }
 
 /// Per-viewer conveniences; losing them is fine.
-function remember(key: string, value: string) {
+export function remember(key: string, value: string) {
   try {
     localStorage.setItem(key, value);
   } catch {
@@ -404,8 +401,8 @@ const DOCK_MIN_W = 360;
 const FOCUS_RIGHT_W_KEY = "focusRightWidth";
 const FOCUS_RIGHT_SHARE = 0.45;
 /// The browser space's tab list: its width.
-const TAB_LIST_W_KEY = "tabListWidth";
-const TAB_LIST_DEFAULT_W = 248;
+export const TAB_LIST_W_KEY = "tabListWidth";
+export const TAB_LIST_DEFAULT_W = 248;
 const TAB_LIST_MIN_W = 180;
 const TAB_LIST_MAX_W = 420;
 /// The work space's list of what runs: its width.
@@ -420,7 +417,7 @@ const TOAST_MS = 4000;
 /// How long the toast about a finished download stays.
 const DOWNLOADED_MS = 8000;
 /// A page's alert, confirm or prompt (PAGE_DIALOG_EVENT).
-interface PageDialogAsk {
+export interface PageDialogAsk {
   id: number;
   tab: string;
   kind: "alert" | "confirm" | "prompt";
@@ -434,12 +431,12 @@ interface SiteAsk {
   camera: boolean;
 }
 /// The browser space's tabs as kept across restarts (PANE_TABS_KEY): their pages, and the one shown.
-interface SavedTabs {
+export interface SavedTabs {
   /// `pinned` is the pinned page's id.
   tabs: { url: string; openedFor?: string; title: string | null; pinned?: string }[];
   active: number;
 }
-const PANE_TABS_KEY = "paneTabs";
+export const PANE_TABS_KEY = "paneTabs";
 /// The split views' left side keeps at least this.
 const FOCUS_LEFT_MIN_W = 360;
 /// Arrow keys on a resizer move it this far.
@@ -1626,11 +1623,11 @@ function Composer({ todo, run, onStarted }: { todo: Todo; run: (f: () => Promise
 }
 
 /// The `cse_…` id of the cloud session a claude.ai page shows, if it shows one.
-const cloudIdOfPage = (url: string) => url.match(/^https:\/\/claude\.ai\/code\/session_([A-Za-z0-9]+)/)?.[1]?.replace(/^/, "cse_") ?? null;
+export const cloudIdOfPage = (url: string) => url.match(/^https:\/\/claude\.ai\/code\/session_([A-Za-z0-9]+)/)?.[1]?.replace(/^/, "cse_") ?? null;
 
 /// A page the app shows (a tab of the browser space, a reading's page in
 /// 学習, a Cloud session's in 作業), or a local session's terminal (作業).
-interface BrowserTab {
+export interface BrowserTab {
   id: string;
   url: string;
   /// The page of the app's own it was opened for (a session, a PR), which
@@ -1659,7 +1656,7 @@ interface BrowserTab {
 
 /// The browser space's tabs kept from the last run (PANE_TABS_KEY), with new
 /// ids; the pages load when shown.
-function restoreTabs(): { tabs: BrowserTab[]; active: string | null } {
+export function restoreTabs(): { tabs: BrowserTab[]; active: string | null } {
   const saved = loadJson<SavedTabs>(PANE_TABS_KEY, { tabs: [], active: -1 });
   let n = 1;
   const tabs = saved.tabs
@@ -1695,16 +1692,21 @@ const USER_PINS_KEY = "userPins";
 /// The pages the user pinned (a tab dragged onto the pins), kept across restarts.
 let userPins: PinnedPage[] = loadJson<PinnedPage[]>(USER_PINS_KEY, []);
 /// The pinned pages: the app's own, then the user's.
-const pinnedPages = (): PinnedPage[] => [...PINNED_PAGES, ...userPins];
-const isUserPin = (id: string) => userPins.some((p) => p.id === id);
-function saveUserPins(pins: PinnedPage[]) {
+export const pinnedPages = (): PinnedPage[] => [...PINNED_PAGES, ...userPins];
+export const isUserPin = (id: string) => userPins.some((p) => p.id === id);
+/// The pages the user pinned, now.
+export const userPinsNow = () => userPins;
+export function saveUserPins(pins: PinnedPage[]) {
   userPins = pins;
   remember(USER_PINS_KEY, JSON.stringify(pins));
 }
+/// What the main window asks of the browser's window besides a page: a pinned page, a new tab page.
+export const PIN_ASK = "pin:";
+export const NEW_TAB_ASK = "new-tab";
 /// The drop target that pins a dragged tab (the pins' row).
 const PIN_DROP = "pin-drop";
 /// Where a pinned page opens (OneLogin's portal is the user's own).
-const pinnedUrl = (id: string) => (id === "pinonelogin" ? loadText(ONELOGIN_URL_KEY) || ONELOGIN_DEFAULT_URL : (pinnedPages().find((p) => p.id === id)?.url ?? ""));
+export const pinnedUrl = (id: string) => (id === "pinonelogin" ? loadText(ONELOGIN_URL_KEY) || ONELOGIN_DEFAULT_URL : (pinnedPages().find((p) => p.id === id)?.url ?? ""));
 /// The pinned pages 学習 keeps on its right, to ask while reading.
 const STUDY_RIGHT = ["pinnotebooklm", "pinchatgpt", "pinclaude"];
 /// Pinned pages whose text box takes the typing when the keyboard comes over
@@ -1750,7 +1752,7 @@ const NEW_TAB_ROW = "new-tab";
 /// then the tabs, which move by dragging), and the page shown, or a new tab
 /// page when no tab is picked. While the list has the keyboard, j k move over
 /// its rows and Enter shows the page under the cursor.
-function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize, onSelect, onPinned, onPin, onUnpin, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
+export function BrowserSpace({ tabs, active, covered, listKeys, width, report, onResize, onSelect, onPinned, onPin, onUnpin, onClose, onNewTab, onOpen, onAddress, onMove, onArchive, onBookmark, onStrip }: {
   /// The tabs, apart from the pinned pages.
   tabs: BrowserTab[];
   active: BrowserTab | null;
@@ -1879,7 +1881,7 @@ interface Visit {
 }
 const HISTORY_KEY = "browserHistory";
 /// Each tab's page as last loaded, which its title then belongs to.
-const tabUrls = new Map<string, string>();
+export const tabUrls = new Map<string, string>();
 const HISTORY_MAX = 1000;
 const SUGGESTIONS_MAX = 8;
 const DAY_MS = 86_400_000;
@@ -1887,7 +1889,7 @@ let history: Visit[] = loadJson<Visit[]>(HISTORY_KEY, []);
 const historyKey = (url: string) => url.replace(/#.*$/, "");
 const visitScore = (v: Visit, now: number) => v.visits / (1 + (now - v.last) / DAY_MS);
 /// A page loaded (`title` unknown yet) or titled (`visit` false) in a tab.
-function recordVisit(url: string, title: string | null, visit: boolean) {
+export function recordVisit(url: string, title: string | null, visit: boolean) {
   if (!/^https?:\/\//.test(url)) return;
   const key = historyKey(url);
   const now = Date.now();
@@ -2061,7 +2063,7 @@ function giveKeys(tab: string, report: (e: unknown) => void, input?: boolean, te
 /// shown (now, if it is `shown` already), a terminal, or with none (a new tab
 /// page, whose field takes it) this page. Only for the user's own action.
 /// With `text`, a page's text box takes it, typed in.
-function keysToTab(next: BrowserTab | null, shown: string | undefined, report: (e: unknown) => void, text?: string) {
+export function keysToTab(next: BrowserTab | null, shown: string | undefined, report: (e: unknown) => void, text?: string) {
   if (!next) {
     noteFocusRequest();
     api.focusAppPage().catch(report);
@@ -5041,7 +5043,7 @@ type Selection = { kind: "todo"; id: number } | null;
 type DialogKind = "add" | "import" | "quick" | "palette" | "keys" | "start" | "settings" | "usage" | "database" | null;
 
 /// A page's alert, confirm or prompt, as the app's dialog (the page waits for the answer).
-function PageDialog({ ask, onAnswer }: { ask: PageDialogAsk; onAnswer: (ok: boolean, text?: string) => void }) {
+export function PageDialog({ ask, onAnswer }: { ask: PageDialogAsk; onAnswer: (ok: boolean, text?: string) => void }) {
   const input = useRef<HTMLInputElement>(null);
   const ok = () => onAnswer(true, ask.kind === "prompt" ? (input.current?.value ?? "") : undefined);
   return (
@@ -5083,11 +5085,9 @@ const FIXED_KEYS: [string, string][] = [
 /// Where things open and run, and what the browser keeps for sites: the
 /// logins (their sites and users), the sites not asked about, and the
 /// microphone and camera answers.
-function SettingsDialog({ cloudTarget, onCloudTarget, browserTarget, onBrowserTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, jevCredit, run, report, onClose }: {
+function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, jevCredit, run, report, onClose }: {
   cloudTarget: CloudTarget;
   onCloudTarget: (t: CloudTarget) => void;
-  browserTarget: BrowserTarget;
-  onBrowserTarget: (t: BrowserTarget) => void;
   terminalTarget: TerminalTarget;
   onTerminalTarget: (t: TerminalTarget) => void;
   herdr: HerdrSessions | null;
@@ -5130,16 +5130,6 @@ function SettingsDialog({ cloudTarget, onCloudTarget, browserTarget, onBrowserTa
               {(["web", "desktop"] as const).map((t) => (
                 <button key={t} className={cloudTarget === t ? "on" : ""} aria-pressed={cloudTarget === t} onClick={() => onCloudTarget(t)}>
                   {t === "web" ? "Web（アプリ内）" : "Claude Desktop"}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="setting-row">
-            <span className="grow">ブラウザ（リンクやページを開く場所）</span>
-            <div className="segmented" role="group" aria-label="ブラウザ">
-              {(["app", "window"] as const).map((t) => (
-                <button key={t} className={browserTarget === t ? "on" : ""} aria-pressed={browserTarget === t} onClick={() => onBrowserTarget(t)}>
-                  {t === "app" ? "アプリ内" : "別ウィンドウ"}
                 </button>
               ))}
             </div>
@@ -6369,7 +6359,7 @@ export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   // The space shown (⌘1–⌘6), kept across restarts.
-  const [space, setSpaceState] = useState<Space>(() => load(SPACE_KEY, SPACE_KEYS, "manage"));
+  const [space, setSpaceState] = useState<Space>(() => load(SPACE_KEY, SPACE_KEYS.filter((k) => k !== "browser"), "manage"));
   const spaceRef = useRef(space);
   spaceRef.current = space;
   const setSpace = (s: Space) => {
@@ -6378,13 +6368,11 @@ export default function App() {
     setSpaceState(s);
   };
   useEffect(() => void api.setSpace(space).catch((e) => setError(String(e))), [space]);
-  // Every page the app shows: the browser space's tabs (and pinned pages),
-  // the readings' pages (学習) and the sessions' pages and terminals (作業).
-  // The browser space's are kept across restarts (see `restoreTabs`).
-  const restored = useRef<ReturnType<typeof restoreTabs> | null>(null);
-  restored.current ??= restoreTabs();
-  const [tabs, setTabs] = useState<BrowserTab[]>(() => restored.current!.tabs);
-  const [activeTabId, setActiveTabIdState] = useState<string | null>(() => restored.current!.active);
+  // Every page this window shows: the readings' pages and the pinned pages
+  // asked beside them (学習), and the sessions' pages and terminals (作業).
+  // The browser's tabs are its own window's (BrowserWindow).
+  const [tabs, setTabs] = useState<BrowserTab[]>([]);
+  const [activeTabId, setActiveTabIdState] = useState<string | null>(null);
   const [newTab, setNewTab] = useState(false);
   const setActiveTabId = (id: string | null) => {
     setActiveTabIdState(id);
@@ -6410,17 +6398,9 @@ export default function App() {
   };
   const switchRef = useRef(switchTab);
   switchRef.current = switchTab;
-  /// The browser space on a new tab page (⌘T).
-  const openNewTab = () => {
-    setSpace("browser");
-    setNewTab(true);
-  };
+  /// The browser's window on a new tab page (⌘T).
+  const openNewTab = () => api.browserWindowOpen(NEW_TAB_ASK).catch(report);
   const [cloudTarget, setCloudTargetState] = useState<CloudTarget>(() => load(CLOUD_TARGET_KEY, ["web", "desktop"] as const, "web"));
-  const [browserTarget, setBrowserTargetState] = useState<BrowserTarget>(() => load(BROWSER_TARGET_KEY, ["app", "window"] as const, "app"));
-  const setBrowserTarget = (t: BrowserTarget) => {
-    remember(BROWSER_TARGET_KEY, t);
-    setBrowserTargetState(t);
-  };
   const setCloudTarget = (t: CloudTarget) => {
     remember(CLOUD_TARGET_KEY, t);
     setCloudTargetState(t);
@@ -6436,36 +6416,14 @@ export default function App() {
     const path = pathOfFileUrl(url);
     (path ? api.openPath(path) : api.openLink(url)).catch(report);
   };
-  const openInBrowser = (url: string, keys = true, behind = false, text?: string) => {
+  /// Opens a page (a PR, an issue, an artifact) as a tab in the browser's own
+  /// window, which comes forward with it (the tab opened for it, if any).
+  const openInBrowser = (url: string) => {
     if (opensOutside() || SLACK_PERMALINK.test(url)) return openOutside(url);
-    if (browserTarget === "window" && /^https?:\/\//.test(url)) return void api.browserWindow(url).catch(report);
-    const open = findTabFor(normalTabs.filter((t) => !t.term), url);
-    if (open) {
-      if (behind) return;
-      setSpace("browser");
-      if (keys) keysToTab(open, browserShown ? activeTab?.id : undefined, report, text);
-      return setActiveTabId(open.id);
-    }
-    const id = `t${nextTab.current++}`;
-    if (keys && !behind) focusSoon(id, !!text, text);
-    setTabs((prev) => insertAfter(prev, { id, url, openedFor: url, title: null, loading: true, nav: 0 }, activeTab?.id ?? null));
-    if (!behind) {
-      setSpace("browser");
-      setActiveTabId(id);
-    }
+    api.browserWindowOpen(url).catch(report);
   };
-  /// A link a page opens in a new window: a new tab right after that page's
-  /// tab, in front with the keyboard (the user clicked it), or `behind` (⌘-click).
-  const openFromPage = (url: string, from: string, behind: boolean) => {
-    if (browserTarget === "window" && /^https?:\/\//.test(url)) return void api.browserWindow(url).catch(report);
-    const id = `t${nextTab.current++}`;
-    if (!behind) focusSoon(id);
-    setTabs((prev) => insertAfter(prev, { id, url, title: null, loading: true, nav: 0 }, prev.some((t) => t.id === from && !t.pinned && !t.area) ? from : (activeTab?.id ?? null)));
-    if (!behind) {
-      setSpace("browser");
-      setActiveTabId(id);
-    }
-  };
+  /// A link a page here (作業's, 学習's) opens in a new window: a tab in the browser's window.
+  const openFromPage = (url: string) => openInBrowser(url);
   const [terminalTarget, setTerminalTargetState] = useState<TerminalTarget>(() => load(TERMINAL_TARGET_KEY, ["ghostty", "app"] as const, "ghostty"));
   const setTerminalTarget = (t: TerminalTarget) => {
     remember(TERMINAL_TARGET_KEY, t);
@@ -6865,33 +6823,8 @@ export default function App() {
   paletteRef.current = togglePalette;
   /// Brings up a pinned page in the browser space, opening its tab the first
   /// time, with its text box ready for typing.
-  // The user's pins live outside React (restoring tabs reads them); a change shows by this.
-  const [, setPinsVersion] = useState(0);
-  /// Pins tab `id` (dragged onto the pins): it becomes a pinned page, shown.
-  const pinTab = (id: string) => {
-    const tab = normalTabs.find((t) => t.id === id);
-    if (!tab || !/^https?:\/\//.test(tab.url)) return;
-    const pin = newPin(pinnedPages(), tab.url, tab.title);
-    saveUserPins([...userPins, pin]);
-    setPinsVersion((n) => n + 1);
-    closeTab(id);
-    showPinned(pin.id);
-  };
-  /// Takes a page the user pinned off the pins (its page closes).
-  const unpin = (id: string) => {
-    saveUserPins(userPins.filter((p) => p.id !== id));
-    setPinsVersion((n) => n + 1);
-    if (!tabs.some((t) => t.id === id)) return;
-    api.browserClose(id).catch(report);
-    setTabs((prev) => prev.filter((t) => t.id !== id));
-    if (activeTab?.id === id) setNewTab(true);
-  };
   const showPinned = (id: string) => {
-    if (!pinnedPages().some((p) => p.id === id)) return;
-    focusSoon(id, true);
-    ensurePinned(id);
-    setSpace("browser");
-    setActiveTabId(id);
+    if (pinnedPages().some((p) => p.id === id)) api.browserWindowOpen(`${PIN_ASK}${id}`).catch(report);
   };
   // With the in-app terminal chosen, local sessions open in 作業; a run that
   // is no herdr session's runs in its own terminal there (made now, started
@@ -7127,13 +7060,6 @@ export default function App() {
       window.removeEventListener("blur", acted);
     };
   }, []);
-  // The browser space's tabs are kept across restarts: their pages (not the
-  // pages' state), the pinned pages' too.
-  const savedTabsJson = JSON.stringify({
-    tabs: paneTabs.map((t): SavedTabs["tabs"][number] => ({ url: t.url, openedFor: t.openedFor, title: t.title, pinned: t.pinned ? t.id : undefined })),
-    active: paneTabs.findIndex((t) => t.id === activeTab?.id),
-  });
-  useEffect(() => remember(PANE_TABS_KEY, savedTabsJson), [savedTabsJson]);
   const closeShownRef = useRef(closeShown);
   closeShownRef.current = closeShown;
   /// ⌘⇧A: archives the cloud session the browser's tab is on and closes the
@@ -7169,7 +7095,7 @@ export default function App() {
     api.takeOpened().then((urls) => {
       for (const url of urls) {
         if (studyReadingRef.current) addStudyPageRef.current(url, false);
-        else openRef.current(url, true);
+        else openRef.current(url);
       }
     }, report);
   const openFromPageRef = useRef(openFromPage);
@@ -7264,10 +7190,10 @@ export default function App() {
       }),
       // A reading's page's new window is a tab among 学習's left; any other page's, the browser space's.
       listen<{ url: string; tab: string; behind: boolean }>(BROWSER_NEW_TAB_EVENT, ({ payload }) =>
-        spaceRef.current === "study" && payload.tab.match(/^[rf]\d/) ? addStudyPageRef.current(payload.url, payload.behind) : openFromPageRef.current(payload.url, payload.tab, payload.behind),
+        spaceRef.current === "study" && payload.tab.match(/^[rf]\d/) ? addStudyPageRef.current(payload.url, payload.behind) : openFromPageRef.current(payload.url),
       ),
       // A notification's PR: opened by the user, so it takes the keyboard.
-      listen<{ url: string }>(OPEN_URL_EVENT, ({ payload }) => openRef.current(payload.url, true)),
+      listen<{ url: string }>(OPEN_URL_EVENT, ({ payload }) => openRef.current(payload.url)),
       listen(OPENED_EVENT, () => takeOpened()),
       listen(OPEN_NEW_TODO_EVENT, () => {
         dialogFromPage.current = true;
@@ -7774,9 +7700,11 @@ export default function App() {
   /// ⌘1–⌘6 and the bar: a space, the keyboard on what it shows (its page,
   /// its session, its list).
   const goSpace = (s: Space) => {
+    // The browser is a window of its own: it comes forward.
+    if (s === "browser") return void api.browserWindowOpen().catch(report);
     setSpace(s);
     setZone(null);
-    const tab = s === "browser" ? (activeTab ?? null) : s === "work" ? workTab(workView.left) : s === "study" && study.view === "read" ? studyLeft : undefined;
+    const tab = s === "work" ? workTab(workView.left) : s === "study" && study.view === "read" ? studyLeft : undefined;
     if (tab !== undefined) {
       setFocusTyping(tab ? "left" : null);
       return keysToTab(tab, undefined, report);
@@ -8586,33 +8514,6 @@ export default function App() {
               <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />
             </main>
           )}
-          {space === "browser" && (
-            <BrowserSpace
-              tabs={normalTabs}
-              active={activeTab}
-              covered={covered}
-              listKeys={typingSide === "app"}
-              width={tabListW}
-              report={report}
-              onResize={setTabListW}
-              onSelect={(id) => {
-                keysToTab(tabs.find((t) => t.id === id) ?? null, activeTab?.id, report);
-                setActiveTabId(id);
-              }}
-              onStrip={() => activeTab && keysToTab(activeTab, activeTab.id, report)}
-              onPinned={showPinned}
-              onPin={pinTab}
-              onUnpin={unpin}
-              onArchive={() => archiveShownRef.current()}
-              onBookmark={bookmarkShown}
-              onClose={closeTab}
-              onNewTab={openNewTab}
-              // What is typed on a new tab page opens in a new tab, as a page's link does.
-              onOpen={(url) => openFromPage(url, activeTab?.id ?? "", false)}
-              onAddress={setTabUrl}
-              onMove={moveTab}
-            />
-          )}
         </div>
 
         {dialog === "add" && (
@@ -8687,8 +8588,6 @@ export default function App() {
           <SettingsDialog
             cloudTarget={cloudTarget}
             onCloudTarget={setCloudTarget}
-            browserTarget={browserTarget}
-            onBrowserTarget={setBrowserTarget}
             terminalTarget={terminalTarget}
             onTerminalTarget={setTerminalTarget}
             herdr={herdr}

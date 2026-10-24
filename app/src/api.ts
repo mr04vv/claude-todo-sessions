@@ -608,7 +608,10 @@ export const api = {
   browserHide: (tab?: string) => invoke<void>("browser_hide", { tab: tab ?? null }),
   browserClose: (tab: string) => invoke<void>("browser_close", { tab }),
   /** Opens a page in a window of its own, apart from the app's tabs. */
-  browserWindow: (url: string) => invoke<void>("browser_window", { url }),
+  /** Brings the browser's own window forward, with `url` (or `pin:<id>`) opened as its tab. */
+  browserWindowOpen: (url?: string) => invoke<void>("browser_window_open", { url: url ?? null }),
+  /** The pages asked of the browser window before its page was up. */
+  browserWindowTake: () => invoke<string[]>("browser_window_take"),
   /** Each session's last reply, model and context (the ones that could be read). */
   sessionPeeks: (ids: string[]) => invoke<Record<string, Peek>>("session_peeks", { ids }),
   /** Where a session stands, in one line Claude writes (none when nothing can be said yet). */
@@ -621,6 +624,8 @@ export const api = {
 };
 
 /** `{tab, url}` after a tab navigates. */
+/** `url` (or `pin:<id>`) to open as a tab in the browser's own window. */
+export const BROWSER_WINDOW_OPEN_EVENT = "browser-window-open";
 export const BROWSER_URL_EVENT = "browser-url";
 /** `{tab, delta}` (-1 or 1) when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]). */
 export const BROWSER_SWITCH_TAB_EVENT = "browser-switch-tab";

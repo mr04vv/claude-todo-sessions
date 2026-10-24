@@ -2104,8 +2104,9 @@ const BROWSER_WINDOW_OPEN_EVENT: &str = "browser-window-open";
 /// hides it, its tabs kept), with `url` opened as a tab there.
 #[tauri::command(async)]
 fn browser_window_open(app: AppHandle, state: State<'_, AppState>, url: Option<String>) -> Result<(), String> {
+    // A page, a file, or the window's own asks: a pinned page (`pin:<id>`), a new tab page.
     if let Some(url) = &url {
-        if !is_web_url(url) && !url.starts_with("file://") {
+        if !is_web_url(url) && !url.starts_with("file://") && !url.starts_with("pin:") && url != "new-tab" {
             return Err(format!("開けない URL です: {url}"));
         }
     }
