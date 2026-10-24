@@ -1689,15 +1689,13 @@ const PINNED_PAGES: { id: string; label: string; short: string; url: string }[] 
 ];
 type PinnedPage = (typeof PINNED_PAGES)[number];
 const USER_PINS_KEY = "userPins";
-/// The pages the user pinned (a tab dragged onto the pins), kept across restarts.
-let userPins: PinnedPage[] = loadJson<PinnedPage[]>(USER_PINS_KEY, []);
+/// The pages the user pinned (a tab dragged onto the pins), kept across
+/// restarts; read each time, as the browser's window changes them.
+export const userPinsNow = () => loadJson<PinnedPage[]>(USER_PINS_KEY, []);
 /// The pinned pages: the app's own, then the user's.
-export const pinnedPages = (): PinnedPage[] => [...PINNED_PAGES, ...userPins];
-export const isUserPin = (id: string) => userPins.some((p) => p.id === id);
-/// The pages the user pinned, now.
-export const userPinsNow = () => userPins;
+export const pinnedPages = (): PinnedPage[] => [...PINNED_PAGES, ...userPinsNow()];
+export const isUserPin = (id: string) => userPinsNow().some((p) => p.id === id);
 export function saveUserPins(pins: PinnedPage[]) {
-  userPins = pins;
   remember(USER_PINS_KEY, JSON.stringify(pins));
 }
 /// What the main window asks of the browser's window besides a page: a pinned page, a new tab page.
@@ -6450,6 +6448,10 @@ export default function App() {
       return next;
     });
   const studyReading = space === "study" && study.view === "read";
+  // 学習's right page is made as reading comes up (after a restart too).
+  useEffect(() => {
+    if (studyReading) ensurePinned(study.right);
+  }, [studyReading, study.right]); // eslint-disable-line react-hooks/exhaustive-deps
   // The left's tabs: the open readings' pages, and pages they opened.
   const studyLefts = tabs.filter((t) => t.area === "study");
   const studyLeft = studyLefts.find((t) => t.id === study.active) ?? studyLefts[0] ?? null;
@@ -7169,11 +7171,6 @@ export default function App() {
         if (wish) api.browserFocus(payload.tab, wish.input || undefined, wish.text).catch(report);
         // A new page starts in its own words (one translated before says so as it loads).
         if (payload.loading) setTabs((prev) => prev.map((t) => (t.id === payload.tab && t.translated ? { ...t, translated: false } : t)));
-        // A page loaded is a visit, for the address field's suggestions.
-        if (!payload.loading) {
-          tabUrls.set(payload.tab, payload.url);
-          recordVisit(payload.url, null, true);
-        }
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, url: payload.url, loading: payload.loading } : t)));
       }),
       listen<{ tab: string; url: string }>(BROWSER_ADDRESS_EVENT, ({ payload }) => setTabUrl(payload.tab, payload.url)),
@@ -7183,11 +7180,7 @@ export default function App() {
       listen<{ tab: string; zoom: number }>(BROWSER_ZOOM_EVENT, ({ payload }) =>
         setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, zoom: payload.zoom } : t))),
       ),
-      listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => {
-        const url = tabUrls.get(payload.tab);
-        if (url) recordVisit(url, payload.title, false);
-        setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)));
-      }),
+      listen<{ tab: string; title: string }>(BROWSER_TITLE_EVENT, ({ payload }) => setTabs((prev) => prev.map((t) => (t.id === payload.tab ? { ...t, title: payload.title } : t)))),
       // A reading's page's new window is a tab among 学習's left; any other page's, the browser space's.
       listen<{ url: string; tab: string; behind: boolean }>(BROWSER_NEW_TAB_EVENT, ({ payload }) =>
         spaceRef.current === "study" && payload.tab.match(/^[rf]\d/) ? addStudyPageRef.current(payload.url, payload.behind) : openFromPageRef.current(payload.url),
