@@ -1270,13 +1270,6 @@ button.lane-toggle:hover .lane-name {
 }
 
 
-.wait-row {
-  display: grid;
-  grid-template-columns: 96px minmax(0, 1fr) minmax(0, 180px) auto;
-  column-gap: 12px;
-  align-items: center;
-}
-
 .row-actions {
   display: inline-flex;
   align-items: center;
