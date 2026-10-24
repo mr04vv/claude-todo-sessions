@@ -543,7 +543,7 @@ export const api = {
   /// Gives the app's own page the keyboard, which a browser tab may hold.
   focusAppPage: () => invoke<void>("term_focus"),
   /// The space shown: the pages learn whether a split view (作業・学習) is up, and 学習 holds the notifications.
-  setSpace: (space: "manage" | "work" | "study" | "browser") => invoke<void>("set_space", { space }),
+  setSpace: (space: string) => invoke<void>("set_space", { space }),
   /// The app's keys (keymap.ts), as JSON, for the pages' script.
   setPageKeys: (keys: string) => invoke<void>("set_page_keys", { keys }),
   /// Archives cloud sessions (`cse_…`), as claude.ai does.
@@ -621,7 +621,7 @@ export const WINDOW_FOCUS_EVENT = "window-focus";
 export const FOCUS_PANE_EVENT = "focus-pane";
 /** `{title, kind, chapters}` once a page kept itself to read (⌘⇧D, a link ⌥-clicked, X's bookmark button). */
 export const READING_ADDED_EVENT = "reading-added";
-/** `{space}` when a page's ⌘1–⌘4 asks for a space. */
+/** `{space}` when a page's ⌘1–⌘6 asks for a space. */
 export const SPACE_EVENT = "space";
 /** When a page's ⌃h hands the typing back to the app's side. */
 export const FOCUS_APP_EVENT = "focus-app";

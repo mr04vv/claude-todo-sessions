@@ -87,6 +87,8 @@
     ["spaceWork", () => send(`${SPACE}?s=work`)],
     ["spaceStudy", () => send(`${SPACE}?s=study`)],
     ["spaceBrowser", () => send(`${SPACE}?s=browser`)],
+    ["spaceSlack", () => send(`${SPACE}?s=slack`)],
+    ["spaceArtifacts", () => send(`${SPACE}?s=artifacts`)],
     ["sessions", () => send(SESSIONS)],
     ["focusUrl", () => send(FOCUS_URL)],
     ["newTab", () => send(NEW_TAB)],

@@ -21,6 +21,8 @@ export type Action =
   | "spaceWork"
   | "spaceStudy"
   | "spaceBrowser"
+  | "spaceSlack"
+  | "spaceArtifacts"
   | "focusUrl"
   | "terminalLinks"
   | "workRight"
@@ -92,10 +94,12 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
   {
     group: "どこでも",
     items: [
-      ["spaceManage", "管理へ（Todo・PR・成果物・Slack）"],
+      ["spaceManage", "管理へ（Todo・PR・DB）"],
       ["spaceWork", "作業へ（セッション）"],
       ["spaceStudy", "学習へ（読みもの）"],
       ["spaceBrowser", "ブラウザへ"],
+      ["spaceSlack", "Slack へ"],
+      ["spaceArtifacts", "成果物へ（セッションが作った Doc・Artifact・ファイル）"],
       ["palette", "コマンド（⌘K のメニュー）"],
       ["sessions", "セッション一覧（⌘K の一番上）"],
       ["newTodo", "新しい todo"],
@@ -239,6 +243,8 @@ const KEYS: Record<Action, string> = {
   spaceWork: "cmd+2",
   spaceStudy: "cmd+3",
   spaceBrowser: "cmd+4",
+  spaceSlack: "cmd+5",
+  spaceArtifacts: "cmd+6",
   focusUrl: "cmd+l",
   terminalLinks: "cmd+shift+l",
   workRight: "cmd+shift+e",

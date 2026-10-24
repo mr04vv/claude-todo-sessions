@@ -148,16 +148,18 @@ const LAUNCH_KEY = "launchPrefs";
 const REVIEW_RUNNER_KEY = "reviewRunner";
 const HERDR_SESSION_KEY = "herdrSession";
 
-/// The spaces (場), each the home of one kind of object: 管理 the todos,
-/// PRs, artifacts and Slack; 作業 the sessions; 学習 the readings; ブラウザ
-/// the pages. ⌘1–⌘4 go to them, and each shows what it showed last.
-type Space = "manage" | "work" | "study" | "browser";
+/// The spaces (場), each the home of one kind of object: 管理 the todos and
+/// PRs; 作業 the sessions; 学習 the readings; ブラウザ the pages; then what
+/// comes in: Slack, and the artifacts sessions made. ⌘1–⌘6 go to them, and
+/// each shows what it showed last.
+type Space = "manage" | "work" | "study" | "browser" | "slack" | "artifacts";
+const SPACE_KEYS = ["manage", "work", "study", "browser", "slack", "artifacts"] as const;
 const SPACE_KEY = "space";
 
 /// 管理's pages. `doing`: the Todo page's list of what is Doing (today's work), on its own;
 /// `db:<id>`: the Todo page's todos in a database the user made (Frontend Backlog).
-type View = "todos" | "doing" | "prs" | "artifacts" | "slack" | `db:${number}`;
-const PAGES = ["todos", "doing", "prs", "artifacts", "slack"] as const;
+type View = "todos" | "doing" | "prs" | `db:${number}`;
+const PAGES = ["todos", "doing", "prs"] as const;
 const dbView = (id: number): View => `db:${id}`;
 /// The database view `v` shows, if it shows one.
 const dbOfView = (v: View) => (v.startsWith("db:") ? Number(v.slice("db:".length)) : null);
@@ -167,8 +169,8 @@ const loadView = (): View => {
   return (PAGES as readonly string[]).includes(v) || /^db:\d+$/.test(v) ? (v as View) : "todos";
 };
 /// The sidebar's groups, in its order.
-type NavGroup = "仕事" | "DB" | "連絡";
-const NAV_GROUPS: NavGroup[] = ["仕事", "DB", "連絡"];
+type NavGroup = "仕事" | "DB";
+const NAV_GROUPS: NavGroup[] = ["仕事", "DB"];
 type Layout = "board" | "list";
 type GroupBy = "repo" | "parent";
 
@@ -5256,23 +5258,30 @@ function ShortcutsDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-/// The spaces in the rail at the left, with their keys (⌘1–⌘4).
-const SPACES: { key: Space; label: string; icon: IconName; action: Action }[] = [
-  { key: "manage", label: "管理", icon: "board", action: "spaceManage" },
-  { key: "work", label: "作業", icon: "terminal", action: "spaceWork" },
-  { key: "study", label: "学習", icon: "book", action: "spaceStudy" },
-  { key: "browser", label: "ブラウザ", icon: "globe", action: "spaceBrowser" },
+/// The spaces in the rail at the left, with their keys (⌘1–⌘6): where the
+/// work is done (場), then what comes in (届く).
+const SPACES: { key: Space; label: string; icon: IconName; action: Action; group: "場" | "届く" }[] = [
+  { key: "manage", label: "管理", icon: "board", action: "spaceManage", group: "場" },
+  { key: "work", label: "作業", icon: "terminal", action: "spaceWork", group: "場" },
+  { key: "study", label: "学習", icon: "book", action: "spaceStudy", group: "場" },
+  { key: "browser", label: "ブラウザ", icon: "globe", action: "spaceBrowser", group: "場" },
+  { key: "slack", label: "Slack", icon: "chat", action: "spaceSlack", group: "届く" },
+  { key: "artifacts", label: "成果物", icon: "open", action: "spaceArtifacts", group: "届く" },
 ];
+const RAIL_GROUPS = ["場", "届く"] as const;
 const SPACE_ACTIONS: [Action, Space][] = SPACES.map((s) => [s.action, s.key]);
 
 const WAITING_TITLE = "あなた待ち：あなたが動かないと進まないもの（返事待ち・CI 失敗・修正依頼・未着手のレビュー依頼）";
 
-/// The rail down the window's left: the spaces as icons (あなた待ち's count
-/// on 作業's, as what waits is answered there), then the usage, ⌘K and the
-/// settings at its foot.
-function SpaceRail({ space, waiting, limits, jev, jevLeft, onSpace, onUsage, onSearch, onSettings }: {
+const SLACK_UNREAD_TITLE = "Slack の未読スレッド（メンションか新しい返信があるもの）";
+
+/// The rail down the window's left: the spaces, each an icon over its name, in
+/// their groups (あなた待ち's count on 作業's, the unread on Slack's), then the
+/// usage, ⌘K and the settings at its foot.
+function SpaceRail({ space, waiting, slackUnread, limits, jev, jevLeft, onSpace, onUsage, onSearch, onSettings }: {
   space: Space;
   waiting: number;
+  slackUnread: number;
   limits: Limit[] | null;
   jev: JevSpend | undefined;
   jevLeft: number | null;
@@ -5281,28 +5290,45 @@ function SpaceRail({ space, waiting, limits, jev, jevLeft, onSpace, onUsage, onS
   onSearch: () => void;
   onSettings: () => void;
 }) {
+  const counts: Partial<Record<Space, { n: number; title: string; className: string }>> = {
+    work: { n: waiting, title: WAITING_TITLE, className: "rail-count" },
+    slack: { n: slackUnread, title: SLACK_UNREAD_TITLE, className: "rail-count accent" },
+  };
   return (
     <nav className="space-rail" aria-label="場">
       <img className="brand-mark" src={logoUrl} alt="Shosai" title="Shosai" />
-      {SPACES.map((s) => (
-        <button
-          key={s.key}
-          className={`space-icon${space === s.key ? " on" : ""}`}
-          aria-label={s.label}
-          aria-current={space === s.key ? "page" : undefined}
-          title={`${s.label}（${keyLabel(keyOf(s.action))}）${s.key === "work" && waiting > 0 ? `\n${WAITING_TITLE} ${waiting} 件` : ""}`}
-          onClick={() => onSpace(s.key)}
-        >
-          <Icon name={s.icon} size={18} />
-          {s.key === "work" && waiting > 0 && <span className="rail-count">{waiting}</span>}
-        </button>
+      {RAIL_GROUPS.map((group) => (
+        <div key={group} className="rail-group" role="group" aria-label={group}>
+          <span className="rail-group-name" aria-hidden="true">
+            {group}
+          </span>
+          {SPACES.filter((s) => s.group === group).map((s) => {
+            const c = counts[s.key];
+            const shown = c && c.n > 0 ? c : null;
+            return (
+              <button
+                key={s.key}
+                className={`space-icon${space === s.key ? " on" : ""}`}
+                aria-current={space === s.key ? "page" : undefined}
+                title={`${s.label}（${keyLabel(keyOf(s.action))}）${shown ? `\n${shown.title} ${shown.n} 件` : ""}`}
+                onClick={() => onSpace(s.key)}
+              >
+                <span className="space-glyph">
+                  <Icon name={s.icon} size={18} />
+                  {shown && <span className={shown.className}>{shown.n}</span>}
+                </span>
+                <span className="space-name">{s.label}</span>
+              </button>
+            );
+          })}
+        </div>
       ))}
       <span className="grow" />
       <RailUsage limits={limits} jev={jev} jevLeft={jevLeft} onOpen={onUsage} />
-      <button className="space-icon" aria-label="検索・操作" title={`検索・操作（${keyLabel(keyOf("palette"))}）`} onClick={onSearch}>
+      <button className="space-icon tool" aria-label="検索・操作" title={`検索・操作（${keyLabel(keyOf("palette"))}）`} onClick={onSearch}>
         <Icon name="search" size={18} />
       </button>
-      <button className="space-icon" aria-label="設定" title="設定" onClick={onSettings}>
+      <button className="space-icon tool" aria-label="設定" title="設定" onClick={onSettings}>
         <Icon name="settings" size={18} />
       </button>
     </nav>
@@ -6090,8 +6116,8 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
 export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
-  // The space shown (⌘1–⌘4), kept across restarts.
-  const [space, setSpaceState] = useState<Space>(() => load(SPACE_KEY, ["manage", "work", "study", "browser"] as const, "manage"));
+  // The space shown (⌘1–⌘6), kept across restarts.
+  const [space, setSpaceState] = useState<Space>(() => load(SPACE_KEY, SPACE_KEYS, "manage"));
   const spaceRef = useRef(space);
   spaceRef.current = space;
   const setSpace = (s: Space) => {
@@ -6969,7 +6995,7 @@ export default function App() {
       listen<{ id: number }>(OPEN_TODO_EVENT, ({ payload }) => goTodoRef.current(payload.id)),
       listen<{ channel: string; ts: string }>(OPEN_SLACK_EVENT, ({ payload }) => {
         setSlackPick(mentionKey(payload));
-        setViewRef.current("slack");
+        goSpaceRef.current("slack");
       }),
       listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => focusSideRef.current(true, onSplitRightRef.current(payload.tab) ? "right" : "left", payload.text ?? undefined)),
       // Back from a page: nothing on this side keeps the typing, so j k work.
@@ -7273,7 +7299,7 @@ export default function App() {
         } else if (e.key === "Escape") setZone(null);
         return;
       }
-      // ⌘1–⌘4: the spaces.
+      // ⌘1–⌘6: the spaces.
       const toSpace = SPACE_ACTIONS.find(([action]) => matches(e, action));
       if (toSpace) {
         e.preventDefault();
@@ -7440,7 +7466,7 @@ export default function App() {
   const reload = () => (space === "manage" && view === "prs" ? loadPrs() : syncAll());
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
-  /// ⌘1–⌘4 and the bar: a space, the keyboard on what it shows (its page,
+  /// ⌘1–⌘6 and the bar: a space, the keyboard on what it shows (its page,
   /// its session, its list).
   const goSpace = (s: Space) => {
     setSpace(s);
@@ -7513,7 +7539,6 @@ export default function App() {
   const nav: { key: string; group: NavGroup; label: string; icon: IconName; badge?: React.ReactNode; count?: number; on: boolean; go: () => void }[] = [
     { key: "todos", group: "仕事", label: "Todo", icon: "board", count: openTodoCount, on: view === "todos" || doingView, go: () => setView(doingView ? view : "todos") },
     { key: "prs", group: "仕事", label: "PR", icon: "pr", on: view === "prs", go: () => setView("prs"), badge: reviewCount > 0 && <span className="pill accent" title="まだレビューを始めていないレビュー依頼">レビュー {reviewCount}</span> },
-    { key: "artifacts", group: "仕事", label: "成果物", icon: "open", count: board?.artifacts.length, on: view === "artifacts", go: () => setView("artifacts") },
     ...databases.map((d) => ({
       key: `db:${d.id}`,
       group: "DB" as const,
@@ -7524,15 +7549,6 @@ export default function App() {
       go: () => setView(dbView(d.id)),
     })),
     { key: "db:new", group: "DB", label: "新しい DB", icon: "plus", on: false, go: () => askDatabase(null) },
-    {
-      key: "slack",
-      group: "連絡",
-      label: "Slack",
-      icon: "chat",
-      on: view === "slack",
-      go: () => setView("slack"),
-      badge: slackUnread > 0 && <span className="pill accent" title="未読のスレッド（メンションか新しい返信があるもの）">{slackUnread}</span>,
-    },
   ];
 
   /// Puts tab `id` where tab `to` is (dragged in the tab list, or ⌘K's "動かす").
@@ -7789,6 +7805,7 @@ export default function App() {
         <SpaceRail
           space={space}
           waiting={waiting.length}
+          slackUnread={slackUnread}
           limits={limits}
           jev={board?.jev_spend}
           jevLeft={jevLeft}
@@ -8032,21 +8049,6 @@ export default function App() {
                     onOpenTodo={goTodo}
                   />
                 )}
-                {view === "artifacts" && board && <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />}
-                {view === "slack" && board && (
-                  <SlackPage
-                    slack={board.slack}
-                    pick={slackPick}
-                    onPicked={() => setSlackPick(null)}
-                    run={run}
-                    report={report}
-                    onSettings={() => setDialog("settings")}
-                    onTodo={(memo) => {
-                      setDialog("add");
-                      setAddMemo(memo);
-                    }}
-                  />
-                )}
                 {panel === "todo" && selectedTodo && (
                   // A sheet over the Todo page, not a dialog: j k go on to the next todo.
                   <div className="sheet-backdrop" onClick={() => setSelection(null)}>
@@ -8243,6 +8245,27 @@ export default function App() {
             </div>
           )}
 
+          {space === "slack" && board && (
+            <main className="main">
+              <SlackPage
+                slack={board.slack}
+                pick={slackPick}
+                onPicked={() => setSlackPick(null)}
+                run={run}
+                report={report}
+                onSettings={() => setDialog("settings")}
+                onTodo={(memo) => {
+                  setDialog("add");
+                  setAddMemo(memo);
+                }}
+              />
+            </main>
+          )}
+          {space === "artifacts" && board && (
+            <main className="main">
+              <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />
+            </main>
+          )}
           {space === "browser" && (
             <BrowserSpace
               tabs={normalTabs}

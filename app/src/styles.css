@@ -44,7 +44,7 @@
   --sans: "IBM Plex Sans JP", "Hiragino Sans", system-ui, sans-serif;
   --mono-font: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   --sidebar-w: 232px;
-  --space-rail-w: 64px;
+  --space-rail-w: 72px;
   --panel-w: 440px;
   --dock-w: max(520px, 44vw);
   color-scheme: dark;
@@ -3193,15 +3193,55 @@ button.slack-reaction:hover {
   margin: -3px -3px 9px;
 }
 
+/* The rail's groups: where the work is done (場), then what comes in (届く). */
+.rail-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.rail-group + .rail-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.rail-group-name {
+  font-size: 10px;
+  color: var(--text-3);
+  letter-spacing: 0.08em;
+  margin-bottom: 2px;
+}
+
+/* A space: its icon over its name. */
 .space-icon {
   position: relative;
-  width: 36px;
-  height: 36px;
+  width: 58px;
+  height: 50px;
   padding: 0;
+  flex-direction: column;
   justify-content: center;
+  gap: 3px;
   background: none;
   border-color: transparent;
   color: var(--text-2);
+}
+
+.space-icon.tool {
+  width: 36px;
+  height: 36px;
+}
+
+.space-glyph {
+  position: relative;
+  display: inline-flex;
+}
+
+.space-name {
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .space-icon:hover:not(:disabled) {
@@ -3211,9 +3251,10 @@ button.slack-reaction:hover {
 }
 
 .space-icon.on {
-  background: var(--card-hover);
-  border-color: var(--border-2);
-  color: var(--text);
+  background: var(--accent-soft);
+  border-color: transparent;
+  box-shadow: inset 3px 0 0 var(--accent);
+  color: var(--accent);
 }
 
 /* The usage at a glance: Claude's most used limit as a ring, Jev's month under it. */
@@ -3302,8 +3343,8 @@ button.slack-reaction:hover {
 /* あなた待ち's count, on 作業's icon. */
 .rail-count {
   position: absolute;
-  top: -3px;
-  right: -5px;
+  top: -6px;
+  right: -12px;
   min-width: 16px;
   height: 16px;
   padding: 0 4px;
@@ -3314,6 +3355,11 @@ button.slack-reaction:hover {
   font-weight: 700;
   line-height: 16px;
   text-align: center;
+}
+
+/* Slack's unread on 管理's, as its row in 管理's sidebar. */
+.rail-count.accent {
+  background: var(--accent);
 }
 
 /* A split view (作業, 学習 while reading): a list on the left, then the
