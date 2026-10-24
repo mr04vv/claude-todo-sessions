@@ -3952,18 +3952,19 @@ button.tab-row {
   box-shadow: inset 4px 0 0 var(--accent-line);
 }
 
-/* Under the keyboard's cursor (j k): a bright ring outside it. */
+/* Under the keyboard's cursor (j k): a ring in the text's colour (white, in
+   the dark), apart from the picked one's blue. */
 .row.work-card.cursor,
 .row.child-card.cursor {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--text);
   outline-offset: 2px;
 }
 
-/* Both: one thick edge, not a ring outside the picked one's. */
+/* Both: the blue of the picked one inside, the cursor's ring on its edge. */
 .row.work-card.selected.cursor,
 .row.child-card.selected.cursor {
   outline: none;
-  box-shadow: inset 4px 0 0 var(--accent), 0 0 0 2px var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent), 0 0 0 2px var(--text);
 }
 
 .card-head {
