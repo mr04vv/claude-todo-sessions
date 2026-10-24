@@ -61,6 +61,66 @@ pub fn peek(entries: &[Value]) -> Peek {
     Peek { last, model, context_tokens }
 }
 
+/// Characters of one message a digest keeps.
+const DIGEST_LINE_CHARS: usize = 300;
+/// Characters of a session's latest messages a summary is made from.
+pub const SUMMARY_SOURCE_CHARS: usize = 6000;
+
+/// A session's latest messages as lines, newest last, within `max_chars`:
+/// what was asked (依頼), what Claude said, and the tools it used (操作).
+pub fn digest(entries: &[Value], max_chars: usize) -> String {
+    let clip = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(DIGEST_LINE_CHARS).collect::<String>();
+    let mut lines = Vec::new();
+    for e in entries {
+        let content = &e["message"]["content"];
+        match e["type"].as_str() {
+            Some("user") => {
+                let asked = content.as_str().map(String::from).unwrap_or_else(|| content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join(" "));
+                if !asked.trim().is_empty() {
+                    lines.push(format!("依頼: {}", clip(&asked)));
+                }
+            }
+            Some("assistant") => {
+                for b in content.as_array().into_iter().flatten() {
+                    match b["type"].as_str() {
+                        Some("text") => {
+                            if let Some(t) = b["text"].as_str().filter(|t| !t.trim().is_empty()) {
+                                lines.push(format!("Claude: {}", clip(t)));
+                            }
+                        }
+                        Some("tool_use") => lines.push(format!("操作: {}", b["name"].as_str().unwrap_or("?"))),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for line in lines.iter().rev() {
+        let size = line.chars().count() + usize::from(!kept.is_empty());
+        if used + size > max_chars {
+            break;
+        }
+        used += size;
+        kept.push(line.as_str());
+    }
+    kept.reverse();
+    kept.join("\n")
+}
+
+/// The ask for a one-line summary of where a session stands, from its digest.
+pub fn summary_prompt(digest: &str) -> String {
+    format!(
+        "次は、Claude Code のセッションの最近のやり取りです（古い順、最後が最新）。\n\
+         このセッションが「いま何をしていて、どこまで進んだか」を、日本語の1文（40字以内）で要約してください。\n\
+         - 主語は省き、「〜を実装中。テストは通過」「〜の方針を確認待ち」のように書く\n\
+         - 前置き、引用符、絵文字、Markdown は付けない。要約の文だけを返す\n\n\
+         <messages>\n{digest}\n</messages>"
+    )
+}
+
 const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
 /// How the Artifact tool reports a publish: "Published <file> at <url> (…".
 const PUBLISHED: &str = "Published ";
@@ -226,6 +286,18 @@ mod tests {
         assert_eq!(p.last.as_deref(), Some("テストが通りました。 PR を作ります。"));
         assert_eq!(p.model.as_deref(), Some("claude-opus-5-5"));
         assert_eq!(p.context_tokens, Some(82_110));
+    }
+
+    #[test]
+    fn the_digest_keeps_the_latest_asks_replies_and_tools_newest_last_within_its_size() {
+        let entries = [
+            json!({"type": "user", "message": {"content": "ログを整理して"}}),
+            assistant(json!([{"type": "text", "text": "見ます。"}, {"type": "tool_use", "name": "Read", "input": {}}]), json!({})),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "…"}]}}),
+            assistant(json!([{"type": "tool_use", "name": "Bash", "input": {}}, {"type": "text", "text": "テストが通りました。"}]), json!({})),
+        ];
+        assert_eq!(digest(&entries, 1000), "依頼: ログを整理して\nClaude: 見ます。\n操作: Read\n操作: Bash\nClaude: テストが通りました。");
+        assert_eq!(digest(&entries, 30), "操作: Bash\nClaude: テストが通りました。");
     }
 
     #[test]

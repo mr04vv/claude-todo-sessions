@@ -4002,7 +4002,9 @@ button.tab-row {
 .card-title {
   flex: 1 1 0;
   min-width: 0;
-  font-weight: 600;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -4172,7 +4174,8 @@ button.tab-row {
 }
 
 .row.child-card .card-title {
-  font-weight: 400;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .row.child-card.not-started,

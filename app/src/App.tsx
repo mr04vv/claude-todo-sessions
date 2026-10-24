@@ -5985,6 +5985,36 @@ function usePeeks(sessions: Session[], report: (e: unknown) => void) {
   return (s: Session) => peekCache.get(s.session_id)?.peek;
 }
 
+/// Each session's one-line summary (Claude's, see `session_summary`), with the
+/// state_at it was made at, kept across restarts: made again only when a
+/// session's state moves, one at a time.
+const SUMMARIES_KEY = "sessionSummaries";
+/// How many sessions' summaries are kept.
+const SUMMARIES_KEPT = 200;
+const summaryCache: Record<string, { at: number; text: string | null }> = loadJson(SUMMARIES_KEY, {});
+const summaryAsked = new Set<string>();
+let summaryQueue: Promise<unknown> = Promise.resolve();
+function useSummaries(sessions: Session[], report: (e: unknown) => void) {
+  const [, bump] = useState(0);
+  const want = sessions.filter((s) => s.agent !== "codex" && summaryCache[s.session_id]?.at !== s.state_at && !summaryAsked.has(`${s.session_id}:${s.state_at}`));
+  const key = want.map((s) => `${s.session_id}:${s.state_at}`).join(",");
+  useEffect(() => {
+    for (const s of want) {
+      summaryAsked.add(`${s.session_id}:${s.state_at}`);
+      summaryQueue = summaryQueue.then(() =>
+        api.sessionSummary(s.session_id).then((text) => {
+          summaryCache[s.session_id] = { at: s.state_at, text: text ?? summaryCache[s.session_id]?.text ?? null };
+          const ids = Object.keys(summaryCache).sort((a, b) => summaryCache[b].at - summaryCache[a].at);
+          for (const id of ids.slice(SUMMARIES_KEPT)) delete summaryCache[id];
+          remember(SUMMARIES_KEY, JSON.stringify(summaryCache));
+          bump((n) => n + 1);
+        }, report),
+      );
+    }
+  }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (s: Session) => summaryCache[s.session_id]?.text ?? null;
+}
+
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
 /// then the work in one list (the todos at work, the reviews and the sessions
 /// of no todo), in the order chosen. j k move, Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
@@ -6100,7 +6130,9 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
   useEffect(() => void (rows[0] && setCursor(rows[0].key)), []); // eslint-disable-line react-hooks/exhaustive-deps
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
   // What the cards read from the sessions' messages: last reply, model, context.
-  const peekOf = usePeeks(rows.flatMap((r) => [r.session ?? (r.todo && mainSession(r.todo))].filter((x): x is Session => !!x)), report);
+  const cardSessions = rows.flatMap((r) => [r.session ?? (r.todo && mainSession(r.todo))].filter((x): x is Session => !!x));
+  const peekOf = usePeeks(cardSessions, report);
+  const summaryOf = useSummaries(cardSessions, report);
   const artifactsOf = (todoIds: number[], session?: Session) => board.artifacts.filter((a) => (a.todo_id !== null && todoIds.includes(a.todo_id)) || (!!session && a.session_id === session.session_id)).length;
   /// Where a card's session runs: Local (herdr, Codex, Desktop) or Cloud.
   const placeShort = (s: Session) => (isCloud(s) ? "Cloud" : s.desktop ? "Desktop" : `Local · ${s.agent === "codex" ? "Codex" : "herdr"}`);
@@ -6121,8 +6153,13 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
     const repos = t?.repos.length ? t.repos : (s?.repos ?? []);
     return [withRepo && repos.length ? (repos.length > 1 ? `${repos[0]} ほか ${repos.length - 1}` : repos[0]) : null, s ? placeShort(s) : null, p?.model ? modelLabel(p.model) : null, p?.context_tokens ? sizeLabel(p.context_tokens) : null].filter(Boolean).join(" · ");
   };
-  /// What it asks (waiting), else what it last said.
-  const saidOf = (s: Session | undefined) => (s?.state === "needs_input" && s.question ? { ask: true, text: s.question } : s && peekOf(s)?.last ? { ask: false, text: peekOf(s)!.last! } : null);
+  /// What it asks (waiting), else where it stands (Claude's summary; its last reply until there is one).
+  const saidOf = (s: Session | undefined) => {
+    if (!s) return null;
+    if (s.state === "needs_input" && s.question) return { ask: true, text: s.question };
+    const text = summaryOf(s) ?? peekOf(s)?.last;
+    return text ? { ask: false, text } : null;
+  };
   const chipsOf = (s: Session | undefined, t: Todo | undefined, made: number) => [
     t?.pr_state && <span key="pr" className={`card-chip ${t.pr_state === "merged" ? "chip-ok" : "chip-pr"}`}>{t.pr_state === "merged" ? `PR マージ` : `PR ${PR_LABEL[t.pr_state]}`}</span>,
     t?.ci_state === "failure" && <span key="ci" className="card-chip chip-ci">CI 失敗{t.ci_failed.length > 0 ? `：${t.ci_failed.join("・")}` : ""}</span>,

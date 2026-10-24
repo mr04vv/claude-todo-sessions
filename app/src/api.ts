@@ -611,6 +611,8 @@ export const api = {
   browserWindow: (url: string) => invoke<void>("browser_window", { url }),
   /** Each session's last reply, model and context (the ones that could be read). */
   sessionPeeks: (ids: string[]) => invoke<Record<string, Peek>>("session_peeks", { ids }),
+  /** Where a session stands, in one line Claude writes (none when nothing can be said yet). */
+  sessionSummary: (id: string) => invoke<string | null>("session_summary", { id }),
   /// With `input`, the page's text box takes the typing too.
   browserFocus: (tab: string, input?: boolean, text?: string) => invoke<void>("browser_focus", { tab, input: input ?? null, text: text ?? null }),
   browserUrl: (tab: string) => invoke<string | null>("browser_url", { tab }),

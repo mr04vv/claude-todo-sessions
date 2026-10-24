@@ -1304,20 +1304,38 @@ fn session_question(session: &Session) -> Option<String> {
 /// One that cannot be read is left out.
 #[tauri::command]
 async fn session_peeks(ids: Vec<String>) -> Result<std::collections::HashMap<String, cts_core::transcript::Peek>, String> {
+    tauri::async_runtime::spawn_blocking(move || ids.into_iter().filter_map(|id| Some((id.clone(), cts_core::transcript::peek(&session_entries(&id)?)))).collect())
+        .await
+        .map_err(err)
+}
+
+/// A Claude session's latest entries: its transcript's tail (local) or its events (cloud).
+fn session_entries(id: &str) -> Option<Vec<serde_json::Value>> {
+    if launch::is_cloud_session(id) {
+        cts_core::cloud::recent_entries(id).map_err(|e| eprintln!("{e}")).ok()
+    } else {
+        Some(cts_core::transcript::parse_jsonl(&transcript_tail(id, TRANSCRIPT_TAIL_BYTES)?))
+    }
+}
+
+/// The model that sums up where a session stands (one line, often).
+const SUMMARY_MODEL: &str = "haiku";
+
+/// Where a session stands, in one line Claude writes from its latest
+/// messages (作業's cards); none when they cannot be read or say nothing yet.
+#[tauri::command]
+async fn session_summary(id: String) -> Result<Option<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        ids.into_iter()
-            .filter_map(|id| {
-                let entries = if launch::is_cloud_session(&id) {
-                    cts_core::cloud::recent_entries(&id).map_err(|e| eprintln!("{e}")).ok()?
-                } else {
-                    cts_core::transcript::parse_jsonl(&transcript_tail(&id, TRANSCRIPT_TAIL_BYTES)?)
-                };
-                Some((id, cts_core::transcript::peek(&entries)))
-            })
-            .collect()
+        let Some(entries) = session_entries(&id) else { return Ok(None) };
+        let digest = cts_core::transcript::digest(&entries, cts_core::transcript::SUMMARY_SOURCE_CHARS);
+        if digest.is_empty() {
+            return Ok(None);
+        }
+        let answer = ask::claude(&cts_core::transcript::summary_prompt(&digest), None, Some(SUMMARY_MODEL), None)?;
+        Ok(answer.as_str().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
     })
     .await
-    .map_err(err)
+    .map_err(err)?
 }
 
 #[tauri::command]
@@ -2961,6 +2979,7 @@ fn main() {
             browser_open,
             browser_window,
             session_peeks,
+            session_summary,
             browser_bounds,
             browser_hide,
             browser_close,
