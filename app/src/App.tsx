@@ -1650,6 +1650,8 @@ export interface BrowserTab {
   reading?: number;
   /// 作業: the session it shows.
   session?: string;
+  /// 作業: a page opened beside: the work it was opened for (its pick, `t<todo>` or `s<session>`).
+  owner?: string;
   /// Its page is translated where it is (原文 / 日本語).
   translated?: boolean;
 }
@@ -6673,7 +6675,8 @@ export default function App() {
   // terminal's link, ⌘-click): tabs of 作業's own, after the subtasks, until
   // closed (not kept over a restart). `workPage` is the one shown instead of
   // the subtask; the side can be hidden (⌘⇧E), kept over restarts.
-  const workPages = tabs.filter(isWorkPage);
+  // Each work (a todo, a session) has the pages opened beside it as its own.
+  const workPages = tabs.filter((t) => isWorkPage(t) && t.owner === (work.pick ?? undefined));
   const [workPage, setWorkPage] = useState<string | null>(null);
   const workPageTab = workPages.find((t) => t.id === workPage);
   const [workRightHidden, setWorkRightHiddenState] = useState(() => loadJson<boolean>(WORK_RIGHT_HIDDEN_KEY, false));
@@ -6707,7 +6710,7 @@ export default function App() {
     if (open && take) return showWorkPage(open.id);
     if (open) return (setWorkPage(open.id), setWorkRightHidden(false));
     const id = `p${nextTab.current++}`;
-    setTabs((prev) => [...prev, { id, url, openedFor: url, title: null, loading: true, nav: 0, area: "work" }]);
+    setTabs((prev) => [...prev, { id, url, openedFor: url, title: null, loading: true, nav: 0, area: "work", owner: work.pick ?? undefined }]);
     setWorkPage(id);
     setWorkRightHidden(false);
     if (!take) return;
