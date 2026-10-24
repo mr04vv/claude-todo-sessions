@@ -3938,33 +3938,46 @@ button.tab-row {
   background: rgba(255, 157, 97, 0.06);
 }
 
-/* Shown in the panes: tinted, with a bar down its left. */
+/* Shown in the panes (選択中): a blue frame. */
 .row.work-card.selected,
 .row.child-card.selected {
   border-color: var(--accent);
-  background: var(--accent-soft);
-  box-shadow: inset 4px 0 0 var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
-/* The parent of the subtask picked: only its bar, so one card stands out. */
+/* The parent of the subtask picked: a faint frame, so one card stands out. */
 .row.work-card.selected-group {
   border-color: var(--accent-line);
-  box-shadow: inset 4px 0 0 var(--accent-line);
 }
 
-/* Under the keyboard's cursor (j k): a ring in the text's colour (white, in
-   the dark), apart from the picked one's blue. */
+/* Under the keyboard's cursor (j k): a band outside the card, on its left,
+   in the text's colour; apart from the frame, so both never stack up. */
+.row.work-card,
+.row.child-card {
+  position: relative;
+}
+
 .row.work-card.cursor,
 .row.child-card.cursor {
-  outline: 2px solid var(--text);
-  outline-offset: 2px;
+  outline: none;
 }
 
-/* Both: the blue of the picked one inside, the cursor's ring on its edge. */
-.row.work-card.selected.cursor,
-.row.child-card.selected.cursor {
-  outline: none;
-  box-shadow: inset 4px 0 0 var(--accent), 0 0 0 2px var(--text);
+/* The list rows' cursor bar is not the cards'. */
+.row.work-card.cursor:not(.selected),
+.row.child-card.cursor:not(.selected) {
+  box-shadow: none;
+}
+
+.row.work-card.cursor::before,
+.row.child-card.cursor::before {
+  content: "";
+  position: absolute;
+  left: -8px;
+  top: 6px;
+  bottom: 6px;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--text);
 }
 
 .card-head {
