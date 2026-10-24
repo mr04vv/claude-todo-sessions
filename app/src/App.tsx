@@ -6089,7 +6089,7 @@ function useSummaries(sessions: Session[], report: (e: unknown) => void) {
 /// 作業's list on the left: あなた待ち first (what is asked, in one line),
 /// then the work in one list (the todos at work, the reviews and the sessions
 /// of no todo), in the order chosen. j k move, Enter shows one (its session takes the keyboard), ⌘⇧A puts a session away.
-function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, onSort, onOrder, run, report }: {
+function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, width, onResize, onPick, onTodo, onShowPrs, onQuick, onLink, onSort, onOrder, run, report }: {
   board: Board;
   /// How the work is ordered (as ⌘K's sessions are), and the order the user put it in.
   sort: WorkSort;
@@ -6098,7 +6098,9 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
   pick: string | null;
   /// The subtask shown on 作業's right, and those closed there.
   child: number | null;
+  /// Whether this list has the keyboard: only then its cursor shows.
   closed: number[];
+  listKeys: boolean;
   width: number;
   onResize: (w: number) => void;
   /// Shows a row's work: a todo (a subtask's at its parent) or a session.
@@ -6198,7 +6200,17 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
     },
   );
   // The cursor starts on the first of the work, not on ちょっと Claude above it.
-  useEffect(() => void (rows[0] && setCursor(rows[0].key)), []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Each time the list takes the keyboard, the cursor starts on what is shown
+  // (the subtask on the right when it is unfolded here), else on the first of the work.
+  useEffect(() => {
+    if (!listKeys) return;
+    const parent = pick?.startsWith("t") ? Number(pick.slice(1)) : null;
+    const shown = parent !== null && child !== null && isOpen(parent) ? `c${child}` : pick;
+    const at = shown && rows.some((r) => r.key === shown) ? shown : rows[0]?.key;
+    if (at) setCursor(at);
+  }, [listKeys]); // eslint-disable-line react-hooks/exhaustive-deps
+  /// The cursor as drawn: only while the list has the keyboard.
+  const shownCursor = listKeys ? cursorId : null;
   const picked = (r: WorkRow) => (r.todo ? pick === `t${r.todo.parent_id ?? r.todo.id}` : pick === `s${r.session?.session_id}`);
   // What the cards read from the sessions' messages: last reply, model, context.
   const cardSessions = rows.flatMap((r) => [r.session ?? (r.todo && mainSession(r.todo))].filter((x): x is Session => !!x));
@@ -6242,7 +6254,7 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
     const s = mainSession(c);
     const off = closed.includes(c.id);
     const on = pick === `t${c.parent_id}` && child === c.id;
-    const base = `row child-card${key === cursorId ? " cursor" : ""}${on ? " selected" : ""}${off ? " off" : ""}`;
+    const base = `row child-card${key === shownCursor ? " cursor" : ""}${on ? " selected" : ""}${off ? " off" : ""}`;
     const go = (e: React.MouseEvent) => (e.stopPropagation(), onPick({ todo: c.id }));
     if (c.status === "done")
       return (
@@ -6293,7 +6305,7 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
     const made = artifactsOf([t.id, ...children.map((c) => c.id)], s);
     const chips = chipsOf(s, t, children.length > 0 ? 0 : made);
     return (
-      <li key={key} data-row={key} className={`row work-card${s?.state === "needs_input" ? " asking" : ""}${key === cursorId ? " cursor" : ""}${pick === key ? (shownInside ? " selected-group" : " selected") : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
+      <li key={key} data-row={key} className={`row work-card${s?.state === "needs_input" ? " asking" : ""}${key === shownCursor ? " cursor" : ""}${pick === key ? (shownInside ? " selected-group" : " selected") : ""}${key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, key)} onClick={() => onPick({ todo: t.id })}>
         {cardHead(s, t, t.title, children.length > 0)}
         {t.escalation && <span className="card-esc">指揮役から：{t.escalation}</span>}
         {said && <span className={said.ask ? "card-ask" : "card-last"}>{said.text}</span>}
@@ -6335,7 +6347,7 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
     const meta = metaOf(s, undefined, true);
     const chips = chipsOf(s, undefined, artifactsOf([], s));
     return (
-      <li key={r.key} data-row={r.key} className={`row work-card${s.state === "needs_input" ? " asking" : ""}${r.key === cursorId ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
+      <li key={r.key} data-row={r.key} className={`row work-card${s.state === "needs_input" ? " asking" : ""}${r.key === shownCursor ? " cursor" : ""}${picked(r) ? " selected" : ""}${r.key === dragging ? " dragging" : ""}`} onPointerDown={(e) => dragRow(e, r.key)} onClick={() => open(r)}>
         {cardHead(s, undefined, sessionLabel(s))}
         {said && <span className={said.ask ? "card-ask" : "card-last"}>{said.text}</span>}
         {meta && <span className="card-meta">{meta}</span>}
@@ -6355,7 +6367,7 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
           ))}
         </select>
         <span className="grow" />
-        <button data-row={QUICK_ROW} className={`ghost small${cursorId === QUICK_ROW ? " cursor" : ""}`} onClick={onQuick} title="todo に紐づけずに claude を開く">
+        <button data-row={QUICK_ROW} className={`ghost small${shownCursor === QUICK_ROW ? " cursor" : ""}`} onClick={onQuick} title="todo に紐づけずに claude を開く">
           <Icon name="spark" size={12} /> ちょっと Claude
         </button>
       </div>
@@ -6368,7 +6380,7 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
                 const key = `w:${w.key}`;
                 const r: WorkRow = { key, todo: w.todo, session: w.session };
                 return (
-                  <li key={key} data-row={key} className={`row work-row wait-row${key === cursorId ? " cursor" : ""}`} onClick={() => open(r)}>
+                  <li key={key} data-row={key} className={`row work-row wait-row${key === shownCursor ? " cursor" : ""}`} onClick={() => open(r)}>
                     <span className="work-line">
                       <span className="state state-needs_input">
                         <i />
@@ -6398,7 +6410,7 @@ function WorkRail({ board, waiting, pick, child, closed, sort, order, width, onR
                 );
               })}
               {asks > 0 && (
-                <li data-row={ASKS_ROW} className={`row work-row wait-row${ASKS_ROW === cursorId ? " cursor" : ""}`} onClick={onShowPrs}>
+                <li data-row={ASKS_ROW} className={`row work-row wait-row${ASKS_ROW === shownCursor ? " cursor" : ""}`} onClick={onShowPrs}>
                   <span className="work-line">
                     <span className="state state-needs_input">
                       <i />
@@ -8407,6 +8419,7 @@ export default function App() {
                 board={board}
                 waiting={waiting}
                 pick={work.pick}
+                listKeys={focusTyping === null && typingSide === "app" && zone === null}
                 child={workView.child?.id ?? null}
                 closed={work.closed ?? []}
                 sort={workSort}
