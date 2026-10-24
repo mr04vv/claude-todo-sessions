@@ -722,7 +722,7 @@ function useOutsideClose(root: React.RefObject<HTMLElement | null>, open: boolea
 }
 
 /// ↓ (or the down key, j, or the menu's ⌃j) is 1, ↑ (or k, ⌃k) -1, else 0.
-const stepOf = (e: KeyboardEvent) => {
+export const stepOf = (e: KeyboardEvent) => {
   const arrow = !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
   return (arrow && e.key === "ArrowDown") || matches(e, "down") || matches(e, "paletteDown") ? 1 : (arrow && e.key === "ArrowUp") || matches(e, "up") || matches(e, "paletteUp") ? -1 : 0;
 };
@@ -787,7 +787,7 @@ function useRowCursor(
     const onKeyDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       // A todo's sheet over the list takes the keys.
-      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app[data-zone], .sheet-backdrop")) return;
+      if (t.closest("input, textarea, select, [role=menu], [role=dialog], .xterm") || document.querySelector(".app[data-zone], .browser-window[data-zone], .sheet-backdrop")) return;
       const { ids, cursorId, onEnter, onKey } = state.current;
       const step = stepOf(e);
       if (step && ids.length > 0) {

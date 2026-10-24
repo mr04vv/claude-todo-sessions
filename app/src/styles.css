@@ -2611,7 +2611,8 @@ body.resizing {
    from the list): its entry under the cursor. */
 .app[data-zone="side"] .sidebar,
 .app[data-zone="side"] .readings-filters,
-.app[data-zone="rail"] .space-rail {
+.app[data-zone="rail"] .space-rail,
+.browser-window[data-zone="rail"] .space-rail {
   box-shadow: inset -3px 0 0 var(--accent);
 }
 

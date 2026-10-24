@@ -36,6 +36,7 @@ import {
   restoreTabs,
   saveUserPins,
   SpaceRail,
+  stepOf,
   TabView,
   TAB_LIST_DEFAULT_W,
   TAB_LIST_W_KEY,
@@ -78,6 +79,10 @@ export default function BrowserWindow() {
   const [error, setError] = useState<string | null>(null);
   const [ask, setAsk] = useState<PageDialogAsk | null>(null);
   // Whether the keyboard is this page's (the tab list's cursor shows) or a tab's.
+  // ⌃h from the tab list: the rail takes the keys (j k pick a space, Enter goes, ⌃l or Esc come back); its cursor.
+  const [railAt, setRailAt] = useState<number | null>(null);
+  const railButtons = () => [...document.querySelectorAll<HTMLElement>(".browser-window .space-rail button")];
+  useEffect(() => railButtons().forEach((el, i) => el.toggleAttribute("data-cursor", i === railAt)), [railAt]);
   // Whether the keyboard is this page's (the tab list's cursor shows), the tab's, or the right ChatGPT's.
   const [typing, setTyping] = useState<"app" | "pane" | "ask">("app");
   const [listW, setListWState] = useState(() => loadJson<number>(TAB_LIST_W_KEY, TAB_LIST_DEFAULT_W));
@@ -190,6 +195,8 @@ export default function BrowserWindow() {
     setAskTab((t) => (t ? { ...t, url: CHATGPT_NEW, loading: true, nav: t.nav + 1 } : { id: ASK_TAB, url: CHATGPT_NEW, openedFor: CHATGPT_NEW, title: "ChatGPT", loading: true, nav: 0 }));
   };
 
+  const railRef = useRef(railAt);
+  railRef.current = railAt;
   // The handlers the listeners call, as they are now.
   const now = useRef({ open, close, step, setUrl, active, askAbout });
   now.current = { open, close, step, setUrl, active, askAbout };
@@ -254,6 +261,22 @@ export default function BrowserWindow() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       setTyping("app");
+      // The rail's keys while it has them.
+      const rail = railRef.current;
+      if (rail !== null) {
+        const buttons = railButtons();
+        const move = stepOf(e);
+        if (move) setRailAt(Math.min(Math.max(rail + move, 0), buttons.length - 1));
+        else if (e.key === "Enter") (buttons[rail]?.click(), setRailAt(null));
+        else if (e.key === "Escape" || matches(e, "sidePane")) setRailAt(null);
+        else return;
+        e.preventDefault();
+        return;
+      }
+      if (matches(e, "sideApp") && !(e.target as HTMLElement).closest("input, textarea")) {
+        e.preventDefault();
+        return setRailAt(Math.max(0, railButtons().findIndex((el) => el.classList.contains("on"))));
+      }
       const { open, close, step, active } = now.current;
       const hit: [boolean, () => void][] = [
         [matches(e, "newTab"), () => open(NEW_TAB_ASK)],
@@ -275,7 +298,7 @@ export default function BrowserWindow() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className={`browser-window typing-${typing}`} style={{ "--tab-list-w": `${listW}px`, "--ask-w": `${askW}px` } as React.CSSProperties}>
+    <div className={`browser-window typing-${typing}`} data-zone={railAt !== null ? "rail" : undefined} style={{ "--tab-list-w": `${listW}px`, "--ask-w": `${askW}px` } as React.CSSProperties}>
       {/* The main window's rail: its spaces bring it forward there (this one, ブラウザ, is here). */}
       <SpaceRail
         space="browser"
