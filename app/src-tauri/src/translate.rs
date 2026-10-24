@@ -60,7 +60,8 @@ pub fn on_translated(app: &AppHandle, tab: &str, on: bool) {
             save_kept(PAGES_FILE, &pages);
         }
     }
-    let _ = app.emit(BROWSER_TRANSLATED_EVENT, Translated { tab: tab.to_string(), on });
+    let (win, id) = cef_browser::split(tab);
+    let _ = app.emit_to(win, BROWSER_TRANSLATED_EVENT, Translated { tab: id.to_string(), on });
 }
 
 /// A page translated before is translated again as it opens.
@@ -130,6 +131,6 @@ pub fn on_selection(app: &AppHandle, tab: &str, id: u64, text: String) {
 
 /// The pane's 「原文 / 日本語」: translates the tab's page, or puts it back.
 #[tauri::command(async)]
-pub fn browser_translate(app: AppHandle, tab: String, on: bool) -> Result<(), String> {
-    cef_browser::eval(&app, tab_id(&tab)?, &format!("window.__todoSessionsTranslate?.({on})"))
+pub fn browser_translate(app: AppHandle, webview: tauri::Webview, tab: String, on: bool) -> Result<(), String> {
+    cef_browser::eval(&app, &cef_browser::key(webview.label(), tab_id(&tab)?), &format!("window.__todoSessionsTranslate?.({on})"))
 }

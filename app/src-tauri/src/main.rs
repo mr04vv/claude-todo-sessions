@@ -1663,7 +1663,6 @@ fn next_zoom(zoom: f64, action: &str) -> Option<f64> {
 
 /// Zooms tab `tab` "in", "out" or "reset".
 fn zoom_tab(app: &AppHandle, tab: &str, action: &str) -> Result<(), String> {
-    let tab = tab_id(tab)?;
     let current = cef_browser::zoom(app, tab).ok_or("このタブは開いていません")?;
     let zoom = next_zoom(current, action).ok_or_else(|| format!("unknown zoom {action}"))?;
     cef_browser::set_zoom(app, tab, zoom)?;
@@ -1677,28 +1676,33 @@ fn zoom_tab(app: &AppHandle, tab: &str, action: &str) -> Result<(), String> {
         }
         save_kept(ZOOMS_FILE, &zooms);
     }
-    app.emit(BROWSER_ZOOM_EVENT, TabZoom { tab: tab.to_string(), zoom }).map_err(err)
+    let (win, id) = cef_browser::split(tab);
+    app.emit_to(win, BROWSER_ZOOM_EVENT, TabZoom { tab: id.to_string(), zoom }).map_err(err)
 }
 
 /// "in", "out" or "reset" the zoom of a tab.
 #[tauri::command(async)]
-fn browser_zoom(app: AppHandle, tab: String, action: String) -> Result<(), String> {
-    zoom_tab(&app, &tab, &action)
+fn browser_zoom(app: AppHandle, webview: tauri::Webview, tab: String, action: String) -> Result<(), String> {
+    zoom_tab(&app, &tab_key(&webview, &tab)?, &action)
 }
 
 /// How far below the main webview's top the page starts. The main webview
 /// runs under the title bar and the page's viewport begins below it
 /// (`viewport` is the page's innerHeight), while a tab is placed from the
 /// window's top, so the page's coordinates are shifted by this.
-fn page_top(app: &AppHandle, viewport: f64) -> f64 {
-    let Some(main) = app.get_webview("main") else { return 0.0 };
-    let scale = main.window().scale_factor().unwrap_or(1.0);
-    main.bounds().map(|b| (b.size.to_logical::<f64>(scale).height - viewport).max(0.0)).unwrap_or(0.0)
+fn page_top(webview: &tauri::Webview, viewport: f64) -> f64 {
+    let scale = webview.window().scale_factor().unwrap_or(1.0);
+    webview.bounds().map(|b| (b.size.to_logical::<f64>(scale).height - viewport).max(0.0)).unwrap_or(0.0)
 }
 
-/// Where a tab goes, from the placeholder's rectangle in the page.
-fn browser_rect(app: &AppHandle, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> cef_browser::PageRect {
-    cef_browser::PageRect { x, y: y + page_top(app, viewport), width, height }
+/// Where a tab goes, from the placeholder's rectangle in its window's page.
+fn browser_rect(webview: &tauri::Webview, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> cef_browser::PageRect {
+    cef_browser::PageRect { x, y: y + page_top(webview, viewport), width, height }
+}
+
+/// The key of tab `tab` in the window of the page that names it.
+fn tab_key(webview: &tauri::Webview, tab: &str) -> Result<String, String> {
+    Ok(cef_browser::key(webview.label(), tab_id(tab)?))
 }
 
 /// A tab's id; tab ids come from the page, so only plain ones pass.
@@ -1783,33 +1787,41 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
     }
     // Only telling: the page keeps the keyboard.
     if url.host_str() == Some("page-focused") {
-        let _ = app.emit(PAGE_FOCUSED_EVENT, TabOnly { tab: tab.to_string() });
+        let (win, id) = cef_browser::split(tab);
+        let _ = app.emit_to(win, PAGE_FOCUSED_EVENT, TabOnly { tab: id.to_string() });
         return;
     }
     // Keys typed next belong in the app (its address bar, a dialog),
     // but for the ones handing the keyboard on to a page or terminal
     // themselves: passing through the app would mark its side for a moment.
     let hands_on = matches!(url.host_str(), Some(h) if KEYS_HANDED_ON.contains(&h));
-    if let Some(main) = app.get_webview("main").filter(|_| !hands_on) {
-        let _ = main.set_focus();
+    // Asks about the page's own tabs go to its window; the app's (a space, ⌘K, a todo) to the main one.
+    let (win, id) = cef_browser::split(tab);
+    let app_wide = matches!(url.host_str(), Some("new-todo" | "palette" | "sessions" | "space"));
+    let to = if app_wide { MAIN_WINDOW } else { win };
+    if app_wide {
+        show_window(app);
     }
-    let tab = tab.to_string();
+    if let Some(page) = app.get_webview(to).filter(|_| !hands_on) {
+        let _ = page.set_focus();
+    }
+    let tab = id.to_string();
     let _ = match url.host_str() {
-        Some("new-tab") => app.emit(BROWSER_OPEN_NEW_TAB_EVENT, ()),
-        Some("new-todo") => app.emit(OPEN_NEW_TODO_EVENT, ()),
-        Some("tab-prev") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: -1 }),
-        Some("tab-next") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: 1 }),
-        Some("archive") => app.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab }),
-        Some("palette") => app.emit(OPEN_PALETTE_EVENT, ()),
-        Some("sessions") => app.emit(OPEN_SESSIONS_EVENT, ()),
-        Some("focus-app") => app.emit(FOCUS_APP_EVENT, TabOnly { tab }),
+        Some("new-tab") => app.emit_to(to, BROWSER_OPEN_NEW_TAB_EVENT, ()),
+        Some("new-todo") => app.emit_to(to, OPEN_NEW_TODO_EVENT, ()),
+        Some("tab-prev") => app.emit_to(to, BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: -1 }),
+        Some("tab-next") => app.emit_to(to, BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: 1 }),
+        Some("archive") => app.emit_to(to, BROWSER_ARCHIVE_EVENT, TabOnly { tab }),
+        Some("palette") => app.emit_to(to, OPEN_PALETTE_EVENT, ()),
+        Some("sessions") => app.emit_to(to, OPEN_SESSIONS_EVENT, ()),
+        Some("focus-app") => app.emit_to(to, FOCUS_APP_EVENT, TabOnly { tab }),
         Some("focus-pane") => {
             let text = url.query_pairs().find(|(k, _)| k == "text").map(|(_, v)| v.into_owned());
-            app.emit(FOCUS_PANE_EVENT, TabText { tab, text })
+            app.emit_to(to, FOCUS_PANE_EVENT, TabText { tab, text })
         }
-        Some("space") => app.emit(SPACE_EVENT, SpaceAsk { space: url.query_pairs().find(|(k, _)| k == "s").map(|(_, v)| v.into_owned()).unwrap_or_default() }),
-        Some("close-tab") => app.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab }),
-        _ => app.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab }),
+        Some("space") => app.emit_to(to, SPACE_EVENT, SpaceAsk { space: url.query_pairs().find(|(k, _)| k == "s").map(|(_, v)| v.into_owned()).unwrap_or_default() }),
+        Some("close-tab") => app.emit_to(to, BROWSER_CLOSE_TAB_EVENT, TabOnly { tab }),
+        _ => app.emit_to(to, BROWSER_FOCUS_URL_EVENT, TabOnly { tab }),
     };
 }
 
@@ -1852,17 +1864,20 @@ fn tab_load(app: &AppHandle, tab: &str, url: String, loading: bool) {
             let _ = cef_browser::eval(app, tab, FOCUS_INPUT_SCRIPT);
         }
     }
-    let _ = app.emit(BROWSER_URL_EVENT, TabUrl { tab: tab.to_string(), url, loading });
+    let (win, id) = cef_browser::split(tab);
+    let _ = app.emit_to(win, BROWSER_URL_EVENT, TabUrl { tab: id.to_string(), url, loading });
 }
 
 /// A tab's page changed its title.
 fn tab_title_changed(app: &AppHandle, tab: &str, title: String) {
-    let _ = app.emit(BROWSER_TITLE_EVENT, TabTitle { tab: tab.to_string(), title });
+    let (win, id) = cef_browser::split(tab);
+    let _ = app.emit_to(win, BROWSER_TITLE_EVENT, TabTitle { tab: id.to_string(), title });
 }
 
 /// A tab's address changed, with or without a load (history pushState).
 fn tab_address_changed(app: &AppHandle, tab: &str, url: String) {
-    let _ = app.emit(BROWSER_ADDRESS_EVENT, TabAddress { tab: tab.to_string(), url });
+    let (win, id) = cef_browser::split(tab);
+    let _ = app.emit_to(win, BROWSER_ADDRESS_EVENT, TabAddress { tab: id.to_string(), url });
 }
 
 /// A page asks for a new window; true lets it open as one. A sized window is
@@ -1870,7 +1885,8 @@ fn tab_address_changed(app: &AppHandle, tab: &str, url: String) {
 /// becomes a tab instead, next to `tab`, `behind` it for a ⌘-click.
 fn tab_new_window(app: &AppHandle, tab: &str, url: String, sized: bool, behind: bool) -> bool {
     if !sized && !open_in_slack(app, &url) {
-        let _ = app.emit(BROWSER_NEW_TAB_EVENT, NewTab { url, tab: tab.to_string(), behind });
+        let (win, id) = cef_browser::split(tab);
+        let _ = app.emit_to(win, BROWSER_NEW_TAB_EVENT, NewTab { url, tab: id.to_string(), behind });
     }
     sized
 }
@@ -1920,7 +1936,8 @@ fn keep_site_zoom(app: &AppHandle, tab: &str, url: &str) {
     let Some(host) = host_of(url) else { return };
     let kept = app.state::<AppState>().zooms.lock().ok().and_then(|z| z.get(&host).copied()).unwrap_or(NO_ZOOM);
     if cef_browser::zoom(app, tab).is_some_and(|now| (now - kept).abs() > f64::EPSILON) && cef_browser::set_zoom(app, tab, kept).is_ok() {
-        let _ = app.emit(BROWSER_ZOOM_EVENT, TabZoom { tab: tab.to_string(), zoom: kept });
+        let (win, id) = cef_browser::split(tab);
+        let _ = app.emit_to(win, BROWSER_ZOOM_EVENT, TabZoom { tab: id.to_string(), zoom: kept });
     }
 }
 
@@ -1966,7 +1983,8 @@ struct PageDialog {
 }
 
 fn page_dialog(app: &AppHandle, tab: &str, id: u64, kind: &'static str, message: String, default: String) {
-    let _ = app.emit(PAGE_DIALOG_EVENT, PageDialog { id, tab: tab.to_string(), kind, message, default });
+    let (win, tab) = cef_browser::split(tab);
+    let _ = app.emit_to(win, PAGE_DIALOG_EVENT, PageDialog { id, tab: tab.to_string(), kind, message, default });
 }
 
 /// The user's answer to a page's dialog: OK (with what was typed for a prompt) or cancel.
@@ -2030,19 +2048,19 @@ fn forget_site_permission(state: State<'_, AppState>, site: String) -> Result<()
 /// page; see `tab_load`).
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, go: bool, keep: Option<String>) -> Result<bool, String> {
+fn browser_open(state: State<'_, AppState>, app: AppHandle, webview: tauri::Webview, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, go: bool, keep: Option<String>) -> Result<bool, String> {
     // A file on the Mac too: an artifact a session wrote.
     if !is_web_url(&url) && !url.starts_with("file://") {
         return Err(format!("開けない URL です: {url}"));
     }
-    let tab = tab_id(&tab)?.to_string();
+    let tab = tab_key(&webview, &tab)?;
     let parsed: tauri::Url = url.parse().map_err(err)?;
     // Two opens of a new tab at once (a re-render) would both create it.
     let _one_at_a_time = state.browser_lock.lock().map_err(err)?;
-    let keep = keep.map(|k| tab_id(&k).map(String::from)).transpose()?;
+    let keep = keep.map(|k| tab_key(&webview, &k)).transpose()?;
     let shown: Vec<String> = std::iter::once(tab.clone()).chain(keep).collect();
-    cef_browser::set_hidden(&app, None, &shown, true)?;
-    let rect = browser_rect(&app, x, y, width, height, viewport);
+    cef_browser::set_hidden(&app, webview.label(), None, &shown, true)?;
+    let rect = browser_rect(&webview, x, y, width, height, viewport);
     if cef_browser::exists(&app, &tab) {
         // Showing the tab again keeps the page the user moved on to; only
         // `go` (the app sending it somewhere) moves it.
@@ -2050,7 +2068,7 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             cef_browser::navigate(&app, &tab, parsed.as_str())?;
         }
         cef_browser::set_rect(&app, &tab, rect)?;
-        cef_browser::set_hidden(&app, Some(&tab), &[], false)?;
+        cef_browser::set_hidden(&app, webview.label(), Some(&tab), &[], false)?;
         return Ok(false);
     }
     cef_browser::create(&app, &tab, parsed.as_str(), rect)?;
@@ -2059,19 +2077,19 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
 
 /// Follows tab `tab`'s placeholder when the layout changes.
 #[tauri::command(async)]
-fn browser_bounds(app: AppHandle, tab: String, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
-    let tab = tab_id(&tab)?;
-    if !cef_browser::exists(&app, tab) {
+fn browser_bounds(app: AppHandle, webview: tauri::Webview, tab: String, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
+    let tab = tab_key(&webview, &tab)?;
+    if !cef_browser::exists(&app, &tab) {
         return Ok(());
     }
-    cef_browser::set_rect(&app, tab, browser_rect(&app, x, y, width, height, viewport))
+    cef_browser::set_rect(&app, &tab, browser_rect(&webview, x, y, width, height, viewport))
 }
 
 /// Hides tab `tab`, or every tab; they keep their pages for the next open.
 #[tauri::command(async)]
-fn browser_hide(app: AppHandle, tab: Option<String>) -> Result<(), String> {
-    let only = tab.as_deref().map(tab_id).transpose()?;
-    cef_browser::set_hidden(&app, only, &[], true)
+fn browser_hide(app: AppHandle, webview: tauri::Webview, tab: Option<String>) -> Result<(), String> {
+    let only = tab.as_deref().map(|t| tab_key(&webview, t)).transpose()?;
+    cef_browser::set_hidden(&app, webview.label(), only.as_deref(), &[], true)
 }
 
 /// Opens a page in a window of its own, apart from the app's tabs.
@@ -2084,25 +2102,25 @@ fn browser_window(app: AppHandle, url: String) -> Result<(), String> {
 }
 
 #[tauri::command(async)]
-fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
-    cef_browser::close(&app, tab_id(&tab)?)
+fn browser_close(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<(), String> {
+    cef_browser::close(&app, &tab_key(&webview, &tab)?)
 }
 
 /// Gives a tab's page the keyboard, as leaving the address bar with Esc does;
 /// with `input`, its text box too (ChatGPT's prompt), now or once it loads,
 /// and `text` typed into it.
 #[tauri::command(async)]
-fn browser_focus(app: AppHandle, state: State<AppState>, tab: String, input: Option<bool>, text: Option<String>) -> Result<(), String> {
-    let id = tab_id(&tab)?;
-    if !cef_browser::exists(&app, id) {
+fn browser_focus(app: AppHandle, webview: tauri::Webview, state: State<AppState>, tab: String, input: Option<bool>, text: Option<String>) -> Result<(), String> {
+    let id = tab_key(&webview, &tab)?;
+    if !cef_browser::exists(&app, &id) {
         return Ok(());
     }
-    cef_browser::focus(&app, id)?;
+    cef_browser::focus(&app, &id)?;
     if input == Some(true) {
-        state.focus_input.lock().map_err(err)?.insert(tab.clone(), std::time::Instant::now());
+        state.focus_input.lock().map_err(err)?.insert(id.clone(), std::time::Instant::now());
         match text {
-            Some(text) => cef_browser::eval(&app, id, &format!("window.__todoSessionsFocusInput?.({})", serde_json::to_string(&text).map_err(err)?)),
-            None => cef_browser::eval(&app, id, FOCUS_INPUT_SCRIPT),
+            Some(text) => cef_browser::eval(&app, &id, &format!("window.__todoSessionsFocusInput?.({})", serde_json::to_string(&text).map_err(err)?)),
+            None => cef_browser::eval(&app, &id, FOCUS_INPUT_SCRIPT),
         }?;
     }
     Ok(())
@@ -2111,21 +2129,21 @@ fn browser_focus(app: AppHandle, state: State<AppState>, tab: String, input: Opt
 /// A tab's address right now, which a page moving without a load (history
 /// pushState) changes without any event.
 #[tauri::command(async)]
-fn browser_url(app: AppHandle, tab: String) -> Result<Option<String>, String> {
-    Ok(cef_browser::url(&app, tab_id(&tab)?))
+fn browser_url(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<Option<String>, String> {
+    Ok(cef_browser::url(&app, &tab_key(&webview, &tab)?))
 }
 
 /// "back", "forward" or "reload" in a tab.
 #[tauri::command(async)]
-fn browser_go(app: AppHandle, tab: String, action: String) -> Result<(), String> {
-    cef_browser::go(&app, tab_id(&tab)?, &action)
+fn browser_go(app: AppHandle, webview: tauri::Webview, tab: String, action: String) -> Result<(), String> {
+    cef_browser::go(&app, &tab_key(&webview, &tab)?, &action)
 }
 
 /// ⌘⇧D from the app's side: the tab's page keeps itself to read, as its own
 /// ⌘⇧D does (a book's page with its table of contents).
 #[tauri::command(async)]
-fn browser_bookmark(app: AppHandle, tab: String) -> Result<(), String> {
-    cef_browser::eval(&app, tab_id(&tab)?, "window.__todoSessionsBookmark?.()")
+fn browser_bookmark(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<(), String> {
+    cef_browser::eval(&app, &tab_key(&webview, &tab)?, "window.__todoSessionsBookmark?.()")
 }
 
 /// A PR opened from the branch any of the todo's sessions works on, however
@@ -2392,8 +2410,11 @@ fn issue_sync_loop(app: AppHandle, wake: std::sync::mpsc::Receiver<Option<i64>>)
     }
 }
 
+/// The app's main window's label (its webview's too).
+const MAIN_WINDOW: &str = "main";
+
 fn show_window(app: &AppHandle) {
-    if let Some(w) = app.get_window("main") {
+    if let Some(w) = app.get_window(MAIN_WINDOW) {
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -2901,8 +2922,11 @@ fn main() {
         })
         .menu(app_menu)
         .on_menu_event(|app, event| {
+            // To the window in front only: each closes a tab of its own.
             if event.id() == MENU_CLOSE_TAB {
-                let _ = app.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: String::new() });
+                if let Some((label, _)) = app.webview_windows().into_iter().find(|(_, w)| w.is_focused().unwrap_or(false)) {
+                    let _ = app.emit_to(label.as_str(), BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: String::new() });
+                }
             }
         })
         .on_window_event(|window, event| match event {
