@@ -3780,6 +3780,11 @@ button.tab-row {
   width: 260px;
 }
 
+.work-search {
+  width: auto;
+  margin: 8px 10px 0;
+}
+
 .readings-hint {
   margin: 8px 20px 0;
 }

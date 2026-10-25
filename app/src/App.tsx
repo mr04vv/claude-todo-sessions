@@ -6124,7 +6124,21 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
   // one list) is in the order chosen (s): the one the user put it in (⇧j ⇧k,
   // or dragging; what was never moved on top), or the latest work first, by
   // when it last moved or began.
-  const { todos, waits: shownWaits, asks, work: workRows, timeOf, endedCount: ended } = workListOf(board, waiting, sort, order, showEnded);
+  // Words typed in its search (/): the rows of them all, ended sessions too.
+  const [query, setQuery] = useState("");
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const found = (...texts: (string | null | undefined)[]) => {
+    const text = texts.filter(Boolean).join(" ").toLowerCase();
+    return words.every((w) => text.includes(w));
+  };
+  const sessionText = (s: Session | undefined) => (s ? [sessionLabel(s), s.review_url && prRef(s.review_url), placeOf(s), s.cwd] : []);
+  const todoText = (t: Todo): string[] => [`#${t.id}`, t.title, ...t.repos, ...t.sessions.flatMap((x) => sessionText(x).filter((v): v is string => !!v))];
+  const listed = workListOf(board, waiting, sort, order, showEnded || words.length > 0);
+  const { todos, asks, timeOf, endedCount: ended } = listed;
+  const shownWaits = listed.waits.filter((w) => found(w.line, w.review?.title, ...(w.todo ? todoText(w.todo) : []), ...sessionText(w.session)));
+  const workRows = listed.work.filter((r) =>
+    r.todo ? found(...todoText(r.todo), ...board.todos.filter((c) => c.parent_id === r.todo!.id).flatMap(todoText)) : found(...sessionText(r.session)),
+  );
   // Ordered by a time, the list is headed by span: 今日, 昨日, … 1ヶ月以上前.
   const now = new Date();
   const groupOf = (r: WorkRow) => (sort === "manual" ? null : ageGroup(timeOf(r), now));
@@ -6161,6 +6175,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
     },
     (e, id) => {
       if (matches(e, "workEnded")) return (setShowEnded((v) => !v), true);
+      if (matches(e, "search")) return (document.querySelector<HTMLInputElement>(".work-search")?.focus(), true);
       // h l: fold or unfold the subtasks of the todo under the cursor (h on a subtask: of its parent, the cursor going up to it).
       const under = rows.find((x) => x.key === id)?.todo;
       const parentId = under?.parent_id ?? under?.id;
@@ -6373,6 +6388,18 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
         </button>
       </div>
       <div className="rail-body">
+        <input
+          className="filter-search work-search"
+          value={query}
+          placeholder={`todo・セッションを探す（${keyLabel(keyOf("search"))}。終了したものも）`}
+          aria-label="作業を探す"
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e) => {
+            // Esc clears the words, then leaves; Enter leaves them to pick from the list (j k).
+            if (e.key === "Escape" && query) return setQuery("");
+            if (e.key === "Escape" || isEnter(e)) e.currentTarget.blur();
+          }}
+        />
         {(shownWaits.length > 0 || asks > 0) && (
           <section>
             <div className="section-title waiting-title">あなた待ち {waiting.length}</div>
@@ -6427,7 +6454,8 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
         )}
         <section>
           <div className="section-title">作業中</div>
-          {workRows.length === 0 && <p className="muted hint">動いているセッションはありません。管理で todo を任せるか、ちょっと Claude で始めると、ここに並びます。</p>}
+          {workRows.length === 0 && words.length > 0 && <p className="muted hint">「{query.trim()}」に当たるものはありません。</p>}
+          {workRows.length === 0 && words.length === 0 && <p className="muted hint">動いているセッションはありません。管理で todo を任せるか、ちょっと Claude で始めると、ここに並びます。</p>}
           <ul className="rows work-cards">
             {workRows.flatMap((r, i) => {
               // Heads where the span changes, the list ordered by a time.
@@ -6437,7 +6465,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
             })}
           </ul>
         </section>
-        {ended > 0 && (
+        {ended > 0 && words.length === 0 && (
           <button className="ghost small show-ended" onClick={() => setShowEnded((v) => !v)}>
             {showEnded ? "終了したセッションを隠す" : `終了したセッション ${ended} 件`} <span className="kbd">{keyLabel(keyOf("workEnded"))}</span>
           </button>
