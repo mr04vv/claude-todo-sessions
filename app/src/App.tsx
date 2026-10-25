@@ -231,7 +231,7 @@ const COLUMNS: { status: Status; label: string }[] = [
 const STATE_LABEL: Record<SessionState, string> = {
   running: "作業中",
   needs_input: "返事待ち",
-  idle: "ひと区切り",
+  idle: "待機",
   ended: "終了",
 };
 /// Where a todo's PR stands, apart from its sessions: its badge's class and name.
@@ -638,7 +638,7 @@ function StatusIcon({ status }: { status: Status }) {
 function StateBadge({ state, unread }: { state: SessionState; unread?: boolean }) {
   const fresh = unread && state === "idle";
   return (
-    <span className={`state state-${state}${fresh ? " state-unread" : ""}`} title={fresh ? "ひと区切りしてから、まだ見ていません" : undefined}>
+    <span className={`state state-${state}${fresh ? " state-unread" : ""}`} title={fresh ? "待機になってから、まだ見ていません" : undefined}>
       <i />
       {fresh ? "新着" : STATE_LABEL[state]}
     </span>
@@ -2838,7 +2838,7 @@ function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
       </header>
       <div className="content" ref={list}>
         {shown.length === 0 && (
-          <p className="muted empty">まだありません。セッションが claude.ai にアーティファクトやドキュメントを作ると、ひと区切りしたときにここへ並びます。html スキルで書いた文書も並びます。ほかの Mac のファイルは、セッションが todo-sessions の add_artifact で登録します。</p>
+          <p className="muted empty">まだありません。セッションが claude.ai にアーティファクトやドキュメントを作ると、返事を終えたときにここへ並びます。html スキルで書いた文書も並びます。ほかの Mac のファイルは、セッションが todo-sessions の add_artifact で登録します。</p>
         )}
         <ArtifactRows artifacts={shown} todos={todos} report={report} onOpenTodo={onOpenTodo} cursorId={cursorId} onForget={forget} />
       </div>
@@ -6219,12 +6219,11 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
   const artifactsOf = (todoIds: number[], session?: Session) => board.artifacts.filter((a) => (a.todo_id !== null && todoIds.includes(a.todo_id)) || (!!session && a.session_id === session.session_id)).length;
   /// Where a card's session runs: Local (herdr, Codex, Desktop) or Cloud.
   const placeShort = (s: Session) => (isCloud(s) ? "Cloud" : s.desktop ? "Desktop" : `Local · ${s.agent === "codex" ? "Codex" : "herdr"}`);
-  /// A card's head: its state (else the todo's), 指揮役, unread, number, title, when.
+  /// A card's head: its state (else the todo's; 待機 not yet seen in its own color), 指揮役, number, title, when.
   const cardHead = (s: Session | undefined, t: Todo | undefined, title: string, lead = false) => (
     <span className="card-head">
-      {s ? <span className={`card-state st-${s.state}`}>{STATE_LABEL[s.state]}</span> : <span className="card-state st-none">未着手</span>}
+      {s ? <span className={`card-state st-${s.unread && s.state === "idle" ? "fresh" : s.state}`} title={s.unread && s.state === "idle" ? "待機になってから、まだ見ていません" : undefined}>{STATE_LABEL[s.state]}</span> : <span className="card-state st-none">未着手</span>}
       {lead && <span className="card-lead">指揮役</span>}
-      {s?.unread && <span className="card-unread" aria-label="未読" />}
       {t && <span className="card-id">#{t.id}</span>}
       <span className="card-title">{title}</span>
       {s && <span className="card-ago">{ago(s.state_at)}</span>}

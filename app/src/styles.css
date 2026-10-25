@@ -27,6 +27,9 @@
   --running: #62d491;
   --running-text: #8fe3b0;
   --running-soft: rgba(98, 212, 145, 0.13);
+  /* 待機 not yet seen */
+  --fresh-text: #d4b8ff;
+  --fresh-soft: rgba(181, 140, 255, 0.2);
   --idle: #8a8984;
   --ended: #5c5d62;
   --review-text: #c6adff;
@@ -82,6 +85,8 @@
     --running: #1b7a44;
     --running-text: #1b7a44;
     --running-soft: rgba(27, 122, 68, 0.1);
+    --fresh-text: #6a35c2;
+    --fresh-soft: rgba(106, 53, 194, 0.12);
     --idle: #6b6b70;
     --ended: #b2b1ac;
     --review-text: #6a4cc0;
@@ -4013,6 +4018,12 @@ button.tab-row {
   background: var(--card-hover);
 }
 
+.card-state.st-fresh {
+  color: var(--fresh-text);
+  background: var(--fresh-soft);
+  box-shadow: inset 0 0 0 1px var(--fresh-text);
+}
+
 .card-state.st-ended {
   color: var(--text-3);
   background: none;
@@ -4027,14 +4038,6 @@ button.tab-row {
   color: var(--accent);
   font-size: 10px;
   font-weight: 600;
-}
-
-.card-unread {
-  flex-shrink: 0;
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--accent);
 }
 
 .card-id {
