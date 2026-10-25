@@ -16,6 +16,7 @@ import {
   BROWSER_WINDOW_OPEN_EVENT,
   BROWSER_ZOOM_EVENT,
   FOCUS_APP_EVENT,
+  FOCUS_PANE_EVENT,
   PAGE_DIALOG_EVENT,
   PAGE_FOCUSED_EVENT,
 } from "./api";
@@ -198,8 +199,8 @@ export default function BrowserWindow() {
   const railRef = useRef(railAt);
   railRef.current = railAt;
   // The handlers the listeners call, as they are now.
-  const now = useRef({ open, close, step, setUrl, active, askAbout });
-  now.current = { open, close, step, setUrl, active, askAbout };
+  const now = useRef({ open, close, step, setUrl, active, askAbout, ask: askOpen ? askTab : null });
+  now.current = { open, close, step, setUrl, active, askAbout, ask: askOpen ? askTab : null };
 
   useEffect(() => {
     // The page takes the keys as it comes up (the window made in front does not give them).
@@ -247,8 +248,15 @@ export default function BrowserWindow() {
         userActed();
         setTyping(payload.tab === ASK_TAB ? "ask" : "pane");
       }),
-      // ⌃h from a page: the tab list takes the keyboard.
-      listen(FOCUS_APP_EVENT, () => {
+      // ⌃l from the page: ChatGPT on the right takes the keys (and the selected text), when it is out.
+      listen<{ tab: string; text: string | null }>(FOCUS_PANE_EVENT, ({ payload }) => {
+        const ask = now.current.ask;
+        if (ask && payload.tab !== ASK_TAB) keysToTab(ask, ASK_TAB, report, payload.text ?? undefined);
+      }),
+      // ⌃h from ChatGPT: back to the page; from a page: the tab list takes the keyboard.
+      listen<{ tab: string }>(FOCUS_APP_EVENT, ({ payload }) => {
+        const page = now.current.active;
+        if (payload.tab === ASK_TAB && page) return keysToTab(page, page.id, report);
         setTyping("app");
         noteFocusRequest();
         api.focusAppPage().catch(report);
