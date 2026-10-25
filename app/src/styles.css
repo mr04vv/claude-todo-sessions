@@ -4019,9 +4019,20 @@ button.tab-row {
 }
 
 .card-state.st-fresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   color: var(--fresh-text);
   background: var(--fresh-soft);
   box-shadow: inset 0 0 0 1px var(--fresh-text);
+}
+
+.card-state.st-fresh::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fresh-text);
 }
 
 .card-state.st-ended {
