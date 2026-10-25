@@ -6845,6 +6845,14 @@ export default function App() {
   const splitLeft = space === "work" ? workTab(workView.left) : studyReading ? studyLeft : undefined;
   const splitRight = space === "work" ? workRightPage : studyReading ? studyRightTab : undefined;
   const [focusTyping, setFocusTyping] = useState<"left" | "right" | null>(null);
+  // A side of 作業 with nothing to take the keyboard (no session, one ended,
+  // one running outside herdr): it stays with the list (its cursor shown;
+  // ⌘Enter presses the side's button).
+  const sideSession = focusTyping === "left" ? workView.left : focusTyping === "right" ? workView.right : undefined;
+  const sideIdle = space === "work" && focusTyping !== null && !(focusTyping === "left" ? splitLeft : splitRight) && (!sideSession || sideSession.state === "ended" || outsideHerdr.has(sideSession.session_id));
+  useEffect(() => {
+    if (sideIdle) setFocusTyping(null);
+  }, [sideIdle]);
   /// ⌘⇧[ ⌘⇧] in a split view: the previous or next tab of the side that has
   /// the keyboard: 学習's readings or LLMs, 作業's subtasks and pages opened beside.
   const switchSplitTab = (right: boolean, delta: number) => {
