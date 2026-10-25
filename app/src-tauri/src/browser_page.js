@@ -132,9 +132,9 @@
     true,
   );
 
-  // The list keys (j k) scroll the page when no field has the typing, unless
-  // the page took them itself (X's own j k, say). The page's scrolling box
-  // is the one under the middle of the view, or the page itself.
+  // ⇧j ⇧k scroll the page when no field has the typing, unless the page took
+  // them itself; j k pick (a Google result), else are the page's own (X's j k).
+  // The page's scrolling box is the one under the middle of the view, or the page itself.
   const SCROLL_STEP = 80;
   const editing = (el) => el instanceof Element && (el.isContentEditable || el.closest("input, textarea, select, [role=textbox]"));
   const scroller = () => {
@@ -167,8 +167,9 @@
     next.scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
     return true;
   };
-  const listDir = (e) =>
-    e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement) ? 0 : is(e, "down") ? 1 : is(e, "up") ? -1 : 0;
+  const typingHere = (e) => e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement);
+  const listDir = (e) => (typingHere(e) ? 0 : is(e, "down") ? 1 : is(e, "up") ? -1 : 0);
+  const scrollDir = (e) => (typingHere(e) ? 0 : is(e, "scrollDown") ? 1 : is(e, "scrollUp") ? -1 : 0);
   // Ahead of Google's own keys (a letter typed anywhere goes to its search box).
   window.addEventListener(
     "keydown",
@@ -181,7 +182,7 @@
     true,
   );
   window.addEventListener("keydown", (e) => {
-    const dir = e.defaultPrevented ? 0 : listDir(e);
+    const dir = e.defaultPrevented ? 0 : scrollDir(e);
     if (!dir) return;
     e.preventDefault();
     scroller().scrollBy({ top: dir * SCROLL_STEP, behavior: e.repeat ? "auto" : "smooth" });

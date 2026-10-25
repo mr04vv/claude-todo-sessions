@@ -18,6 +18,8 @@ export type Action =
   | "archive"
   | "bookmark"
   | "askChatGpt"
+  | "scrollDown"
+  | "scrollUp"
   | "spaceManage"
   | "spaceWork"
   | "spaceStudy"
@@ -129,14 +131,16 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
       ["archive", "Cloud セッションのページをアーカイブ（作業の一覧では、行のセッションを片付ける）"],
       ["bookmark", "表示中のページを読みものに入れる（O'Reilly の本のページなら本として目次ごと）"],
+      ["scrollDown", "ページを下へスクロール"],
+      ["scrollUp", "ページを上へスクロール"],
       ["askChatGpt", "ブラウザのウインドウで、表示中のページ（選んだ文があればその文）を右の ChatGPT に解説してもらう"],
     ],
   },
   {
     group: "一覧（Todo・PR・作業・学習・ブラウザのタブ・メニュー）",
     items: [
-      ["down", "下へ（ブラウザのページではスクロール）"],
-      ["up", "上へ（ブラウザのページではスクロール）"],
+      ["down", "下へ（ブラウザのページでは、Google の検索結果なら結果を選ぶ）"],
+      ["up", "上へ（ブラウザのページでは、Google の検索結果なら結果を選ぶ）"],
       ["left", "左へ（リストはレーンを畳む）"],
       ["right", "右へ（リストはレーンを開く）"],
       ["moveLeft", "カンバン：カードを左の列へ"],
@@ -244,6 +248,8 @@ const KEYS: Record<Action, string> = {
   // As Safari's "Add to Reading List".
   bookmark: "cmd+shift+d",
   askChatGpt: "cmd+shift+g",
+  scrollDown: "shift+j",
+  scrollUp: "shift+k",
   spaceManage: "cmd+1",
   spaceWork: "cmd+2",
   spaceStudy: "cmd+3",
