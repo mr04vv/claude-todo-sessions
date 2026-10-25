@@ -2487,26 +2487,42 @@ body.resizing {
   min-height: 30px;
 }
 
-/* Which side has the typing (⌃h / ⌃l move it): an accent edge on that side. */
-/* The side with the keyboard has a bar along its top; nothing steps back. */
-.app.typing-app:not([data-zone]) .main,
-.app.split-shown.typing-app:not([data-zone]) .split-rail {
-  box-shadow: inset 0 3px 0 var(--accent);
+/* Where the keyboard is (⌃h / ⌃l move it): a frame round that pane, its
+   head tinted; the other panes stay as they are. */
+.app[data-zone="rail"] .space-rail,
+.browser-window[data-zone="rail"] .space-rail,
+.app[data-zone="side"] .sidebar,
+.app[data-zone="side"] .readings-filters,
+.app.typing-app:not([data-zone]):not(.space-slack) .main,
+.app.typing-app:not([data-zone]) .slack-page:not(:has(.slack-thread:focus-within)) > .slack-list,
+.app:not([data-zone]) .slack-thread:focus-within,
+.app.split-shown.typing-app:not([data-zone]) .split-rail,
+.browser-window.typing-app:not([data-zone]) .tab-list {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
 }
 
-/* A split view's sides: on their tab strips, which their pages do not cover.
-   The side with the keyboard is tinted with a thicker bar; the others dim. */
+/* A pane holding a page (Chromium's own view, laid over the window, which
+   covers whatever is drawn under it) has its frame outside the page: a
+   border kept clear while the keyboard is elsewhere, so the page never
+   moves when it comes. */
+.focus-left,
+.browser-dock.focus-right,
+.browser-window .browser-main,
+.browser-dock.ask-dock {
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.app.typing-left .focus-left,
+.app.typing-right .focus-right,
+.browser-window.typing-pane .browser-main,
+.browser-window.typing-ask .ask-dock {
+  border-color: var(--accent);
+}
+
 .app.typing-left .focus-left > .browser-tabs,
-.app.typing-right .focus-right .focus-head {
-  background: var(--accent-soft);
-  box-shadow: inset 0 4px 0 var(--accent);
-}
-
-.app.split-shown:not(.typing-left) .focus-left > .browser-tabs > *,
-.app.split-shown:not(.typing-right) .focus-right .focus-head > * {
-  opacity: 0.5;
-}
-
+.app.typing-right .focus-right .focus-head,
 .app.split-shown.typing-app:not([data-zone]) .split-rail .rail-head {
   background: var(--accent-soft);
 }
@@ -2613,14 +2629,7 @@ body.resizing {
 }
 
 /* The sidebar (or 学習's filters), or the spaces' rail, with the keyboard (⌃h
-   from the list): its entry under the cursor. */
-.app[data-zone="side"] .sidebar,
-.app[data-zone="side"] .readings-filters,
-.app[data-zone="rail"] .space-rail,
-.browser-window[data-zone="rail"] .space-rail {
-  box-shadow: inset -3px 0 0 var(--accent);
-}
-
+   from the list; framed above): its entry under the cursor. */
 .sidebar [data-cursor],
 .readings-filters [data-cursor],
 .space-rail [data-cursor] {
@@ -4378,22 +4387,12 @@ button.tab-row {
   min-width: 0;
 }
 
-/* Where the keyboard is in the browser's window: the tab list, the page,
-   or the ChatGPT beside it; its strip tinted with a bar, the others dimmed. */
-.browser-window.typing-app .tab-list {
-  box-shadow: inset 0 4px 0 var(--accent);
-  background: var(--accent-soft);
-}
-
+/* Where the keyboard is in the browser's window (framed above): the tab
+   list, the page or the ChatGPT beside it, its strip tinted. */
+.browser-window.typing-app:not([data-zone]) .tab-list,
 .browser-window.typing-pane .browser-main .browser-bar,
 .browser-window.typing-ask .ask-head {
   background: var(--accent-soft);
-  box-shadow: inset 0 4px 0 var(--accent);
-}
-
-.browser-window:not(.typing-pane) .browser-main .browser-bar > *,
-.browser-window:not(.typing-ask) .ask-head > * {
-  opacity: 0.55;
 }
 
 /* The ChatGPT explaining the page (⌘⇧G), on the right. */
