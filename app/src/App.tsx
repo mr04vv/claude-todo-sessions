@@ -6068,7 +6068,8 @@ const summaryAsked = new Set<string>();
 let summaryQueue: Promise<unknown> = Promise.resolve();
 function useSummaries(sessions: Session[], report: (e: unknown) => void) {
   const [, bump] = useState(0);
-  const want = sessions.filter((s) => s.agent !== "codex" && summaryCache[s.session_id]?.at !== s.state_at && !summaryAsked.has(`${s.session_id}:${s.state_at}`));
+  // An ended one (shown with 終了したセッション) keeps its last reply: no summary is asked for it.
+  const want = sessions.filter((s) => s.agent !== "codex" && s.state !== "ended" && summaryCache[s.session_id]?.at !== s.state_at && !summaryAsked.has(`${s.session_id}:${s.state_at}`));
   const key = want.map((s) => `${s.session_id}:${s.state_at}`).join(",");
   useEffect(() => {
     for (const s of want) {

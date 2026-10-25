@@ -258,13 +258,23 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: Stat
             .map(|todo| (sessions.remove(&todo.id).unwrap_or_default(), todo))
             .collect::<Vec<_>>();
         let archived = state.archived.lock().map_err(err)?.clone();
+        // The latest ended ones too, for 作業's 終了したセッション (newest first, as listed).
+        let mut ended_left = ENDED_IN_BOARD;
         let inbox: Vec<Session> = db
             .unlinked_sessions()
             .map_err(err)?
             .into_iter()
-            // A review that ended without being put away stopped before submitting: it waits on the user.
-            .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
+            .filter(|s| !archived.contains(&s.session_id))
             .map(mark)
+            // A review that ended without being put away stopped before submitting: it waits on the user.
+            .filter(|s| {
+                let past = s.state == SessionState::Ended && !(s.review_url.is_some() && !s.hidden);
+                let keep = !past || (!s.hidden && !s.routine && ended_left > 0);
+                if past && keep {
+                    ended_left -= 1;
+                }
+                keep
+            })
             .collect();
         (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, readings::spend_view(db.jev_spend().map_err(err)?, db.jev_credit().map_err(err)?), db.databases().map_err(err)?, digest::view(&digesting, &db)?)
     };
@@ -1216,6 +1226,8 @@ fn mark_done(db: &Db, todo: &Todo) {
 
 /// Bytes read from the end of a transcript to find its latest gitBranch.
 const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
+/// How many ended sessions of no todo the board carries (作業's 終了したセッション).
+const ENDED_IN_BOARD: usize = 50;
 /// Bytes read to find what a session made: a whole turn, its tools' output
 /// however long (the html skill's call comes well before the file it writes).
 const ARTIFACT_TAIL_BYTES: u64 = 4 * 1024 * 1024;
