@@ -1521,6 +1521,8 @@ const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
 /// When ⌘W in the app menu asks to close the shown tab.
 const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
+/// When a page's ⌘⇧E asks to hide (or show) 作業's right side.
+const WORK_RIGHT_EVENT: &str = "work-right";
 /// `{tab}` when a page's ⌃h hands the typing back to the app's side (the
 /// main page already has the keyboard by then), or to the focus mode's left.
 const FOCUS_APP_EVENT: &str = "focus-app";
@@ -1847,6 +1849,7 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         }
         Some("space") => app.emit_to(to, SPACE_EVENT, SpaceAsk { space: url.query_pairs().find(|(k, _)| k == "s").map(|(_, v)| v.into_owned()).unwrap_or_default() }),
         Some("close-tab") => app.emit_to(to, BROWSER_CLOSE_TAB_EVENT, TabOnly { tab }),
+        Some("work-right") => app.emit_to(to, WORK_RIGHT_EVENT, ()),
         _ => app.emit_to(to, BROWSER_FOCUS_URL_EVENT, TabOnly { tab }),
     };
 }

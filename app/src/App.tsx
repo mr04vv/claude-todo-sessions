@@ -21,6 +21,7 @@ import {
   BROWSER_OPEN_NEW_TAB_EVENT,
   BROWSER_SWITCH_TAB_EVENT,
   BROWSER_CLOSE_TAB_EVENT,
+  WORK_RIGHT_EVENT,
   BROWSER_ARCHIVE_EVENT,
   OPEN_PALETTE_EVENT,
   OPEN_SESSIONS_EVENT,
@@ -7333,6 +7334,7 @@ export default function App() {
         splitRef.current ? switchSplitTabRef.current(onSplitRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
       ),
       // ⌘W in a page: the browser space's page shown, or a page opened beside in 作業 (a split view's other right pages stay).
+      listen(WORK_RIGHT_EVENT, () => toggleWorkRightRef.current()),
       listen<{ tab: string }>(BROWSER_CLOSE_TAB_EVENT, ({ payload }) => (splitRef.current && onSplitRightRef.current(payload.tab) ? closeRightRef.current(payload.tab) : closeShownRef.current())),
       listen<{ tab: string }>(BROWSER_ARCHIVE_EVENT, () => archiveShownRef.current()),
       listen(OPEN_PALETTE_EVENT, () => {

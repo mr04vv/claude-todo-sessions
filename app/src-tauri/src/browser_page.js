@@ -35,6 +35,7 @@
   const FOCUS_PANE = "todo-sessions://focus-pane";
   const SPACE = "todo-sessions://space";
   const CLOSE_TAB = "todo-sessions://close-tab";
+  const WORK_RIGHT = "todo-sessions://work-right";
   const BOOKMARK = "todo-sessions://bookmark";
   const ASK_CHATGPT = "todo-sessions://ask-chatgpt";
   const CHAPTER_READ = "todo-sessions://chapter-read";
@@ -95,6 +96,7 @@
     ["newTab", () => send(NEW_TAB)],
     ["newTodo", () => send(NEW_TODO)],
     ["closeTab", () => send(CLOSE_TAB)],
+    ["workRight", () => send(WORK_RIGHT)],
     ["prevTab", () => send(PREV_TAB)],
     ["nextTab", () => send(NEXT_TAB)],
     ["archive", () => send(ARCHIVE)],
