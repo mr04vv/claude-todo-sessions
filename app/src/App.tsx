@@ -7122,6 +7122,15 @@ export default function App() {
         }, () => {});
       }, FOCUS_SETTLE_MS);
     };
+    // A key reaching this page means it has the keyboard, whatever was last
+    // marked (coming back from another app or window can go unannounced).
+    const typed = () => {
+      const el = document.activeElement;
+      const inPane = !!el?.closest(".xterm, .browser-main, .focus-left, .focus-right");
+      setTypingSide(inPane ? "pane" : "app");
+      setFocusTyping(el ? splitSideOf(el) : null);
+    };
+    window.addEventListener("keydown", typed, true);
     window.addEventListener("pointerdown", press, true);
     window.addEventListener("focus", here);
     document.addEventListener("focusin", here);
@@ -7137,6 +7146,7 @@ export default function App() {
     return () => {
       clearTimeout(timer);
       offs.forEach((off) => void off.then((f) => f()));
+      window.removeEventListener("keydown", typed, true);
       window.removeEventListener("pointerdown", press, true);
       window.removeEventListener("focus", here);
       document.removeEventListener("focusin", here);
