@@ -6670,7 +6670,11 @@ export default function App() {
   // outside herdr are not started twice: they are only marked.
   const [workTerms, setWorkTerms] = useState<Record<string, string>>({});
   const [outsideHerdr, setOutsideHerdr] = useState<Set<string>>(new Set());
-  const workTab = (session: Session | undefined) => (session ? tabs.find((t) => t.id === (isCloud(session) ? workTabId(session.session_id) : workTerms[session.session_id])) : undefined);
+  // When each local session was resumed here (seconds): one that ended after
+  // it (or never resumed) shows as ended, not as the herdr pane it ran in.
+  const [resumedAt, setResumedAt] = useState<Record<string, number>>({});
+  const endedHere = (s: Session) => s.state === "ended" && !isCloud(s) && !((resumedAt[s.session_id] ?? 0) > s.state_at);
+  const workTab = (session: Session | undefined) => (session && !endedHere(session) ? tabs.find((t) => t.id === (isCloud(session) ? workTabId(session.session_id) : workTerms[session.session_id])) : undefined);
   const resuming = useRef(new Set<string>());
   /// Shows a session in 作業: a Cloud session's claude.ai page (made once), a
   /// local one's herdr pane (focused, its herdr session attached). An ended
@@ -6684,6 +6688,7 @@ export default function App() {
     }
     if (resuming.current.has(sid) || (session.state === "ended" && !resume)) return;
     resuming.current.add(sid);
+    if (resume) setResumedAt((m) => ({ ...m, [sid]: Date.now() / 1000 }));
     terminalApi
       .resume(sid, false, !resume)
       .then((run) => {
