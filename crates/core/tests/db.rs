@@ -626,6 +626,23 @@ fn a_day_s_digest_made_in_a_session_takes_the_artifact_it_publishes() {
 }
 
 #[test]
+fn a_digest_s_session_is_off_the_lists() {
+    let (dir, db) = open();
+    db.register_session("sess-1", "/home", "読みものの日報 2026-10-18", None).unwrap();
+    db.start_digest("2026-10-18", "sess-1").unwrap();
+    assert!(db.unlinked_sessions().unwrap()[0].hidden);
+    // One started before they were put away is, once opened again.
+    db.register_session("sess-0", "/home", "読みものの日報 2026-10-17", None).unwrap();
+    drop(db);
+    rusqlite::Connection::open(db_path(&dir))
+        .unwrap()
+        .execute("INSERT INTO digests (day, made_at, session_id) VALUES ('2026-10-17', 0, 'sess-0')", [])
+        .unwrap();
+    let db = Db::open(&db_path(&dir)).unwrap();
+    assert!(db.get_session("sess-0").unwrap().unwrap().hidden);
+}
+
+#[test]
 fn the_x_digests_made_before_are_the_days_digests() {
     let (dir, db) = open();
     drop(db);

@@ -1034,6 +1034,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
              COMMIT;",
         )?;
     }
+    // Digests' sessions started before start_digest put them away.
+    conn.execute("INSERT OR IGNORE INTO session_hidden (session_id, hidden_at) SELECT session_id, ?1 FROM digests WHERE session_id IS NOT NULL", [now()])?;
     Ok(())
 }
 
@@ -1387,14 +1389,15 @@ impl Db {
         Ok(())
     }
 
-    /// `day`'s digest being made in session `session_id`, from scratch.
+    /// `day`'s digest being made in session `session_id`, from scratch. The
+    /// session is off the lists (unless it asks): the digest shows it.
     pub fn start_digest(&self, day: &str, session_id: &str) -> Result<()> {
         self.conn.execute(
             "INSERT INTO digests (day, url, error, made_at, session_id) VALUES (?1, NULL, NULL, ?2, ?3)
              ON CONFLICT(day) DO UPDATE SET url = NULL, error = NULL, made_at = ?2, session_id = ?3",
             params![day, now(), session_id],
         )?;
-        Ok(())
+        self.hide_session(session_id)
     }
 
     /// An artifact session `session_id` published: the digest it makes, if it
