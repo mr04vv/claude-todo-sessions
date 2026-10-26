@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-use cts_core::{digest, launch, ogp, Digest, Reading, ReadingKind};
+use cts_core::{digest, ogp, Digest, Reading, ReadingKind};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -21,9 +21,6 @@ const CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 const PAGE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Where the briefs go, beside the database.
 const BRIEFS_DIR: &str = "digests";
-/// What the session may do without asking: read its brief, write the page,
-/// read the artifact skill and publish.
-const SESSION_TOOLS: &str = "Read,Write,Skill,ToolSearch,Artifact";
 
 /// The day whose brief is being made (its pages read), if one is; the session
 /// making a page shows on the day's digest itself.
@@ -85,12 +82,7 @@ fn start(app: &AppHandle, day: &str) -> Result<(), String> {
     let session = uuid::Uuid::new_v4().to_string();
     // At home, as ちょっと Claude (a folder of its own would be asked to be
     // trusted first), with the briefs' folder added for its file tools.
-    let command = format!(
-        "claude --session-id {session} --add-dir {} --allowedTools {} {}",
-        launch::shell_quote(&dir.to_string_lossy()),
-        launch::shell_quote(SESSION_TOOLS),
-        launch::shell_quote(&digest::first_prompt(&brief.to_string_lossy()))
-    );
+    let command = digest::session_command(&session, &dir.to_string_lossy(), &brief.to_string_lossy());
     let (cwd, title) = (crate::home().to_string_lossy().to_string(), format!("読みものの日報 {day}"));
     state.db.lock().map_err(err)?.register_session(&session, &cwd, &title, None).map_err(err)?;
     crate::start_in_herdr(&state, &cwd, &title, &command, false, false).or_else(|herdr| crate::start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr} / {e}")))?;

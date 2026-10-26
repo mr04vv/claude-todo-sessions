@@ -3,9 +3,13 @@
 //! are or link to, read in full, are written into a brief for a Claude Code
 //! session, which sums them up as closely as it can, theme by theme, with
 //! pictures, and publishes the page (the Artifact tool is a session's alone).
+use crate::launch::shell_quote;
 use crate::ogp::Page;
 use crate::{Reading, ReadingKind};
 
+/// What the session may do without asking: read its brief, write the page,
+/// read the artifact skill and publish.
+const SESSION_TOOLS: &str = "Read,Write,Skill,ToolSearch,Artifact";
 /// Enough of a page's text for a close summary.
 const PAGE_TEXT_MAX_CHARS: usize = 20_000;
 
@@ -68,6 +72,18 @@ pub fn brief(day: &str, items: &[Item]) -> String {
     out
 }
 
+/// The command starting the session that makes the page of the brief at
+/// `brief_path`, in `briefs_dir` (added for its file tools).
+pub fn session_command(session_id: &str, briefs_dir: &str, brief_path: &str) -> String {
+    // The prompt first: --add-dir and --allowedTools take as many values as follow them.
+    format!(
+        "claude {} --session-id {session_id} --add-dir {} --allowedTools {}",
+        shell_quote(&first_prompt(brief_path)),
+        shell_quote(briefs_dir),
+        shell_quote(SESSION_TOOLS)
+    )
+}
+
 /// The session's first prompt: its brief (long; read in parts).
 pub fn first_prompt(brief_path: &str) -> String {
     format!("{brief_path} を読んで（長いので何回かに分けて）、そこに書いてあるとおりに読みものの日報を HTML のアーティファクトにして公開してください。")
@@ -108,6 +124,14 @@ mod tests {
         assert!(b.contains("### ページ 1: https://ashunar0.dev/posts/try-void\nタイトル: Void"));
         assert_eq!(b.matches('ゑ').count(), PAGE_TEXT_MAX_CHARS, "a page's text is cut");
         assert!(b.contains("### ページ 2: 読めませんでした（timeout）"));
+    }
+
+    #[test]
+    fn the_session_gets_its_prompt_before_the_options_taking_many_values() {
+        let c = session_command("sess-1", "/data/digests", "/data/digests/2026-10-18.md");
+        let prompt = c.find("/data/digests/2026-10-18.md を読んで").unwrap();
+        assert!(prompt < c.find("--add-dir").unwrap() && prompt < c.find("--allowedTools").unwrap(), "a prompt after --allowedTools is taken for a tool, and the session waits");
+        assert!(c.starts_with("claude ") && c.contains("--session-id sess-1"));
     }
 
     #[test]
