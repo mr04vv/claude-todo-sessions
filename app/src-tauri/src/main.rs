@@ -1423,8 +1423,23 @@ struct PrLists {
 }
 
 /// Open PRs, leaving out archived repositories' (they can no longer move).
-fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
-    let json = gh(&["search", "prs", filter, "@me", "--state", "open", "--archived=false", "--limit", GH_PR_LIMIT, "--json", GH_PR_FIELDS])?;
+/// The open PRs asking for the user's review: asked of them (again, too,
+/// after they reviewed), or of a team of theirs while they have not reviewed
+/// it (a team's request stays after its member's review is in).
+fn review_requests() -> Result<Vec<PrView>, String> {
+    let mut prs = search_prs(&["user-review-requested:@me"])?;
+    for p in search_prs(&["review-requested:@me", "-reviewed-by:@me"])? {
+        if !prs.iter().any(|q| q.url == p.url) {
+            prs.push(p);
+        }
+    }
+    Ok(prs)
+}
+
+fn search_prs(query: &[&str]) -> Result<Vec<PrView>, String> {
+    let mut args = vec!["search", "prs", "--state", "open", "--archived=false", "--limit", GH_PR_LIMIT, "--json", GH_PR_FIELDS, "--"];
+    args.extend_from_slice(query);
+    let json = gh(&args)?;
     let prs: Vec<GhPr> = serde_json::from_str(&json).map_err(|e| format!("gh output: {e}"))?;
     Ok(prs
         .into_iter()
@@ -1468,7 +1483,7 @@ fn herdr_focused(name: String) -> Option<String> {
 
 #[tauri::command]
 async fn gh_prs() -> Result<PrLists, String> {
-    tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: search_prs("--review-requested")?, mine: my_prs()? }))
+    tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: review_requests()?, mine: my_prs()? }))
         .await
         .map_err(err)?
 }
@@ -2595,7 +2610,7 @@ fn post_banner(app: &AppHandle, headline: &'static str, label: String, id: Optio
 /// again once it had stopped (the user reviewed it). The first check, before
 /// any was ever recorded, only records the ones already waiting.
 fn notify_review_requests(app: &AppHandle, db: &Db, seeded: &mut bool) -> Result<(), String> {
-    let prs = search_prs("--review-requested")?;
+    let prs = review_requests()?;
     let quiet = !*seeded && !db.has_review_notices().map_err(err)?;
     *seeded = true;
     db.end_review_notices(&prs.iter().map(|p| p.url.clone()).collect::<Vec<_>>()).map_err(err)?;
