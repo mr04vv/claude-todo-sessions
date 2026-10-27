@@ -5943,16 +5943,17 @@ interface WorkRow {
 /// 作業's list as 作業 and ⌘⇧K show it: あなた待ち (but the review requests
 /// not started, counted apart), then the work in the order chosen (by hand,
 /// or the latest first by `timeOf`): the todos at work (not done; a subtask's
-/// at its parent) and the sessions of no todo (listed; the ended too with `ended`).
-function workListOf(board: Board, waiting: WaitItem[], sort: WorkSort, order: string[], ended: boolean) {
+/// at its parent) and the sessions of no todo (listed; the ended too with
+/// `ended`, the PR reviews with `reviews`).
+function workListOf(board: Board, waiting: WaitItem[], sort: WorkSort, order: string[], ended: boolean, reviews = false) {
   const live = (s: Session) => s.state !== "ended";
   const todos = board.todos.filter((t) => t.status !== "done");
   // A todo is at work while it or (for a parent) one of its subtasks has a live session.
   const atWork = todos.filter((t) => t.parent_id === null && (t.sessions.some(live) || todos.some((c) => c.parent_id === t.id && c.sessions.some(live))));
   const waitingSessions = new Set(waiting.flatMap((w) => (w.session ? [w.session.session_id] : [])));
   const waits = waiting.filter((w) => !isReviewAsk(w));
-  // Sessions put away (⌘⇧A) and routines' runs are out, but for one asking.
-  const listed = (s: Session) => (!s.hidden && !s.routine) || s.state === "needs_input";
+  // Sessions put away (⌘⇧A), routines' runs and PR reviews (but while searching) are out, but for one asking.
+  const listed = (s: Session) => listedSession(s) || (reviews && isReviewSession(s) && !s.hidden && !s.routine);
   const loose = board.inbox.filter((s) => (ended || live(s)) && listed(s) && !waitingSessions.has(s.session_id));
   /// A row's sessions: its own, or its todo's and its subtasks'.
   const sessionsOf = (r: WorkRow) => (r.session ? [r.session] : todos.filter((t) => t.id === r.todo?.id || t.parent_id === r.todo?.id).flatMap((t) => t.sessions));
@@ -6133,7 +6134,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
   };
   const sessionText = (s: Session | undefined) => (s ? [sessionLabel(s), s.review_url && prRef(s.review_url), placeOf(s), s.cwd] : []);
   const todoText = (t: Todo): string[] => [`#${t.id}`, t.title, ...t.repos, ...t.sessions.flatMap((x) => sessionText(x).filter((v): v is string => !!v))];
-  const listed = workListOf(board, waiting, sort, order, showEnded || words.length > 0);
+  const listed = workListOf(board, waiting, sort, order, showEnded || words.length > 0, words.length > 0);
   const { todos, asks, timeOf, endedCount: ended } = listed;
   const shownWaits = listed.waits.filter((w) => found(w.line, w.review?.title, ...(w.todo ? todoText(w.todo) : []), ...sessionText(w.session)));
   const workRows = listed.work.filter((r) =>
