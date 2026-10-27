@@ -453,13 +453,10 @@ export interface StartOptions {
   agent?: Agent;
 }
 
-export const MODELS: { id: string; label: string }[] = [
+/// The choices before the models themselves (useModels in App.tsx reads those).
+export const MODEL_DEFAULTS: { id: string; label: string }[] = [
   { id: "", label: "既定のモデル" },
   { id: AUTO_MODEL, label: "自動（内容から選ぶ）" },
-  { id: "claude-opus-5-5", label: "Opus 5.5" },
-  { id: "claude-fable-5-1", label: "Fable 5.1" },
-  { id: "claude-sonnet-5", label: "Sonnet 5" },
-  { id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];
 
 export const EFFORTS: string[] = ["", "low", "medium", "high", "xhigh", "max"];
@@ -518,6 +515,8 @@ export const api = {
   hideSession: (sessionId: string) => invoke<void>("hide_session", { sessionId }),
   /// The models Codex offers and the efforts each takes (Codex's own cache).
   codexModels: () => invoke<{ id: string; label: string; efforts: string[] }[]>("codex_models"),
+  /// The newest Claude model of each family (as Claude Code last fetched them).
+  claudeModels: () => invoke<{ id: string; label: string }[]>("claude_models"),
   syncNow: (todoId?: number) => invoke<void>("sync_now", { todoId: todoId ?? null }),
   openLink: (url: string) => invoke<void>("open_link", { url }),
   slackConnect: (token: string) => invoke<SlackAccount>("slack_connect", { token }),

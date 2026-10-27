@@ -7,6 +7,7 @@ pub mod files;
 pub mod github;
 pub mod herdr;
 pub mod launch;
+pub mod models;
 pub mod ogp;
 pub mod pick;
 pub mod slack;

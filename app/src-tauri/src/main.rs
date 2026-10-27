@@ -1340,10 +1340,11 @@ const PICK_MODEL: &str = "haiku";
 async fn pick_model(state: State<'_, AppState>, todo_id: i64, plan: bool, prompt: Option<String>) -> Result<cts_core::pick::Pick, String> {
     let todo = state.db.lock().map_err(err)?.get_todo(todo_id).map_err(err)?.ok_or_else(|| format!("todo #{todo_id} がありません"))?;
     let first = prompt.or(todo.prompt).unwrap_or_default();
-    let ask = cts_core::pick::prompt(&todo.title, todo.memo.as_deref().unwrap_or_default(), &first, plan);
     tauri::async_runtime::spawn_blocking(move || {
-        let answer = ask::claude(&ask, Some(&cts_core::pick::schema()), Some(PICK_MODEL), None)?;
-        cts_core::pick::parse(&answer).ok_or_else(|| format!("モデルを選べませんでした: {answer}"))
+        let models = claude_models();
+        let ask = cts_core::pick::prompt(&todo.title, todo.memo.as_deref().unwrap_or_default(), &first, plan, &models);
+        let answer = ask::claude(&ask, Some(&cts_core::pick::schema(&models)), Some(PICK_MODEL), None)?;
+        cts_core::pick::parse(&answer, &models).ok_or_else(|| format!("モデルを選べませんでした: {answer}"))
     })
     .await
     .map_err(err)?
@@ -1470,6 +1471,14 @@ fn codex_models() -> Vec<cts_core::codex::Model> {
         .and_then(|t| serde_json::from_str(&t).ok())
         .map(|v| cts_core::codex::models(&v))
         .unwrap_or_default()
+}
+
+/// The newest Claude model of each family, as Claude Code last fetched them
+/// (its config read each time, so a new one shows once Claude Code has seen it).
+#[tauri::command(async)]
+fn claude_models() -> Vec<cts_core::models::Model> {
+    let config = std::fs::read_to_string(home().join(cts_core::models::CONFIG)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    cts_core::models::latest(&config)
 }
 
 /// The Claude session herdr session `name` shows (its focused pane), for the
@@ -3172,6 +3181,7 @@ fn main() {
             forget_site_permission,
             herdr_focused,
             codex_models,
+            claude_models,
             readings::add_reading,
             readings::delete_reading,
             readings::set_reading_tags,

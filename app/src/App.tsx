@@ -52,7 +52,7 @@ import {
   EFFORTS,
   isCloud,
   issueRef,
-  MODELS,
+  MODEL_DEFAULTS,
   type Board,
   type Database,
   type DigestView,
@@ -277,6 +277,19 @@ const isReviewSession = (s: Session) =>
 /// The session lists leave out reviews and routines (one asking is in
 /// あなた待ち; the routines have a filter of their own), and sessions put
 /// away (⌘⇧A, or a review once it is in) unless they ask.
+/// How often the Claude models are read again (Claude Code's config, which it refreshes itself).
+const MODELS_EVERY_MS = 60_000;
+/// The model choices: the defaults, then the newest Claude model of each family.
+function useModels() {
+  const [models, setModels] = useState<{ id: string; label: string }[]>([]);
+  useEffect(() => {
+    const load = () => api.claudeModels().then(setModels, () => {});
+    load();
+    const timer = setInterval(load, MODELS_EVERY_MS);
+    return () => clearInterval(timer);
+  }, []);
+  return [...MODEL_DEFAULTS, ...models];
+}
 const listedSession = (s: Session) => (!isReviewSession(s) || s.state === "needs_input") && (!s.routine || s.state === "needs_input") && (!s.hidden || s.state === "needs_input");
 
 /// Lanes that start folded, and the ones already folded once on this machine
@@ -1534,6 +1547,7 @@ function useLaunchPrefs() {
 /// starts (the launch sheet's and the new todo dialog's).
 function LaunchControls({ plan, launch, onPlan, onLaunch }: { plan: boolean; launch: Launch; onPlan: (on: boolean) => void; onLaunch: (patch: Partial<Launch>) => void }) {
   const e = effectiveLaunch(launch, plan);
+  const models = useModels();
   const why = plan ? "計画させるときは herdr の Claude で動きます（Mac の Claude がサブタスクを作ります）" : "Codex は herdr でだけ動きます";
   return (
     <div className="launch-controls">
@@ -1558,7 +1572,7 @@ function LaunchControls({ plan, launch, onPlan, onLaunch }: { plan: boolean; lau
       {e.agent === "claude" && (
         <>
           <select className="select compact" value={launch.model} title="モデル" aria-label="モデル" onChange={(ev) => onLaunch({ model: ev.target.value })}>
-            {MODELS.map((m) => (
+            {models.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.label}
               </option>
@@ -4186,7 +4200,8 @@ function PrsPage({ prs, prsLoading, prError, todos, sessions, submitted, local, 
   const [codexModels, setCodexModels] = useState<{ id: string; label: string; efforts: string[] }[]>([]);
   useEffect(() => void api.codexModels().then(setCodexModels, () => {}), []);
   const picked = reviewOptions[prefs.agent];
-  const modelChoices = prefs.agent === "codex" ? [{ id: "", label: "Codex の既定のモデル" }, ...codexModels] : MODELS;
+  const claudeModels = useModels();
+  const modelChoices = prefs.agent === "codex" ? [{ id: "", label: "Codex の既定のモデル" }, ...codexModels] : claudeModels;
   const effortChoices = prefs.agent === "codex" ? ["", ...(codexModels.find((m) => m.id === picked.model)?.efforts ?? ["low", "medium", "high", "xhigh"])] : EFFORTS;
   const byRepo = (p: { repo: string }) => repoFilter === null || p.repo === repoFilter;
   const review = (prs?.review ?? []).filter(byRepo);
@@ -6481,6 +6496,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
 }
 
 export default function App() {
+  const models = useModels();
   const [board, setBoard] = useState<Board | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   // The space shown (⌘1–⌘6), kept across restarts.
@@ -7289,7 +7305,7 @@ export default function App() {
         const picked = await api.pickModel(todoId, plan);
         model = picked.model;
         effort ||= picked.effort;
-        showToast(`#${todoId} は ${MODELS.find((m) => m.id === picked.model)?.label ?? picked.model}・effort ${effort} で始めます（${picked.reason}）`);
+        showToast(`#${todoId} は ${models.find((m) => m.id === picked.model)?.label ?? picked.model}・effort ${effort} で始めます（${picked.reason}）`);
       } catch (err) {
         report(`モデルを自動で選べなかったので、既定のモデルで始めます：${err}`);
       }
