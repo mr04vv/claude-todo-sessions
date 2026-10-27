@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use base64::Engine;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 /// `{id, data}` (base64 of what the program wrote) as output arrives.
 const OUTPUT_EVENT: &str = "term-output";
@@ -20,7 +20,6 @@ const EXIT_EVENT: &str = "term-exit";
 const READ_CHUNK: usize = 16 * 1024;
 /// Used when $SHELL is not set.
 const FALLBACK_SHELL: &str = "/bin/zsh";
-const MAIN_WEBVIEW: &str = "main";
 /// herdr marks its panes with these, and refuses to start inside one.
 const HERDR_ENV_PREFIX: &str = "HERDR_";
 
@@ -250,11 +249,8 @@ pub fn ghostty_keybinds() -> Vec<(String, String)> {
 /// Gives the app's own page the keyboard, which a browser tab may hold, so
 /// the terminal is focused (and its cursor blinks).
 #[tauri::command(async)]
-pub fn term_focus(app: AppHandle) -> Result<(), String> {
-    match app.get_webview(MAIN_WEBVIEW) {
-        Some(view) => view.set_focus().map_err(err),
-        None => Ok(()),
-    }
+pub fn term_focus(webview: tauri::Webview) -> Result<(), String> {
+    webview.set_focus().map_err(err)
 }
 
 #[cfg(test)]

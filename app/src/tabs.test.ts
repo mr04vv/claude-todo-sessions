@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { addressToUrl, findTabFor, foldReviews, insertAfter, nextAfterClose, sameObject } from "./tabs.ts";
+import { addressToUrl, findTabFor, insertAfter, isSplitRight, isWorkPage, newPin, nextAfterClose, rightChildren, sameObject } from "./tabs.ts";
 
 const tabs = (...ids: string[]) => ids.map((id) => ({ id }));
 
@@ -60,18 +60,43 @@ test("a host with a port, or localhost, opens as a URL", () => {
   assert.equal(addressToUrl("example.com:8443/x"), "https://example.com:8443/x");
 });
 
-test("reviews show as tabs while they fit", () => {
-  const { shown, folded } = foldReviews(tabs("a", "b", "c"), () => false, 3);
-  assert.deepEqual(shown.map((t) => t.id), ["a", "b", "c"]);
-  assert.deepEqual(folded, []);
+test("a split view's right is a pinned page to ask, or the page of the session on its right", () => {
+  const split = [{ id: "r1" }, { id: "pinchatgpt" }, { id: "wa", session: "a" }, { id: "wb", session: "b" }];
+  assert.equal(isSplitRight(split, "pinchatgpt", ["pinchatgpt"], undefined), true);
+  assert.equal(isSplitRight(split, "wb", ["pinchatgpt"], "b"), true);
+  assert.equal(isSplitRight(split, "wa", ["pinchatgpt"], "b"), false);
+  // With no session on the right, a reading's page (which has none) is still the left.
+  assert.equal(isSplitRight(split, "r1", ["pinchatgpt"], undefined), false);
 });
 
-test("more reviews than fit fold, but the ones waiting for a reply stay out", () => {
-  const { shown, folded } = foldReviews(tabs("a", "b", "c", "d"), (t) => t.id === "c", 3);
-  assert.deepEqual(shown.map((t) => t.id), ["c"]);
-  assert.deepEqual(folded.map((t) => t.id), ["a", "b", "d"]);
+test("a page opened beside a session in 作業 is the right, a session's page or terminal is not", () => {
+  const page = { id: "p1", area: "work" as const };
+  const cloud = { id: "wa", area: "work" as const, session: "a" };
+  const herdr = { id: "wh1", area: "work" as const, term: {} };
+  const reading = { id: "r1", area: "study" as const };
+  assert.equal(isWorkPage(page), true);
+  assert.equal(isWorkPage(cloud), false);
+  assert.equal(isWorkPage(herdr), false);
+  assert.equal(isWorkPage(reading), false);
+  assert.equal(isSplitRight([page, cloud], "p1", [], undefined), true);
 });
 
-test("with no room even one review folds", () => {
-  assert.deepEqual(foldReviews(tabs("a"), () => false, 0).folded.map((t) => t.id), ["a"]);
+test("作業's right shows the subtasks not closed there, and the one asked for among them, else one asking, else one at work, else the first", () => {
+  const kids = [{ id: 1, state: "idle" }, { id: 2, state: "needs_input" }, { id: 3, state: "running" }];
+  const asks = (c: { state: string }) => c.state === "needs_input";
+  const runs = (c: { state: string }) => c.state === "running";
+  const shown = rightChildren(kids, [2], 3, asks, runs);
+  assert.deepEqual(shown.children.map((c) => c.id), [1, 3]);
+  assert.equal(shown.child?.id, 3);
+  assert.equal(rightChildren(kids, [], null, asks, runs).child?.id, 2);
+  assert.equal(rightChildren(kids, [2], 2, asks, runs).child?.id, 3);
+  assert.equal(rightChildren(kids, [2, 3], null, asks, runs).child?.id, 1);
+  assert.equal(rightChildren(kids, [1, 2, 3], 1, asks, runs).child, undefined);
+});
+
+test("a page pinned by dragging gets an id not taken, its title for a name and two letters for a mark", () => {
+  const pin = newPin([{ id: "pinclaude" }, { id: "pinu1" }], "https://linear.app/team/issue/1", "Linear – Issue 1");
+  assert.deepEqual(pin, { id: "pinu2", label: "Linear – Issue 1", short: "Li", url: "https://linear.app/team/issue/1" });
+  assert.equal(newPin([], "https://www.figma.com/file/x", null).label, "figma.com");
+  assert.equal(newPin([], "https://www.figma.com/file/x", null).short, "Fi");
 });

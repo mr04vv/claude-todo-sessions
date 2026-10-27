@@ -34,7 +34,93 @@ pub fn question<'a>(entries: impl IntoIterator<Item = &'a Value>) -> Option<Stri
     asked.map(|q| q.chars().take(QUESTION_MAX_CHARS).collect())
 }
 
-const ARTIFACT_HOST: &str = "https://claude.ai/";
+/// Characters kept of a session's last reply (a card's two lines).
+pub const LAST_MAX_CHARS: usize = 280;
+
+/// What a session's card shows of where it is: its last reply (in one line),
+/// the model answering, and how full its context is (tokens, as of its last turn).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Peek {
+    pub last: Option<String>,
+    pub model: Option<String>,
+    pub context_tokens: Option<u64>,
+}
+
+/// The peek of a session from its entries, oldest first.
+pub fn peek(entries: &[Value]) -> Peek {
+    let replies: Vec<&Value> = entries.iter().filter(|e| e["type"] == "assistant").collect();
+    let last = replies.iter().rev().find_map(|e| {
+        let text: Vec<&str> = e["message"]["content"].as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect();
+        let line = text.join(" ").split_whitespace().collect::<Vec<_>>().join(" ");
+        (!line.is_empty()).then(|| line.chars().take(LAST_MAX_CHARS).collect())
+    });
+    let model = replies.iter().rev().find_map(|e| e["message"]["model"].as_str().map(String::from));
+    let context_tokens = replies.last().map(|e| &e["message"]["usage"]).filter(|u| u.is_object()).map(|u| {
+        ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"].iter().map(|k| u[k].as_u64().unwrap_or(0)).sum()
+    });
+    Peek { last, model, context_tokens }
+}
+
+/// Characters of one message a digest keeps.
+const DIGEST_LINE_CHARS: usize = 300;
+/// Characters of a session's latest messages a summary is made from.
+pub const SUMMARY_SOURCE_CHARS: usize = 6000;
+
+/// A session's latest messages as lines, newest last, within `max_chars`:
+/// what was asked (依頼), what Claude said, and the tools it used (操作).
+pub fn digest(entries: &[Value], max_chars: usize) -> String {
+    let clip = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(DIGEST_LINE_CHARS).collect::<String>();
+    let mut lines = Vec::new();
+    for e in entries {
+        let content = &e["message"]["content"];
+        match e["type"].as_str() {
+            Some("user") => {
+                let asked = content.as_str().map(String::from).unwrap_or_else(|| content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join(" "));
+                if !asked.trim().is_empty() {
+                    lines.push(format!("依頼: {}", clip(&asked)));
+                }
+            }
+            Some("assistant") => {
+                for b in content.as_array().into_iter().flatten() {
+                    match b["type"].as_str() {
+                        Some("text") => {
+                            if let Some(t) = b["text"].as_str().filter(|t| !t.trim().is_empty()) {
+                                lines.push(format!("Claude: {}", clip(t)));
+                            }
+                        }
+                        Some("tool_use") => lines.push(format!("操作: {}", b["name"].as_str().unwrap_or("?"))),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for line in lines.iter().rev() {
+        let size = line.chars().count() + usize::from(!kept.is_empty());
+        if used + size > max_chars {
+            break;
+        }
+        used += size;
+        kept.push(line.as_str());
+    }
+    kept.reverse();
+    kept.join("\n")
+}
+
+/// The ask for a one-line summary of where a session stands, from its digest.
+pub fn summary_prompt(digest: &str) -> String {
+    format!(
+        "次は、Claude Code のセッションの最近のやり取りです（古い順、最後が最新）。\n\
+         このセッションが「いま何をしていて、どこまで進んだか」を、日本語の1文（40字以内）で要約してください。\n\
+         - 主語は省き、「〜を実装中。テストは通過」「〜の方針を確認待ち」のように書く\n\
+         - 前置き、引用符、絵文字、Markdown は付けない。要約の文だけを返す\n\n\
+         <messages>\n{digest}\n</messages>"
+    )
+}
+
 const ARTIFACT_PAGES: [&str; 2] = ["https://claude.ai/artifact/", "https://claude.ai/code/artifact/"];
 /// How the Artifact tool reports a publish: "Published <file> at <url> (…".
 const PUBLISHED: &str = "Published ";
@@ -43,33 +129,6 @@ const PUBLISHED_AT: &str = " at ";
 const MADE_AT: [&str; 2] = ["Created a new Artifact at ", "Updated the Artifact at "];
 /// The Docs connector's ack for a new doc: `"artifactUrl":"<url>"`.
 const DOC_BORN: &str = "artifactUrl";
-/// The line a theme's document's writer ends with (study::doc_prompt).
-pub const NOTE_LINE: &str = "NOTE_URL: ";
-
-/// The note a session made (the focus mode's "ノート"): the first artifact it
-/// published, the first doc it made (shown as it fills), or the one its
-/// NOTE_LINE names, in its transcript or events (as text, its quotes escaped
-/// once or more). Placeholders and links merely mentioned are not it.
-pub fn note_url(text: &str) -> Option<String> {
-    let published = text.match_indices(PUBLISHED).find_map(|(i, _)| {
-        let line = until_line_end(&text[i + PUBLISHED.len()..]);
-        line.find(PUBLISHED_AT).and_then(|j| artifact_at(&line[j + PUBLISHED_AT.len()..]))
-    });
-    let born = || {
-        text.match_indices(DOC_BORN)
-            .find_map(|(i, _)| artifact_at(text[i + DOC_BORN.len()..].trim_start_matches(['\\', '"', ':'])))
-    };
-    // The line is asked for as "NOTE_URL: <url>"; it may come in brackets or
-    // as a Markdown link, so the link is looked for on the rest of the line.
-    let named = || {
-        text.match_indices(NOTE_LINE).find_map(|(i, _)| {
-            let line = until_line_end(&text[i + NOTE_LINE.len()..]);
-            line.find(ARTIFACT_HOST).and_then(|j| artifact_at(&line[j..]))
-        })
-    };
-    published.or_else(born).or_else(named)
-}
-
 /// An artifact or a doc a session made, as its record tells it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Found {
@@ -213,50 +272,43 @@ mod tests {
     }
 
     #[test]
+    fn a_peek_is_the_last_reply_its_model_and_the_context_it_fills() {
+        let entries = [
+            assistant(json!([{"type": "text", "text": "前の返事"}]), json!({"input_tokens": 10, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 5, "output_tokens": 7})),
+            json!({"type": "user", "message": {"content": "続けて"}}),
+            assistant(
+                json!([{"type": "text", "text": "\n  テストが通りました。\nPR を作ります。"}, {"type": "tool_use", "name": "Bash", "input": {}}]),
+                json!({"input_tokens": 3, "cache_read_input_tokens": 80_000, "cache_creation_input_tokens": 2_000, "output_tokens": 40}),
+            ),
+            assistant(json!([{"type": "tool_use", "name": "Bash", "input": {}}]), json!({"input_tokens": 1, "cache_read_input_tokens": 82_100, "cache_creation_input_tokens": 0, "output_tokens": 9})),
+        ];
+        let p = peek(&entries);
+        assert_eq!(p.last.as_deref(), Some("テストが通りました。 PR を作ります。"));
+        assert_eq!(p.model.as_deref(), Some("claude-opus-5-5"));
+        assert_eq!(p.context_tokens, Some(82_110));
+    }
+
+    #[test]
+    fn the_digest_keeps_the_latest_asks_replies_and_tools_newest_last_within_its_size() {
+        let entries = [
+            json!({"type": "user", "message": {"content": "ログを整理して"}}),
+            assistant(json!([{"type": "text", "text": "見ます。"}, {"type": "tool_use", "name": "Read", "input": {}}]), json!({})),
+            json!({"type": "user", "message": {"content": [{"type": "tool_result", "content": "…"}]}}),
+            assistant(json!([{"type": "tool_use", "name": "Bash", "input": {}}, {"type": "text", "text": "テストが通りました。"}]), json!({})),
+        ];
+        assert_eq!(digest(&entries, 1000), "依頼: ログを整理して\nClaude: 見ます。\n操作: Read\n操作: Bash\nClaude: テストが通りました。");
+        assert_eq!(digest(&entries, 30), "操作: Bash\nClaude: テストが通りました。");
+    }
+
+    #[test]
+    fn nothing_said_yet_peeks_nothing() {
+        assert_eq!(peek(&[json!({"type": "user", "message": {"content": "やって"}})]), Peek::default());
+    }
+
+    #[test]
     fn jsonl_skips_a_cut_first_line_and_blank_lines() {
         let v = parse_jsonl("e\": 1}\n{\"type\": \"user\"}\n\n{\"type\": \"assistant\"}\n");
         assert_eq!(v, [json!({"type": "user"}), json!({"type": "assistant"})]);
-    }
-
-    #[test]
-    fn the_note_is_the_first_artifact_published() {
-        let text = concat!(
-            r#"{"type":"user","message":{"content":"see https://claude.ai/artifact/{id} and https://claude.ai/artifact/abc123 in the docs"}}"#,
-            "\n",
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Published /tmp/note.html at https://claude.ai/artifact/1UnAnmsD3RX7oDxWBD5q9c (Version 1)\n\nLive subscription"}]}}"#,
-            "\n",
-            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"Published /tmp/other.html at https://claude.ai/artifact/Zz9 (Version 1)"}]}}"#,
-        );
-        assert_eq!(note_url(text).as_deref(), Some("https://claude.ai/artifact/1UnAnmsD3RX7oDxWBD5q9c"));
-    }
-
-    #[test]
-    fn a_doc_is_known_from_its_birth() {
-        // The Docs connector's ack, a JSON string inside the transcript's line.
-        let text = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"created\":{\"minted\":\"e1e7\"},\"frame\":{\"url\":\"https://claude.ai/code/artifact/e1e71452-f7a7\",\"artifactUrl\":\"https://claude.ai/code/artifact/e1e71452-f7a7\"}}"}]}}"#;
-        assert_eq!(note_url(text).as_deref(), Some("https://claude.ai/code/artifact/e1e71452-f7a7"));
-        // As events serialized again, the quotes are escaped once more.
-        assert_eq!(note_url(&serde_json::to_string(text).unwrap()).as_deref(), Some("https://claude.ai/code/artifact/e1e71452-f7a7"));
-    }
-
-    #[test]
-    fn the_note_line_names_it_too() {
-        let text = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"できました。\nNOTE_URL: https://claude.ai/code/artifact/8574c0b4-3336-416f"}]}}"#;
-        assert_eq!(note_url(text).as_deref(), Some("https://claude.ai/code/artifact/8574c0b4-3336-416f"));
-        assert_eq!(note_url("Published /a at https://claude.ai/artifact/ (Version 1)"), None);
-        // A doc's link may lead with its title, and a sentence may follow it.
-        assert_eq!(
-            note_url("NOTE_URL: https://claude.ai/artifact/Rust-の所有権-3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90。").as_deref(),
-            Some("https://claude.ai/artifact/Rust-の所有権-3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90")
-        );
-        assert_eq!(note_url("NOTE_URL: <https://claude.ai/code/artifact/Q3-plan%E3%81%AE-abcDEF0123456789abcdef>").as_deref(), Some("https://claude.ai/code/artifact/Q3-plan%E3%81%AE-abcDEF0123456789abcdef"));
-        // Cloud sessions write it as a Markdown link.
-        assert_eq!(
-            note_url("NOTE_URL: [Server Components ノート](https://claude.ai/artifact/Ab3dEf6hIj9kLm2nOp5qRs)\n").as_deref(),
-            Some("https://claude.ai/artifact/Ab3dEf6hIj9kLm2nOp5qRs")
-        );
-        assert_eq!(note_url("NOTE_URL: まだありません\nhttps://claude.ai/artifact/Ab3dEf6hIj9kLm2nOp5qRs"), None);
-        assert_eq!(note_url("nothing published"), None);
     }
 
     #[test]

@@ -9,15 +9,27 @@ export type Action =
   | "newTodo"
   | "newTab"
   | "closeTab"
+  | "closeRow"
   | "prevTab"
   | "nextTab"
   | "reload"
   | "sideApp"
   | "sidePane"
   | "archive"
-  | "toInput"
+  | "bookmark"
+  | "askChatGpt"
+  | "scrollDown"
+  | "scrollUp"
+  | "spaceManage"
+  | "spaceWork"
+  | "spaceStudy"
+  | "spaceBrowser"
+  | "spaceSlack"
+  | "spaceArtifacts"
   | "focusUrl"
   | "terminalLinks"
+  | "workRight"
+  | "workArtifacts"
   | "back"
   | "forward"
   | "zoomIn"
@@ -41,6 +53,15 @@ export type Action =
   | "reviewAgent"
   | "reviewSubmit"
   | "reviewRunner"
+  | "prFilter"
+  | "showTodo"
+  | "workFix"
+  | "workHandled"
+  | "workEnded"
+  | "workLink"
+  | "workSort"
+  | "workMoveDown"
+  | "workMoveUp"
   | "slackFilter"
   | "slackCompose"
   | "slackDone"
@@ -56,23 +77,16 @@ export type Action =
   | "slackScrollUp"
   | "slackNarrower"
   | "slackWider"
-  | "learnAdd"
-  | "learnNewTheme"
-  | "learnNewCategory"
-  | "learnAsk"
-  | "learnApply"
-  | "learnNextInput"
-  | "learnPrevInput"
-  | "learnOpen"
-  | "learnRead"
-  | "learnForget"
-  | "learnMove"
-  | "learnRename"
-  | "learnGoal"
-  | "learnCategory"
-  | "learnShowRead"
-  | "learnNote"
-  | "learnDeleteTheme"
+  | "studyPick"
+  | "studyRead"
+  | "studyBrowser"
+  | "studyForget"
+  | "studyTags"
+  | "studyKind"
+  | "studyCopy"
+  | "studyChapter"
+  | "studyKeep"
+  | "studyList"
   | "artifactForget"
   | "search"
   | "help"
@@ -84,12 +98,20 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
   {
     group: "どこでも",
     items: [
+      ["spaceManage", "管理へ（Todo・PR・DB）"],
+      ["spaceWork", "作業へ（セッション）"],
+      ["spaceStudy", "学習へ（読みもの）"],
+      ["spaceBrowser", "ブラウザのウインドウを前に出す（⌘T で新しいタブ、⌘W でタブを閉じる）"],
+      ["spaceSlack", "Slack へ"],
+      ["spaceArtifacts", "成果物へ（セッションが作った Doc・Artifact・ファイル）"],
       ["palette", "コマンド（⌘K のメニュー）"],
       ["sessions", "セッション一覧（⌘K の一番上）"],
-      ["newTodo", "新しい todo（Input の画面では input）"],
+      ["newTodo", "新しい todo"],
       ["reload", "今の画面を取り直す（ページでは再読み込み）"],
-      ["sideApp", "入力先を Todo 側へ（学ぶ時間では左へ）"],
-      ["sidePane", "入力先を右のペインへ（学ぶ時間では右へ）"],
+      ["sideApp", "入力先を左へ（ページから一覧、一覧から管理のサイドバー・学習の絞り込み、いちばん左は場のアイコン）"],
+      ["sidePane", "入力先を右へ（ページ、作業・学習では右のページ）"],
+      ["workRight", "作業の右側（サブタスクと、横に開いたページ）を隠す・出す"],
+      ["workArtifacts", "作業の右側に、このセッション（サブタスクも）の成果物を出す・戻す（j k で選んで Enter で横に、⌘Enter でブラウザに）"],
     ],
   },
   {
@@ -97,30 +119,35 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     items: [
       ["newTab", "新しいタブ"],
       ["closeTab", "タブを閉じる"],
-      ["prevTab", "前のタブ（学ぶ時間では入力先の側のタブ、Todo では前のレーン）"],
-      ["nextTab", "次のタブ（学ぶ時間では入力先の側のタブ、Todo では次のレーン）"],
+      ["closeRow", "タブの一覧で、カーソルのあるタブを閉じる（開いていなくても）"],
+      ["prevTab", "前のタブ（作業・学習では入力先の側のタブ、Todo では前のレーン）"],
+      ["nextTab", "次のタブ（作業・学習では入力先の側のタブ、Todo では次のレーン）"],
       ["focusUrl", "アドレス欄へ"],
-      ["terminalLinks", "ターミナルに出ているリンクを選んで開く（⌘ クリックで後ろのタブ、⌘⇧ クリックで前に開く）"],
+      ["terminalLinks", "ターミナルに出ているリンクを選んで開く（Enter で横に、⌘Enter でブラウザに。⌘ クリックと ⌘⇧ クリックも同じ）"],
       ["back", "戻る"],
       ["forward", "進む"],
       ["zoomIn", "拡大"],
       ["zoomOut", "縮小"],
       ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
-      ["archive", "Cloud セッションのページをアーカイブ（セッション一覧では、行のセッションを片付ける）"],
-      ["toInput", "表示中のページを学びに入れる"],
+      ["archive", "Cloud セッションのページをアーカイブ（作業の一覧では、行のセッションを片付ける）"],
+      ["bookmark", "表示中のページを読みものに入れる（O'Reilly の本のページなら本として目次ごと）"],
+      ["scrollDown", "ページを下へスクロール"],
+      ["scrollUp", "ページを上へスクロール"],
+      ["askChatGpt", "ブラウザのウインドウで、表示中のページ（選んだ文があればその文）を右の ChatGPT に解説してもらう"],
     ],
   },
   {
-    group: "一覧（Todo・セッション・PR・メニュー）",
+    group: "一覧（Todo・PR・作業・学習・ブラウザのタブ・メニュー）",
     items: [
-      ["down", "下へ（ブラウザのページではスクロール）"],
-      ["up", "上へ（ブラウザのページではスクロール）"],
+      ["down", "下へ（ブラウザのページでは、Google の検索結果なら結果を選ぶ）"],
+      ["up", "上へ（ブラウザのページでは、Google の検索結果なら結果を選ぶ）"],
       ["left", "左へ（リストはレーンを畳む）"],
       ["right", "右へ（リストはレーンを開く）"],
       ["moveLeft", "カンバン：カードを左の列へ"],
       ["moveRight", "カンバン：カードを右の列へ"],
       ["status", "ステータスを変える"],
-      ["session", "セッションを開く"],
+      ["session", "作業で開く（セッションがなければ起動シート）"],
+      ["showTodo", "その todo を管理で開く（PR・作業の一覧）"],
       ["link", "PR / issue を開く"],
       ["parent", "親の todo を開く"],
       ["add", "その場所に todo を追加"],
@@ -134,15 +161,28 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["editTitle", "タイトルを編集"],
       ["editMemo", "メモを編集"],
       ["addSubtask", "サブタスクを追加"],
-      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ。PR の画面では PR を開く）"],
+      ["start", "セッションを始める（起動シート。o もセッションがなければ同じ。PR の画面では GitHub で見る。作業では空いている側のボタン：始める・再開・開く）"],
     ],
   },
   {
-    group: "PR の画面（Enter でレビューを始める）",
+    group: "PR の画面（J K で選ぶ、Enter でレビューを始める・元のセッションに直させる、o で作業で開く）",
     items: [
+      ["prFilter", "すべて・レビュー依頼・自分の PR を切り替える"],
       ["reviewAgent", "レビューのエージェントを切り替える（Claude / Codex）"],
       ["reviewSubmit", "レビューの提出を切り替える（提出前に確認する / 自動で提出する）"],
       ["reviewRunner", "レビューが動く場所を切り替える（Cloud / herdr）"],
+    ],
+  },
+  {
+    group: "作業の一覧（J K で選ぶ、Enter で開く）",
+    items: [
+      ["workFix", "あなた待ちの CI の失敗・修正の依頼を、元のセッションに直させる"],
+      ["workHandled", "指揮役から回されたものに対応した（あなた待ちから外す）"],
+      ["workEnded", "終了したセッションを出す・隠す"],
+      ["workLink", "選んでいるセッションを todo に紐づける（紐づいていれば外す）"],
+      ["workSort", "並べ方を切り替える（手で並べた順・動きがあった順・始めた順）"],
+      ["workMoveDown", "選んでいる行を下へ（並べ替え。ドラッグでも。手で並べた順になる）"],
+      ["workMoveUp", "選んでいる行を上へ（並べ替え。ドラッグでも。手で並べた順になる）"],
     ],
   },
   {
@@ -166,25 +206,18 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
     ],
   },
   {
-    group: "学びの画面（J K でテーマを選ぶ、Enter で学ぶ時間を始める。カテゴリでは Enter か H L で畳む・開く）",
+    group: "学習の一覧（J K で選ぶ、Enter で読む）",
     items: [
-      ["learnAdd", "URL の欄へ（選んでいるテーマに入れる）"],
-      ["learnNewTheme", "新しいテーマ（選んでいるカテゴリに）"],
-      ["learnNewCategory", "新しいカテゴリ"],
-      ["learnAsk", "Claude に聞く（まだテーマにないものは振り分け、テーマは次に読むもの）"],
-      ["learnApply", "Claude の振り分けの通りにする（Esc でやめる）"],
-      ["learnNextInput", "次の読むものへ"],
-      ["learnPrevInput", "前の読むものへ"],
-      ["learnOpen", "読むものを開く"],
-      ["learnRead", "読み終わった／まだ読み終わっていない"],
-      ["learnForget", "読むものを消す"],
-      ["learnMove", "読むものを別のテーマへ"],
-      ["learnRename", "テーマの名前を編集"],
-      ["learnGoal", "テーマの目標を編集"],
-      ["learnCategory", "テーマのカテゴリを変える"],
-      ["learnShowRead", "読み終わったものを出す・隠す"],
-      ["learnNote", "テーマのノートを開く"],
-      ["learnDeleteTheme", "テーマを消す（Enter で消す、Esc でやめる）"],
+      ["studyPick", "選ぶ・外す（選んだものはまとめて読む）"],
+      ["studyRead", "選んだものをまとめて読む"],
+      ["studyBrowser", "ブラウザで開く"],
+      ["studyForget", "消す（もう一度押すと消す、Esc でやめる）"],
+      ["studyTags", "タグを直す"],
+      ["studyKind", "種類を切り替える（すべて・記事・X の投稿・本）"],
+      ["studyCopy", "選んだもの（なければカーソルの行、読んでいるときは開いているもの）の URL をコピー（NotebookLM 用）"],
+      ["studyChapter", "目次：章を読んだ・まだにする（Enter でその章へ）"],
+      ["studyKeep", "読んで良かったものを残す（もう一度で「これから読む」に戻す。読んでいる画面でも）"],
+      ["studyList", "読んでいるところと一覧を行き来する（一覧では、消すのや選ぶのをやめるのが先）"],
     ],
   },
   {
@@ -194,8 +227,8 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
   {
     group: "⌘K のメニュー",
     items: [
-      ["paletteDown", "下へ"],
-      ["paletteUp", "上へ"],
+      ["paletteDown", "下へ（一覧・メニューでも）"],
+      ["paletteUp", "上へ（一覧・メニューでも）"],
     ],
   },
 ];
@@ -213,9 +246,20 @@ const KEYS: Record<Action, string> = {
   sidePane: "ctrl+l",
   archive: "cmd+shift+a",
   // As Safari's "Add to Reading List".
-  toInput: "cmd+shift+d",
+  bookmark: "cmd+shift+d",
+  askChatGpt: "cmd+shift+g",
+  scrollDown: "shift+j",
+  scrollUp: "shift+k",
+  spaceManage: "cmd+1",
+  spaceWork: "cmd+2",
+  spaceStudy: "cmd+3",
+  spaceBrowser: "cmd+4",
+  spaceSlack: "cmd+5",
+  spaceArtifacts: "cmd+6",
   focusUrl: "cmd+l",
   terminalLinks: "cmd+shift+l",
+  workRight: "cmd+shift+e",
+  workArtifacts: "cmd+shift+o",
   back: "cmd+[",
   forward: "cmd+]",
   zoomIn: "cmd+=",
@@ -239,6 +283,16 @@ const KEYS: Record<Action, string> = {
   reviewAgent: "a",
   reviewSubmit: "s",
   reviewRunner: "r",
+  prFilter: "f",
+  showTodo: "t",
+  workFix: "f",
+  workHandled: "d",
+  closeRow: "d",
+  workEnded: "e",
+  workLink: "l",
+  workSort: "s",
+  workMoveDown: "shift+j",
+  workMoveUp: "shift+k",
   slackFilter: "f",
   slackDone: "e",
   slackForget: "d",
@@ -254,23 +308,16 @@ const KEYS: Record<Action, string> = {
   slackScrollUp: "shift+k",
   slackNarrower: "[",
   slackWider: "]",
-  learnAdd: "c",
-  learnNewTheme: "n",
-  learnNewCategory: "shift+n",
-  learnAsk: "a",
-  learnApply: "cmd+Enter",
-  learnNextInput: "shift+j",
-  learnPrevInput: "shift+k",
-  learnOpen: "o",
-  learnRead: "e",
-  learnForget: "d",
-  learnMove: "t",
-  learnRename: "r",
-  learnGoal: "g",
-  learnCategory: "m",
-  learnShowRead: "f",
-  learnNote: "shift+o",
-  learnDeleteTheme: "shift+d",
+  studyPick: "x",
+  studyRead: "cmd+Enter",
+  studyBrowser: "o",
+  studyForget: "d",
+  studyTags: "t",
+  studyKind: "f",
+  studyCopy: "c",
+  studyChapter: "m",
+  studyKeep: "s",
+  studyList: "Escape",
   artifactForget: "d",
   search: "/",
   help: "?",
@@ -316,7 +363,7 @@ export function matchesCombo(e: KeyboardEvent, combo: string, exact = false): bo
 }
 
 /// The keys that open something (a session, a page), besides Enter.
-const OPENING: Action[] = ["session", "link", "slackOpen", "learnOpen", "learnNote"];
+const OPENING: Action[] = ["session", "link", "slackOpen", "studyBrowser"];
 
 /// Whether a key with ctrl is one that opens, ctrl asking for the default
 /// browser: Enter (⌘Enter too), or an opening key, ctrl being none of its own.

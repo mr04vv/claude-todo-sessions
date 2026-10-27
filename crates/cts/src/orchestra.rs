@@ -1,7 +1,8 @@
 //! What a parent todo's planning session (its orchestrator) does to its
 //! subtasks through the MCP server: start them, answer them, have them fix
-//! their PRs, and hand them to the user. It runs in a herdr pane on the Mac,
-//! so herdr's CLI talks to the herdr session it is in.
+//! their PRs, and hand them to the user. It runs in a herdr pane on the Mac;
+//! the subtasks run in a herdr session of their own beside it (`<its
+//! session>-sub`), which the app shows apart from the parent's.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -19,6 +20,18 @@ fn herdr(args: &[&str]) -> Result<String, String> {
     }
     Ok(String::from_utf8_lossy(&out.stdout).into())
 }
+
+/// The herdr session the subtasks run in, started when it does not run yet;
+/// None outside herdr (herdr's CLI then talks to its own default).
+fn subtasks_session() -> Result<Option<String>, String> {
+    let Ok(parent) = std::env::var(HERDR_SESSION_ENV) else { return Ok(None) };
+    let name = cts_core::herdr::subtasks_session(&parent);
+    cts_core::herdr::ensure_session(&name, || Command::new("herdr"))?;
+    Ok(Some(name))
+}
+
+/// Set in a herdr pane: the herdr session it is in.
+const HERDR_SESSION_ENV: &str = "HERDR_SESSION";
 
 fn todo(db: &Db, id: i64) -> Result<Todo, String> {
     db.get_todo(id).map_err(|e| e.to_string())?.ok_or_else(|| format!("todo {id} not found"))
@@ -52,7 +65,7 @@ pub fn start_subtask(id: i64, cloud: Option<bool>, agent: Option<&str>, model: O
         let body = launch::cloud_subtask_prompt(&db.session_prompt(&t, false).map_err(|e| e.to_string())?);
         ("Cloud", Some(cts_core::cloud::create_session(&db, t.id, &repos, &t.title, &body, &opts)?))
     } else {
-        ("herdr", launch::start_todo_in_herdr(&db, &t, &opts, &cwd_of(&t), None, herdr)?)
+        ("herdr", launch::start_todo_in_herdr(&db, &t, &opts, &cwd_of(&t), subtasks_session()?.as_deref(), herdr)?)
     };
     log(&db, &t, &format!("#{} {} を {place} で始めました", t.id, t.title))?;
     Ok(format!("started todo {} on {place}{}", t.id, session.map(|s| format!(" (session {s})")).unwrap_or_default()))
@@ -63,11 +76,19 @@ fn latest_session(db: &Db, id: i64) -> Result<Session, String> {
     db.sessions_for_todo(id).map_err(|e| e.to_string())?.into_iter().next().ok_or_else(|| format!("todo {id} has no session yet: start_subtask first"))
 }
 
-/// Sends `text` to the herdr pane running the session, or false when herdr does not host it.
+/// Sends `text` to the herdr pane running the session (in the subtasks'
+/// herdr session, or this one), or false when herdr does not host it.
 fn prompt_pane(session_id: &str, text: &str) -> Result<bool, String> {
-    let agents: serde_json::Value = serde_json::from_str(&herdr(&["agent", "list"])?).map_err(|e| format!("herdr output: {e}"))?;
-    let Some(pane) = cts_core::herdr::find_pane(&agents, session_id) else { return Ok(false) };
-    herdr(&["agent", "prompt", &pane, text]).map(|_| true)
+    let sub = subtasks_session()?;
+    for session in [sub.as_deref(), None] {
+        let on = |args: &[&str]| -> Vec<String> { session.map(|s| vec!["--session".to_string(), s.to_string()]).unwrap_or_default().into_iter().chain(args.iter().map(|a| a.to_string())).collect() };
+        let list = on(&["agent", "list"]);
+        let agents: serde_json::Value = serde_json::from_str(&herdr(&list.iter().map(String::as_str).collect::<Vec<_>>())?).map_err(|e| format!("herdr output: {e}"))?;
+        let Some(pane) = cts_core::herdr::find_pane(&agents, session_id) else { continue };
+        let prompt = on(&["agent", "prompt", &pane, text]);
+        return herdr(&prompt.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| true);
+    }
+    Ok(false)
 }
 
 pub fn reply(id: i64, text: &str) -> Result<String, String> {
@@ -100,7 +121,7 @@ pub fn fix(id: i64) -> Result<String, String> {
         // Not running any more: resumed with the request, in a workspace not shown.
         let program = if s.agent == Agent::Codex { "codex resume" } else { "claude --resume" };
         let command = format!("{program} {} {}", s.session_id, launch::shell_quote(&prompt));
-        cts_core::herdr::start_workspace(herdr, None, &s.cwd, &t.title, &command, false)?;
+        cts_core::herdr::start_workspace(herdr, subtasks_session()?.as_deref(), &s.cwd, &t.title, &command, false)?;
     }
     let n = db.count_fix(id).map_err(|e| e.to_string())?;
     log(&db, &t, &format!("#{} に PR を直させました（{n} 回目）", t.id))?;

@@ -3,10 +3,11 @@
 mod ask;
 mod banner;
 mod cef_browser;
+mod digest;
 mod logins;
 mod power;
+mod readings;
 mod slack;
-mod study;
 mod terminal;
 mod translate;
 
@@ -18,7 +19,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use cts_core::launch::StartOptions;
-use cts_core::{launch, Db, Input, InputPatch, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
+use cts_core::{launch, Db, NewReading, NewTodo, NoticeKind, Session, SessionState, Status, Todo, TodoPatch};
 use serde::{Deserialize, Serialize};
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
@@ -63,11 +64,15 @@ struct AppState {
     cloud_wake: Mutex<std::sync::mpsc::Sender<()>>,
     /// herdr session the user picked for new workspaces, if any.
     herdr_session: Mutex<Option<String>>,
+    /// Workspaces opened in each herdr session, to close once their agent has exited.
+    herdr_workspaces: Mutex<HashMap<String, cts_core::herdr::Watched>>,
     /// Local sessions run in the in-app terminal pane rather than herdr.
     in_app_terminal: AtomicBool,
-    /// The focus mode is on: pages' Esc asks about leaving it, and macOS
-    /// notifications wait (the in-app list still gets them).
+    /// A split view (作業・学習) is shown: a page taking the keyboard says so,
+    /// for the side that has the typing.
     focus_mode: AtomicBool,
+    /// 学習 is shown: macOS notifications wait (the in-app list still gets them).
+    studying: AtomicBool,
     /// Logins kept per host (logins.rs), as read from the Keychain this run (None: none kept).
     logins: Mutex<HashMap<String, Option<logins::Login>>>,
     /// A login a page just sent, asked about before it is kept: its host and the login.
@@ -78,6 +83,8 @@ struct AppState {
     page_keys: Mutex<String>,
     /// Tabs whose page should focus its text box once it loads, and since when.
     focus_input: Mutex<HashMap<String, std::time::Instant>>,
+    /// Pages asked of the browser window while its page was still starting (it takes them once up).
+    browser_queue: Mutex<Vec<String>>,
     /// Held while a browser tab is shown or created.
     browser_lock: Mutex<()>,
     /// CLI session ids archived in Desktop. Reading every Desktop record is
@@ -154,15 +161,17 @@ struct Board {
     todos: Vec<TodoView>,
     /// The Slack messages for the user (#27), and whether Slack is connected.
     slack: slack::SlackView,
-    /// The Input page's reading material, apart from the todos.
-    inputs: Vec<Input>,
+    /// What there is to read (学習), the newest first.
+    readings: Vec<cts_core::Reading>,
+    /// How sorting the readings into tags stands, and the tags.
+    reading_sort: readings::SortingView,
+    /// What the requests to Jev (tags, X's posts) took today and this month.
+    jev_spend: readings::SpendView,
+    /// The lists the user made to keep todos in, in the order made.
+    databases: Vec<cts_core::Database>,
+    /// The days' readings summed up (日報), and the day being summed up.
+    digests: digest::DigestView,
     inbox: Vec<SessionView>,
-    /// Each theme's latest review, and when the next is due.
-    feynman: Vec<cts_core::FeynmanSummary>,
-    /// The learning themes, the latest changed first.
-    themes: Vec<cts_core::Theme>,
-    /// The categories the themes are gathered in, in the order made.
-    categories: Vec<cts_core::Category>,
     /// What sessions made besides PRs, newest first.
     artifacts: Vec<cts_core::Artifact>,
     sync_status: String,
@@ -233,8 +242,8 @@ struct TodoUpdate {
 }
 
 #[tauri::command(async)]
-fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Board, String> {
-    let (todos, inputs, inbox, feynman, artifacts, themes, categories, slack) = {
+fn board(state: State<AppState>, slack_state: State<slack::Slack>, sorting: State<readings::Sorting>, digesting: State<digest::Digesting>) -> Result<Board, String> {
+    let (todos, readings, inbox, artifacts, slack, jev_spend, databases, digests) = {
         let db = state.db.lock().map_err(err)?;
         let mut sessions = db.sessions_by_todo().map_err(err)?;
         let (desktop, routines) = (state.desktop.lock().map_err(err)?.clone(), state.routines.lock().map_err(err)?.clone());
@@ -249,15 +258,25 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Boa
             .map(|todo| (sessions.remove(&todo.id).unwrap_or_default(), todo))
             .collect::<Vec<_>>();
         let archived = state.archived.lock().map_err(err)?.clone();
+        // The latest ended ones too, for 作業's 終了したセッション (newest first, as listed).
+        let mut ended_left = ENDED_IN_BOARD;
         let inbox: Vec<Session> = db
             .unlinked_sessions()
             .map_err(err)?
             .into_iter()
-            // A review that ended without being put away stopped before submitting: it waits on the user.
-            .filter(|s| (s.state != SessionState::Ended || (s.review_url.is_some() && !s.hidden)) && !archived.contains(&s.session_id))
+            .filter(|s| !archived.contains(&s.session_id))
             .map(mark)
+            // A review that ended without being put away stopped before submitting: it waits on the user.
+            .filter(|s| {
+                let past = s.state == SessionState::Ended && !(s.review_url.is_some() && !s.hidden);
+                let keep = !past || (!s.hidden && !s.routine && ended_left > 0);
+                if past && keep {
+                    ended_left -= 1;
+                }
+                keep
+            })
             .collect();
-        (todos, db.list_inputs().map_err(err)?, inbox, db.feynman_summaries().map_err(err)?, db.artifacts().map_err(err)?, db.list_themes().map_err(err)?, db.list_categories().map_err(err)?, slack::view(&slack_state, &db)?)
+        (todos, db.list_readings().map_err(err)?, inbox, db.artifacts().map_err(err)?, slack::view(&slack_state, &db)?, readings::spend_view(db.jev_spend().map_err(err)?, db.jev_credit().map_err(err)?), db.databases().map_err(err)?, digest::view(&digesting, &db)?)
     };
     // Repo lookup may run git, so the DB lock is released first.
     let todos = todos
@@ -276,7 +295,7 @@ fn board(state: State<AppState>, slack_state: State<slack::Slack>) -> Result<Boa
         .map(|session| SessionView { repos: repos_of_session(&state, &session), session })
         .collect();
     let sync_status = state.sync_status.lock().map_err(err)?.clone();
-    Ok(Board { todos, slack, inputs, inbox, feynman, artifacts, themes, categories, sync_status })
+    Ok(Board { todos, slack, readings, reading_sort: readings::view(&sorting)?, jev_spend, databases, digests, inbox, artifacts, sync_status })
 }
 
 #[tauri::command(async)]
@@ -312,6 +331,27 @@ fn update_todo(state: State<AppState>, id: i64, update: TodoUpdate) -> Result<To
 #[tauri::command(async)]
 fn delete_todo(state: State<AppState>, id: i64) -> Result<(), String> {
     state.db.lock().map_err(err)?.delete_todo(id).map_err(err)
+}
+
+#[tauri::command(async)]
+fn create_database(state: State<AppState>, name: String) -> Result<cts_core::Database, String> {
+    state.db.lock().map_err(err)?.create_database(&name).map_err(err)
+}
+
+#[tauri::command(async)]
+fn rename_database(state: State<AppState>, id: i64, name: String) -> Result<(), String> {
+    state.db.lock().map_err(err)?.rename_database(id, &name).map_err(err)
+}
+
+#[tauri::command(async)]
+fn delete_database(state: State<AppState>, id: i64) -> Result<(), String> {
+    state.db.lock().map_err(err)?.delete_database(id).map_err(err)
+}
+
+/// Puts the todo in a database (out of the one it was in), or with none in none.
+#[tauri::command(async)]
+fn set_todo_database(state: State<AppState>, todo_id: i64, database_id: Option<i64>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.set_todo_database(todo_id, database_id).map_err(err)
 }
 
 #[tauri::command(async)]
@@ -420,7 +460,7 @@ fn fix_in_session(state: State<AppState>, session_id: String, todo_id: i64) -> R
     } else {
         let TerminalRun { cwd, title, command, .. } = resume_run(&state, &session_id)?;
         let command = format!("{command} {}", launch::shell_quote(&prompt));
-        start_in_herdr(&state, &cwd, &title, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
+        start_in_herdr(&state, &cwd, &title, &command, false, todo.parent_id.is_some()).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
     }
     Ok(FixSent { sent: true, prompt })
 }
@@ -433,7 +473,7 @@ fn fix_in_session(state: State<AppState>, session_id: String, todo_id: i64) -> R
 fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> Result<(), String> {
     let TerminalRun { cwd, title: label, command, .. } = quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default());
     // Started behind: neither herdr's view nor the terminal app comes forward (opening it does).
-    start_in_herdr(&state, &cwd, &label, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))
+    start_in_herdr(&state, &cwd, &label, &command, false, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))
 }
 
 /// A plain `claude` (at home unless `cwd` is given), with the prompt if one
@@ -472,26 +512,27 @@ fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -
 /// claude and reopening a session (see `terminal.rs`).
 #[tauri::command(async)]
 fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<TerminalRun, String> {
-    Ok(via_herdr(&state, prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)?, false))
+    Ok(via_herdr(&state, prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)?, false, is_subtask(&state, Some(todo_id))))
 }
 
 #[tauri::command(async)]
 fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> TerminalRun {
-    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()), false)
+    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()), false, false)
 }
 
 /// The in-app terminal's sessions run in herdr when one runs (so they go on
 /// with the app closed): `run` goes to a new workspace there (herdr shows it
 /// with `show`: opening, not starting), and the tab attaches that herdr session
-/// (one tab for it, as `terminal_resume`'s). Without herdr, or when it fails,
-/// `run` runs in the tab itself.
-fn via_herdr(state: &AppState, run: TerminalRun, show: bool) -> TerminalRun {
+/// (one tab for it, as `terminal_resume`'s); a `subtask`'s goes to the
+/// subtasks' herdr session. Without herdr, or when it fails, `run` runs in
+/// the tab itself.
+fn via_herdr(state: &AppState, run: TerminalRun, show: bool, subtask: bool) -> TerminalRun {
     let Some(name) = herdr_target(state) else { return run };
-    if let Err(e) = start_in_herdr(state, &run.cwd, &run.title, &run.command, show) {
+    if let Err(e) = start_in_herdr(state, &run.cwd, &run.title, &run.command, show, subtask) {
         eprintln!("herdr: {e}; running in the tab instead");
         return run;
     }
-    herdr_attach_run(name)
+    herdr_attach_run(if subtask { cts_core::herdr::subtasks_session(&name) } else { name })
 }
 
 /// What the in-app terminal runs to show herdr session `name`.
@@ -508,11 +549,15 @@ fn herdr_attach_run(name: String) -> TerminalRun {
 /// What the in-app terminal runs to show a session: a session running in
 /// herdr gets its pane focused and the herdr session attached in the app;
 /// with `desktop`, one still running in Claude Desktop opens there (None);
-/// any other is resumed with `claude --resume`.
+/// any other is resumed with `claude --resume`, but for `attach_only` (only
+/// looking at it: a session running outside herdr is not started twice), None.
 #[tauri::command(async)]
-fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) -> Result<Option<TerminalRun>, String> {
+fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool, attach_only: Option<bool>) -> Result<Option<TerminalRun>, String> {
     if let Some(name) = focus_herdr_pane(&session_id) {
         return Ok(Some(herdr_attach_run(name)));
+    }
+    if attach_only == Some(true) {
+        return Ok(None);
     }
     // One still going in Desktop stays there; a finished one resumes here.
     let running = state.db.lock().map_err(err)?.get_session(&session_id).map_err(err)?.is_some_and(|s| s.state != SessionState::Ended);
@@ -521,7 +566,7 @@ fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool) ->
             return open_url(&launch::jump_url(&session_id, Some(&local))).map(|_| None);
         }
     }
-    resume_run(&state, &session_id).map(|run| Some(via_herdr(&state, run, true)))
+    resume_run(&state, &session_id).map(|run| Some(via_herdr(&state, run, true, of_subtask(&state, &session_id))))
 }
 
 #[tauri::command]
@@ -563,11 +608,14 @@ fn set_page_keys(app: AppHandle, state: State<AppState>, keys: String) -> Result
     Ok(())
 }
 
-/// Turns the focus mode on or off for the pages (and the notifications).
+/// The space shown (manage, work, study or browser): the pages learn whether
+/// a split view is up, and 学習 holds the notifications.
 #[tauri::command]
-fn set_focus_mode(app: AppHandle, state: State<AppState>, on: bool) {
-    state.focus_mode.store(on, Ordering::Relaxed);
-    cef_browser::eval_all(&app, &focus_mode_script(on));
+fn set_space(app: AppHandle, state: State<AppState>, space: String) {
+    let split = space == "work" || space == "study";
+    state.focus_mode.store(split, Ordering::Relaxed);
+    state.studying.store(space == "study", Ordering::Relaxed);
+    cef_browser::eval_all(&app, &focus_mode_script(split));
 }
 
 /// Whether the app is in front. With the page not having the keyboard, a
@@ -659,47 +707,6 @@ fn open_in_slack(app: &AppHandle, url: &str) -> bool {
     true
 }
 
-/// Attaches a URL to a todo. The page's title and image are fetched in the
-/// background, so the link shows up at once and fills in on the next refresh.
-#[tauri::command(async)]
-fn create_input(state: State<AppState>, title: String) -> Result<Input, String> {
-    let title = title.trim();
-    if title.is_empty() {
-        return Err("タイトルを入れてください".into());
-    }
-    state.db.lock().map_err(err)?.create_input(title, None).map_err(err)
-}
-
-#[tauri::command(async)]
-fn update_input(state: State<AppState>, id: i64, update: InputPatch) -> Result<Input, String> {
-    state.db.lock().map_err(err)?.update_input(id, update).map_err(err)
-}
-
-#[tauri::command(async)]
-fn delete_input(state: State<AppState>, id: i64) -> Result<(), String> {
-    state.db.lock().map_err(err)?.delete_input(id).map_err(err)
-}
-
-/// A page for an input; what it says about itself comes in the background, as for a todo's link.
-#[tauri::command(async)]
-fn add_input_link(app: AppHandle, input_id: i64, url: String) -> Result<cts_core::InputLink, String> {
-    let url = url.trim().to_string();
-    if !is_web_url(&url) {
-        return Err("http(s) の URL を入れてください".into());
-    }
-    let link = app.state::<AppState>().db.lock().map_err(err)?.add_input_link(input_id, &url).map_err(err)?;
-    let id = link.id;
-    std::thread::spawn(move || {
-        let Ok(meta) = cts_core::ogp::fetch(&url) else { return };
-        if let Ok(db) = app.state::<AppState>().db.lock() {
-            if let Err(e) = db.set_input_link_meta(id, meta.title.as_deref(), meta.image.as_deref()) {
-                eprintln!("{e}");
-            }
-        }
-    });
-    Ok(link)
-}
-
 #[tauri::command(async)]
 fn open_session(state: State<AppState>, session_id: String, target: Option<String>) -> Result<(), String> {
     if target.as_deref() == Some("herdr") {
@@ -749,7 +756,7 @@ fn jump_to_session(session_id: &str, desktop: bool) -> Result<(), String> {
 /// herdr workspace at the folder it ran in, which is where its transcript lives.
 fn resume_in_herdr(state: &AppState, session_id: &str) -> Result<(), String> {
     let TerminalRun { cwd, title, command, .. } = resume_run(state, session_id)?;
-    start_in_herdr(state, &cwd, &title, &command, true)?;
+    start_in_herdr(state, &cwd, &title, &command, true, of_subtask(state, session_id))?;
     cli("open").args(["-a", TERMINAL_APP]).status().map(|_| ()).map_err(err)
 }
 
@@ -801,7 +808,7 @@ fn start_review(state: State<AppState>, url: String, repo: String, title: String
         db.set_session_title(id, &title).map_err(err)?;
         db.record_review_session(id, &url, auto).map_err(err)?;
     }
-    start_in_herdr(&state, &cwd, &label, &command, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
+    start_in_herdr(&state, &cwd, &label, &command, false, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))?;
     Ok(session)
 }
 
@@ -848,11 +855,56 @@ fn herdr_target(state: &AppState) -> Option<String> {
     cts_core::herdr::pick_session(&running_herdr_sessions(), picked.as_deref())
 }
 
-/// Opens a workspace in the picked herdr session and runs `command` in it.
+/// Opens a workspace in the picked herdr session and runs `command` in it;
+/// a `subtask`'s in the subtasks' herdr session beside it (started when it
+/// does not run), so 作業 shows a parent's pane and a subtask's side by side.
 /// Without `--session` herdr talks to its default session, which may not run.
-fn start_in_herdr(state: &AppState, cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
+fn start_in_herdr(state: &AppState, cwd: &str, label: &str, command: &str, focus: bool, subtask: bool) -> Result<(), String> {
     let session = herdr_target(state).ok_or("herdr のセッションが動いていません")?;
-    cts_core::herdr::start_workspace(herdr, Some(&session), cwd, label, command, focus)
+    let session = if subtask {
+        let sub = cts_core::herdr::subtasks_session(&session);
+        cts_core::herdr::ensure_session(&sub, || cli("herdr"))?;
+        sub
+    } else {
+        session
+    };
+    let workspace = cts_core::herdr::start_workspace(herdr, Some(&session), cwd, label, command, focus)?;
+    if let Ok(mut watched) = state.herdr_workspaces.lock() {
+        watched.entry(session).or_default().insert(workspace, false);
+    }
+    Ok(())
+}
+
+/// Closes the workspaces opened here whose agent has exited (closing the
+/// session in its pane), so they do not stay behind as bare shells.
+fn close_finished_workspaces(state: &AppState) {
+    let Ok(mut watched) = state.herdr_workspaces.lock() else { return };
+    for (session, workspaces) in watched.iter_mut() {
+        let panes = match herdr(&["--session", session, "pane", "list"]).and_then(|out| serde_json::from_str(&out).map_err(|e| format!("herdr pane list: {e}"))) {
+            Ok(panes) => panes,
+            Err(e) => {
+                eprintln!("{e}");
+                continue;
+            }
+        };
+        for workspace in cts_core::herdr::finished_workspaces(workspaces, &panes) {
+            if let Err(e) = herdr(&["--session", session, "workspace", "close", &workspace]) {
+                eprintln!("{e}");
+            }
+        }
+    }
+}
+
+/// Whether the todo is a subtask, whose sessions run in the subtasks' herdr session.
+fn is_subtask(state: &AppState, todo_id: Option<i64>) -> bool {
+    let Some(id) = todo_id else { return false };
+    state.db.lock().ok().and_then(|db| db.get_todo(id).ok().flatten()).is_some_and(|t| t.parent_id.is_some())
+}
+
+/// Whether the session is a subtask's.
+fn of_subtask(state: &AppState, session_id: &str) -> bool {
+    let todo = state.db.lock().ok().and_then(|db| db.get_session(session_id).ok().flatten()).and_then(|s| s.todo_id);
+    is_subtask(state, todo)
 }
 
 #[derive(Serialize)]
@@ -933,7 +985,7 @@ fn prepare_terminal(state: &AppState, todo_id: i64, opts: &StartOptions, body: O
 /// Returns the session's id.
 fn launch_terminal(state: &AppState, todo_id: i64, focus: bool, opts: &StartOptions, body: Option<String>) -> Result<String, String> {
     let TerminalRun { cwd, title, command, session, .. } = prepare_terminal(state, todo_id, opts, body)?;
-    start_in_herdr(state, &cwd, &title, &command, focus).or_else(|herdr_err| {
+    start_in_herdr(state, &cwd, &title, &command, focus, is_subtask(state, Some(todo_id))).or_else(|herdr_err| {
         start_in_ghostty(&cwd, &format!("cd {} && {command}", launch::shell_quote(&cwd)))
             .map_err(|e| format!("{herdr_err} / {e}"))
     })?;
@@ -1174,6 +1226,8 @@ fn mark_done(db: &Db, todo: &Todo) {
 
 /// Bytes read from the end of a transcript to find its latest gitBranch.
 const TRANSCRIPT_TAIL_BYTES: u64 = 256 * 1024;
+/// How many ended sessions of no todo the board carries (作業's 終了したセッション).
+const ENDED_IN_BOARD: usize = 50;
 /// Bytes read to find what a session made: a whole turn, its tools' output
 /// however long (the html skill's call comes well before the file it writes).
 const ARTIFACT_TAIL_BYTES: u64 = 4 * 1024 * 1024;
@@ -1219,7 +1273,11 @@ fn keep_artifacts(session: &Session) {
         Err(e) => return eprintln!("{e}"),
     };
     for f in found {
-        let a = cts_core::NewArtifact { url: f.url, title: f.title, kind: f.kind, session_id: Some(session.session_id.clone()), todo_id: session.todo_id, theme_id: None };
+        // A day's digest's session: what it publishes is the digest.
+        if let Err(e) = db.digest_made_by(&session.session_id, &f.url) {
+            eprintln!("{e}");
+        }
+        let a = cts_core::NewArtifact { url: f.url, title: f.title, kind: f.kind, session_id: Some(session.session_id.clone()), todo_id: session.todo_id };
         if let Err(e) = db.add_artifact(a) {
             eprintln!("{e}");
         }
@@ -1255,6 +1313,63 @@ fn session_question(session: &Session) -> Option<String> {
     cts_core::transcript::question(&entries)
 }
 
+/// What 作業's cards show of each session (Claude's, not Codex's): its last
+/// reply, model and context, from its transcript (local) or events (cloud).
+/// One that cannot be read is left out.
+#[tauri::command]
+async fn session_peeks(ids: Vec<String>) -> Result<std::collections::HashMap<String, cts_core::transcript::Peek>, String> {
+    tauri::async_runtime::spawn_blocking(move || ids.into_iter().filter_map(|id| Some((id.clone(), cts_core::transcript::peek(&session_entries(&id)?)))).collect())
+        .await
+        .map_err(err)
+}
+
+/// A Claude session's latest entries: its transcript's tail (local) or its events (cloud).
+fn session_entries(id: &str) -> Option<Vec<serde_json::Value>> {
+    if launch::is_cloud_session(id) {
+        cts_core::cloud::recent_entries(id).map_err(|e| eprintln!("{e}")).ok()
+    } else {
+        Some(cts_core::transcript::parse_jsonl(&transcript_tail(id, TRANSCRIPT_TAIL_BYTES)?))
+    }
+}
+
+/// The model that picks the model a session starts with (自動).
+const PICK_MODEL: &str = "haiku";
+
+/// 自動: the model and effort for todo `todo_id`'s session, from what it is to do.
+#[tauri::command]
+async fn pick_model(state: State<'_, AppState>, todo_id: i64, plan: bool, prompt: Option<String>) -> Result<cts_core::pick::Pick, String> {
+    let todo = state.db.lock().map_err(err)?.get_todo(todo_id).map_err(err)?.ok_or_else(|| format!("todo #{todo_id} がありません"))?;
+    let first = prompt.or(todo.prompt).unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let models = claude_models();
+        let ask = cts_core::pick::prompt(&todo.title, todo.memo.as_deref().unwrap_or_default(), &first, plan, &models);
+        let answer = ask::claude(&ask, Some(&cts_core::pick::schema(&models)), Some(PICK_MODEL), None)?;
+        cts_core::pick::parse(&answer, &models).ok_or_else(|| format!("モデルを選べませんでした: {answer}"))
+    })
+    .await
+    .map_err(err)?
+}
+
+/// The model that sums up where a session stands (one line, often).
+const SUMMARY_MODEL: &str = "haiku";
+
+/// Where a session stands, in one line Claude writes from its latest
+/// messages (作業's cards); none when they cannot be read or say nothing yet.
+#[tauri::command]
+async fn session_summary(id: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(entries) = session_entries(&id) else { return Ok(None) };
+        let digest = cts_core::transcript::digest(&entries, cts_core::transcript::SUMMARY_SOURCE_CHARS);
+        if digest.is_empty() {
+            return Ok(None);
+        }
+        let answer = ask::claude(&cts_core::transcript::summary_prompt(&digest), None, Some(SUMMARY_MODEL), None)?;
+        Ok(answer.as_str().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()))
+    })
+    .await
+    .map_err(err)?
+}
+
 #[tauri::command]
 async fn usage() -> Result<Vec<cts_core::usage::Limit>, String> {
     tauri::async_runtime::spawn_blocking(cts_core::cloud::usage).await.map_err(err)?
@@ -1266,7 +1381,7 @@ fn set_parent(state: State<AppState>, todo_id: i64, parent_id: Option<i64>) -> R
 }
 
 const GH_PR_LIMIT: &str = "50";
-const GH_PR_FIELDS: &str = "number,title,url,repository,author,updatedAt,isDraft";
+const GH_PR_FIELDS: &str = "number,title,url,repository,author,updatedAt,isDraft,body";
 
 #[derive(Deserialize)]
 struct GhAuthor {
@@ -1284,6 +1399,8 @@ struct GhPr {
     updated_at: String,
     #[serde(rename = "isDraft")]
     is_draft: bool,
+    #[serde(default)]
+    body: String,
 }
 
 #[derive(Serialize)]
@@ -1295,19 +1412,35 @@ struct PrView {
     author: String,
     updated_at: String,
     is_draft: bool,
+    body: String,
 }
 
 #[derive(Serialize)]
 struct PrLists {
     /// Open PRs asking the user for a review.
     review: Vec<PrView>,
-    /// Open PRs the user opened: their stage, CI and reviewers.
+    /// Open PRs the user opened: their stage, CI and reviews.
     mine: Vec<cts_core::github::MyPr>,
 }
 
 /// Open PRs, leaving out archived repositories' (they can no longer move).
-fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
-    let json = gh(&["search", "prs", filter, "@me", "--state", "open", "--archived=false", "--limit", GH_PR_LIMIT, "--json", GH_PR_FIELDS])?;
+/// The open PRs asking for the user's review: asked of them (again, too,
+/// after they reviewed), or of a team of theirs while they have not reviewed
+/// it (a team's request stays after its member's review is in).
+fn review_requests() -> Result<Vec<PrView>, String> {
+    let mut prs = search_prs(&["user-review-requested:@me"])?;
+    for p in search_prs(&["review-requested:@me", "-reviewed-by:@me"])? {
+        if !prs.iter().any(|q| q.url == p.url) {
+            prs.push(p);
+        }
+    }
+    Ok(prs)
+}
+
+fn search_prs(query: &[&str]) -> Result<Vec<PrView>, String> {
+    let mut args = vec!["search", "prs", "--state", "open", "--archived=false", "--limit", GH_PR_LIMIT, "--json", GH_PR_FIELDS, "--"];
+    args.extend_from_slice(query);
+    let json = gh(&args)?;
     let prs: Vec<GhPr> = serde_json::from_str(&json).map_err(|e| format!("gh output: {e}"))?;
     Ok(prs
         .into_iter()
@@ -1319,6 +1452,7 @@ fn search_prs(filter: &str) -> Result<Vec<PrView>, String> {
             author: p.author.login,
             updated_at: p.updated_at,
             is_draft: p.is_draft,
+            body: p.body,
         })
         .collect())
 }
@@ -1339,6 +1473,14 @@ fn codex_models() -> Vec<cts_core::codex::Model> {
         .unwrap_or_default()
 }
 
+/// The newest Claude model of each family, as Claude Code last fetched them
+/// (its config read each time, so a new one shows once Claude Code has seen it).
+#[tauri::command(async)]
+fn claude_models() -> Vec<cts_core::models::Model> {
+    let config = std::fs::read_to_string(home().join(cts_core::models::CONFIG)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+    cts_core::models::latest(&config)
+}
+
 /// The Claude session herdr session `name` shows (its focused pane), for the
 /// title over an in-app terminal attached to it.
 #[tauri::command(async)]
@@ -1350,7 +1492,7 @@ fn herdr_focused(name: String) -> Option<String> {
 
 #[tauri::command]
 async fn gh_prs() -> Result<PrLists, String> {
-    tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: search_prs("--review-requested")?, mine: my_prs()? }))
+    tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: review_requests()?, mine: my_prs()? }))
         .await
         .map_err(err)?
 }
@@ -1415,6 +1557,8 @@ const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
 /// When ⌘W in the app menu asks to close the shown tab.
 const BROWSER_CLOSE_TAB_EVENT: &str = "browser-close-tab";
+/// When a page's ⌘⇧E asks to hide (or show) 作業's right side.
+const WORK_RIGHT_EVENT: &str = "work-right";
 /// `{tab}` when a page's ⌃h hands the typing back to the app's side (the
 /// main page already has the keyboard by then), or to the focus mode's left.
 const FOCUS_APP_EVENT: &str = "focus-app";
@@ -1424,9 +1568,8 @@ const PAGE_FOCUSED_EVENT: &str = "page-focused";
 /// the text selected in it (to paste there), if any.
 const FOCUS_PANE_EVENT: &str = "focus-pane";
 /// A page's keys whose action gives a page or terminal the keyboard
-/// (switching and closing tabs, ⌃l to the Input mode's right), not the app,
-/// and messages that leave the keyboard where it is (⌥-click keeping a link).
-const KEYS_HANDED_ON: [&str; 5] = ["tab-prev", "tab-next", "close-tab", "focus-pane", "add-input"];
+/// (switching and closing tabs, ⌃l to the focus mode's right), not the app.
+const KEYS_HANDED_ON: [&str; 4] = ["tab-prev", "tab-next", "close-tab", "focus-pane"];
 /// When a page's ⌘N asks for a new todo.
 const OPEN_NEW_TODO_EVENT: &str = "open-new-todo";
 
@@ -1516,15 +1659,6 @@ fn forget_login(state: State<'_, AppState>, host: String) -> Result<(), String> 
     Ok(())
 }
 
-/// `{url, title}` when a link is ⌥-clicked in a page, to keep as an input todo.
-const ADD_INPUT_EVENT: &str = "add-input";
-
-#[derive(Clone, Serialize)]
-struct InputLink {
-    url: String,
-    title: String,
-}
-
 #[derive(Clone, Serialize)]
 struct TabDelta {
     tab: String,
@@ -1537,23 +1671,15 @@ struct TabText {
     text: Option<String>,
 }
 
-/// How long an input added without a title waits for its page's.
-const PAGE_TITLE_TIMEOUT: Duration = Duration::from_secs(5);
+/// `{space}` when a page's ⌘1–⌘4 asks for a space.
+const SPACE_EVENT: &str = "space";
 
-/// A page's own title (og:title, else <title>), for an input added without one.
-#[tauri::command]
-async fn page_title(url: String) -> Result<Option<String>, String> {
-    if !is_web_url(&url) {
-        return Err(format!("開けない URL です: {url}"));
-    }
-    tauri::async_runtime::spawn_blocking(move || cts_core::ogp::fetch_within(&url, PAGE_TITLE_TIMEOUT).map(|m| m.title))
-        .await
-        .map_err(err)?
+#[derive(Clone, Serialize)]
+struct SpaceAsk {
+    space: String,
 }
 
-/// When a page's Esc, in the focus mode, asks about leaving it.
-const FOCUS_EXIT_EVENT: &str = "focus-exit";
-/// Tells every page whether the focus mode is on (their Esc then asks about leaving).
+/// Tells every page whether a split view is shown (a page taking the keyboard then says so).
 fn focus_mode_script(on: bool) -> String {
     format!("window.__todoSessionsFocusMode = {on}")
 }
@@ -1563,8 +1689,6 @@ const OPEN_PALETTE_EVENT: &str = "open-palette";
 const OPEN_SESSIONS_EVENT: &str = "open-sessions";
 /// `{tab}` when a cloud session's page asks to archive it (⌘⇧A).
 const BROWSER_ARCHIVE_EVENT: &str = "browser-archive";
-/// `{tab}` when a page asks to go into an input (⌘⇧D).
-const BROWSER_TO_INPUT_EVENT: &str = "browser-to-input";
 
 #[derive(Clone, Serialize)]
 struct TabOnly {
@@ -1596,7 +1720,6 @@ fn next_zoom(zoom: f64, action: &str) -> Option<f64> {
 
 /// Zooms tab `tab` "in", "out" or "reset".
 fn zoom_tab(app: &AppHandle, tab: &str, action: &str) -> Result<(), String> {
-    let tab = tab_id(tab)?;
     let current = cef_browser::zoom(app, tab).ok_or("このタブは開いていません")?;
     let zoom = next_zoom(current, action).ok_or_else(|| format!("unknown zoom {action}"))?;
     cef_browser::set_zoom(app, tab, zoom)?;
@@ -1610,28 +1733,33 @@ fn zoom_tab(app: &AppHandle, tab: &str, action: &str) -> Result<(), String> {
         }
         save_kept(ZOOMS_FILE, &zooms);
     }
-    app.emit(BROWSER_ZOOM_EVENT, TabZoom { tab: tab.to_string(), zoom }).map_err(err)
+    let (win, id) = cef_browser::split(tab);
+    app.emit_to(win, BROWSER_ZOOM_EVENT, TabZoom { tab: id.to_string(), zoom }).map_err(err)
 }
 
 /// "in", "out" or "reset" the zoom of a tab.
 #[tauri::command(async)]
-fn browser_zoom(app: AppHandle, tab: String, action: String) -> Result<(), String> {
-    zoom_tab(&app, &tab, &action)
+fn browser_zoom(app: AppHandle, webview: tauri::Webview, tab: String, action: String) -> Result<(), String> {
+    zoom_tab(&app, &tab_key(&webview, &tab)?, &action)
 }
 
 /// How far below the main webview's top the page starts. The main webview
 /// runs under the title bar and the page's viewport begins below it
 /// (`viewport` is the page's innerHeight), while a tab is placed from the
 /// window's top, so the page's coordinates are shifted by this.
-fn page_top(app: &AppHandle, viewport: f64) -> f64 {
-    let Some(main) = app.get_webview("main") else { return 0.0 };
-    let scale = main.window().scale_factor().unwrap_or(1.0);
-    main.bounds().map(|b| (b.size.to_logical::<f64>(scale).height - viewport).max(0.0)).unwrap_or(0.0)
+fn page_top(webview: &tauri::Webview, viewport: f64) -> f64 {
+    let scale = webview.window().scale_factor().unwrap_or(1.0);
+    webview.bounds().map(|b| (b.size.to_logical::<f64>(scale).height - viewport).max(0.0)).unwrap_or(0.0)
 }
 
-/// Where a tab goes, from the placeholder's rectangle in the page.
-fn browser_rect(app: &AppHandle, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> cef_browser::PageRect {
-    cef_browser::PageRect { x, y: y + page_top(app, viewport), width, height }
+/// Where a tab goes, from the placeholder's rectangle in its window's page.
+fn browser_rect(webview: &tauri::Webview, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> cef_browser::PageRect {
+    cef_browser::PageRect { x, y: y + page_top(webview, viewport), width, height }
+}
+
+/// The key of tab `tab` in the window of the page that names it.
+fn tab_key(webview: &tauri::Webview, tab: &str) -> Result<String, String> {
+    Ok(cef_browser::key(webview.label(), tab_id(tab)?))
 }
 
 /// A tab's id; tab ids come from the page, so only plain ones pass.
@@ -1685,45 +1813,80 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
             }
             return;
         }
+        // ⌘⇧G: the page (or its selection) for ChatGPT to explain, in its window's right.
+        Some("ask-chatgpt") => {
+            let (win, id) = cef_browser::split(tab);
+            let ask = AskPage { tab: id.to_string(), url: param("u"), title: param("t"), text: param("x"), selected: param("s") == "1" };
+            let _ = app.emit_to(win, ASK_CHATGPT_EVENT, ask);
+            return;
+        }
         Some("translate") => return translate::on_blocks(app, tab, &param("b")),
         Some("translate-selection") => return translate::on_selection(app, tab, param("i").parse().unwrap_or(0), param("t")),
         Some("translated") => return translate::on_translated(app, tab, param("on") == "1"),
+        // A post on X's home timeline, to fold away if not about engineering.
+        Some("x-post") => return readings::on_post(app, tab, param("i"), param("t")),
+        // Kept to read (⌘⇧D, a link ⌥-clicked, X's bookmark button): the page keeps the keyboard.
+        Some("bookmark") => {
+            let reading = NewReading {
+                kind: serde_json::from_value(serde_json::Value::String(param("k"))).unwrap_or_default(),
+                url: param("u"),
+                title: param("t"),
+                text: Some(param("x")).filter(|x| !x.is_empty()),
+                chapters: serde_json::from_str(&param("c")).unwrap_or_default(),
+                links: serde_json::from_str(&param("l")).unwrap_or_default(),
+            };
+            if let Err(e) = readings::add(app, reading) {
+                eprintln!("bookmark: {e}");
+            }
+            return;
+        }
+        // A book's chapter read to its end.
+        Some("chapter-read") => {
+            if let Err(e) = app.state::<AppState>().db.lock().map_err(err).and_then(|db| db.mark_chapter_read(&param("u")).map_err(err)) {
+                eprintln!("chapter-read: {e}");
+            }
+            return;
+        }
         _ => {}
     }
     // Only telling: the page keeps the keyboard.
     if url.host_str() == Some("page-focused") {
-        let _ = app.emit(PAGE_FOCUSED_EVENT, TabOnly { tab: tab.to_string() });
+        let (win, id) = cef_browser::split(tab);
+        let _ = app.emit_to(win, PAGE_FOCUSED_EVENT, TabOnly { tab: id.to_string() });
         return;
     }
     // Keys typed next belong in the app (its address bar, a dialog),
     // but for the ones handing the keyboard on to a page or terminal
     // themselves: passing through the app would mark its side for a moment.
     let hands_on = matches!(url.host_str(), Some(h) if KEYS_HANDED_ON.contains(&h));
-    if let Some(main) = app.get_webview("main").filter(|_| !hands_on) {
-        let _ = main.set_focus();
+    // Asks about the page's own tabs go to its window; the app's (a space, ⌘K, a todo) to the main one.
+    let (win, id) = cef_browser::split(tab);
+    let app_wide = matches!(url.host_str(), Some("new-todo" | "palette" | "sessions" | "space"));
+    let to = if app_wide { MAIN_WINDOW } else { win };
+    if app_wide {
+        show_window(app);
     }
-    let tab = tab.to_string();
+    if let Some(page) = app.get_webview(to).filter(|_| !hands_on) {
+        let _ = page.set_focus();
+    }
+    let tab = id.to_string();
     let _ = match url.host_str() {
-        Some("new-tab") => app.emit(BROWSER_OPEN_NEW_TAB_EVENT, ()),
-        Some("new-todo") => app.emit(OPEN_NEW_TODO_EVENT, ()),
-        Some("tab-prev") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: -1 }),
-        Some("tab-next") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: 1 }),
-        Some("archive") => app.emit(BROWSER_ARCHIVE_EVENT, TabOnly { tab }),
-        Some("to-input") => app.emit(BROWSER_TO_INPUT_EVENT, TabOnly { tab }),
-        Some("palette") => app.emit(OPEN_PALETTE_EVENT, ()),
-        Some("sessions") => app.emit(OPEN_SESSIONS_EVENT, ()),
-        Some("focus-app") => app.emit(FOCUS_APP_EVENT, TabOnly { tab }),
+        Some("new-tab") => app.emit_to(to, BROWSER_OPEN_NEW_TAB_EVENT, ()),
+        Some("new-todo") => app.emit_to(to, OPEN_NEW_TODO_EVENT, ()),
+        Some("tab-prev") => app.emit_to(to, BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: -1 }),
+        Some("tab-next") => app.emit_to(to, BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: 1 }),
+        Some("archive") => app.emit_to(to, BROWSER_ARCHIVE_EVENT, TabOnly { tab }),
+        Some("palette") => app.emit_to(to, OPEN_PALETTE_EVENT, ()),
+        Some("sessions") => app.emit_to(to, OPEN_SESSIONS_EVENT, ()),
+        Some("focus-app") => app.emit_to(to, FOCUS_APP_EVENT, TabOnly { tab }),
         Some("focus-pane") => {
             let text = url.query_pairs().find(|(k, _)| k == "text").map(|(_, v)| v.into_owned());
-            app.emit(FOCUS_PANE_EVENT, TabText { tab, text })
+            app.emit_to(to, FOCUS_PANE_EVENT, TabText { tab, text })
         }
-        Some("focus-exit") => app.emit(FOCUS_EXIT_EVENT, ()),
-        Some("close-tab") => app.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab }),
-        Some("add-input") => {
-            let param = |name: &str| url.query_pairs().find(|(k, _)| k == name).map(|(_, v)| v.into_owned()).unwrap_or_default();
-            app.emit(ADD_INPUT_EVENT, InputLink { url: param("u"), title: param("t") })
-        }
-        _ => app.emit(BROWSER_FOCUS_URL_EVENT, TabOnly { tab }),
+        Some("space") => app.emit_to(to, SPACE_EVENT, SpaceAsk { space: url.query_pairs().find(|(k, _)| k == "s").map(|(_, v)| v.into_owned()).unwrap_or_default() }),
+        Some("close-tab") => app.emit_to(to, BROWSER_CLOSE_TAB_EVENT, TabOnly { tab }),
+        Some("work-right") => app.emit_to(to, WORK_RIGHT_EVENT, ()),
+        _ => app.emit_to(to, BROWSER_FOCUS_URL_EVENT, TabOnly { tab }),
     };
 }
 
@@ -1766,17 +1929,20 @@ fn tab_load(app: &AppHandle, tab: &str, url: String, loading: bool) {
             let _ = cef_browser::eval(app, tab, FOCUS_INPUT_SCRIPT);
         }
     }
-    let _ = app.emit(BROWSER_URL_EVENT, TabUrl { tab: tab.to_string(), url, loading });
+    let (win, id) = cef_browser::split(tab);
+    let _ = app.emit_to(win, BROWSER_URL_EVENT, TabUrl { tab: id.to_string(), url, loading });
 }
 
 /// A tab's page changed its title.
 fn tab_title_changed(app: &AppHandle, tab: &str, title: String) {
-    let _ = app.emit(BROWSER_TITLE_EVENT, TabTitle { tab: tab.to_string(), title });
+    let (win, id) = cef_browser::split(tab);
+    let _ = app.emit_to(win, BROWSER_TITLE_EVENT, TabTitle { tab: id.to_string(), title });
 }
 
 /// A tab's address changed, with or without a load (history pushState).
 fn tab_address_changed(app: &AppHandle, tab: &str, url: String) {
-    let _ = app.emit(BROWSER_ADDRESS_EVENT, TabAddress { tab: tab.to_string(), url });
+    let (win, id) = cef_browser::split(tab);
+    let _ = app.emit_to(win, BROWSER_ADDRESS_EVENT, TabAddress { tab: id.to_string(), url });
 }
 
 /// A page asks for a new window; true lets it open as one. A sized window is
@@ -1784,7 +1950,8 @@ fn tab_address_changed(app: &AppHandle, tab: &str, url: String) {
 /// becomes a tab instead, next to `tab`, `behind` it for a ⌘-click.
 fn tab_new_window(app: &AppHandle, tab: &str, url: String, sized: bool, behind: bool) -> bool {
     if !sized && !open_in_slack(app, &url) {
-        let _ = app.emit(BROWSER_NEW_TAB_EVENT, NewTab { url, tab: tab.to_string(), behind });
+        let (win, id) = cef_browser::split(tab);
+        let _ = app.emit_to(win, BROWSER_NEW_TAB_EVENT, NewTab { url, tab: id.to_string(), behind });
     }
     sized
 }
@@ -1834,7 +2001,8 @@ fn keep_site_zoom(app: &AppHandle, tab: &str, url: &str) {
     let Some(host) = host_of(url) else { return };
     let kept = app.state::<AppState>().zooms.lock().ok().and_then(|z| z.get(&host).copied()).unwrap_or(NO_ZOOM);
     if cef_browser::zoom(app, tab).is_some_and(|now| (now - kept).abs() > f64::EPSILON) && cef_browser::set_zoom(app, tab, kept).is_ok() {
-        let _ = app.emit(BROWSER_ZOOM_EVENT, TabZoom { tab: tab.to_string(), zoom: kept });
+        let (win, id) = cef_browser::split(tab);
+        let _ = app.emit_to(win, BROWSER_ZOOM_EVENT, TabZoom { tab: id.to_string(), zoom: kept });
     }
 }
 
@@ -1880,7 +2048,8 @@ struct PageDialog {
 }
 
 fn page_dialog(app: &AppHandle, tab: &str, id: u64, kind: &'static str, message: String, default: String) {
-    let _ = app.emit(PAGE_DIALOG_EVENT, PageDialog { id, tab: tab.to_string(), kind, message, default });
+    let (win, tab) = cef_browser::split(tab);
+    let _ = app.emit_to(win, PAGE_DIALOG_EVENT, PageDialog { id, tab: tab.to_string(), kind, message, default });
 }
 
 /// The user's answer to a page's dialog: OK (with what was typed for a prompt) or cancel.
@@ -1944,19 +2113,19 @@ fn forget_site_permission(state: State<'_, AppState>, site: String) -> Result<()
 /// page; see `tab_load`).
 #[tauri::command(async)]
 #[allow(clippy::too_many_arguments)]
-fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, go: bool, keep: Option<String>) -> Result<bool, String> {
+fn browser_open(state: State<'_, AppState>, app: AppHandle, webview: tauri::Webview, tab: String, url: String, x: f64, y: f64, width: f64, height: f64, viewport: f64, go: bool, keep: Option<String>) -> Result<bool, String> {
     // A file on the Mac too: an artifact a session wrote.
     if !is_web_url(&url) && !url.starts_with("file://") {
         return Err(format!("開けない URL です: {url}"));
     }
-    let tab = tab_id(&tab)?.to_string();
+    let tab = tab_key(&webview, &tab)?;
     let parsed: tauri::Url = url.parse().map_err(err)?;
     // Two opens of a new tab at once (a re-render) would both create it.
     let _one_at_a_time = state.browser_lock.lock().map_err(err)?;
-    let keep = keep.map(|k| tab_id(&k).map(String::from)).transpose()?;
+    let keep = keep.map(|k| tab_key(&webview, &k)).transpose()?;
     let shown: Vec<String> = std::iter::once(tab.clone()).chain(keep).collect();
-    cef_browser::set_hidden(&app, None, &shown, true)?;
-    let rect = browser_rect(&app, x, y, width, height, viewport);
+    cef_browser::set_hidden(&app, webview.label(), None, &shown, true)?;
+    let rect = browser_rect(&webview, x, y, width, height, viewport);
     if cef_browser::exists(&app, &tab) {
         // Showing the tab again keeps the page the user moved on to; only
         // `go` (the app sending it somewhere) moves it.
@@ -1964,7 +2133,7 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
             cef_browser::navigate(&app, &tab, parsed.as_str())?;
         }
         cef_browser::set_rect(&app, &tab, rect)?;
-        cef_browser::set_hidden(&app, Some(&tab), &[], false)?;
+        cef_browser::set_hidden(&app, webview.label(), Some(&tab), &[], false)?;
         return Ok(false);
     }
     cef_browser::create(&app, &tab, parsed.as_str(), rect)?;
@@ -1973,41 +2142,124 @@ fn browser_open(state: State<'_, AppState>, app: AppHandle, tab: String, url: St
 
 /// Follows tab `tab`'s placeholder when the layout changes.
 #[tauri::command(async)]
-fn browser_bounds(app: AppHandle, tab: String, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
-    let tab = tab_id(&tab)?;
-    if !cef_browser::exists(&app, tab) {
+fn browser_bounds(app: AppHandle, webview: tauri::Webview, tab: String, x: f64, y: f64, width: f64, height: f64, viewport: f64) -> Result<(), String> {
+    let tab = tab_key(&webview, &tab)?;
+    if !cef_browser::exists(&app, &tab) {
         return Ok(());
     }
-    cef_browser::set_rect(&app, tab, browser_rect(&app, x, y, width, height, viewport))
+    cef_browser::set_rect(&app, &tab, browser_rect(&webview, x, y, width, height, viewport))
 }
 
 /// Hides tab `tab`, or every tab; they keep their pages for the next open.
 #[tauri::command(async)]
-fn browser_hide(app: AppHandle, tab: Option<String>) -> Result<(), String> {
-    let only = tab.as_deref().map(tab_id).transpose()?;
-    cef_browser::set_hidden(&app, only, &[], true)
+fn browser_hide(app: AppHandle, webview: tauri::Webview, tab: Option<String>) -> Result<(), String> {
+    let only = tab.as_deref().map(|t| tab_key(&webview, t)).transpose()?;
+    cef_browser::set_hidden(&app, webview.label(), only.as_deref(), &[], true)
+}
+
+/// The browser's own window (its tabs, pins and address bar), apart from the main one.
+const BROWSER_WINDOW: &str = "browser";
+const BROWSER_WINDOW_SIZE: (f64, f64) = (1280.0, 860.0);
+/// `url` to open as a tab in the browser window.
+const BROWSER_WINDOW_OPEN_EVENT: &str = "browser-window-open";
+
+/// Brings the browser window forward (made the first time; closing it only
+/// hides it, its tabs kept), with `url` opened as a tab there.
+#[tauri::command(async)]
+fn browser_window_open(app: AppHandle, state: State<'_, AppState>, url: Option<String>) -> Result<(), String> {
+    // A page, a file, or the window's own asks: a pinned page (`pin:<id>`), a new tab page.
+    if let Some(url) = &url {
+        if !is_web_url(url) && !url.starts_with("file://") && !url.starts_with("pin:") && url != "new-tab" {
+            return Err(format!("開けない URL です: {url}"));
+        }
+    }
+    let window = match app.get_webview_window(BROWSER_WINDOW) {
+        Some(w) => {
+            if let Some(url) = url {
+                app.emit_to(BROWSER_WINDOW, BROWSER_WINDOW_OPEN_EVENT, url).map_err(err)?;
+            }
+            w
+        }
+        None => {
+            // Its page is not up to listen yet: it takes these once it is.
+            state.browser_queue.lock().map_err(err)?.extend(url);
+            let (width, height) = BROWSER_WINDOW_SIZE;
+            tauri::WebviewWindowBuilder::new(&app, BROWSER_WINDOW, tauri::WebviewUrl::App("index.html".into()))
+                .title("Shosai ブラウザ")
+                .inner_size(width, height)
+                .build()
+                .map_err(err)?
+        }
+    };
+    window.show().map_err(err)?;
+    window.set_focus().map_err(err)?;
+    // The window in front is not enough: its page takes the keys (a tab asked for takes them from it as it comes).
+    match app.get_webview(BROWSER_WINDOW) {
+        Some(page) => page.set_focus().map_err(err),
+        None => Ok(()),
+    }
+}
+
+/// From the browser's window: the main window comes forward, at `space` (⌘1–⌘6) if one is named.
+#[tauri::command]
+fn main_window_show(app: AppHandle, space: Option<String>) -> Result<(), String> {
+    show_window(&app);
+    match space {
+        Some(space) => app.emit_to(MAIN_WINDOW, SPACE_EVENT, SpaceAsk { space }).map_err(err),
+        None => Ok(()),
+    }
+}
+
+/// `{tab, url, title, text, selected}`: a page (or what is selected in it) for ChatGPT to explain.
+const ASK_CHATGPT_EVENT: &str = "ask-chatgpt";
+
+#[derive(Clone, Serialize)]
+struct AskPage {
+    tab: String,
+    url: String,
+    title: String,
+    text: String,
+    selected: bool,
+}
+
+/// ⌘⇧G from the app's side: the tab's page sends itself (or its selection) to be explained.
+#[tauri::command(async)]
+fn browser_ask(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<(), String> {
+    cef_browser::eval(&app, &tab_key(&webview, &tab)?, "window.__todoSessionsAskChatgpt?.(String(getSelection() ?? '').trim())")
+}
+
+/// Types `text` into ChatGPT's prompt box in tab `tab`, and sends it.
+#[tauri::command(async)]
+fn browser_ask_type(app: AppHandle, webview: tauri::Webview, tab: String, text: String) -> Result<(), String> {
+    cef_browser::eval(&app, &tab_key(&webview, &tab)?, &format!("window.__todoSessionsAsk?.({})", serde_json::to_string(&text).map_err(err)?))
+}
+
+/// The pages asked of the browser window before its page was up.
+#[tauri::command]
+fn browser_window_take(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    Ok(std::mem::take(&mut *state.browser_queue.lock().map_err(err)?))
 }
 
 #[tauri::command(async)]
-fn browser_close(app: AppHandle, tab: String) -> Result<(), String> {
-    cef_browser::close(&app, tab_id(&tab)?)
+fn browser_close(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<(), String> {
+    cef_browser::close(&app, &tab_key(&webview, &tab)?)
 }
 
 /// Gives a tab's page the keyboard, as leaving the address bar with Esc does;
 /// with `input`, its text box too (ChatGPT's prompt), now or once it loads,
 /// and `text` typed into it.
 #[tauri::command(async)]
-fn browser_focus(app: AppHandle, state: State<AppState>, tab: String, input: Option<bool>, text: Option<String>) -> Result<(), String> {
-    let id = tab_id(&tab)?;
-    if !cef_browser::exists(&app, id) {
+fn browser_focus(app: AppHandle, webview: tauri::Webview, state: State<AppState>, tab: String, input: Option<bool>, text: Option<String>) -> Result<(), String> {
+    let id = tab_key(&webview, &tab)?;
+    if !cef_browser::exists(&app, &id) {
         return Ok(());
     }
-    cef_browser::focus(&app, id)?;
+    cef_browser::focus(&app, &id)?;
     if input == Some(true) {
-        state.focus_input.lock().map_err(err)?.insert(tab.clone(), std::time::Instant::now());
+        state.focus_input.lock().map_err(err)?.insert(id.clone(), std::time::Instant::now());
         match text {
-            Some(text) => cef_browser::eval(&app, id, &format!("window.__todoSessionsFocusInput?.({})", serde_json::to_string(&text).map_err(err)?)),
-            None => cef_browser::eval(&app, id, FOCUS_INPUT_SCRIPT),
+            Some(text) => cef_browser::eval(&app, &id, &format!("window.__todoSessionsFocusInput?.({})", serde_json::to_string(&text).map_err(err)?)),
+            None => cef_browser::eval(&app, &id, FOCUS_INPUT_SCRIPT),
         }?;
     }
     Ok(())
@@ -2016,14 +2268,21 @@ fn browser_focus(app: AppHandle, state: State<AppState>, tab: String, input: Opt
 /// A tab's address right now, which a page moving without a load (history
 /// pushState) changes without any event.
 #[tauri::command(async)]
-fn browser_url(app: AppHandle, tab: String) -> Result<Option<String>, String> {
-    Ok(cef_browser::url(&app, tab_id(&tab)?))
+fn browser_url(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<Option<String>, String> {
+    Ok(cef_browser::url(&app, &tab_key(&webview, &tab)?))
 }
 
 /// "back", "forward" or "reload" in a tab.
 #[tauri::command(async)]
-fn browser_go(app: AppHandle, tab: String, action: String) -> Result<(), String> {
-    cef_browser::go(&app, tab_id(&tab)?, &action)
+fn browser_go(app: AppHandle, webview: tauri::Webview, tab: String, action: String) -> Result<(), String> {
+    cef_browser::go(&app, &tab_key(&webview, &tab)?, &action)
+}
+
+/// ⌘⇧D from the app's side: the tab's page keeps itself to read, as its own
+/// ⌘⇧D does (a book's page with its table of contents).
+#[tauri::command(async)]
+fn browser_bookmark(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<(), String> {
+    cef_browser::eval(&app, &tab_key(&webview, &tab)?, "window.__todoSessionsBookmark?.()")
 }
 
 /// A PR opened from the branch any of the todo's sessions works on, however
@@ -2290,8 +2549,11 @@ fn issue_sync_loop(app: AppHandle, wake: std::sync::mpsc::Receiver<Option<i64>>)
     }
 }
 
+/// The app's main window's label (its webview's too).
+const MAIN_WINDOW: &str = "main";
+
 fn show_window(app: &AppHandle) {
-    if let Some(w) = app.get_window("main") {
+    if let Some(w) = app.get_window(MAIN_WINDOW) {
         let _ = w.show();
         let _ = w.set_focus();
     }
@@ -2338,8 +2600,8 @@ fn notify_needs_input(app: &AppHandle, db: &Db, session: Session) {
 
 /// Posts a macOS notification; clicking it reads notice `id` and runs `open`.
 fn post_banner(app: &AppHandle, headline: &'static str, label: String, id: Option<i64>, open: impl FnOnce(&AppHandle) -> Result<(), String> + Send + 'static) {
-    // The focus mode holds them; the in-app list has them, and the page tells of them after.
-    if app.state::<AppState>().focus_mode.load(Ordering::Relaxed) {
+    // 学習 holds them; the in-app list has them, and the page tells of them after.
+    if app.state::<AppState>().studying.load(Ordering::Relaxed) {
         return;
     }
     let app = app.clone();
@@ -2357,7 +2619,7 @@ fn post_banner(app: &AppHandle, headline: &'static str, label: String, id: Optio
 /// again once it had stopped (the user reviewed it). The first check, before
 /// any was ever recorded, only records the ones already waiting.
 fn notify_review_requests(app: &AppHandle, db: &Db, seeded: &mut bool) -> Result<(), String> {
-    let prs = search_prs("--review-requested")?;
+    let prs = review_requests()?;
     let quiet = !*seeded && !db.has_review_notices().map_err(err)?;
     *seeded = true;
     db.end_review_notices(&prs.iter().map(|p| p.url.clone()).collect::<Vec<_>>()).map_err(err)?;
@@ -2394,7 +2656,9 @@ fn discover_sessions(db: &Db, with_agents: bool) -> Result<(), String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    for s in &live {
+    // The app's own one-shot asks (a card's summary, the model picked) are not sessions.
+    let asks = ask::ask_dir().to_string_lossy().into_owned();
+    for s in live.iter().filter(|s| s.cwd != asks) {
         let known = db.get_session(&s.session_id).map_err(err)?;
         // Hooks report state faster and more precisely; only fill in what they missed.
         let stale = known.as_ref().is_none_or(|k| k.state != s.state && now - k.state_at > DISCOVER_GRACE_SECS);
@@ -2565,6 +2829,7 @@ fn watch_loop(app: AppHandle) {
             if let Err(e) = discover_sessions(&db, with_agents) {
                 eprintln!("{e}");
             }
+            close_finished_workspaces(&app.state::<AppState>());
         }
         tick = tick.wrapping_add(1);
         if let Ok(todos) = db.list_todos(None) {
@@ -2732,14 +2997,20 @@ fn main() {
         .manage(terminal::Terminals::default())
         .manage(translate::Kept::load())
         .manage(slack::Slack::new(slack_tx))
+        .manage(readings::Sorting::load())
+        .manage(readings::PostVerdicts::default())
+        .manage(digest::Digesting::default())
         .manage(AppState {
             db: Mutex::new(db),
             sync_status: Mutex::new("cloud: 同期待ち".into()),
             origin_cache: Mutex::new(HashMap::new()),
             herdr_session: Mutex::new(None),
+            herdr_workspaces: Mutex::new(HashMap::new()),
             in_app_terminal: AtomicBool::new(false),
             focus_input: Mutex::new(HashMap::new()),
+            browser_queue: Mutex::new(Vec::new()),
             focus_mode: AtomicBool::new(false),
+            studying: AtomicBool::new(false),
             logins: Mutex::new(HashMap::new()),
             pending_login: Mutex::new(None),
             login_never: Mutex::new(load_kept(LOGIN_NEVER_FILE)),
@@ -2783,12 +3054,21 @@ fn main() {
             std::thread::spawn(move || slack::socket_run(handle));
             let handle = app.handle().clone();
             std::thread::spawn(move || slack::warm(handle));
+            // What was kept while the app was closed (or before a key) is sorted now.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || readings::sort_all(&handle));
+            // The day before's readings, summed up every morning (日報).
+            let handle = app.handle().clone();
+            std::thread::spawn(move || digest::digest_loop(handle));
             Ok(())
         })
         .menu(app_menu)
         .on_menu_event(|app, event| {
+            // To the window in front only: each closes a tab of its own.
             if event.id() == MENU_CLOSE_TAB {
-                let _ = app.emit(BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: String::new() });
+                if let Some((label, _)) = app.webview_windows().into_iter().find(|(_, w)| w.is_focused().unwrap_or(false)) {
+                    let _ = app.emit_to(label.as_str(), BROWSER_CLOSE_TAB_EVENT, TabOnly { tab: String::new() });
+                }
             }
         })
         .on_window_event(|window, event| match event {
@@ -2834,6 +3114,10 @@ fn main() {
             create_todo,
             update_todo,
             delete_todo,
+            create_database,
+            rename_database,
+            delete_database,
+            set_todo_database,
             open_link,
             link_session,
             unlink_session,
@@ -2860,6 +3144,14 @@ fn main() {
             usage,
             gh_prs,
             browser_open,
+            browser_window_open,
+            browser_window_take,
+            main_window_show,
+            browser_ask,
+            browser_ask_type,
+            session_peeks,
+            session_summary,
+            pick_model,
             browser_bounds,
             browser_hide,
             browser_close,
@@ -2869,18 +3161,13 @@ fn main() {
             terminal_start,
             archive_sessions,
             window_focused,
-            set_focus_mode,
+            set_space,
             set_page_keys,
             start_review,
             stop_review,
             terminal_quick,
             terminal_resume,
             set_in_app_terminal,
-            create_input,
-            update_input,
-            delete_input,
-            add_input_link,
-            page_title,
             mark_session_seen,
             hide_session,
             answer_login,
@@ -2895,20 +3182,17 @@ fn main() {
             forget_site_permission,
             herdr_focused,
             codex_models,
-            study::browser_text,
-            study::page_text,
-            study::create_theme,
-            study::create_category,
-            study::set_theme_category,
-            study::update_theme,
-            study::delete_theme,
-            study::set_input_theme,
-            study::sort_unsorted,
-            study::next_reads,
-            study::review_questions,
-            study::review_grade,
-            study::finish_reading,
-            study::theme_reviews,
+            claude_models,
+            readings::add_reading,
+            readings::delete_reading,
+            readings::set_reading_tags,
+            readings::set_chapter_read,
+            readings::set_reading_kept,
+            digest::make_digest,
+            readings::set_typesafe_key,
+            readings::set_jev_credit,
+            readings::clear_jev_credit,
+            browser_bookmark,
             terminal::term_open,
             terminal::term_write,
             terminal::term_resize,

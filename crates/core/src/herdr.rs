@@ -1,5 +1,9 @@
 //! Reading herdr's CLI output: which named sessions run, and which pane
-//! hosts a given Claude Code session.
+//! hosts a given Claude Code session; and the subtasks' herdr session.
+
+use std::os::unix::process::CommandExt;
+use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -20,28 +24,99 @@ pub fn running_sessions(table: &str) -> Vec<String> {
 pub const DEFAULT_SESSION: &str = "default";
 
 /// The running session new workspaces go to: the one picked, else the
-/// default one, else the first running one. None when herdr is not running.
+/// default one, else the first running one; never a subtasks' session. None
+/// when herdr is not running.
 pub fn pick_session(running: &[String], picked: Option<&str>) -> Option<String> {
-    let is_running = |name: &str| running.iter().any(|r| r == name);
+    let usable = |name: &str| !name.ends_with(SUBTASKS_SUFFIX) && running.iter().any(|r| r == name);
     picked
-        .filter(|p| is_running(p))
-        .or_else(|| is_running(DEFAULT_SESSION).then_some(DEFAULT_SESSION))
+        .filter(|p| usable(p))
+        .or_else(|| usable(DEFAULT_SESSION).then_some(DEFAULT_SESSION))
         .map(Into::into)
-        .or_else(|| running.first().cloned())
+        .or_else(|| running.iter().find(|r| usable(r)).cloned())
+}
+
+/// What a subtasks' session's name ends with.
+const SUBTASKS_SUFFIX: &str = "-sub";
+/// How long a herdr session started here may take to answer, and how often it is asked.
+const SESSION_START_WAIT: Duration = Duration::from_secs(10);
+const SESSION_START_POLL: Duration = Duration::from_millis(200);
+
+/// The herdr session a parent's subtasks run in, beside the parent's own
+/// `session` (`<session>-sub`): the app attaches each herdr session once, so
+/// the parent's pane and a subtask's show side by side.
+pub fn subtasks_session(session: &str) -> String {
+    if session.ends_with(SUBTASKS_SUFFIX) {
+        session.to_string()
+    } else {
+        format!("{session}{SUBTASKS_SUFFIX}")
+    }
+}
+
+/// Starts herdr session `name` headless unless it answers already, and waits
+/// until it does. `herdr` makes the command that runs the herdr CLI.
+pub fn ensure_session(name: &str, herdr: impl Fn() -> Command) -> Result<(), String> {
+    let answers = || herdr().args(["--session", name, "workspace", "list"]).output().is_ok_and(|o| o.status.success());
+    if answers() {
+        return Ok(());
+    }
+    let mut server = herdr();
+    server.args(["--session", name, "server"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0);
+    let mut child = server.spawn().map_err(|e| format!("herdr のセッション {name} を起動できません: {e}"))?;
+    // Waited for when it ends, so it leaves no zombie behind.
+    std::thread::spawn(move || child.wait());
+    let until = Instant::now() + SESSION_START_WAIT;
+    while Instant::now() < until {
+        if answers() {
+            return Ok(());
+        }
+        std::thread::sleep(SESSION_START_POLL);
+    }
+    Err(format!("herdr のセッション {name} が起動しません"))
 }
 
 /// Opens a workspace in herdr session `session` (None: the one herdr talks
 /// to from here, as in its own panes) at `cwd`, and runs `command` in it.
 /// `run` runs the herdr CLI with its arguments and gives back what it
 /// printed. Without `focus` herdr's view stays where it is.
-pub fn start_workspace(run: impl Fn(&[&str]) -> Result<String, String>, session: Option<&str>, cwd: &str, label: &str, command: &str, focus: bool) -> Result<(), String> {
+pub fn start_workspace(run: impl Fn(&[&str]) -> Result<String, String>, session: Option<&str>, cwd: &str, label: &str, command: &str, focus: bool) -> Result<String, String> {
     let with_session = |args: &[&str]| -> Vec<String> { session.map(|s| vec!["--session".to_string(), s.to_string()]).unwrap_or_default().into_iter().chain(args.iter().map(|a| a.to_string())).collect() };
     let create = with_session(&["workspace", "create", "--cwd", cwd, "--label", label, if focus { "--focus" } else { "--no-focus" }]);
     let created = run(&create.iter().map(String::as_str).collect::<Vec<_>>())?;
     let v: Value = serde_json::from_str(&created).map_err(|e| format!("herdr output: {e}"))?;
     let pane = crate::launch::herdr_pane_id(&v).ok_or("herdr output has no pane id")?;
     let run_args = with_session(&["pane", "run", &pane, command]);
-    run(&run_args.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ())
+    run(&run_args.iter().map(String::as_str).collect::<Vec<_>>())?;
+    Ok(workspace_of_pane(&pane).to_string())
+}
+
+/// The workspace a pane id (`w4W:p1`) belongs to.
+fn workspace_of_pane(pane: &str) -> &str {
+    pane.split(':').next().unwrap_or(pane)
+}
+
+/// Workspaces opened here, by id, with whether an agent has run in them yet.
+pub type Watched = std::collections::HashMap<String, bool>;
+
+/// From `herdr pane list` JSON: the watched workspaces whose agent has gone
+/// (it ran, and no pane there runs one now), to close; those herdr no longer
+/// has are dropped, and so are the ones returned.
+pub fn finished_workspaces(watched: &mut Watched, panes: &Value) -> Vec<String> {
+    let panes = panes["result"]["panes"].as_array().map(Vec::as_slice).unwrap_or_default();
+    let mut finished = vec![];
+    watched.retain(|workspace, ran| {
+        let here: Vec<&Value> = panes.iter().filter(|p| p["workspace_id"] == workspace.as_str()).collect();
+        if here.is_empty() {
+            return false;
+        }
+        if here.iter().any(|p| p.get("agent").is_some()) {
+            *ran = true;
+        } else if *ran {
+            finished.push(workspace.clone());
+            return false;
+        }
+        true
+    });
+    finished
 }
 
 /// Pane id of the agent whose Claude session id matches, from
@@ -117,6 +192,20 @@ mod tests {
         assert_eq!(pick_session(&with_default, None).as_deref(), Some("default"));
         assert_eq!(pick_session(&[], Some("review")), None);
     }
+
+    #[test]
+    fn subtasks_get_a_session_of_their_own_beside_their_parents() {
+        assert_eq!(subtasks_session("implement"), "implement-sub");
+        assert_eq!(subtasks_session("implement-sub"), "implement-sub", "already the subtasks'");
+    }
+
+    #[test]
+    fn new_work_never_falls_back_to_a_subtasks_session() {
+        let running: Vec<String> = ["implement-sub", "implement"].map(String::from).to_vec();
+        assert_eq!(pick_session(&running, None).as_deref(), Some("implement"));
+        assert_eq!(pick_session(&["implement-sub".to_string()], None), None);
+        assert_eq!(pick_session(&running, Some("implement-sub")).as_deref(), Some("implement"), "not even when picked");
+    }
     use serde_json::json;
 
     #[test]
@@ -189,6 +278,7 @@ mod tests {
 #[cfg(test)]
 mod start_tests {
     use super::*;
+    use serde_json::json;
     use std::cell::RefCell;
 
     #[test]
@@ -213,5 +303,22 @@ mod start_tests {
         };
         start_workspace(run, None, "/w", "l", "c", true).unwrap();
         assert_eq!(calls.into_inner()[0], ["workspace", "create", "--cwd", "/w", "--label", "l", "--focus"]);
+    }
+
+    #[test]
+    fn a_workspace_closes_once_its_agent_has_gone() {
+        let with = json!({"result": {"panes": [{"workspace_id": "w1", "agent": "claude"}, {"workspace_id": "w2"}]}});
+        let without = json!({"result": {"panes": [{"workspace_id": "w1"}, {"workspace_id": "w2"}]}});
+        let mut watched = Watched::from([("w1".into(), false), ("w2".into(), false), ("w3".into(), false)]);
+        assert!(finished_workspaces(&mut watched, &with).is_empty(), "w2 has not started its agent yet; w3 is gone");
+        assert_eq!(watched, Watched::from([("w1".into(), true), ("w2".into(), false)]));
+        assert_eq!(finished_workspaces(&mut watched, &without), ["w1"]);
+        assert_eq!(watched, Watched::from([("w2".into(), false)]));
+    }
+
+    #[test]
+    fn a_workspace_opened_reports_its_id() {
+        let run = |args: &[&str]| Ok(if args.contains(&"create") { r#"{"result": {"root_pane": {"pane_id": "w9:p1"}}}"#.to_string() } else { String::new() });
+        assert_eq!(start_workspace(run, None, "/w", "l", "c", false).unwrap(), "w9");
     }
 }

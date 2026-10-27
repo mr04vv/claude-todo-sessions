@@ -38,19 +38,31 @@ export function nextAfterClose<T extends { id: string }>(tabs: T[], closed: stri
   return tabs[i + 1] ?? tabs[i - 1] ?? null;
 }
 
+/// A page opened beside a session in 作業 (a terminal's link): a tab of
+/// 作業's that is no session's page or terminal.
+export const isWorkPage = (t: { area?: string; session?: string; term?: unknown }) => t.area === "work" && !t.session && !t.term;
+
+/// Whether tab `id` is a split view's right: one of `rights` (学習's pages to
+/// ask), a page of `rightSession` (the session on 作業's right), or a page
+/// opened beside a session in 作業.
+export function isSplitRight<T extends { id: string; area?: string; session?: string; term?: unknown }>(tabs: T[], id: string, rights: string[], rightSession: string | undefined): boolean {
+  if (rights.includes(id)) return true;
+  const tab = tabs.find((t) => t.id === id);
+  return !!tab && ((rightSession !== undefined && tab.session === rightSession) || isWorkPage(tab));
+}
+
 /// `tabs` with `tab` put right after `after` (the tab it was opened from), or last.
+/// 作業's right: the subtasks not closed there, and the one shown: the one
+/// asked for, else one asking, else one at work, else the first.
+export function rightChildren<T extends { id: number }>(children: T[], closed: number[], asked: number | null, asks: (c: T) => boolean, runs: (c: T) => boolean) {
+  const shown = children.filter((c) => !closed.includes(c.id));
+  return { children: shown, child: shown.find((c) => c.id === asked) ?? shown.find(asks) ?? shown.find(runs) ?? shown[0] };
+}
+
 export function insertAfter<T extends { id: string }>(tabs: T[], tab: T, after: string | null): T[] {
   const i = after === null ? -1 : tabs.findIndex((t) => t.id === after);
   if (i < 0) return [...tabs, tab];
   return [...tabs.slice(0, i + 1), tab, ...tabs.slice(i + 1)];
-}
-
-/// The review tabs on the strip and the ones folded into "レビュー n ▾": all
-/// shown while there is `room` for them, else folded but the `urgent` ones
-/// (waiting for a reply), which stay out.
-export function foldReviews<T>(reviews: T[], urgent: (t: T) => boolean, room: number): { shown: T[]; folded: T[] } {
-  if (reviews.length <= room) return { shown: reviews, folded: [] };
-  return { shown: reviews.filter(urgent), folded: reviews.filter((t) => !urgent(t)) };
 }
 
 /// A file on the Mac as a page to open (its path's parts escaped).
@@ -58,3 +70,19 @@ export const fileUrl = (path: string) => `file://${path.split("/").map(encodeURI
 
 /// The path a file URL stands for (null for any other URL).
 export const pathOfFileUrl = (url: string) => (url.startsWith("file://") ? decodeURIComponent(url.slice("file://".length)) : null);
+
+/// Letters a pinned page's mark shows.
+const PIN_MARK_LETTERS = 2;
+/// The prefix of the ids of pages the user pinned (the app's own are `pin<name>`).
+const USER_PIN = "pinu";
+
+/// A page the user pins (a tab dragged onto the pins): an id not taken, its
+/// title for a name (else its site), and the name's first letters for a mark.
+export function newPin(pins: { id: string }[], url: string, title: string | null) {
+  const taken = new Set(pins.map((p) => p.id));
+  let n = 1;
+  while (taken.has(`${USER_PIN}${n}`)) n++;
+  const label = title?.trim() || new URL(url).hostname.replace(/^www\./, "");
+  const short = label.slice(0, PIN_MARK_LETTERS);
+  return { id: `${USER_PIN}${n}`, label, short: short.charAt(0).toUpperCase() + short.slice(1), url };
+}

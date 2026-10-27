@@ -2,14 +2,16 @@ pub mod agents;
 pub mod cloud;
 pub mod codex;
 pub mod desktop;
-pub mod feynman;
+pub mod digest;
 pub mod files;
 pub mod github;
 pub mod herdr;
 pub mod launch;
+pub mod models;
 pub mod ogp;
+pub mod pick;
 pub mod slack;
-pub mod study;
+pub mod tags;
 pub mod transcript;
 pub mod translate;
 pub mod usage;
@@ -25,11 +27,14 @@ use serde::{Deserialize, Serialize};
 pub enum Error {
     Sql(rusqlite::Error),
     TodoNotFound(i64),
-    InputNotFound(i64),
-    ThemeNotFound(i64),
+    ReadingNotFound(i64),
     SessionNotFound(String),
     /// Subtasks go one level deep: why this parent cannot be set.
     InvalidParent(String),
+    DatabaseNotFound(i64),
+    /// Another database has the name.
+    DatabaseNameTaken(String),
+    DatabaseNameEmpty,
 }
 
 impl std::fmt::Display for Error {
@@ -37,10 +42,12 @@ impl std::fmt::Display for Error {
         match self {
             Error::Sql(e) => write!(f, "sqlite: {e}"),
             Error::TodoNotFound(id) => write!(f, "todo {id} not found"),
-            Error::InputNotFound(id) => write!(f, "input {id} not found"),
-            Error::ThemeNotFound(id) => write!(f, "theme {id} not found"),
+            Error::ReadingNotFound(id) => write!(f, "reading {id} not found"),
             Error::SessionNotFound(id) => write!(f, "session {id} not found"),
             Error::InvalidParent(why) => write!(f, "{why}"),
+            Error::DatabaseNotFound(id) => write!(f, "database {id} not found"),
+            Error::DatabaseNameTaken(name) => write!(f, "a database named {name} already exists"),
+            Error::DatabaseNameEmpty => write!(f, "a database needs a name"),
         }
     }
 }
@@ -179,70 +186,148 @@ pub struct NewTodo {
     pub repos: Vec<String>,
 }
 
-/// Material to take in (an article, a book's chapter), read in the Input
-/// mode: apart from the todos, with no status or sessions of its own.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Input {
-    pub id: i64,
-    pub title: String,
-    pub memo: Option<String>,
-    /// Read already: kept, out of the way.
-    pub done: bool,
-    pub updated_at: i64,
-    /// Its pages (and its note), in the order they were added.
-    pub links: Vec<InputLink>,
-    /// The learning theme it is in; None waits unsorted (まだテーマにないもの).
-    pub theme_id: Option<i64>,
+/// What a reading is: a web page, a post on X, or a book (O'Reilly's) with chapters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadingKind {
+    #[default]
+    Article,
+    Post,
+    Book,
 }
 
-/// Something to learn: a name and a goal, the inputs read for it, and one
-/// claude.ai document its notes build up in.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Theme {
-    pub id: i64,
-    pub name: String,
-    pub goal: Option<String>,
-    /// Its claude.ai document, once made.
-    pub doc_url: Option<String>,
-    pub updated_at: i64,
-    /// The category it is in, if any.
-    pub category_id: Option<i64>,
+impl ReadingKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ReadingKind::Article => "article",
+            ReadingKind::Post => "post",
+            ReadingKind::Book => "book",
+        }
+    }
+    fn parse(s: &str) -> ReadingKind {
+        match s {
+            "post" => ReadingKind::Post,
+            "book" => ReadingKind::Book,
+            _ => ReadingKind::Article,
+        }
+    }
 }
 
-/// A field the themes are gathered in (セキュリティ, with OIDC and CSP in it):
-/// a name only, the themes keeping their notes and reviews.
+/// Something kept to read (読みもの): bookmarked in the app's browser (the
+/// page shown, a link ⌥-clicked, a post bookmarked on X, a book's page),
+/// sorted into `tags::TAGS`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Category {
+pub struct Reading {
     pub id: i64,
-    pub name: String,
-}
-
-/// None leaves a field unchanged; a blank goal clears it.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct ThemePatch {
-    pub name: Option<String>,
-    pub goal: Option<String>,
-    pub doc_url: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct InputLink {
-    pub id: i64,
-    pub input_id: i64,
+    pub kind: ReadingKind,
+    /// A book's is the book's own page, its chapters' pages being under it.
     pub url: String,
-    pub title: Option<String>,
+    pub title: String,
+    /// What it says, for its tags: a post's text, or what its page says it is about.
+    pub text: Option<String>,
     pub image: Option<String>,
+    /// None until sorted; empty when no tag fits.
+    pub tags: Option<Vec<String>>,
+    /// A book's table of contents, in order; none for the others.
+    pub chapters: Vec<Chapter>,
     pub created_at: i64,
+    /// Read and kept (a good one), as against still to read.
+    pub kept: bool,
+    /// A post's links, as X gives them (t.co); none for the others.
+    pub links: Vec<String>,
 }
 
-/// None leaves a field unchanged; an empty memo clears it.
-#[derive(Debug, Default, Deserialize)]
-#[serde(default)]
-pub struct InputPatch {
-    pub title: Option<String>,
-    pub memo: Option<String>,
-    pub done: Option<bool>,
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Chapter {
+    /// From 1, in the book's order.
+    pub position: i64,
+    pub title: String,
+    pub url: String,
+    pub read: bool,
+}
+
+/// A list the user made to keep todos in (Frontend Backlog), with the todos in it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Database {
+    pub id: i64,
+    pub name: String,
+    pub todos: Vec<i64>,
+}
+
+/// A database's name as kept: trimmed, and not empty.
+fn database_name(name: &str) -> Result<String> {
+    Some(name.trim()).filter(|n| !n.is_empty()).map(Into::into).ok_or(Error::DatabaseNameEmpty)
+}
+
+/// The UNIQUE on databases' names failing is the name being taken.
+fn name_taken(e: rusqlite::Error, name: &str) -> Error {
+    match e {
+        rusqlite::Error::SqliteFailure(f, _) if f.code == rusqlite::ErrorCode::ConstraintViolation => Error::DatabaseNameTaken(name.into()),
+        e => e.into(),
+    }
+}
+
+/// Jev's credit as read off TypeSafe's console (its billing page has no API):
+/// the credit bought or given and what its usage page said was spent, at
+/// `at`, with the input tokens this app had used by then (in that Spend).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct JevCredit {
+    pub credit: f64,
+    pub spent: f64,
+    pub base_input_tokens: i64,
+    pub at: i64,
+}
+
+impl JevCredit {
+    /// What is left: what the console left, less what this app has used
+    /// since (`all_input_tokens` being all it used); others using the key
+    /// (the X extension) are not counted.
+    pub fn left(&self, all_input_tokens: i64) -> f64 {
+        self.credit - self.spent - tags::cost_usd((all_input_tokens - self.base_input_tokens).max(0))
+    }
+}
+
+/// The requests to Jev over a span, and their tokens.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct JevTally {
+    pub calls: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+}
+
+/// The requests to Jev today, this month (by the local date) and all along.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct JevSpend {
+    pub today: JevTally,
+    pub month: JevTally,
+    pub all: JevTally,
+}
+
+/// A reading to keep; a book comes with its chapters (title, page).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct NewReading {
+    pub kind: ReadingKind,
+    pub url: String,
+    pub title: String,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub chapters: Vec<(String, String)>,
+    /// A post's links.
+    #[serde(default)]
+    pub links: Vec<String>,
+}
+
+/// A day's readings summed up (its 日報): the document's link, or why it was not made.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Digest {
+    /// The local date, YYYY-MM-DD.
+    pub day: String,
+    pub url: Option<String>,
+    pub error: Option<String>,
+    pub made_at: i64,
+    /// The session making it (the artifact it publishes is the digest).
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -359,56 +444,6 @@ pub struct Notice {
     pub input_id: Option<i64>,
 }
 
-/// What the Input mode is open for: a todo (its pages) or an input.
-#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Hash, Debug)]
-#[serde(tag = "kind", content = "id", rename_all = "lowercase")]
-pub enum Subject {
-    Todo(i64),
-    Input(i64),
-    Theme(i64),
-}
-
-impl Subject {
-    fn kind(self) -> &'static str {
-        match self {
-            Subject::Todo(_) => "todo",
-            Subject::Input(_) => "input",
-            Subject::Theme(_) => "theme",
-        }
-    }
-    fn id(self) -> i64 {
-        match self {
-            Subject::Todo(id) | Subject::Input(id) | Subject::Theme(id) => id,
-        }
-    }
-    fn from_row(kind: &str, id: i64) -> Subject {
-        match kind {
-            "todo" => Subject::Todo(id),
-            "theme" => Subject::Theme(id),
-            _ => Subject::Input(id),
-        }
-    }
-}
-
-/// One explanation of a subject and its grading.
-#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
-pub struct FeynmanAttempt {
-    pub id: i64,
-    pub explanation: String,
-    pub grade: feynman::Grade,
-    pub score: u8,
-    pub created_at: i64,
-}
-
-/// A subject's latest attempt, and when to explain again.
-#[derive(Serialize, Clone, PartialEq, Eq, Debug)]
-pub struct FeynmanSummary {
-    pub subject: Subject,
-    pub score: u8,
-    pub attempted_at: i64,
-    pub due_at: i64,
-}
-
 /// What an artifact is: a claude.ai artifact, a Claude Docs document, or a
 /// file on the Mac.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -437,8 +472,7 @@ impl ArtifactKind {
 }
 
 /// Something a session made other than a PR: found in its record (a
-/// claude.ai artifact or doc) or registered by it (a file), with the todo
-/// (or the learning theme) it is for.
+/// claude.ai artifact or doc) or registered by it (a file), with the todo it is for.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Artifact {
     pub id: i64,
@@ -448,7 +482,6 @@ pub struct Artifact {
     pub kind: ArtifactKind,
     pub session_id: Option<String>,
     pub todo_id: Option<i64>,
-    pub theme_id: Option<i64>,
     pub created_at: i64,
 }
 
@@ -459,7 +492,6 @@ pub struct NewArtifact {
     pub kind: ArtifactKind,
     pub session_id: Option<String>,
     pub todo_id: Option<i64>,
-    pub theme_id: Option<i64>,
 }
 
 /// A Slack message for the user (#27): a mention of them, or of a user
@@ -638,23 +670,6 @@ CREATE TABLE IF NOT EXISTS notifications (
     -- A review request's PR no longer asks for the user's review.
     gone INTEGER NOT NULL DEFAULT 0
 );
-CREATE TABLE IF NOT EXISTS feynman_points (
-    id INTEGER PRIMARY KEY,
-    subject_kind TEXT NOT NULL,
-    subject_id INTEGER NOT NULL,
-    position INTEGER NOT NULL,
-    text TEXT NOT NULL,
-    created_at INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS feynman_attempts (
-    id INTEGER PRIMARY KEY,
-    subject_kind TEXT NOT NULL,
-    subject_id INTEGER NOT NULL,
-    explanation TEXT NOT NULL,
-    grade TEXT NOT NULL,
-    score INTEGER NOT NULL,
-    created_at INTEGER NOT NULL
-);
 CREATE TABLE IF NOT EXISTS links (
     id INTEGER PRIMARY KEY,
     todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
@@ -663,26 +678,6 @@ CREATE TABLE IF NOT EXISTS links (
     image TEXT,
     created_at INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS inputs (
-    id INTEGER PRIMARY KEY,
-    title TEXT NOT NULL,
-    memo TEXT,
-    done INTEGER NOT NULL DEFAULT 0,
-    updated_at INTEGER NOT NULL,
-    theme_id INTEGER REFERENCES themes(id) ON DELETE SET NULL
-);
-CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS themes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    goal TEXT,
-    doc_url TEXT,
-    updated_at INTEGER NOT NULL,
-    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL
-);
 CREATE TABLE IF NOT EXISTS artifacts (
     id INTEGER PRIMARY KEY,
     url TEXT NOT NULL UNIQUE,
@@ -690,7 +685,6 @@ CREATE TABLE IF NOT EXISTS artifacts (
     kind TEXT NOT NULL,
     session_id TEXT,
     todo_id INTEGER REFERENCES todos(id) ON DELETE SET NULL,
-    theme_id INTEGER,
     created_at INTEGER NOT NULL,
     gone INTEGER NOT NULL DEFAULT 0
 );
@@ -743,19 +737,67 @@ CREATE TABLE IF NOT EXISTS slack_muted_channels (
     channel TEXT PRIMARY KEY,
     name TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS input_links (
+CREATE TABLE IF NOT EXISTS readings (
     id INTEGER PRIMARY KEY,
-    input_id INTEGER NOT NULL REFERENCES inputs(id) ON DELETE CASCADE,
-    url TEXT NOT NULL,
-    title TEXT,
+    kind TEXT NOT NULL DEFAULT 'article',
+    url TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    text TEXT,
     image TEXT,
+    -- One per line; NULL until sorted.
+    tags TEXT,
+    created_at INTEGER NOT NULL,
+    -- Read and kept (a good one), as against still to read.
+    kept INTEGER NOT NULL DEFAULT 0,
+    -- A post's links (as X gives them, t.co), one per line.
+    links TEXT
+);
+CREATE TABLE IF NOT EXISTS reading_chapters (
+    reading_id INTEGER NOT NULL REFERENCES readings(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    url TEXT NOT NULL,
+    read INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (reading_id, position)
+);
+-- The requests to Jev (tags::ask) a day, by the local date, and their tokens.
+CREATE TABLE IF NOT EXISTS jev_usage (
+    day TEXT PRIMARY KEY,
+    calls INTEGER NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL
+);
+-- Lists the user makes to keep todos in (Frontend Backlog); a todo is in one at most.
+CREATE TABLE IF NOT EXISTS databases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
     created_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS database_todos (
+    todo_id INTEGER PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
+    database_id INTEGER NOT NULL REFERENCES databases(id) ON DELETE CASCADE
+);
+-- A day's readings summed up (its 日報, a Claude Docs document), or why that failed.
+CREATE TABLE IF NOT EXISTS digests (
+    day TEXT PRIMARY KEY,
+    url TEXT,
+    error TEXT,
+    made_at INTEGER NOT NULL,
+    session_id TEXT
+);
+-- Jev's credit as last read off TypeSafe's console (JevCredit); one row at most.
+CREATE TABLE IF NOT EXISTS jev_credit (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    credit REAL NOT NULL,
+    spent REAL NOT NULL,
+    base_input_tokens INTEGER NOT NULL,
+    at INTEGER NOT NULL
 );
 ";
 
-const INPUT_COLS: &str = "id, title, memo, done, updated_at, CAST(theme_id AS INTEGER)";
-const THEME_COLS: &str = "id, name, goal, doc_url, updated_at, category_id";
-const INPUT_LINK_COLS: &str = "id, input_id, url, title, image, created_at";
+const READING_COLS: &str = "id, kind, url, title, text, image, tags, created_at, kept, links";
+/// A reading's tags are kept one per line (a tag may have a comma).
+const TAGS_SEPARATOR: char = '\n';
 
 const TODO_COLS: &str = "id, title, status, issue_url, cwd, memo, updated_at, repos, prompt, issue_state, pr_url, pr_state, CAST(parent_id AS INTEGER), ci_state, ci_failed, plan, COALESCE(CAST(fix_count AS INTEGER), 0), escalation";
 /// A Slack row (a message, a thread) not in a channel muted in the app.
@@ -841,12 +883,27 @@ fn todo_from_row(r: &Row) -> rusqlite::Result<Todo> {
     })
 }
 
-fn theme_from_row(r: &Row) -> rusqlite::Result<Theme> {
-    Ok(Theme { id: r.get(0)?, name: r.get(1)?, goal: r.get(2)?, doc_url: r.get(3)?, updated_at: r.get(4)?, category_id: r.get(5)? })
+/// A reading's row, its chapters left for `with_chapters` to fill.
+fn reading_from_row(r: &Row) -> rusqlite::Result<Reading> {
+    let tags: Option<String> = r.get(6)?;
+    Ok(Reading {
+        id: r.get(0)?,
+        kind: ReadingKind::parse(&r.get::<_, String>(1)?),
+        url: r.get(2)?,
+        title: r.get(3)?,
+        text: r.get(4)?,
+        image: r.get(5)?,
+        tags: tags.map(|t| t.split(TAGS_SEPARATOR).filter(|t| !t.is_empty()).map(Into::into).collect()),
+        chapters: Vec::new(),
+        created_at: r.get(7)?,
+        kept: r.get(8)?,
+        links: r.get::<_, Option<String>>(9)?.map(|l| l.lines().map(Into::into).collect()).unwrap_or_default(),
+    })
 }
 
-fn input_link_from_row(r: &Row) -> rusqlite::Result<InputLink> {
-    Ok(InputLink { id: r.get(0)?, input_id: r.get(1)?, url: r.get(2)?, title: r.get(3)?, image: r.get(4)?, created_at: r.get(5)? })
+/// A chapter's page, as it is matched: without its fragment.
+fn chapter_url(url: &str) -> &str {
+    url.split('#').next().unwrap_or(url)
 }
 
 fn session_from_row(r: &Row) -> rusqlite::Result<Session> {
@@ -898,24 +955,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             [now()],
         )?;
     }
-    // Themes from before categories were broad fields (セキュリティ): they
-    // become the categories, what was in them waits unsorted again, and the
-    // table is made anew so that a theme's id is never used again (the
-    // app keeps a study time's pages by it).
-    let themes_categorized: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('themes') WHERE name = 'category_id'", [], |r| r.get::<_, i64>(0).map(|n| n > 0))?;
-    if !themes_categorized {
-        let last_id: i64 = conn.query_row("SELECT COALESCE(MAX(id), 0) FROM themes", [], |r| r.get(0))?;
-        conn.execute_batch(&format!(
-            "BEGIN;
-             INSERT INTO categories (name) SELECT name FROM themes ORDER BY id;
-             UPDATE inputs SET theme_id = NULL WHERE theme_id IS NOT NULL;
-             DROP TABLE themes;
-             {SCHEMA}
-             INSERT INTO sqlite_sequence (name, seq) VALUES ('themes', {last_id});
-             COMMIT;"
-        ))?;
-    }
-    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("inputs", "theme_id"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone")] {
+    for (table, column) in [("sessions", "title"), ("sessions", "repos"), ("sessions", "branch"), ("sessions", "started_at"), ("todos", "repos"), ("todos", "prompt"), ("todos", "issue_state"), ("todos", "pr_url"), ("todos", "pr_state"), ("todos", "queue_runner"), ("todos", "queue_pos"), ("todos", "queue_error"), ("todos", "kind"), ("todos", "parent_id"), ("notifications", "url"), ("notifications", "input_id"), ("sessions", "agent"), ("sessions", "question"), ("review_sessions", "auto"), ("todos", "ci_state"), ("todos", "ci_failed"), ("todos", "plan"), ("todos", "fix_count"), ("todos", "escalation"), ("slack_messages", "user_image"), ("slack_messages", "gone"), ("artifacts", "gone"), ("notifications", "gone"), ("readings", "kept"), ("readings", "links"), ("digests", "session_id")] {
         let exists: bool = conn.query_row(
             &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = '{column}'"),
             [],
@@ -925,9 +965,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             // Integer columns keep integer affinity; older builds added them as TEXT,
             // which TODO_COLS casts back when reading.
             let ty = match column {
-                "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto" | "fix_count" | "theme_id" => "INTEGER",
-                // A flag every row needs: not let go.
-                "gone" => "INTEGER NOT NULL DEFAULT 0",
+                "queue_pos" | "parent_id" | "started_at" | "input_id" | "auto" | "fix_count" => "INTEGER",
+                // A flag every row needs: not let go, not kept.
+                "gone" | "kept" => "INTEGER NOT NULL DEFAULT 0",
                 _ => "TEXT",
             };
             conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {ty}"), [])?;
@@ -958,18 +998,45 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             create = TODOS_TABLE.replace("{name}", "todos_new"),
         ))?;
     }
-    // Inputs were todos of kind 'input' once: they move to their own table
-    // with their ids (the app keeps their Input mode pages by id) and pages.
+    // What was to be read (todos of kind 'input' once, then inputs in
+    // learning themes) is kept as articles to read, a page each; the themes,
+    // their reviews and the inputs go.
     conn.execute_batch(
         "BEGIN;
-         INSERT INTO inputs (id, title, memo, done, updated_at)
-             SELECT id, title, memo, status = 'done', updated_at FROM todos WHERE kind = 'input';
-         INSERT INTO input_links (input_id, url, title, image, created_at)
-             SELECT todo_id, url, title, image, created_at FROM links
-             WHERE todo_id IN (SELECT id FROM todos WHERE kind = 'input') ORDER BY id;
+         INSERT OR IGNORE INTO readings (url, title, image, created_at)
+             SELECT l.url, COALESCE(l.title, t.title), l.image, l.created_at FROM links l JOIN todos t ON t.id = l.todo_id
+             WHERE t.kind = 'input' ORDER BY l.id;
          DELETE FROM todos WHERE kind = 'input';
          COMMIT;",
     )?;
+    let inputs: bool = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name = 'input_links'", [], |r| r.get::<_, i64>(0).map(|n| n > 0))?;
+    if inputs {
+        conn.execute(
+            "INSERT OR IGNORE INTO readings (url, title, image, created_at)
+             SELECT l.url, COALESCE(l.title, i.title), l.image, l.created_at FROM input_links l JOIN inputs i ON i.id = l.input_id ORDER BY l.id",
+            [],
+        )?;
+    }
+    conn.execute_batch(
+        "DROP TABLE IF EXISTS input_links;
+         DROP TABLE IF EXISTS inputs;
+         DROP TABLE IF EXISTS themes;
+         DROP TABLE IF EXISTS categories;
+         DROP TABLE IF EXISTS feynman_points;
+         DROP TABLE IF EXISTS feynman_attempts;",
+    )?;
+    // The days' digests were of X's bookmarks alone at first, in x_digests.
+    let x_digests: bool = conn.query_row("SELECT COUNT(*) > 0 FROM sqlite_master WHERE name = 'x_digests'", [], |r| r.get(0))?;
+    if x_digests {
+        conn.execute_batch(
+            "BEGIN;
+             INSERT OR IGNORE INTO digests (day, url, error, made_at) SELECT day, url, error, made_at FROM x_digests;
+             DROP TABLE x_digests;
+             COMMIT;",
+        )?;
+    }
+    // Digests' sessions started before start_digest put them away.
+    conn.execute("INSERT OR IGNORE INTO session_hidden (session_id, hidden_at) SELECT session_id, ?1 FROM digests WHERE session_id IS NOT NULL", [now()])?;
     Ok(())
 }
 
@@ -1104,144 +1171,272 @@ impl Db {
         }
     }
 
-    pub fn create_input(&self, title: &str, memo: Option<&str>) -> Result<Input> {
-        self.conn.execute("INSERT INTO inputs (title, memo, updated_at) VALUES (?1, ?2, ?3)", params![title, memo, now()])?;
-        let id = self.conn.last_insert_rowid();
-        self.get_input(id)?.ok_or(Error::InputNotFound(id))
-    }
-
-    pub fn get_input(&self, id: i64) -> Result<Option<Input>> {
-        let row = self
-            .conn
-            .query_row(&format!("SELECT {INPUT_COLS} FROM inputs WHERE id = ?1"), [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
-            .optional()?;
-        let Some((id, title, memo, done, updated_at, theme_id)) = row else { return Ok(None) };
-        let links = self.input_links(Some(id))?;
-        Ok(Some(Input { id, title, memo, done, updated_at, links, theme_id }))
-    }
-
-    /// Every input, the latest changed first.
-    pub fn list_inputs(&self) -> Result<Vec<Input>> {
-        let mut by_input: std::collections::HashMap<i64, Vec<InputLink>> = std::collections::HashMap::new();
-        for link in self.input_links(None)? {
-            by_input.entry(link.input_id).or_default().push(link);
-        }
-        let mut stmt = self.conn.prepare(&format!("SELECT {INPUT_COLS} FROM inputs ORDER BY updated_at DESC, id DESC"))?;
-        let rows = stmt.query_map([], |r| {
-            let id: i64 = r.get(0)?;
-            Ok(Input { id, title: r.get(1)?, memo: r.get(2)?, done: r.get(3)?, updated_at: r.get(4)?, links: by_input.remove(&id).unwrap_or_default(), theme_id: r.get(5)? })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// The links of one input, or of all, in the order they were added.
-    fn input_links(&self, input_id: Option<i64>) -> Result<Vec<InputLink>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT {INPUT_LINK_COLS} FROM input_links WHERE ?1 IS NULL OR input_id = ?1 ORDER BY id"))?;
-        let rows = stmt.query_map([input_id], input_link_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    pub fn update_input(&self, id: i64, p: InputPatch) -> Result<Input> {
-        let memo = p.memo.map(|m| m.trim().to_string());
-        let changed = self.conn.execute(
-            "UPDATE inputs SET title = COALESCE(?2, title), memo = CASE WHEN ?3 IS NULL THEN memo ELSE NULLIF(?3, '') END,
-                 done = COALESCE(?4, done), updated_at = ?5 WHERE id = ?1",
-            params![id, p.title, memo, p.done, now()],
+    /// Keeps a reading; one kept already stays as it was, but a book takes
+    /// the chapters it lacks.
+    pub fn add_reading(&self, r: &NewReading) -> Result<Reading> {
+        let text = r.text.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        let links = Some(r.links.join("\n")).filter(|l| !l.is_empty());
+        self.conn.execute(
+            "INSERT OR IGNORE INTO readings (kind, url, title, text, created_at, links) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![r.kind.as_str(), r.url, r.title.trim(), text, now(), links],
         )?;
-        if changed == 0 {
-            return Err(Error::InputNotFound(id));
+        // Kept again: a post kept before its links were gets them.
+        self.conn.execute("UPDATE readings SET links = ?2 WHERE url = ?1 AND links IS NULL", params![r.url, links])?;
+        let id: i64 = self.conn.query_row("SELECT id FROM readings WHERE url = ?1", [&r.url], |row| row.get(0))?;
+        for (i, (title, url)) in r.chapters.iter().enumerate() {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO reading_chapters (reading_id, position, title, url) VALUES (?1, ?2, ?3, ?4)",
+                params![id, i as i64 + 1, title.trim(), chapter_url(url)],
+            )?;
         }
-        self.get_input(id)?.ok_or(Error::InputNotFound(id))
+        Ok(self.query_readings("id = ?1", [id])?.remove(0))
     }
 
-    /// Puts an input in a theme, or (None) back among the unsorted.
-    pub fn set_input_theme(&self, id: i64, theme_id: Option<i64>) -> Result<()> {
-        match self.conn.execute("UPDATE inputs SET theme_id = ?2, updated_at = ?3 WHERE id = ?1", params![id, theme_id, now()])? {
-            0 => Err(Error::InputNotFound(id)),
-            _ => Ok(()),
+    /// Every reading, the newest first.
+    pub fn list_readings(&self) -> Result<Vec<Reading>> {
+        self.query_readings("1 ORDER BY created_at DESC, id DESC", [])
+    }
+
+    /// The readings not sorted into tags yet, the oldest first.
+    pub fn unsorted_readings(&self) -> Result<Vec<Reading>> {
+        self.query_readings("tags IS NULL ORDER BY created_at, id", [])
+    }
+
+    fn query_readings<P: rusqlite::Params>(&self, filter: &str, p: P) -> Result<Vec<Reading>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT {READING_COLS} FROM readings WHERE {filter}"))?;
+        let mut readings = stmt.query_map(p, reading_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt = self.conn.prepare("SELECT reading_id, position, title, url, read FROM reading_chapters ORDER BY reading_id, position")?;
+        let chapters = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, Chapter { position: r.get(1)?, title: r.get(2)?, url: r.get(3)?, read: r.get(4)? })))?;
+        for row in chapters {
+            let (id, chapter) = row?;
+            if let Some(reading) = readings.iter_mut().find(|r| r.id == id) {
+                reading.chapters.push(chapter);
+            }
         }
+        Ok(readings)
     }
 
-    pub fn create_theme(&self, name: &str, goal: Option<&str>, category_id: Option<i64>) -> Result<Theme> {
-        let goal = goal.map(str::trim).filter(|g| !g.is_empty());
-        self.conn.execute("INSERT INTO themes (name, goal, updated_at, category_id) VALUES (?1, ?2, ?3, ?4)", params![name.trim(), goal, now(), category_id])?;
-        let id = self.conn.last_insert_rowid();
-        self.get_theme(id)?.ok_or(Error::ThemeNotFound(id))
-    }
-
-    pub fn get_theme(&self, id: i64) -> Result<Option<Theme>> {
-        Ok(self.conn.query_row(&format!("SELECT {THEME_COLS} FROM themes WHERE id = ?1"), [id], theme_from_row).optional()?)
-    }
-
-    /// Every theme, the latest changed first.
-    pub fn list_themes(&self) -> Result<Vec<Theme>> {
-        let mut stmt = self.conn.prepare(&format!("SELECT {THEME_COLS} FROM themes ORDER BY updated_at DESC, id DESC"))?;
-        let rows = stmt.query_map([], theme_from_row)?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    pub fn update_theme(&self, id: i64, p: ThemePatch) -> Result<Theme> {
-        let goal = p.goal.map(|g| g.trim().to_string());
-        let changed = self.conn.execute(
-            "UPDATE themes SET name = COALESCE(?2, name), goal = CASE WHEN ?3 IS NULL THEN goal ELSE NULLIF(?3, '') END,
-                 doc_url = COALESCE(?4, doc_url), updated_at = ?5 WHERE id = ?1",
-            params![id, p.name.map(|n| n.trim().to_string()), goal, p.doc_url, now()],
-        )?;
-        if changed == 0 {
-            return Err(Error::ThemeNotFound(id));
-        }
-        self.get_theme(id)?.ok_or(Error::ThemeNotFound(id))
-    }
-
-    /// Puts a theme in a category, or (None) in none.
-    pub fn set_theme_category(&self, id: i64, category_id: Option<i64>) -> Result<()> {
-        match self.conn.execute("UPDATE themes SET category_id = ?2 WHERE id = ?1", params![id, category_id])? {
-            0 => Err(Error::ThemeNotFound(id)),
-            _ => Ok(()),
-        }
-    }
-
-    pub fn create_category(&self, name: &str) -> Result<Category> {
-        self.conn.execute("INSERT INTO categories (name) VALUES (?1)", [name.trim()])?;
-        Ok(Category { id: self.conn.last_insert_rowid(), name: name.trim().to_string() })
-    }
-
-    /// Every category, in the order made.
-    pub fn list_categories(&self) -> Result<Vec<Category>> {
-        let mut stmt = self.conn.prepare("SELECT id, name FROM categories ORDER BY id")?;
-        let rows = stmt.query_map([], |r| Ok(Category { id: r.get(0)?, name: r.get(1)? }))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Takes a theme out; its inputs go back to the unsorted.
-    pub fn delete_theme(&self, id: i64) -> Result<()> {
-        self.conn.execute("UPDATE inputs SET theme_id = NULL WHERE theme_id = ?1", [id])?;
-        match self.conn.execute("DELETE FROM themes WHERE id = ?1", [id])? {
-            0 => Err(Error::ThemeNotFound(id)),
-            _ => Ok(()),
-        }
-    }
-
-    pub fn delete_input(&self, id: i64) -> Result<()> {
-        match self.conn.execute("DELETE FROM inputs WHERE id = ?1", [id])? {
-            0 => Err(Error::InputNotFound(id)),
-            _ => Ok(()),
-        }
-    }
-
-    pub fn add_input_link(&self, input_id: i64, url: &str) -> Result<InputLink> {
-        let created_at = now();
-        if self.conn.execute("UPDATE inputs SET updated_at = ?2 WHERE id = ?1", params![input_id, created_at])? == 0 {
-            return Err(Error::InputNotFound(input_id));
-        }
-        self.conn.execute("INSERT INTO input_links (input_id, url, created_at) VALUES (?1, ?2, ?3)", params![input_id, url, created_at])?;
-        Ok(InputLink { id: self.conn.last_insert_rowid(), input_id, url: url.into(), title: None, image: None, created_at })
-    }
-
-    /// Records what the input's page says about itself.
-    pub fn set_input_link_meta(&self, id: i64, title: Option<&str>, image: Option<&str>) -> Result<()> {
-        self.conn.execute("UPDATE input_links SET title = ?2, image = ?3 WHERE id = ?1", params![id, title, image])?;
+    /// What its page says about itself, where the reading has nothing yet.
+    pub fn fill_reading(&self, id: i64, text: Option<&str>, image: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE readings SET text = COALESCE(text, ?2), image = COALESCE(image, ?3) WHERE id = ?1", params![id, text, image])?;
         Ok(())
+    }
+
+    pub fn set_reading_tags(&self, id: i64, tags: &[String]) -> Result<()> {
+        match self.conn.execute("UPDATE readings SET tags = ?2 WHERE id = ?1", params![id, tags.join(&TAGS_SEPARATOR.to_string())])? {
+            0 => Err(Error::ReadingNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// A database named `name`, new.
+    pub fn create_database(&self, name: &str) -> Result<Database> {
+        let name = database_name(name)?;
+        self.conn.execute("INSERT INTO databases (name, created_at) VALUES (?1, ?2)", params![name, now()]).map_err(|e| name_taken(e, &name))?;
+        Ok(Database { id: self.conn.last_insert_rowid(), name, todos: vec![] })
+    }
+
+    pub fn rename_database(&self, id: i64, name: &str) -> Result<()> {
+        let name = database_name(name)?;
+        match self.conn.execute("UPDATE databases SET name = ?2 WHERE id = ?1", params![id, name]).map_err(|e| name_taken(e, &name))? {
+            0 => Err(Error::DatabaseNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Its todos stay, in no database.
+    pub fn delete_database(&self, id: i64) -> Result<()> {
+        match self.conn.execute("DELETE FROM databases WHERE id = ?1", [id])? {
+            0 => Err(Error::DatabaseNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Every database, in the order made, with the todos in it.
+    pub fn databases(&self) -> Result<Vec<Database>> {
+        let mut stmt = self.conn.prepare("SELECT id, name FROM databases ORDER BY id")?;
+        let mut databases = stmt.query_map([], |r| Ok(Database { id: r.get(0)?, name: r.get(1)?, todos: vec![] }))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut stmt = self.conn.prepare("SELECT database_id, todo_id FROM database_todos ORDER BY todo_id")?;
+        for row in stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))? {
+            let (database, todo) = row?;
+            if let Some(d) = databases.iter_mut().find(|d| d.id == database) {
+                d.todos.push(todo);
+            }
+        }
+        Ok(databases)
+    }
+
+    /// Puts the todo in a database (out of the one it was in), or with None in none.
+    pub fn set_todo_database(&self, todo_id: i64, database_id: Option<i64>) -> Result<()> {
+        if self.get_todo(todo_id)?.is_none() {
+            return Err(Error::TodoNotFound(todo_id));
+        }
+        let Some(database_id) = database_id else {
+            self.conn.execute("DELETE FROM database_todos WHERE todo_id = ?1", [todo_id])?;
+            return Ok(());
+        };
+        let known: bool = self.conn.query_row("SELECT COUNT(*) > 0 FROM databases WHERE id = ?1", [database_id], |r| r.get(0))?;
+        if !known {
+            return Err(Error::DatabaseNotFound(database_id));
+        }
+        self.conn.execute(
+            "INSERT INTO database_todos (todo_id, database_id) VALUES (?1, ?2) ON CONFLICT(todo_id) DO UPDATE SET database_id = ?2",
+            params![todo_id, database_id],
+        )?;
+        Ok(())
+    }
+
+    /// Counts a request to Jev, today's.
+    pub fn add_jev_usage(&self, usage: &tags::Usage) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO jev_usage (day, calls, input_tokens, output_tokens) VALUES (date('now', 'localtime'), 1, ?1, ?2)
+             ON CONFLICT(day) DO UPDATE SET calls = calls + 1, input_tokens = input_tokens + ?1, output_tokens = output_tokens + ?2",
+            params![usage.input_tokens, usage.output_tokens],
+        )?;
+        Ok(())
+    }
+
+    /// The requests to Jev today, this month and all along.
+    pub fn jev_spend(&self) -> Result<JevSpend> {
+        let since = |start: &str| -> Result<JevTally> {
+            Ok(self.conn.query_row(
+                &format!("SELECT COALESCE(SUM(calls), 0), COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0) FROM jev_usage WHERE day >= {start}"),
+                [],
+                |r| Ok(JevTally { calls: r.get(0)?, input_tokens: r.get(1)?, output_tokens: r.get(2)? }),
+            )?)
+        };
+        Ok(JevSpend {
+            today: since("date('now', 'localtime')")?,
+            month: since("date('now', 'localtime', 'start of month')")?,
+            all: since("''")?,
+        })
+    }
+
+    /// Keeps Jev's credit as just read off the console, against what this app has used so far.
+    pub fn set_jev_credit(&self, credit: f64, spent: f64) -> Result<JevCredit> {
+        let credit = JevCredit { credit, spent, base_input_tokens: self.jev_spend()?.all.input_tokens, at: now() };
+        self.conn.execute(
+            "INSERT INTO jev_credit (id, credit, spent, base_input_tokens, at) VALUES (1, ?1, ?2, ?3, ?4)
+             ON CONFLICT(id) DO UPDATE SET credit = ?1, spent = ?2, base_input_tokens = ?3, at = ?4",
+            params![credit.credit, credit.spent, credit.base_input_tokens, credit.at],
+        )?;
+        Ok(credit)
+    }
+
+    pub fn clear_jev_credit(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM jev_credit", [])?;
+        Ok(())
+    }
+
+    pub fn jev_credit(&self) -> Result<Option<JevCredit>> {
+        Ok(self
+            .conn
+            .query_row("SELECT credit, spent, base_input_tokens, at FROM jev_credit", [], |r| {
+                Ok(JevCredit { credit: r.get(0)?, spent: r.get(1)?, base_input_tokens: r.get(2)?, at: r.get(3)? })
+            })
+            .optional()?)
+    }
+
+    /// With a tag some reading has no longer among `known` (the tags were
+    /// changed), every reading goes back to be sorted; how many did.
+    pub fn unsort_readings_if_tags_gone(&self, known: &[&str]) -> Result<usize> {
+        let mut stmt = self.conn.prepare("SELECT tags FROM readings WHERE tags IS NOT NULL")?;
+        let tagged = stmt.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let gone = tagged.iter().any(|tags| tags.split(TAGS_SEPARATOR).any(|t| !t.is_empty() && !known.contains(&t)));
+        if !gone {
+            return Ok(0);
+        }
+        Ok(self.conn.execute("UPDATE readings SET tags = NULL WHERE tags IS NOT NULL", [])?)
+    }
+
+    pub fn set_chapter_read(&self, reading_id: i64, position: i64, read: bool) -> Result<()> {
+        match self.conn.execute("UPDATE reading_chapters SET read = ?3 WHERE reading_id = ?1 AND position = ?2", params![reading_id, position, read])? {
+            0 => Err(Error::ReadingNotFound(reading_id)),
+            _ => Ok(()),
+        }
+    }
+
+    /// Marks the chapter whose page `url` is as read; false when no book has it.
+    pub fn mark_chapter_read(&self, url: &str) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE reading_chapters SET read = 1 WHERE url = ?1", [chapter_url(url)])? > 0)
+    }
+
+    /// The local date `offset` days from today, YYYY-MM-DD (the database's clock, as the days are kept).
+    pub fn local_day(&self, offset: i64) -> Result<String> {
+        Ok(self.conn.query_row("SELECT date('now', 'localtime', ?1 || ' days')", [offset.to_string()], |r| r.get(0))?)
+    }
+
+    /// The local hour now (0–23).
+    pub fn local_hour(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT CAST(strftime('%H', 'now', 'localtime') AS INTEGER)", [], |r| r.get(0))?)
+    }
+
+    /// The readings kept on `day` (the local date), in the order kept.
+    pub fn readings_on(&self, day: &str) -> Result<Vec<Reading>> {
+        self.query_readings("date(created_at, 'unixepoch', 'localtime') = ?1 ORDER BY created_at, id", [day])
+    }
+
+    /// A day's digest made (its document's link), or why it was not.
+    pub fn set_digest(&self, day: &str, made: std::result::Result<&str, &str>) -> Result<()> {
+        let (url, error) = match made {
+            Ok(url) => (Some(url), None),
+            Err(why) => (None, Some(why)),
+        };
+        self.conn.execute(
+            "INSERT INTO digests (day, url, error, made_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(day) DO UPDATE SET url = ?2, error = ?3, made_at = ?4",
+            params![day, url, error, now()],
+        )?;
+        Ok(())
+    }
+
+    /// `day`'s digest being made in session `session_id`, from scratch. The
+    /// session is off the lists (unless it asks): the digest shows it.
+    pub fn start_digest(&self, day: &str, session_id: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO digests (day, url, error, made_at, session_id) VALUES (?1, NULL, NULL, ?2, ?3)
+             ON CONFLICT(day) DO UPDATE SET url = NULL, error = NULL, made_at = ?2, session_id = ?3",
+            params![day, now(), session_id],
+        )?;
+        self.hide_session(session_id)
+    }
+
+    /// An artifact session `session_id` published: the digest it makes, if it
+    /// makes one (and has none yet); whether it was.
+    pub fn digest_made_by(&self, session_id: &str, url: &str) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])? > 0)
+    }
+
+    pub fn digest(&self, day: &str) -> Result<Option<Digest>> {
+        Ok(self.digests_where("day = ?1", [day])?.pop())
+    }
+
+    /// Every day's digest, the newest first.
+    pub fn digests(&self) -> Result<Vec<Digest>> {
+        self.digests_where("1", [])
+    }
+
+    fn digests_where<P: rusqlite::Params>(&self, filter: &str, p: P) -> Result<Vec<Digest>> {
+        let mut stmt = self.conn.prepare(&format!("SELECT day, url, error, made_at, session_id FROM digests WHERE {filter} ORDER BY day DESC"))?;
+        let digests = stmt
+            .query_map(p, |r| Ok(Digest { day: r.get(0)?, url: r.get(1)?, error: r.get(2)?, made_at: r.get(3)?, session_id: r.get(4)? }))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(digests)
+    }
+
+    /// Keeps a reading read (a good one), or puts it back to read.
+    pub fn set_reading_kept(&self, id: i64, kept: bool) -> Result<()> {
+        match self.conn.execute("UPDATE readings SET kept = ?2 WHERE id = ?1", params![id, kept])? {
+            0 => Err(Error::ReadingNotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
+    pub fn delete_reading(&self, id: i64) -> Result<()> {
+        match self.conn.execute("DELETE FROM readings WHERE id = ?1", [id])? {
+            0 => Err(Error::ReadingNotFound(id)),
+            _ => Ok(()),
+        }
     }
 
     /// The session was looked at as of `at`: a turn that ended before then is read.
@@ -1414,49 +1609,6 @@ impl Db {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    pub fn add_feynman_attempt(&self, subject: Subject, explanation: &str, grade: &feynman::Grade, score: u8) -> Result<FeynmanAttempt> {
-        let at = now();
-        // Strings and enums only: it always serializes.
-        let grade_json = serde_json::to_string(grade).expect("a grade serializes");
-        self.conn.execute(
-            "INSERT INTO feynman_attempts (subject_kind, subject_id, explanation, grade, score, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![subject.kind(), subject.id(), explanation, grade_json, score as i64, at],
-        )?;
-        Ok(FeynmanAttempt { id: self.conn.last_insert_rowid(), explanation: explanation.into(), grade: grade.clone(), score, created_at: at })
-    }
-
-    /// The subject's attempts, newest first.
-    pub fn feynman_attempts(&self, subject: Subject) -> Result<Vec<FeynmanAttempt>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, explanation, grade, score, created_at FROM feynman_attempts WHERE subject_kind = ?1 AND subject_id = ?2 ORDER BY id DESC",
-        )?;
-        let rows = stmt.query_map(params![subject.kind(), subject.id()], |r| {
-            let grade: String = r.get(2)?;
-            Ok(FeynmanAttempt {
-                id: r.get(0)?,
-                explanation: r.get(1)?,
-                grade: serde_json::from_str(&grade).unwrap_or_default(),
-                score: r.get::<_, i64>(3)? as u8,
-                created_at: r.get(4)?,
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Every subject's latest attempt.
-    pub fn feynman_summaries(&self) -> Result<Vec<FeynmanSummary>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT subject_kind, subject_id, score, created_at FROM feynman_attempts a
-             WHERE id = (SELECT MAX(id) FROM feynman_attempts WHERE subject_kind = a.subject_kind AND subject_id = a.subject_id)",
-        )?;
-        let rows = stmt.query_map([], |r| {
-            let (kind, id, score, at): (String, i64, i64, i64) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
-            let score = score as u8;
-            Ok(FeynmanSummary { subject: Subject::from_row(&kind, id), score, attempted_at: at, due_at: at + feynman::review_after_days(score) * 86_400 })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
     /// Records a review request on the PR unless one still asking was
     /// recorded, and returns its id when it is new. `read` keeps it out of
     /// the unread ones.
@@ -1600,15 +1752,15 @@ impl Db {
     /// Keeps an artifact, once per URL; whether it is new.
     pub fn add_artifact(&self, a: NewArtifact) -> Result<bool> {
         let n = self.conn.execute(
-            "INSERT OR IGNORE INTO artifacts (url, title, kind, session_id, todo_id, theme_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![a.url, a.title, a.kind.as_str(), a.session_id, a.todo_id, a.theme_id, now()],
+            "INSERT OR IGNORE INTO artifacts (url, title, kind, session_id, todo_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![a.url, a.title, a.kind.as_str(), a.session_id, a.todo_id, now()],
         )?;
         Ok(n > 0)
     }
 
     /// Every artifact not forgotten, newest first.
     pub fn artifacts(&self) -> Result<Vec<Artifact>> {
-        let mut stmt = self.conn.prepare("SELECT id, url, title, kind, session_id, todo_id, theme_id, created_at FROM artifacts WHERE gone = 0 ORDER BY id DESC")?;
+        let mut stmt = self.conn.prepare("SELECT id, url, title, kind, session_id, todo_id, created_at FROM artifacts WHERE gone = 0 ORDER BY id DESC")?;
         let rows = stmt.query_map([], |r| {
             Ok(Artifact {
                 id: r.get(0)?,
@@ -1617,8 +1769,7 @@ impl Db {
                 kind: ArtifactKind::parse(&r.get::<_, String>(3)?),
                 session_id: r.get(4)?,
                 todo_id: r.get(5)?,
-                theme_id: r.get(6)?,
-                created_at: r.get(7)?,
+                created_at: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)

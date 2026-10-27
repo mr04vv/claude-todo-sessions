@@ -1,7 +1,5 @@
-// Claude asked once through `claude -p`, without a session or the built-in
-// tools: translations, the learning themes' sorting, picks and reviews (in
-// a JSON schema), and writing a theme's document (with the Claude Docs
-// connector's tools).
+// Claude asked once through `claude -p`, without a session, the built-in
+// tools or MCP servers: the in-place translations (in a JSON schema).
 use std::io::{Read, Write};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -10,35 +8,37 @@ use serde_json::Value;
 
 use crate::err;
 
-/// How long one answer may take (the points of eight pages take a while).
+/// How long one answer may take.
 const CLAUDE_TIMEOUT: Duration = Duration::from_secs(240);
 
-/// The MCP server whose tools a theme's document is read and written with.
-const DOCS_TOOLS: &str = "mcp__claude_ai_Claude_Docs";
+/// Where the one-shot asks run (beside the database), so they are told apart from sessions.
+pub fn ask_dir() -> std::path::PathBuf {
+    crate::db_path().parent().map(|d| d.join("ask")).unwrap_or_else(|| std::env::temp_dir().join("shosai-ask"))
+}
 
 /// Asks Claude once, without a session or the built-in tools, for an answer
 /// in `schema` (its structured output), or without one for its text (a
-/// string). `docs` lets it use the Claude Docs connector; otherwise no MCP
-/// server loads. The prompt goes in on stdin (a long one would not fit in
-/// an argument).
-pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>, docs: bool) -> Result<Value, String> {
+/// string). The prompt goes in on stdin (a long one would not fit in an
+/// argument).
+pub fn claude(prompt: &str, schema: Option<&Value>, model: Option<&str>, effort: Option<&str>) -> Result<Value, String> {
     let mut cmd = crate::cli("claude");
     cmd.args(["-p", "--output-format", "json", "--tools", "", "--no-session-persistence"]);
+    // Without the hooks: the todo-sessions plugin's would record each ask as a session of the lists.
+    cmd.args(["--settings", r#"{"disableAllHooks": true}"#]);
     if let Some(schema) = schema {
         cmd.args(["--json-schema", &schema.to_string()]);
     }
-    if docs {
-        cmd.args(["--allowedTools", DOCS_TOOLS]);
-    } else {
-        cmd.arg("--strict-mcp-config");
-    }
+    cmd.arg("--strict-mcp-config");
     if let Some(model) = model {
         cmd.args(["--model", model]);
     }
     if let Some(effort) = effort {
         cmd.args(["--effort", effort]);
     }
-    cmd.current_dir(crate::home()).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // In a folder of its own: the app's discovery (claude agents) leaves runs there out of the lists.
+    let dir = ask_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    cmd.current_dir(&dir).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|e| format!("claude を起動できません: {e}"))?;
     let mut stdin = child.stdin.take().ok_or("claude の入力を開けません")?;
     let prompt = prompt.to_string();

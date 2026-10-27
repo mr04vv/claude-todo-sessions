@@ -40,8 +40,6 @@ const SHUTDOWN_WAIT: Duration = Duration::from_millis(1500);
 const MAIN_THREAD_WAIT: Duration = Duration::from_secs(10);
 /// How long the browser may take to start.
 const READY_WAIT: Duration = Duration::from_secs(20);
-/// How long a page's text is waited for.
-const TEXT_WAIT: Duration = Duration::from_secs(15);
 
 /// Where the framework is in the .app, from the folder of the executable.
 const FRAMEWORK: &str = "../Frameworks/Chromium Embedded Framework.framework";
@@ -280,6 +278,17 @@ fn on_main<R: Send + 'static>(app: &AppHandle, f: impl FnOnce() -> R + Send + 's
     rx.recv_timeout(MAIN_THREAD_WAIT).map_err(|_| "ブラウザが応答しません".to_string())
 }
 
+/// A tab's key here: the window it is in (its label) and its id there, as
+/// each window's page names its own tabs. Every function below takes it.
+pub fn key(win: &str, tab: &str) -> String {
+    format!("{win}:{tab}")
+}
+
+/// A key's window and tab id.
+pub fn split(key: &str) -> (&str, &str) {
+    key.split_once(':').unwrap_or(("main", key))
+}
+
 fn with_tab<R>(tab: &str, f: impl FnOnce(&Browser) -> R) -> Option<R> {
     TABS.with(|t| t.borrow().get(tab).map(f))
 }
@@ -295,11 +304,11 @@ fn cocoa_frame(content: &NSView, rect: PageRect) -> NSRect {
     NSRect::new(NSPoint::new(rect.x, top - rect.y - rect.height), NSSize::new(rect.width, rect.height))
 }
 
-/// The main window's content view. Not a `Retained`: objc2's getters over-release
+/// A window's content view. Not a `Retained`: objc2's getters over-release
 /// when optimised on macOS 14+ (madsmtm/objc2#861), which freed the view tao's
 /// mouse events still go to (a crash on the first mouse move). The window owns it.
-fn content_view(app: &AppHandle) -> Result<&'static NSView, String> {
-    let window = app.get_window("main").ok_or("main window not found")?;
+fn content_view(app: &AppHandle, win: &str) -> Result<&'static NSView, String> {
+    let window = app.get_window(win).ok_or_else(|| format!("{win} window not found"))?;
     let ns_window = window.ns_window().map_err(err)? as *mut AnyObject;
     // SAFETY: Tauri's window handle is its NSWindow, alive with the window; this runs on the main thread.
     let content: *mut NSView = unsafe { msg_send![ns_window, contentView] };
@@ -714,18 +723,6 @@ pub fn answer_media(app: &AppHandle, id: u64, allow: bool) -> Result<(), String>
     })
 }
 
-wrap_string_visitor! {
-    struct TextVisitor {
-        out: Sender<String>,
-    }
-
-    impl CefStringVisitor {
-        fn visit(&self, string: Option<&CefString>) {
-            let _ = self.out.send(string.map(CefString::to_string).unwrap_or_default());
-        }
-    }
-}
-
 /// Runs Chromium's work until its context is up, which a browser needs to be made (a tab
 /// restored right after launch would come first).
 fn wait_ready() -> Result<(), String> {
@@ -745,7 +742,7 @@ pub fn exists(app: &AppHandle, tab: &str) -> bool {
     on_main(app, move || with_tab(&tab, |_| ()).is_some()).unwrap_or(false)
 }
 
-/// Opens tab `tab` on `url` at `rect`, over the main window's content.
+/// Opens tab `tab` (a key) on `url` at `rect`, over its window's content.
 pub fn create(app: &AppHandle, tab: &str, url: &str, rect: PageRect) -> Result<(), String> {
     if !available() {
         return Err("ブラウザ（Chromium）が入っていません。.app として起動してください".into());
@@ -753,7 +750,7 @@ pub fn create(app: &AppHandle, tab: &str, url: &str, rect: PageRect) -> Result<(
     let (tab, url, handle) = (tab.to_string(), url.to_string(), app.clone());
     on_main(app, move || {
         wait_ready()?;
-        let content = content_view(&handle)?;
+        let content = content_view(&handle, split(&tab).0)?;
         let frame = cocoa_frame(content, rect);
         let bounds = Rect { x: frame.origin.x as i32, y: frame.origin.y as i32, width: frame.size.width as i32, height: frame.size.height as i32 };
         let info = WindowInfo { runtime_style: RuntimeStyle::ALLOY, ..Default::default() }.set_as_child(content as *const NSView as *mut AnyObject as _, &bounds);
@@ -781,19 +778,19 @@ pub fn url(app: &AppHandle, tab: &str) -> Option<String> {
 pub fn set_rect(app: &AppHandle, tab: &str, rect: PageRect) -> Result<(), String> {
     let (tab, handle) = (tab.to_string(), app.clone());
     on_main(app, move || {
-        let content = content_view(&handle)?;
+        let content = content_view(&handle, split(&tab).0)?;
         with_tab(&tab, |b| view_of(b).map(|v| v.setFrame(cocoa_frame(content, rect))));
         Ok(())
     })?
 }
 
-/// Shows or hides tab `tab`, or every tab but those in `except`.
-pub fn set_hidden(app: &AppHandle, only: Option<&str>, except: &[String], hidden: bool) -> Result<(), String> {
-    let (only, except) = (only.map(String::from), except.to_vec());
+/// Shows or hides window `win`'s tab `only` (a key), or every one of its tabs but those in `except`.
+pub fn set_hidden(app: &AppHandle, win: &str, only: Option<&str>, except: &[String], hidden: bool) -> Result<(), String> {
+    let (win, only, except) = (win.to_string(), only.map(String::from), except.to_vec());
     on_main(app, move || {
         TABS.with(|t| {
             for (tab, browser) in t.borrow().iter() {
-                if only.as_ref().is_some_and(|o| o != tab) || except.contains(tab) {
+                if split(tab).0 != win || only.as_ref().is_some_and(|o| o != tab) || except.contains(tab) {
                     continue;
                 }
                 if let Some(view) = view_of(browser) {
@@ -875,19 +872,6 @@ pub fn zoom(app: &AppHandle, tab: &str) -> Option<f64> {
     let level = on_main(app, move || with_tab(&tab, |b| b.host().map(|h| h.zoom_level())).flatten()).ok().flatten()?;
     // Rounded: the steps (1.1, 1.25, ...) are compared with it.
     Some((ZOOM_LEVEL_BASE.powf(level) * 100.0).round() / 100.0)
-}
-
-/// The text of the tab's page, or None when the tab has no page open.
-pub fn text(app: &AppHandle, tab: &str) -> Result<Option<String>, String> {
-    let tab = tab.to_string();
-    let (tx, rx) = channel();
-    let asked = on_main(app, move || {
-        with_tab(&tab, |b| b.main_frame().map(|f| f.text(Some(&mut TextVisitor::new(tx))))).flatten().is_some()
-    })?;
-    if !asked {
-        return Ok(None);
-    }
-    rx.recv_timeout(TEXT_WAIT).map(Some).map_err(|_| "ページの本文を読めませんでした".to_string())
 }
 
 /// At quit: closes the pages and lets Chromium write what it keeps (cookies among it).

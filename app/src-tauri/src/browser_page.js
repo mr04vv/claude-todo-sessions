@@ -2,7 +2,10 @@
 // own: the app's keys work here too (⌘L the address bar, ⌘T ⌘W tabs, ⌘K the
 // commands, ⌃h ⌃l the typing's side, ⌘[ ⌘] ⌘R the page, j k scrolling (and
 // picking a Google result), as the user set them), the page translates where it is (Claude, through the app),
-// and ⌥ + click keeps a link as an input todo.
+// and what is worth reading is kept (読みもの): the page (⌘⇧D; an O'Reilly
+// book's page as the book, with its contents), a link ⌥-clicked, a post
+// bookmarked on X. A book's chapter read to its end is marked read. Posts on
+// X's home timeline not about engineering fold away (Jev, through the app).
 // It runs in the page's frames too (a doc's editor on claude.ai is one), which
 // get the app's keys as the page does and tell the app themselves (FRAME), but
 // for the page's own history keys.
@@ -26,14 +29,17 @@
   const PREV_TAB = "todo-sessions://tab-prev";
   const NEXT_TAB = "todo-sessions://tab-next";
   const ARCHIVE = "todo-sessions://archive";
-  const TO_INPUT = "todo-sessions://to-input";
   const PALETTE = "todo-sessions://palette";
   const SESSIONS = "todo-sessions://sessions";
   const FOCUS_APP = "todo-sessions://focus-app";
   const FOCUS_PANE = "todo-sessions://focus-pane";
-  const FOCUS_EXIT = "todo-sessions://focus-exit";
+  const SPACE = "todo-sessions://space";
   const CLOSE_TAB = "todo-sessions://close-tab";
-  const ADD_INPUT = "todo-sessions://add-input";
+  const WORK_RIGHT = "todo-sessions://work-right";
+  const BOOKMARK = "todo-sessions://bookmark";
+  const ASK_CHATGPT = "todo-sessions://ask-chatgpt";
+  const CHAPTER_READ = "todo-sessions://chapter-read";
+  const X_POST = "todo-sessions://x-post";
   const NEW_TODO = "todo-sessions://new-todo";
   const ZOOM_IN = "todo-sessions://zoom-in";
   const ZOOM_OUT = "todo-sessions://zoom-out";
@@ -79,15 +85,23 @@
       send(text ? `${FOCUS_PANE}?text=${encodeURIComponent(text)}` : FOCUS_PANE);
     }],
     ["palette", () => send(PALETTE)],
+    ["spaceManage", () => send(`${SPACE}?s=manage`)],
+    ["spaceWork", () => send(`${SPACE}?s=work`)],
+    ["spaceStudy", () => send(`${SPACE}?s=study`)],
+    ["spaceBrowser", () => send(`${SPACE}?s=browser`)],
+    ["spaceSlack", () => send(`${SPACE}?s=slack`)],
+    ["spaceArtifacts", () => send(`${SPACE}?s=artifacts`)],
     ["sessions", () => send(SESSIONS)],
     ["focusUrl", () => send(FOCUS_URL)],
     ["newTab", () => send(NEW_TAB)],
     ["newTodo", () => send(NEW_TODO)],
     ["closeTab", () => send(CLOSE_TAB)],
+    ["workRight", () => send(WORK_RIGHT)],
     ["prevTab", () => send(PREV_TAB)],
     ["nextTab", () => send(NEXT_TAB)],
     ["archive", () => send(ARCHIVE)],
-    ["toInput", () => send(TO_INPUT)],
+    ["bookmark", () => window.__todoSessionsBookmark?.()],
+    ["askChatGpt", (selected) => window.__todoSessionsAskChatgpt?.(selected)],
     ["zoomIn", () => send(ZOOM_IN)],
     ["zoomOut", () => send(ZOOM_OUT)],
     ["zoomReset", () => send(ZOOM_RESET)],
@@ -101,21 +115,15 @@
   // ⌘⇧A archives the Cloud session a claude.ai page shows; elsewhere the key is the page's.
   const SESSION_PAGE = /^https:\/\/claude\.ai\/code\/session_/;
   const appliesHere = (action) => action !== "archive" || SESSION_PAGE.test(location.href);
-  // In the focus mode the app shows which side has the keyboard; a page (or
-  // one of its frames) taking it says so.
+  // In a split view (作業・学習) the app shows which side has the keyboard; a
+  // page (or one of its frames) taking it says so.
   const FOCUSED = "todo-sessions://page-focused";
-  window.addEventListener("focus", () => window.__todoSessionsFocusMode && send(FOCUSED));
+  // The browser's own window marks it always, so it is said always.
+  window.addEventListener("focus", () => send(FOCUSED));
 
   window.addEventListener(
     "keydown",
     (e) => {
-      // In the focus mode (the app sets the flag) Esc asks about leaving it.
-      if (window.__todoSessionsFocusMode && e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey) {
-        e.preventDefault();
-        e.stopImmediatePropagation();
-        send(FOCUS_EXIT);
-        return;
-      }
       // Ahead of the page's own keys (ChatGPT's ⌘K search, say).
       const hit = KEY_ACTIONS.find(([action]) => is(e, action) && appliesHere(action) && !(FRAME && PAGE_ONLY.includes(action)));
       if (!hit) return;
@@ -126,9 +134,9 @@
     true,
   );
 
-  // The list keys (j k) scroll the page when no field has the typing, unless
-  // the page took them itself (X's own j k, say). The page's scrolling box
-  // is the one under the middle of the view, or the page itself.
+  // ⇧j ⇧k scroll the page when no field has the typing, unless the page took
+  // them itself; j k pick (a Google result), else are the page's own (X's j k).
+  // The page's scrolling box is the one under the middle of the view, or the page itself.
   const SCROLL_STEP = 80;
   const editing = (el) => el instanceof Element && (el.isContentEditable || el.closest("input, textarea, select, [role=textbox]"));
   const scroller = () => {
@@ -161,8 +169,9 @@
     next.scrollIntoView({ block: "center", behavior: smooth ? "smooth" : "auto" });
     return true;
   };
-  const listDir = (e) =>
-    e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement) ? 0 : is(e, "down") ? 1 : is(e, "up") ? -1 : 0;
+  const typingHere = (e) => e.isComposing || e.keyCode === 229 || editing(e.target) || editing(document.activeElement);
+  const listDir = (e) => (typingHere(e) ? 0 : is(e, "down") ? 1 : is(e, "up") ? -1 : 0);
+  const scrollDir = (e) => (typingHere(e) ? 0 : is(e, "scrollDown") ? 1 : is(e, "scrollUp") ? -1 : 0);
   // Ahead of Google's own keys (a letter typed anywhere goes to its search box).
   window.addEventListener(
     "keydown",
@@ -175,7 +184,7 @@
     true,
   );
   window.addEventListener("keydown", (e) => {
-    const dir = e.defaultPrevented ? 0 : listDir(e);
+    const dir = e.defaultPrevented ? 0 : scrollDir(e);
     if (!dir) return;
     e.preventDefault();
     scroller().scrollBy({ top: dir * SCROLL_STEP, behavior: e.repeat ? "auto" : "smooth" });
@@ -183,15 +192,18 @@
 
   if (FRAME) return;
 
-  // The app asks a page (ChatGPT's) to take the typing: its prompt box, once
-  // the page has drawn it, with `text` typed into it when given.
-  const INPUT = '#prompt-textarea, [contenteditable="true"], textarea, input[type="text"], input:not([type])';
+  // The app asks a page (ChatGPT's, Claude's, NotebookLM's) to take the
+  // typing: its prompt box, once the page has drawn it, with `text` typed
+  // into it when given. The first kind shown wins, not the first in the page
+  // (Claude's sidebar has a search field ahead of its prompt box).
+  const INPUTS = ['#prompt-textarea', '[contenteditable="true"][role="textbox"]', '[contenteditable="true"]', "textarea", 'input[type="text"]', "input:not([type])"];
   const INPUT_WAIT_MS = 10000;
   const INPUT_RETRY_MS = 200;
+  const drawn = (el) => el.getClientRects().length > 0;
   window.__todoSessionsFocusInput = (text) => {
     const until = Date.now() + INPUT_WAIT_MS;
     const tryFocus = () => {
-      const el = document.querySelector(INPUT);
+      const el = INPUTS.flatMap((kind) => [...document.querySelectorAll(kind)]).find(drawn);
       if (!el) {
         if (Date.now() < until) setTimeout(tryFocus, INPUT_RETRY_MS);
         return;
@@ -213,7 +225,7 @@
     'input[type=email], input[autocomplete~=username], input[name*=user i], input[name*=email i], input[name*=login i], input[id*=user i], input[id*=email i]';
   const shown = (el) => el && el.offsetParent !== null && !el.disabled && !el.readOnly;
   const userField = () => [...document.querySelectorAll(USER_FIELDS)].find((el) => shown(el) && el.type !== "password" && el.type !== "hidden");
-  const passField = () => [...document.querySelectorAll("input[type=password]")].find(shown);
+  const passField = () => [...document.querySelectorAll("input[type=password]")].find(drawn);
   /// The user typed in a step before the password's.
   const LOGIN_USER_KEY = "__todoSessionsLoginUser";
   /// The user a site remembers, kept in a hidden field beside the password (OneLogin's).
@@ -247,7 +259,7 @@
   };
   const sendFrom = (el) => {
     const scope = el.form ?? document;
-    const button = [...scope.querySelectorAll('button[type=submit], input[type=submit], button:not([type])')].find(shown);
+    const button = [...scope.querySelectorAll('button[type=submit], input[type=submit], button:not([type])')].find(drawn);
     if (button) button.click();
     else if (el.form) el.form.requestSubmit();
   };
@@ -279,7 +291,69 @@
     setTimeout(() => clearInterval(timer), FILL_FOR_MS);
   };
 
-  // ⌥ + click keeps the link as an input instead of following it.
+  // Readings (読みもの) the app keeps: a kind (article, post, book), the page,
+  // its title, what it says (for its tags) and a book's chapters ([title, page]).
+  const TEXT_MAX = 2000;
+  const TITLE_MAX = 120;
+  const enc = encodeURIComponent;
+  const oneLine = (text) => (text ?? "").trim().replace(/\s+/g, " ");
+  const keep = (kind, url, title, text, chapters, links) =>
+    send(
+      `${BOOKMARK}?k=${kind}&u=${enc(url)}&t=${enc(title || url)}&x=${enc((text ?? "").slice(0, TEXT_MAX))}${chapters ? `&c=${enc(JSON.stringify(chapters))}` : ""}${links?.length ? `&l=${enc(JSON.stringify(links))}` : ""}`,
+    );
+  const meta = (name) => document.querySelector(`meta[property="${name}"], meta[name="${name}"]`)?.content?.trim() ?? "";
+  // An O'Reilly book's pages are under its own (…/library/view/<book>/<isbn>/).
+  const OREILLY_BOOK = /^https:\/\/learning\.oreilly\.com\/library\/view\/[^/]+\/[^/]+\//;
+  const X_HOST = /(^|\.)(x|twitter)\.com$/;
+  const X_STATUS = /^\/([^/]+)\/status\/\d+/;
+  /// A post on X: its own page, its author, its text and the links in it
+  /// (its text's and its card's; X gives them as t.co, the app follows them).
+  const POST_LINKS = '[data-testid="tweetText"] a[href^="https://t.co/"], [data-testid="card.wrapper"] a[href]';
+  const linksOf = (post) => [...new Set([...(post?.querySelectorAll(POST_LINKS) ?? [])].map((a) => a.href))];
+  const keepPost = (url, user, text, post) => keep("post", url, `@${user}: ${oneLine(text).slice(0, TITLE_MAX) || url}`, text, null, linksOf(post));
+  // ⌘⇧D (here, or from the app's side): the page shown. A book's page keeps
+  // the book with the chapters it links to (its table of contents).
+  window.__todoSessionsBookmark = () => {
+    const book = location.href.match(OREILLY_BOOK);
+    if (book) {
+      const root = book[0];
+      const seen = new Set();
+      const chapters = [];
+      for (const a of document.querySelectorAll("a[href]")) {
+        const url = a.href.split("#")[0];
+        const title = oneLine(a.textContent);
+        if (!url.startsWith(root) || !/\.x?html$/.test(url) || !title || seen.has(url)) continue;
+        seen.add(url);
+        chapters.push([title, url]);
+      }
+      return keep("book", root, meta("og:title") || document.title.split("|").pop().trim(), meta("og:description") || meta("description"), chapters);
+    }
+    const status = X_HOST.test(location.hostname) && location.pathname.match(X_STATUS);
+    if (status) return keepPost(location.href.split("?")[0], status[1], document.querySelector('article [data-testid="tweetText"]')?.innerText, document.querySelector("article"));
+    keep("article", location.href, document.title, meta("og:description") || meta("description"));
+  };
+  // ⌘⇧G (here, or from the app's side): the page (or what is selected in it)
+  // goes to the app, for ChatGPT on the right to explain.
+  const ASK_TEXT_MAX = 6000;
+  window.__todoSessionsAskChatgpt = (selected) => {
+    const text = (selected || document.body?.innerText || "").replace(/\n{3,}/g, "\n\n").slice(0, ASK_TEXT_MAX);
+    send(`${ASK_CHATGPT}?u=${enc(location.href)}&t=${enc(document.title)}&s=${selected ? 1 : 0}&x=${enc(text)}`);
+  };
+  // In ChatGPT's page: `text` typed into its prompt box and sent (its send
+  // button, once it takes it; left typed if the button never comes).
+  const SEND_BUTTON = 'button[data-testid="send-button"], #composer-submit-button';
+  const SEND_WAIT_MS = 5000;
+  window.__todoSessionsAsk = (text) => {
+    window.__todoSessionsFocusInput(text);
+    const until = Date.now() + INPUT_WAIT_MS + SEND_WAIT_MS;
+    const trySend = () => {
+      const button = document.querySelector(SEND_BUTTON);
+      if (button && !button.disabled && document.querySelector(INPUTS[0])?.textContent?.trim()) return button.click();
+      if (Date.now() < until) setTimeout(trySend, INPUT_RETRY_MS);
+    };
+    setTimeout(trySend, INPUT_RETRY_MS);
+  };
+  // ⌥ + click keeps the link to read instead of following it.
   window.addEventListener(
     "click",
     (e) => {
@@ -287,8 +361,102 @@
       if (!e.altKey || e.metaKey || e.ctrlKey || !link || !/^https?:/.test(link.href)) return;
       e.preventDefault();
       e.stopImmediatePropagation();
-      const text = (link.textContent ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
-      send(`${ADD_INPUT}?u=${encodeURIComponent(link.href)}&t=${encodeURIComponent(text || link.href)}`);
+      keep("article", link.href, oneLine(link.textContent).slice(0, TITLE_MAX));
+    },
+    true,
+  );
+  // X's own bookmark button keeps the post here too (X bookmarks it as well).
+  window.addEventListener(
+    "click",
+    (e) => {
+      if (!X_HOST.test(location.hostname)) return;
+      const button = e.target instanceof Element ? e.target.closest('[data-testid="bookmark"]') : null;
+      const post = button?.closest("article");
+      const link = post && [...post.querySelectorAll('a[href*="/status/"]')].find((a) => a.querySelector("time"));
+      const status = link?.pathname.match(X_STATUS);
+      if (!status) return;
+      keepPost(link.href.split("?")[0], status[1], post.querySelector('[data-testid="tweetText"]')?.innerText, post);
+    },
+    true,
+  );
+  // On X's home timeline, a post not about engineering folds away to a line
+  // saying so (a click shows it): the app asks TypeSafe's Jev about each one
+  // and answers with __todoSessionsPostVerdict. A post without text stays.
+  const X_HOME = "/home";
+  const ENGINEERING_MIN = 0.5;
+  const postIdOf = (post) => [...post.querySelectorAll('a[href*="/status/"]')].find((a) => a.querySelector("time"))?.pathname.match(/\/status\/(\d+)/)?.[1];
+  const askPosts = () => {
+    if (location.pathname !== X_HOME) return;
+    for (const post of document.querySelectorAll('article[data-testid="tweet"]')) {
+      // X reuses a post's cell for another as the timeline scrolls.
+      const cell = post.closest('[data-testid="cellInnerDiv"]') ?? post;
+      const id = postIdOf(post);
+      if (!id || cell.dataset.tsPost === id) continue;
+      cell.dataset.tsPost = id;
+      delete cell.dataset.tsFold;
+      const text = post.querySelector('[data-testid="tweetText"]')?.innerText.trim();
+      if (!text) continue;
+      cell.dataset.tsFold = "asking";
+      send(`${X_POST}?i=${id}&t=${enc(text.slice(0, TEXT_MAX))}`);
+    }
+  };
+  /// How likely post `id` is about engineering (null: not known, it stays).
+  window.__todoSessionsPostVerdict = (id, probability) => {
+    for (const cell of document.querySelectorAll(`[data-ts-post="${id}"][data-ts-fold="asking"]`)) {
+      if (probability === null || probability >= ENGINEERING_MIN) {
+        delete cell.dataset.tsFold;
+        continue;
+      }
+      cell.dataset.tsFold = "folded";
+      cell.dataset.tsFoldLabel = `エンジニアリング以外の投稿を隠しています（${Math.round(probability * 100)}%）· クリックで表示`;
+    }
+  };
+  const watchPosts = () => {
+    const style = document.createElement("style");
+    style.textContent = `
+      [data-ts-fold="asking"] article { opacity: 0.35; }
+      [data-ts-fold="folded"] article { display: none !important; }
+      [data-ts-fold="folded"]::before { content: attr(data-ts-fold-label); display: block; padding: 10px 16px; font-size: 13px;
+        color: rgb(113, 118, 123); border-bottom: 1px solid rgb(47, 51, 54); cursor: pointer; }`;
+    document.head.appendChild(style);
+    let scheduled = false;
+    new MutationObserver(() => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        askPosts();
+      });
+    }).observe(document.body, { childList: true, subtree: true });
+    askPosts();
+    window.addEventListener(
+      "click",
+      (e) => {
+        const cell = e.target instanceof Element ? e.target.closest('[data-ts-fold="folded"]') : null;
+        if (!cell) return;
+        e.preventDefault();
+        e.stopPropagation();
+        cell.dataset.tsFold = "shown";
+      },
+      true,
+    );
+  };
+  if (X_HOST.test(location.hostname)) {
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", watchPosts);
+    else watchPosts();
+  }
+  // A book's chapter scrolled to its end is read (once per page).
+  const END_SLACK_PX = 80;
+  const readChapters = new Set();
+  window.addEventListener(
+    "scroll",
+    (e) => {
+      const page = location.href.split("#")[0];
+      if (!OREILLY_BOOK.test(page) || !/\.x?html$/.test(page) || readChapters.has(page)) return;
+      const el = e.target instanceof Element ? e.target : document.scrollingElement;
+      if (!el || el.scrollTop + el.clientHeight < el.scrollHeight - END_SLACK_PX) return;
+      readChapters.add(page);
+      send(`${CHAPTER_READ}?u=${enc(page)}`);
     },
     true,
   );

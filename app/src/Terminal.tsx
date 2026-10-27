@@ -14,6 +14,7 @@ import { allKeys, matches, matchesCombo } from "./keymap";
 import { KittyFlags, kittyChord } from "./kitty";
 import { asOutside } from "./outside";
 import { findUrls } from "./links";
+import { osc52Text } from "./osc52";
 
 /// A command to run, where, and what to call its tab (`TerminalRun` in main.rs).
 export interface TerminalRun {
@@ -34,8 +35,9 @@ export const terminalApi = {
   quick: (prompt: string, cwd?: string, title?: string, agent?: "claude" | "codex", options?: { model?: string; effort?: string }) =>
     invoke<TerminalRun>("terminal_quick", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null, options: options ?? null }),
   /// A session running in herdr comes back as attaching herdr (its pane
-  /// focused); null when (with `desktop`) Claude Desktop knows it and opens it.
-  resume: (sessionId: string, desktop: boolean) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop }),
+  /// focused); null when (with `desktop`) Claude Desktop knows it and opens
+  /// it, or (with `attachOnly`) it runs in no herdr pane.
+  resume: (sessionId: string, desktop: boolean, attachOnly = false) => invoke<TerminalRun | null>("terminal_resume", { sessionId, desktop, attachOnly }),
   /// Lets notifications open local sessions through the page.
   setInApp: (on: boolean) => invoke<void>("set_in_app_terminal", { on }),
   /// The Claude session a herdr session shows (its focused pane), if any.
@@ -132,11 +134,11 @@ interface MarkedLink {
 const MARKED_LINKS = 200;
 const entries = new Map<string, Entry>();
 
-/// Opens a link from a terminal in the browser, in front (`front`) or behind.
-let linkOpener: ((url: string, front: boolean) => void) | null = null;
+/// Opens a link from a terminal: beside it (作業's right), or in the browser space (`browser`).
+let linkOpener: ((url: string, browser: boolean) => void) | null = null;
 export const setTerminalLinkOpener = (open: typeof linkOpener) => void (linkOpener = open);
-/// ⌘-click opens a link in a new tab behind, ⌘⇧-click in front, as a browser
-/// does; with ctrl too, in the default browser.
+/// ⌘-click opens a link beside the terminal, ⌘⇧-click in the browser space;
+/// with ctrl too, in the default browser.
 const openClicked = (ev: MouseEvent, url: string) => {
   if (!ev.metaKey) return;
   const open = () => linkOpener?.(url, ev.shiftKey);
@@ -298,6 +300,12 @@ function entryFor(id: string, look: Look): Entry {
       const url = data.slice(data.indexOf(";") + 1);
       opened = /^https?:\/\//.test(url) ? { url, y, x: buffer.cursorX } : null;
       return false;
+    });
+    // A program's copy (herdr's selection): xterm.js drops OSC 52, so it goes to the clipboard here.
+    term.parser.registerOscHandler(52, (data) => {
+      const text = osc52Text(data);
+      if (text) invoke("copy_text", { text }).catch((err) => console.error("OSC 52 copy failed", err));
+      return true;
     });
     term.registerLinkProvider({
       provideLinks(y, callback) {
