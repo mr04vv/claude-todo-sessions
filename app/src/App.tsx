@@ -5995,7 +5995,7 @@ interface WorkState {
 }
 const WORK_KEY = "work";
 /// Whether 作業's right side (the subtasks, the pages opened beside) is hidden.
-const WORK_RIGHT_HIDDEN_KEY = "workRightHidden";
+const WORK_RIGHT_HIDDEN_KEY = "workRightHiddenBy";
 /// A session's page or terminal in 作業 (ids are letters and digits only).
 const workTabId = (sessionId: string) => `w${sessionId.replace(/[^A-Za-z0-9]/g, "")}`;
 /// The session a todo is worked in: the latest live one, else the latest.
@@ -6823,8 +6823,8 @@ export default function App() {
     const next: WorkState = parent ? { pick: `t${parent.id}`, child: todo!.id, closed } : todo ? { pick: `t${todo.id}`, child: work.child, closed } : "session" in at ? { pick: `s${at.session}`, child: null, closed } : work;
     setWork(next);
     if (parent) {
-      setWorkPage(null);
-      setWorkRightHidden(false);
+      setWorkPage(null, next.pick ?? "");
+      setWorkRightHidden(false, next.pick ?? "");
     }
     setSpace("work");
     const view = workViewOf(board, next);
@@ -6840,17 +6840,22 @@ export default function App() {
   // terminal's link, ⌘-click): tabs of 作業's own, after the subtasks, until
   // closed (not kept over a restart). `workPage` is the one shown instead of
   // the subtask; the side can be hidden (⌘⇧E), kept over restarts.
-  // Each work (a todo, a session) has the pages opened beside it as its own.
+  // Each work (a todo, a session) has the pages opened beside it as its own,
+  // and its own right side: the page shown, hidden or not, the artifacts or not.
+  const workKey = work.pick ?? "";
   const workPages = tabs.filter((t) => isWorkPage(t) && t.owner === (work.pick ?? undefined));
-  const [workPage, setWorkPage] = useState<string | null>(null);
+  const [workPageBy, setWorkPageBy] = useState<Record<string, string | null>>({});
+  const workPage = workPageBy[workKey] ?? null;
+  const setWorkPage = (id: string | null, key = workKey) => setWorkPageBy((m) => ({ ...m, [key]: id }));
   const workPageTab = workPages.find((t) => t.id === workPage);
-  const [workRightHidden, setWorkRightHiddenState] = useState(() => loadJson<boolean>(WORK_RIGHT_HIDDEN_KEY, false));
-  const setWorkRightHidden = (hidden: boolean) => {
-    remember(WORK_RIGHT_HIDDEN_KEY, JSON.stringify(hidden));
-    setWorkRightHiddenState(hidden);
-  };
+  const [workRightHiddenBy, setWorkRightHiddenBy] = useState(() => loadJson<Record<string, boolean>>(WORK_RIGHT_HIDDEN_KEY, {}));
+  useEffect(() => remember(WORK_RIGHT_HIDDEN_KEY, JSON.stringify(workRightHiddenBy)), [workRightHiddenBy]);
+  const workRightHidden = workRightHiddenBy[workKey] ?? false;
+  const setWorkRightHidden = (hidden: boolean, key = workKey) => setWorkRightHiddenBy((m) => ({ ...m, [key]: hidden }));
   // ⌘⇧O: the right shows what the todo (its subtasks too) and its sessions made, in place of its tabs.
-  const [workArtifactsOpen, setWorkArtifactsOpen] = useState(false);
+  const [workArtifactsBy, setWorkArtifactsBy] = useState<Record<string, boolean>>({});
+  const workArtifactsOpen = workArtifactsBy[workKey] ?? false;
+  const setWorkArtifactsOpen = (open: boolean) => setWorkArtifactsBy((m) => ({ ...m, [workKey]: open }));
   const workTodoIds = [workView.todo, ...workView.children].filter((t): t is Todo => !!t).map((t) => t.id);
   const workSessionIds = [workView.left, workView.right].filter((x): x is Session => !!x).map((x) => x.session_id);
   const workMade = (board?.artifacts ?? []).filter((a) => (a.todo_id !== null && workTodoIds.includes(a.todo_id)) || (a.session_id !== null && workSessionIds.includes(a.session_id))).sort((a, b) => b.created_at - a.created_at);
