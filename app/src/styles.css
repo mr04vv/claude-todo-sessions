@@ -4054,7 +4054,7 @@ button.tab-row {
   background: var(--text);
 }
 
-.card-head {
+.work-cards .card-head {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -4125,7 +4125,7 @@ button.tab-row {
   color: var(--text-3);
 }
 
-.card-title {
+.work-cards .card-title {
   flex: 1 1 0;
   min-width: 0;
   color: var(--text);
