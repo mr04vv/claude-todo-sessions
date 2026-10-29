@@ -1852,7 +1852,7 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
                 chapters: serde_json::from_str(&param("c")).unwrap_or_default(),
                 links: serde_json::from_str(&param("l")).unwrap_or_default(),
             };
-            if let Err(e) = readings::add(app, reading) {
+            if let Err(e) = readings::add(app, reading, param("s") == "1") {
                 eprintln!("bookmark: {e}");
             }
             return;
@@ -2300,11 +2300,11 @@ fn browser_go(app: AppHandle, webview: tauri::Webview, tab: String, action: Stri
     cef_browser::go(&app, &tab_key(&webview, &tab)?, &action)
 }
 
-/// ⌘⇧D from the app's side: the tab's page keeps itself to read, as its own
-/// ⌘⇧D does (a book's page with its table of contents).
+/// ⌘⇧D (⌘⇧S, `study`: and read in 学習) from the app's side: the tab's page
+/// keeps itself to read, as its own ⌘⇧D does (a book's page with its table of contents).
 #[tauri::command(async)]
-fn browser_bookmark(app: AppHandle, webview: tauri::Webview, tab: String) -> Result<(), String> {
-    cef_browser::eval(&app, &tab_key(&webview, &tab)?, "window.__todoSessionsBookmark?.()")
+fn browser_bookmark(app: AppHandle, webview: tauri::Webview, tab: String, study: bool) -> Result<(), String> {
+    cef_browser::eval(&app, &tab_key(&webview, &tab)?, &format!("window.__todoSessionsBookmark?.({study})"))
 }
 
 /// A PR opened from the branch any of the todo's sessions works on, however

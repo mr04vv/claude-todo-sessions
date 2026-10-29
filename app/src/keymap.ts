@@ -17,6 +17,7 @@ export type Action =
   | "sidePane"
   | "archive"
   | "bookmark"
+  | "studyThis"
   | "askChatGpt"
   | "scrollDown"
   | "scrollUp"
@@ -134,6 +135,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
       ["archive", "Cloud セッションのページをアーカイブ（作業の一覧では、行のセッションを片付ける）"],
       ["bookmark", "表示中のページを読みものに入れる（O'Reilly の本のページなら本として目次ごと）"],
+      ["studyThis", "表示中のページを読みものに入れて、すぐ学習で読む（右に NotebookLM など）"],
       ["scrollDown", "ページを下へスクロール"],
       ["scrollUp", "ページを上へスクロール"],
       ["askChatGpt", "ブラウザのウインドウで、表示中のページ（選んだ文があればその文）を右の ChatGPT に解説してもらう"],
@@ -253,6 +255,7 @@ const KEYS: Record<Action, string> = {
   archive: "cmd+shift+a",
   // As Safari's "Add to Reading List".
   bookmark: "cmd+shift+d",
+  studyThis: "cmd+shift+s",
   askChatGpt: "cmd+shift+g",
   scrollDown: "shift+j",
   scrollUp: "shift+k",
