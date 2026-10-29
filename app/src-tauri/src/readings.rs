@@ -82,19 +82,20 @@ fn api_key() -> Option<String> {
 }
 
 #[derive(Clone, Serialize)]
-struct Added {
-    title: String,
-    kind: ReadingKind,
-    chapters: usize,
+struct Added<'a> {
+    reading: &'a Reading,
+    /// Kept to read in 学習 right away (⌘⇧S).
+    study: bool,
 }
 
-/// Keeps a reading, fills in what its page says and sorts it, behind.
-pub fn add(app: &AppHandle, r: NewReading) -> Result<Reading, String> {
+/// Keeps a reading, fills in what its page says and sorts it, behind;
+/// `study` has 学習 open it to read.
+pub fn add(app: &AppHandle, r: NewReading, study: bool) -> Result<Reading, String> {
     if !crate::is_web_url(&r.url) {
         return Err(format!("開けない URL です: {}", r.url));
     }
     let reading = app.state::<AppState>().db.lock().map_err(err)?.add_reading(&r).map_err(err)?;
-    let _ = app.emit(READING_ADDED_EVENT, Added { title: reading.title.clone(), kind: reading.kind, chapters: reading.chapters.len() });
+    let _ = app.emit(READING_ADDED_EVENT, Added { reading: &reading, study });
     let (app, id, url, kind) = (app.clone(), reading.id, reading.url.clone(), reading.kind);
     std::thread::spawn(move || {
         // A post's text came with it; a book's page is behind a login.
@@ -158,7 +159,7 @@ pub fn sort_all(app: &AppHandle) {
 
 #[tauri::command(async)]
 pub fn add_reading(app: AppHandle, reading: NewReading) -> Result<Reading, String> {
-    add(&app, reading)
+    add(&app, reading, false)
 }
 
 #[tauri::command(async)]

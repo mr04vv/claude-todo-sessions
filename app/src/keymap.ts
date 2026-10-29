@@ -16,6 +16,7 @@ export type Action =
   | "sidePane"
   | "archive"
   | "bookmark"
+  | "studyThis"
   | "spaceManage"
   | "spaceWork"
   | "spaceStudy"
@@ -123,6 +124,7 @@ export const ACTIONS: { group: string; items: [Action, string][] }[] = [
       ["zoomReset", "実際のサイズ（ピンチの拡大も戻す）"],
       ["archive", "Cloud セッションのページをアーカイブ（作業の一覧では、行のセッションを片付ける）"],
       ["bookmark", "表示中のページを読みものに入れる（O'Reilly の本のページなら本として目次ごと）"],
+      ["studyThis", "表示中のページを読みものに入れて学習で読む。ページが無ければ学習を新しいページで開く（右に NotebookLM など）"],
       ["linkNext", "ページの次のリンクを選ぶ（Enter で開く、⌘Enter で新しいタブ。Google では検索結果、GitHub では GitHub の j）"],
       ["linkPrev", "ページの前のリンクを選ぶ（GitHub では GitHub の k）"],
     ],
@@ -241,6 +243,7 @@ const KEYS: Record<Action, string> = {
   archive: "cmd+shift+a",
   // As Safari's "Add to Reading List".
   bookmark: "cmd+shift+d",
+  studyThis: "cmd+shift+s",
   spaceManage: "cmd+1",
   spaceWork: "cmd+2",
   spaceStudy: "cmd+3",

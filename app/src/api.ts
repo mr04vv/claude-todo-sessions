@@ -586,7 +586,7 @@ export const api = {
   setJevCredit: (credit: number, spent: number) => invoke<void>("set_jev_credit", { credit, spent }),
   clearJevCredit: () => invoke<void>("clear_jev_credit"),
   /// The tab's page keeps itself to read, as its own ⌘⇧D does.
-  browserBookmark: (tab: string) => invoke<void>("browser_bookmark", { tab }),
+  browserBookmark: (tab: string, study = false) => invoke<void>("browser_bookmark", { tab, study }),
   forgetArtifact: (id: number) => invoke<void>("forget_artifact", { id }),
   /// Puts an artifact under a todo (null: under none).
   linkArtifact: (id: number, todoId: number | null) => invoke<void>("link_artifact", { id, todoId }),
@@ -668,6 +668,7 @@ export const BROWSER_TRANSLATED_EVENT = "browser-translated";
 export const BROWSER_ARCHIVE_EVENT = "browser-archive";
 /** When a page asks for a new tab (⌘T). */
 export const BROWSER_OPEN_NEW_TAB_EVENT = "browser-open-new-tab";
+export const STUDY_THIS_EVENT = "study-this";
 /** `{tab}` when a page asks for the address bar (⌘L). */
 export const BROWSER_FOCUS_URL_EVENT = "browser-focus-url";
 /** `{tab, url}` when a tab's address changes without a page load. */

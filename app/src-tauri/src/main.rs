@@ -1469,6 +1469,7 @@ const FOCUS_INPUT_WITHIN: Duration = Duration::from_secs(15);
 const BROWSER_FOCUS_URL_EVENT: &str = "browser-focus-url";
 /// When a page asks for a new tab (⌘T).
 const BROWSER_OPEN_NEW_TAB_EVENT: &str = "browser-open-new-tab";
+const STUDY_THIS_EVENT: &str = "study-this";
 /// `{tab, delta}` (-1 or 1) when a page asks for the previous or next tab (⌘⇧[ ⌘⇧]).
 const BROWSER_SWITCH_TAB_EVENT: &str = "browser-switch-tab";
 /// When ⌘W in the app menu asks to close the shown tab.
@@ -1743,7 +1744,8 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         Some("translated") => return translate::on_translated(app, tab, param("on") == "1"),
         // A post on X's home timeline, to fold away if not about engineering.
         Some("x-post") => return readings::on_post(app, tab, param("i"), param("t")),
-        // Kept to read (⌘⇧D, a link ⌥-clicked, X's bookmark button): the page keeps the keyboard.
+        // Kept to read (⌘⇧D, a link ⌥-clicked, X's bookmark button): the page
+        // keeps the keyboard, unless 学習 opens it (⌘⇧S).
         Some("bookmark") => {
             let reading = NewReading {
                 kind: serde_json::from_value(serde_json::Value::String(param("k"))).unwrap_or_default(),
@@ -1753,7 +1755,7 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
                 chapters: serde_json::from_str(&param("c")).unwrap_or_default(),
                 links: serde_json::from_str(&param("l")).unwrap_or_default(),
             };
-            if let Err(e) = readings::add(app, reading) {
+            if let Err(e) = readings::add(app, reading, param("s") == "1") {
                 eprintln!("bookmark: {e}");
             }
             return;
@@ -1782,6 +1784,7 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
     let tab = tab.to_string();
     let _ = match url.host_str() {
         Some("new-tab") => app.emit(BROWSER_OPEN_NEW_TAB_EVENT, ()),
+        Some("study-this") => app.emit(STUDY_THIS_EVENT, ()),
         Some("new-todo") => app.emit(OPEN_NEW_TODO_EVENT, ()),
         Some("tab-prev") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: -1 }),
         Some("tab-next") => app.emit(BROWSER_SWITCH_TAB_EVENT, TabDelta { tab, delta: 1 }),
@@ -2103,11 +2106,11 @@ fn browser_go(app: AppHandle, tab: String, action: String) -> Result<(), String>
     cef_browser::go(&app, tab_id(&tab)?, &action)
 }
 
-/// ⌘⇧D from the app's side: the tab's page keeps itself to read, as its own
-/// ⌘⇧D does (a book's page with its table of contents).
+/// ⌘⇧D (⌘⇧S: and read in 学習) from the app's side: the tab's page keeps
+/// itself to read, as its own ⌘⇧D does (a book's page with its table of contents).
 #[tauri::command(async)]
-fn browser_bookmark(app: AppHandle, tab: String) -> Result<(), String> {
-    cef_browser::eval(&app, tab_id(&tab)?, "window.__todoSessionsBookmark?.()")
+fn browser_bookmark(app: AppHandle, tab: String, study: bool) -> Result<(), String> {
+    cef_browser::eval(&app, tab_id(&tab)?, &format!("window.__todoSessionsBookmark?.({study})"))
 }
 
 /// A PR opened from the branch any of the todo's sessions works on, however

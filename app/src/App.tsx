@@ -25,6 +25,7 @@ import {
   OPEN_PALETTE_EVENT,
   OPEN_SESSIONS_EVENT,
   READING_ADDED_EVENT,
+  STUDY_THIS_EVENT,
   SPACE_EVENT,
   REVIEW_SUBMITTED_EVENT,
   OPEN_TODO_EVENT,
@@ -5639,7 +5640,7 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
           </div>
         ) : (
           <p className="muted hint readings-hint">
-            入れ方：ページで {keyLabel(keyOf("bookmark"))}、リンクを ⌥ クリック、X ではブックマークのボタン。O'Reilly の本のページなら本として目次ごと入ります。{keyLabel(keyOf("studyPick"))} で選ぶと、まとめて読んだり、日報（{keyLabel(keyOf("studyDigest"))}）や音声つきの日報（{keyLabel(keyOf("studyPodcast"))}）にしたりできます。選ばなければカーソルの行が対象です。
+            入れ方：ページで {keyLabel(keyOf("bookmark"))}（{keyLabel(keyOf("studyThis"))} なら入れてすぐ NotebookLM などと並べて読む）、リンクを ⌥ クリック、X ではブックマークのボタン。O'Reilly の本のページなら本として目次ごと入ります。{keyLabel(keyOf("studyPick"))} で選ぶと、まとめて読んだり、日報（{keyLabel(keyOf("studyDigest"))}）や音声つきの日報（{keyLabel(keyOf("studyPodcast"))}）にしたりできます。選ばなければカーソルの行が対象です。
           </p>
         )}
         <div className="content" ref={list}>
@@ -5989,9 +5990,12 @@ function WorkRail({ board, waiting, pick, sort, order, width, onResize, onPick, 
       const s = r?.session;
       // A todo's row stands for the session it shows.
       const shown = s ?? (r?.todo && mainSession(r.todo));
+      // What ⌘⇧A puts away: the row's session, a todo's it shows, one waiting
+      // (the list has the keys on coming to 作業, not the session's page).
+      const away = shown ?? w?.session;
       const acts: [boolean, () => void][] = [
         [matches(e, "workLink") && !!shown, () => onLink(shown!, r?.todo)],
-        [matches(e, "archive") && !!s, () => run(() => (isCloud(s!) ? api.archiveSessions([s!.session_id]) : api.hideSession(s!.session_id)))],
+        [matches(e, "archive") && !!away, () => run(() => (isCloud(away!) ? api.archiveSessions([away!.session_id]) : api.hideSession(away!.session_id)))],
         [matches(e, "showTodo") && !!r?.todo, () => onTodo(r!.todo!.id)],
         [matches(e, "workFix") && !!(fix && s && w?.todo && (w.reasons.includes("ci") || w.reasons.includes("changes"))), () => fix!(s!, w!.todo!)],
         [matches(e, "workHandled") && !!(w?.todo && w.reasons.includes("escalated")), () => run(() => api.clearEscalation(w!.todo!.id))],
@@ -6255,6 +6259,8 @@ export default function App() {
       return next;
     });
   const studyReading = space === "study" && study.view === "read";
+  // 学習's left on a new tab page (⌘T there, or ⌘⇧S with no page shown).
+  const [studyBlank, setStudyBlank] = useState(false);
   // The left's tabs: the open readings' pages, and pages they opened.
   const studyLefts = tabs.filter((t) => t.area === "study");
   const studyLeft = studyLefts.find((t) => t.id === study.active) ?? studyLefts[0] ?? null;
@@ -6269,9 +6275,10 @@ export default function App() {
       ...list.filter((r) => !prev.some((t) => t.id === readingTabId(r.id))).map((r): BrowserTab => ({ id: readingTabId(r.id), url: readingUrl(r), openedFor: r.url, title: r.title, loading: true, nav: 0, area: "study", reading: r.id })),
     ]);
   /// Opens readings to read, the first shown with the keyboard (as tabs on the left).
-  const readReadings = (ids: number[]) => {
-    const list = ids.map((id) => readings.find((r) => r.id === id)).filter((r): r is Reading => !!r);
+  const readReadings = (ids: number[]) => readList(ids.map((id) => readings.find((r) => r.id === id)).filter((r): r is Reading => !!r));
+  const readList = (list: Reading[]) => {
     if (list.length === 0) return;
+    setStudyBlank(false);
     readingTabs(list);
     ensurePinned(study.right);
     const first = readingTabId(list[0].id);
@@ -6280,6 +6287,8 @@ export default function App() {
     setStudy((s) => ({ ...s, open: [...new Set([...s.open, ...list.map((r) => r.id)])], active: first, view: "read" }));
     setSpace("study");
   };
+  const readListRef = useRef(readList);
+  readListRef.current = readList;
   // The readings open before a restart come back once the board has them.
   const boardLoaded = board !== null;
   useEffect(() => {
@@ -6317,9 +6326,22 @@ export default function App() {
     const id = `f${nextTab.current++}`;
     setTabs((prev) => [...prev, { id, url, title: null, loading: true, nav: 0, area: "study" }]);
     if (behind) return;
+    setStudyBlank(false);
     focusSoon(id);
     setStudy((s) => ({ ...s, active: id }));
   };
+  /// 学習 to read whatever comes up: its left on a new tab page, the right's
+  /// LLM beside it, nothing kept to read.
+  const openStudy = () => {
+    ensurePinned(study.right);
+    setStudyBlank(true);
+    setStudy((s) => ({ ...s, view: "read" }));
+    setSpace("study");
+    setFocusTyping("left");
+    keysToTab(null, undefined, report);
+  };
+  const openStudyRef = useRef(openStudy);
+  openStudyRef.current = openStudy;
   // Notifications wait while in 学習 (the backend posts none); on leaving it,
   // the page tells how much more waits on the user.
   const waitingAtStudy = useRef<Set<string>>(new Set());
@@ -6448,11 +6470,12 @@ export default function App() {
   const onSplitRightRef = useRef(onSplitRight);
   onSplitRightRef.current = onSplitRight;
 
-  /// ⌘⇧D: the page shown keeps itself to read (a book's with its contents).
-  const bookmarkShown = () => {
+  /// ⌘⇧D: the page shown keeps itself to read (a book's with its contents);
+  /// ⌘⇧S (`study`) also reads it in 学習.
+  const bookmarkShown = (study = false) => {
     const tab = browserShown ? activeTab : studyReading ? studyLeft : undefined;
     if (!tab || tab.term || tab.pinned || !/^https?:\/\//.test(tab.url)) return false;
-    api.browserBookmark(tab.id).catch(report);
+    api.browserBookmark(tab.id, study).catch(report);
     return true;
   };
   const bookmarkShownRef = useRef(bookmarkShown);
@@ -6557,7 +6580,11 @@ export default function App() {
   /// page for the last tab; in 学習, the reading shown. False when ⌘W is not ours.
   const closeShown = () => {
     if (studyReading) {
-      if (focusTyping !== "right" && studyLeft) closeStudyTab(studyLeft.id);
+      if (focusTyping === "right") return true;
+      if (studyBlank) {
+        setStudyBlank(false);
+        if (!studyLeft) setStudy((s) => ({ ...s, view: "list" }));
+      } else if (studyLeft) closeStudyTab(studyLeft.id);
       return true;
     }
     if (!browserShown) return false;
@@ -6885,12 +6912,14 @@ export default function App() {
       listen<{ path: string; name: string }>(BROWSER_DOWNLOADED_EVENT, ({ payload }) => setDownloaded(payload)),
       listen<PageDialogAsk>(PAGE_DIALOG_EVENT, ({ payload }) => setPageDialog(payload)),
       listen<SiteAsk>(SITE_PERMISSION_EVENT, ({ payload }) => setSiteAsk(payload)),
-      // A page kept itself to read: said at the bottom.
-      listen<{ title: string; kind: ReadingKind; chapters: number }>(READING_ADDED_EVENT, ({ payload }) =>
-        showToastRef.current(payload.kind === "book" ? `本として読みものに入れました（目次 ${payload.chapters} 章）：${payload.title}` : `読みものに入れました：${payload.title}`),
-      ),
+      // A page kept itself to read: said at the bottom (and read in 学習, asked so).
+      listen<{ reading: Reading; study: boolean }>(READING_ADDED_EVENT, ({ payload: { reading: r, study } }) => {
+        showToastRef.current(r.kind === "book" ? `本として読みものに入れました（目次 ${r.chapters.length} 章）：${r.title}` : `読みものに入れました：${r.title}`);
+        if (study) readListRef.current([r]);
+      }),
       listen<{ space: Space }>(SPACE_EVENT, ({ payload }) => goSpaceRef.current(payload.space)),
-      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
+      listen(BROWSER_OPEN_NEW_TAB_EVENT, () => (studyReadingRef.current ? openStudyRef.current() : openNewTab())),
+      listen(STUDY_THIS_EVENT, () => bookmarkShownRef.current(true) || openStudyRef.current()),
       listen<{ tab: string; delta: number }>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) =>
         splitRef.current ? switchSplitTabRef.current(onSplitRightRef.current(payload.tab), payload.delta) : switchRef.current(payload.delta),
       ),
@@ -7228,15 +7257,16 @@ export default function App() {
       // marked); on 管理's Todo page these keys go through the lanes (todoKeys.ts).
       if ((matches(e, "prevTab") || matches(e, "nextTab")) && typingSideRef.current !== "pane" && !t.closest(".tab-list, .browser-main")) return;
       const run: [Action, () => unknown][] = [
-        // The browser's page, while it has the typing (in 作業's list ⌘⇧A puts its row away).
-        ["archive", () => typingSideRef.current === "pane" && archiveShownRef.current()],
+        // The browser's page shown, from it or its tab list (in 作業's list ⌘⇧A puts its row away).
+        ["archive", () => archiveShownRef.current()],
         ["bookmark", () => bookmarkShownRef.current()],
+        ["studyThis", () => bookmarkShownRef.current(true) || openStudyRef.current()],
         ["prevTab", () => switchRef.current(-1)],
         ["nextTab", () => switchRef.current(1)],
         ["newTodo", () => setDialog("add")],
         // Again closes the commands.
         ["palette", () => setDialog((d) => (d === "palette" ? null : "palette"))],
-        ["newTab", () => openNewTab()],
+        ["newTab", () => (studyReadingRef.current ? openStudyRef.current() : openNewTab())],
         ["closeTab", () => closeShownRef.current()],
         // The side with the typing: this one takes its data again, a page
         // reloads (a page with the keyboard reloads itself).
@@ -7651,7 +7681,8 @@ export default function App() {
           },
         ]
       : []),
-    ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: bookmarkShown }] : []),
+    ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: () => bookmarkShown() }, { key: "studyThis", label: "表示中のページを学習で読む（NotebookLM などと並べる）", hint: keyLabel(keyOf("studyThis")), run: () => bookmarkShown(true) }] : []),
+    { key: "studyBlank", label: "学習で好きなページを開く（NotebookLM などと並べる）", hint: browserShown ? undefined : keyLabel(keyOf("studyThis")), run: openStudy },
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
     { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
@@ -8113,7 +8144,7 @@ export default function App() {
               <section className="focus-left browser" aria-label="読んでいるページ">
                 <div className="browser-tabs" role="tablist" onMouseDown={(e) => !(e.target as HTMLElement).closest("input, button, .browser-tab") && studyLeft && keysToTab(studyLeft, studyLeft.id, report)}>
                   {studyLefts.map((t) => (
-                    <span key={t.id} className={`browser-tab${t.id === studyLeft?.id ? " on" : ""}`}>
+                    <span key={t.id} className={`browser-tab${t.id === studyLeft?.id && !studyBlank ? " on" : ""}`}>
                       <button
                         role="tab"
                         aria-selected={t.id === studyLeft?.id}
@@ -8121,6 +8152,7 @@ export default function App() {
                         title={t.url}
                         onClick={() => {
                           keysToTab(t, studyLeft?.id, report);
+                          setStudyBlank(false);
                           setStudy((st) => ({ ...st, active: t.id }));
                         }}
                       >
@@ -8132,9 +8164,14 @@ export default function App() {
                       </button>
                     </span>
                   ))}
+                  <button className="ghost icon" aria-label="新しいページを開く" title={`新しいページを開く（${keyLabel(keyOf("newTab"))}）`} onClick={openStudy}>
+                    <Icon name="plus" size={12} />
+                  </button>
                 </div>
-                {studyLeft ? (
-                  <TabView key={studyLeft.id} tab={studyLeft} covered={covered} report={report} onAddress={(url) => setTabUrl(studyLeft.id, url)} keep={studyRightTab?.id} keysOn={focusTyping === "left"} onBookmark={studyLeft.reading === undefined ? bookmarkShown : undefined} />
+                {studyBlank ? (
+                  <NewTabPage onOpen={(url) => addStudyPage(url, false)} />
+                ) : studyLeft ? (
+                  <TabView key={studyLeft.id} tab={studyLeft} covered={covered} report={report} onAddress={(url) => setTabUrl(studyLeft.id, url)} keep={studyRightTab?.id} keysOn={focusTyping === "left"} onBookmark={studyLeft.reading === undefined ? () => bookmarkShown() : undefined} />
                 ) : (
                   <div className="pane-empty">読みものを左の一覧から選んでください。</div>
                 )}
@@ -8182,7 +8219,7 @@ export default function App() {
               onStrip={() => activeTab && keysToTab(activeTab, activeTab.id, report)}
               onPinned={showPinned}
               onArchive={() => archiveShownRef.current()}
-              onBookmark={bookmarkShown}
+              onBookmark={() => bookmarkShown()}
               onClose={closeTab}
               onNewTab={openNewTab}
               // What is typed on a new tab page opens in a new tab, as a page's link does.

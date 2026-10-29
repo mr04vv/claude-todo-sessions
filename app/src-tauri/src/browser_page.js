@@ -36,6 +36,7 @@
   const SPACE = "todo-sessions://space";
   const CLOSE_TAB = "todo-sessions://close-tab";
   const BOOKMARK = "todo-sessions://bookmark";
+  const STUDY_THIS = "todo-sessions://study-this";
   const CHAPTER_READ = "todo-sessions://chapter-read";
   const X_POST = "todo-sessions://x-post";
   const NEW_TODO = "todo-sessions://new-todo";
@@ -114,6 +115,8 @@
     ["nextTab", () => send(NEXT_TAB)],
     ["archive", () => send(ARCHIVE)],
     ["bookmark", () => window.__todoSessionsBookmark?.()],
+    // The app decides: this page to read in 学習, or 学習 on a new page (a pinned page's).
+    ["studyThis", () => send(STUDY_THIS)],
     ["zoomIn", () => send(ZOOM_IN)],
     ["zoomOut", () => send(ZOOM_OUT)],
     ["zoomReset", () => send(ZOOM_RESET)],
@@ -340,9 +343,9 @@
   const TITLE_MAX = 120;
   const enc = encodeURIComponent;
   const oneLine = (text) => (text ?? "").trim().replace(/\s+/g, " ");
-  const keep = (kind, url, title, text, chapters, links) =>
+  const keep = (kind, url, title, text, chapters, links, study) =>
     send(
-      `${BOOKMARK}?k=${kind}&u=${enc(url)}&t=${enc(title || url)}&x=${enc((text ?? "").slice(0, TEXT_MAX))}${chapters ? `&c=${enc(JSON.stringify(chapters))}` : ""}${links?.length ? `&l=${enc(JSON.stringify(links))}` : ""}`,
+      `${BOOKMARK}?${study ? "s=1&" : ""}k=${kind}&u=${enc(url)}&t=${enc(title || url)}&x=${enc((text ?? "").slice(0, TEXT_MAX))}${chapters ? `&c=${enc(JSON.stringify(chapters))}` : ""}${links?.length ? `&l=${enc(JSON.stringify(links))}` : ""}`,
     );
   const meta = (name) => document.querySelector(`meta[property="${name}"], meta[name="${name}"]`)?.content?.trim() ?? "";
   // An O'Reilly book's pages are under its own (…/library/view/<book>/<isbn>/).
@@ -353,10 +356,10 @@
   /// (its text's and its card's; X gives them as t.co, the app follows them).
   const POST_LINKS = '[data-testid="tweetText"] a[href^="https://t.co/"], [data-testid="card.wrapper"] a[href]';
   const linksOf = (post) => [...new Set([...(post?.querySelectorAll(POST_LINKS) ?? [])].map((a) => a.href))];
-  const keepPost = (url, user, text, post) => keep("post", url, `@${user}: ${oneLine(text).slice(0, TITLE_MAX) || url}`, text, null, linksOf(post));
-  // ⌘⇧D (here, or from the app's side): the page shown. A book's page keeps
-  // the book with the chapters it links to (its table of contents).
-  window.__todoSessionsBookmark = () => {
+  const keepPost = (url, user, text, post, study) => keep("post", url, `@${user}: ${oneLine(text).slice(0, TITLE_MAX) || url}`, text, null, linksOf(post), study);
+  // ⌘⇧D (here, or from the app's side): the page shown; ⌘⇧S also reads it in
+  // 学習. A book's page keeps the book with the chapters it links to (its table of contents).
+  window.__todoSessionsBookmark = (study = false) => {
     const book = location.href.match(OREILLY_BOOK);
     if (book) {
       const root = book[0];
@@ -369,11 +372,11 @@
         seen.add(url);
         chapters.push([title, url]);
       }
-      return keep("book", root, meta("og:title") || document.title.split("|").pop().trim(), meta("og:description") || meta("description"), chapters);
+      return keep("book", root, meta("og:title") || document.title.split("|").pop().trim(), meta("og:description") || meta("description"), chapters, null, study);
     }
     const status = X_HOST.test(location.hostname) && location.pathname.match(X_STATUS);
-    if (status) return keepPost(location.href.split("?")[0], status[1], document.querySelector('article [data-testid="tweetText"]')?.innerText, document.querySelector("article"));
-    keep("article", location.href, document.title, meta("og:description") || meta("description"));
+    if (status) return keepPost(location.href.split("?")[0], status[1], document.querySelector('article [data-testid="tweetText"]')?.innerText, document.querySelector("article"), study);
+    keep("article", location.href, document.title, meta("og:description") || meta("description"), null, null, study);
   };
   // ⌥ + click keeps the link to read instead of following it.
   window.addEventListener(
