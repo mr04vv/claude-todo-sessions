@@ -1284,6 +1284,12 @@ fn keep_artifacts(session: &Session) {
     }
 }
 
+/// Puts an artifact under a todo (none: under none).
+#[tauri::command(async)]
+fn link_artifact(state: State<AppState>, id: i64, todo_id: Option<i64>) -> Result<(), String> {
+    state.db.lock().map_err(err)?.link_artifact(id, todo_id).map_err(err)
+}
+
 /// Takes an artifact off the list (it is not found again).
 #[tauri::command(async)]
 fn forget_artifact(state: State<AppState>, id: i64) -> Result<(), String> {
@@ -1299,18 +1305,14 @@ fn open_path(path: String) -> Result<(), String> {
     cli("open").arg(&path).status().map_err(err)?.success().then_some(()).ok_or_else(|| format!("{path} を開けませんでした"))
 }
 
-/// What a session waiting for a reply asks, from its transcript (local) or
-/// events (cloud). Codex's rollouts are not read.
+/// A session's latest messages (session_entries); Codex's rollouts are not read.
+fn entries_of(session: &Session) -> Option<Vec<serde_json::Value>> {
+    (session.agent != cts_core::Agent::Codex).then(|| session_entries(&session.session_id)).flatten()
+}
+
+/// What a session waiting for a reply asks.
 fn session_question(session: &Session) -> Option<String> {
-    if session.agent == cts_core::Agent::Codex {
-        return None;
-    }
-    let entries = if launch::is_cloud_session(&session.session_id) {
-        cts_core::cloud::recent_entries(&session.session_id).map_err(|e| eprintln!("{e}")).ok()?
-    } else {
-        cts_core::transcript::parse_jsonl(&transcript_tail(&session.session_id, TRANSCRIPT_TAIL_BYTES)?)
-    };
-    cts_core::transcript::question(&entries)
+    cts_core::transcript::question(&entries_of(session)?)
 }
 
 /// What 作業's cards show of each session (Claude's, not Codex's): its last
@@ -1572,6 +1574,8 @@ const FOCUS_PANE_EVENT: &str = "focus-pane";
 const KEYS_HANDED_ON: [&str; 4] = ["tab-prev", "tab-next", "close-tab", "focus-pane"];
 /// When a page's ⌘N asks for a new todo.
 const OPEN_NEW_TODO_EVENT: &str = "open-new-todo";
+/// `{tab, links}` when a page's ⌘⇧L asks to pick one of the links it shows.
+const PAGE_LINKS_EVENT: &str = "page-links";
 
 /// `{host, user}` when a page sent a login not kept yet: asked whether to keep it.
 const LOGIN_CAPTURED_EVENT: &str = "login-captured";
@@ -1693,6 +1697,19 @@ const BROWSER_ARCHIVE_EVENT: &str = "browser-archive";
 #[derive(Clone, Serialize)]
 struct TabOnly {
     tab: String,
+}
+
+/// A link a page shows: its address, and its text if it has some.
+#[derive(Clone, Serialize, Deserialize)]
+struct PageLink {
+    url: String,
+    text: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+struct PageLinks {
+    tab: String,
+    links: Vec<PageLink>,
 }
 
 /// `{tab, zoom}` when a tab's zoom changes (1.0 is none).
@@ -1886,6 +1903,11 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         Some("space") => app.emit_to(to, SPACE_EVENT, SpaceAsk { space: url.query_pairs().find(|(k, _)| k == "s").map(|(_, v)| v.into_owned()).unwrap_or_default() }),
         Some("close-tab") => app.emit_to(to, BROWSER_CLOSE_TAB_EVENT, TabOnly { tab }),
         Some("work-right") => app.emit_to(to, WORK_RIGHT_EVENT, ()),
+        // The page's word on its links: only web pages are offered.
+        Some("page-links") => {
+            let links = serde_json::from_str::<Vec<PageLink>>(&param("l")).unwrap_or_default().into_iter().filter(|l| is_web_url(&l.url)).collect();
+            app.emit_to(to, PAGE_LINKS_EVENT, PageLinks { tab, links })
+        }
         _ => app.emit_to(to, BROWSER_FOCUS_URL_EVENT, TabOnly { tab }),
     };
 }
@@ -2768,18 +2790,17 @@ fn relay_to_orchestrator(db: &Db, subtask: &Todo, event: launch::SubtaskEvent) -
     true
 }
 
-/// Tells a Cloud subtask's orchestrator that its turn ended, with what it
-/// said last: a Cloud session cannot message another one.
-fn relay_cloud_turn(session: &Session) {
-    if !launch::is_cloud_session(&session.session_id) {
-        return;
-    }
+/// Tells a subtask's orchestrator that its turn ended, with what it said
+/// last: a subtask cannot message its orchestrator, and one may ask in words
+/// (no AskUserQuestion), which leaves it waiting without anyone told.
+fn relay_turn(session: &Session) {
     let db = match open_db() {
         Ok(db) => db,
         Err(e) => return eprintln!("{e}"),
     };
     if let Some(subtask) = session.todo_id.and_then(|id| db.get_todo(id).ok().flatten()).filter(|t| t.parent_id.is_some()) {
-        relay_to_orchestrator(&db, &subtask, launch::SubtaskEvent::TurnEnded(session_question(session)));
+        let said = entries_of(session).and_then(|e| cts_core::transcript::last_words(&e));
+        relay_to_orchestrator(&db, &subtask, launch::SubtaskEvent::TurnEnded(said));
     }
 }
 
@@ -2906,7 +2927,7 @@ fn watch_loop(app: AppHandle) {
                         let session = s.clone();
                         std::thread::spawn(move || {
                             keep_artifacts(&session);
-                            relay_cloud_turn(&session);
+                            relay_turn(&session);
                         });
                         // Look for the PR now.
                         if let (Some(todo_id), Ok(tx)) = (s.todo_id, app.state::<AppState>().github_wake.lock()) {
@@ -3132,6 +3153,7 @@ fn main() {
             todo_events,
             open_path,
             forget_artifact,
+            link_artifact,
             translate::browser_translate,
             start_terminal,
             start_cloud,
@@ -3189,6 +3211,9 @@ fn main() {
             readings::set_chapter_read,
             readings::set_reading_kept,
             digest::make_digest,
+            digest::make_picked_digest,
+            digest::retry_picked_digest,
+            digest::set_gemini_key,
             readings::set_typesafe_key,
             readings::set_jev_credit,
             readings::clear_jev_credit,

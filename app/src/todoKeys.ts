@@ -4,7 +4,7 @@
 // keys acting on the todo under it:
 // Enter its sheet, s its status, ⇧h ⇧l (kanban) the column it is in, o its
 // sessions in 作業 (o and ⌘Enter, without one, the launch sheet), p its PR, u its parent; c adds a todo there, / searches,
-// ? lists the keys. The browser's tab keys (⌘⇧[ ⌘⇧]) go to the lane (a
+// ? lists the keys, f switches kanban / list / Doing. The browser's tab keys (⌘⇧[ ⌘⇧]) go to the lane (a
 // repository's, a parent's) before or after.
 // It reads the page's elements, so the pages only mark them:
 //   data-row="todo:<id>" on a card or row, data-row="lane:<key>" on a list
@@ -33,6 +33,8 @@ export interface TodoKeyActions {
   start: (todoId: number) => void;
   /// ?: the list of these keys.
   help: () => void;
+  /// f: the next way the page shows (kanban, list, Doing).
+  nextView: () => void;
   /// Esc: closes the panel.
   close: () => void;
   /// The list's h / l, and Enter on a lane's head.
@@ -81,7 +83,12 @@ export function useTodoKeys(root: RefObject<HTMLElement | null>, layout: "board"
       if (!enabled || (e.target as HTMLElement).closest(TYPING)) return;
       const plain = !e.metaKey && !e.ctrlKey && !e.altKey;
       const arrow = (name: string, shift = false) => plain && e.shiftKey === shift && e.key === name;
-      // Page-wide: the search box, and the list of keys.
+      // Page-wide: the search box, the list of keys, and how the page shows.
+      if (matches(e, "todoView")) {
+        e.preventDefault();
+        actions.nextView();
+        return;
+      }
       if (matches(e, "search") || matches(e, "help")) {
         e.preventDefault();
         if (matches(e, "help")) actions.help();

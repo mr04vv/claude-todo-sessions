@@ -8,6 +8,8 @@ struct Input {
     session_id: String,
     cwd: String,
     prompt: Option<String>,
+    /// Set only when the hook fires inside a subagent.
+    agent_id: Option<String>,
 }
 
 pub fn run(event: &str) -> Result<(), String> {
@@ -31,6 +33,9 @@ fn handle(db: &Db, event: &str, i: &Input) -> Result<Option<String>, String> {
             return Ok(None);
         }
         "notification" => SessionState::NeedsInput,
+        // A subagent (a background Explore, say) finishing a tool says nothing
+        // of the main thread, which may still be waiting on a question.
+        "post-tool-use" if i.agent_id.is_some() => return Ok(None),
         // Approving a permission prompt fires no UserPromptSubmit, so a
         // finished tool call is what moves needs_input back to running.
         "post-tool-use" => SessionState::Running,
@@ -52,7 +57,7 @@ mod tests {
     use super::*;
 
     fn input(prompt: Option<&str>) -> Input {
-        Input { session_id: "s1".into(), cwd: "/w".into(), prompt: prompt.map(Into::into) }
+        Input { session_id: "s1".into(), cwd: "/w".into(), prompt: prompt.map(Into::into), agent_id: None }
     }
 
     #[test]
@@ -72,5 +77,15 @@ mod tests {
             assert_eq!(db.get_session("s1").unwrap().unwrap().state, want, "{event}");
         }
         assert!(handle(&db, "bogus", &input(None)).is_err());
+    }
+
+    #[test]
+    fn a_subagents_finished_tool_leaves_the_question_waiting() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("db.sqlite")).unwrap();
+        handle(&db, "notification", &input(None)).unwrap();
+        let subagent = Input { agent_id: Some("a1".into()), ..input(None) };
+        handle(&db, "post-tool-use", &subagent).unwrap();
+        assert_eq!(db.get_session("s1").unwrap().unwrap().state, SessionState::NeedsInput);
     }
 }

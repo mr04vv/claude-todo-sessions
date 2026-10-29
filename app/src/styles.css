@@ -2023,6 +2023,12 @@ input.panel-title:focus-visible {
   color: var(--text-3);
 }
 
+/* An artifact of no todo: the session that made it, as wide as a todo's chip. */
+.made-in {
+  max-width: 180px;
+  font-size: 12px;
+}
+
 .todo-chip {
   max-width: 150px;
   overflow: hidden;
@@ -3531,8 +3537,12 @@ button.slack-reaction:hover {
   background: var(--bg);
   font-size: 12px;
   color: var(--text);
+}
+
+/* Two lines at most: the cut is on the text, as a padded box's overflow
+   shows the third line in its padding. */
+.ask-line > span {
   overflow: hidden;
-  text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;

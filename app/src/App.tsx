@@ -40,6 +40,7 @@ import {
   BROWSER_NEW_TAB_EVENT,
   OPEN_URL_EVENT,
   OPENED_EVENT,
+  PAGE_LINKS_EVENT,
   OPEN_NEW_TODO_EVENT,
   BROWSER_DOWNLOADED_EVENT,
   PAGE_DIALOG_EVENT,
@@ -55,7 +56,9 @@ import {
   MODEL_DEFAULTS,
   type Board,
   type Database,
+  type Digest,
   type DigestView,
+  type PickedDigest,
   type Reading,
   type ReadingKind,
   type ReadingSort,
@@ -2414,8 +2417,10 @@ function DatabaseDialog({ database, databases, run, onMade, onClose }: {
   );
 }
 
-function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, databases, unlinked, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
+function TodoPanel({ todo, allTodos, waiting, artifacts, madeIn, local, groups, databases, unlinked, run, report, setStatus, onOpenTodo, onStart, onWork, onClose }: {
   todo: Todo;
+  /// The session an artifact was made in, by its name.
+  madeIn: (a: Artifact) => string | null;
   /// The sessions of no todo, to link one to this.
   unlinked: Session[];
   /// The databases the user made, to put the todo in one.
@@ -2433,7 +2438,7 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
   onOpenTodo: (id: number) => void;
   /// The launch sheet.
   onStart: () => void;
-  /// Its sessions (and its subtasks') in 作業.
+  /// Its sessions (and its subtasks') in 作業, the ended one resumed.
   onWork: () => void;
   onClose: () => void;
 }) {
@@ -2491,6 +2496,8 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
   }, [todo.id, isParent]); // eslint-disable-line react-hooks/exhaustive-deps
   const latestOf = (t: Todo) => [...t.sessions].sort((a, b) => b.state_at - a.state_at)[0];
   const mine = artifacts.filter((a) => a.todo_id === todo.id || children.some((c) => c.id === a.todo_id));
+  // What no todo has, to put under this one.
+  const loose = artifacts.filter((a) => a.todo_id === null);
   return (
     <aside ref={root} className="panel" aria-label={`#${todo.id} ${todo.title}`} onClick={stop}>
       <header className="panel-head">
@@ -2634,7 +2641,7 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
               {under.length > 0 && <span className="pill waiting">あなた待ち {under.length}</span>}
               <span className="grow" />
               <button className="primary small" onClick={onWork} title="会話は作業で見ます">
-                作業で開く <span className="kbd">{keyLabel(keyOf("session"))}</span>
+                {mainSession(todo)?.state === "ended" ? "再開する" : "作業で開く"} <span className="kbd">{keyLabel(keyOf("session"))}</span>
               </button>
             </div>
           )}
@@ -2700,12 +2707,24 @@ function TodoPanel({ todo, allTodos, waiting, artifacts, local, groups, database
           <MemoEditor value={todo.memo ?? ""} report={report} onSave={(memo) => update({ memo })} />
         </section>
 
-        {mine.length > 0 && (
+        {(mine.length > 0 || loose.length > 0) && (
           <section>
             <h3>
               成果物 <span className="muted">{mine.length}</span>
             </h3>
-            <ArtifactRows artifacts={mine} todos={allTodos} report={report} onOpenTodo={onOpenTodo} />
+            <ArtifactRows artifacts={mine} todos={allTodos} madeIn={madeIn} report={report} onOpenTodo={onOpenTodo} />
+            {loose.length > 0 && (
+              <div className="summary-line">
+                <select className="select" value="" aria-label="todo のない成果物を紐づける" onChange={(e) => e.target.value && run(() => api.linkArtifact(Number(e.target.value), todo.id))}>
+                  <option value="">todo のない成果物を紐づける…</option>
+                  {loose.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {artifactName(a)}（{[madeIn(a), ago(a.created_at)].filter(Boolean).join(" · ")}）
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
           </section>
         )}
 
@@ -2767,9 +2786,11 @@ function useOpenArtifact() {
 
 /// Artifacts as rows: their kind, name, todo and when; with `onForget`, a
 /// way to take each off the list (the cursor's row shown as such).
-function ArtifactRows({ artifacts, todos, report, onOpenTodo, cursorId, onForget }: {
+function ArtifactRows({ artifacts, todos, madeIn, report, onOpenTodo, cursorId, onForget }: {
   artifacts: Artifact[];
   todos: Todo[];
+  /// The session an artifact was made in, by its name: shown where no todo is.
+  madeIn: (a: Artifact) => string | null;
   report: (e: unknown) => void;
   onOpenTodo: (id: number) => void;
   cursorId?: string | null;
@@ -2784,10 +2805,16 @@ function ArtifactRows({ artifacts, todos, report, onOpenTodo, cursorId, onForget
           <li key={a.id} data-row={artifactRow(a)} className={`row artifact-row${artifactRow(a) === cursorId ? " cursor" : ""}`} title={a.url} onClick={() => open(a)}>
             <span className="tag">{ARTIFACT_KIND[a.kind]}</span>
             <span className="row-title ellipsis">{artifactName(a)}</span>
-            {todo && (
+            {todo ? (
               <button className="tag todo-chip" onClick={(e) => (e.stopPropagation(), onOpenTodo(todo.id))} title={todo.title}>
                 #{todo.id} {todo.title}
               </button>
+            ) : (
+              madeIn(a) && (
+                <span className="muted ellipsis made-in" title="作ったセッション">
+                  {madeIn(a)}
+                </span>
+              )
             )}
             <span className="muted when">{ago(a.created_at)}</span>
             {onForget && (
@@ -2806,9 +2833,10 @@ const artifactRow = (a: Artifact) => `a:${a.id}`;
 
 /// What sessions made besides PRs, newest first, narrowed to a todo (a parent
 /// with its subtasks).
-function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
+function ArtifactsPage({ artifacts, todos, madeIn, report, run, onOpenTodo }: {
   artifacts: Artifact[];
   todos: Todo[];
+  madeIn: (a: Artifact) => string | null;
   report: (e: unknown) => void;
   run: (f: () => Promise<unknown>) => void;
   onOpenTodo: (id: number) => void;
@@ -2857,7 +2885,7 @@ function ArtifactsPage({ artifacts, todos, report, run, onOpenTodo }: {
         {shown.length === 0 && (
           <p className="muted empty">まだありません。セッションが claude.ai にアーティファクトやドキュメントを作ると、返事を終えたときにここへ並びます。html スキルで書いた文書も並びます。ほかの Mac のファイルは、セッションが todo-sessions の add_artifact で登録します。</p>
         )}
-        <ArtifactRows artifacts={shown} todos={todos} report={report} onOpenTodo={onOpenTodo} cursorId={cursorId} onForget={forget} />
+        <ArtifactRows artifacts={shown} todos={todos} madeIn={madeIn} report={report} onOpenTodo={onOpenTodo} cursorId={cursorId} onForget={forget} />
       </div>
     </>
   );
@@ -5268,7 +5296,7 @@ const FIXED_KEYS: [string, string][] = [
 /// Where things open and run, and what the browser keeps for sites: the
 /// logins (their sites and users), the sites not asked about, and the
 /// microphone and camera answers.
-function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, jevCredit, run, report, onClose }: {
+function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminalTarget, herdr, onLoadHerdr, onPickHerdr, hasTypesafeKey, hasGeminiKey, jevCredit, run, report, onClose }: {
   cloudTarget: CloudTarget;
   onCloudTarget: (t: CloudTarget) => void;
   terminalTarget: TerminalTarget;
@@ -5278,6 +5306,8 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
   onPickHerdr: (name: string) => void;
   /// A TypeSafe API key is kept (for the readings' tags).
   hasTypesafeKey: boolean;
+  /// A Gemini API key is kept (for the digests' podcasts).
+  hasGeminiKey: boolean;
   /// Jev's credit as last read off TypeSafe's console.
   jevCredit: JevCredit | null;
   run: (f: () => Promise<unknown>) => void;
@@ -5285,6 +5315,7 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
   onClose: () => void;
 }) {
   const keyRef = useRef<HTMLInputElement>(null);
+  const geminiRef = useRef<HTMLInputElement>(null);
   const creditRef = useRef<HTMLInputElement>(null);
   const spentRef = useRef<HTMLInputElement>(null);
   const saveCredit = () => {
@@ -5360,6 +5391,23 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
             </button>
             {hasTypesafeKey && (
               <button className="ghost small" onClick={() => run(() => api.setTypesafeKey(""))}>
+                消す
+              </button>
+            )}
+          </div>
+          <div className="setting-row">
+            <span className="grow">
+              Gemini の API キー（日報のポッドキャストの音声合成用。aistudio.google.com で作ったもの。Keychain に置きます）
+              <span className="muted">{hasGeminiKey ? " · 保存済み" : " · まだありません"}</span>
+            </span>
+          </div>
+          <div className="setting-row">
+            <input ref={geminiRef} className="grow mono" type="password" placeholder={hasGeminiKey ? "新しいキーで置き換える" : "API キー"} aria-label="Gemini の API キー" onKeyDown={(e) => isEnter(e) && run(() => api.setGeminiKey(e.currentTarget.value).then(() => geminiRef.current && (geminiRef.current.value = "")))} />
+            <button className="small" onClick={() => run(() => api.setGeminiKey(geminiRef.current?.value ?? "").then(() => geminiRef.current && (geminiRef.current.value = "")))}>
+              保存
+            </button>
+            {hasGeminiKey && (
+              <button className="ghost small" onClick={() => run(() => api.setGeminiKey(""))}>
                 消す
               </button>
             )}
@@ -5580,6 +5628,8 @@ const localDay = (offset: number) => {
 };
 /// A day as the list shows it: 10/18（土）.
 const dayLabel = (day: string) => new Date(`${day}T00:00:00`).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" });
+/// A moment's day (Unix seconds), as dayLabel says it.
+const timeDayLabel = (at: number) => new Date(at * 1000).toLocaleDateString("ja-JP", { month: "numeric", day: "numeric", weekday: "short" });
 
 /// 学習's shelves: the readings still to read, the ones read and kept (good
 /// ones; the rest are deleted once read), or both.
@@ -5633,6 +5683,11 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
   onToast: (text: string) => void;
 }) {
   const [shelf, setShelf] = useState<Shelf>("toRead");
+  // The days' digests and those of readings picked by hand, the newest first.
+  const digestRows: ({ key: string; at: number } & ({ day: Digest } | { picked: PickedDigest }))[] = [
+    ...(digests?.digests ?? []).map((d) => ({ key: `d:${d.day}`, at: d.made_at, day: d })),
+    ...(digests?.picked ?? []).map((p) => ({ key: `p:${p.id}`, at: p.made_at, picked: p })),
+  ].sort((a, b) => b.at - a.at);
   const [kind, setKind] = useState<KindFilter>("all");
   const [tag, setTag] = useState(ALL_TAGS);
   const [query, setQuery] = useState("");
@@ -5650,6 +5705,17 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
   const tags = sort?.tags ?? [];
   const count = (t: string) => ofKind.filter((r) => (t === UNSORTED ? r.tags === null : r.tags?.includes(t))).length;
   const togglePick = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  /// Readings `ids` summed up in a 日報 (with their podcast if `podcast`),
+  /// behind; a podcast without a Gemini API key opens the settings for one.
+  const makeDigestOf = (ids: number[], podcast: boolean) => {
+    if (podcast && !digests?.has_gemini_key) return onSettings();
+    run(() =>
+      api.makePickedDigest(ids, podcast).then(() => {
+        setPicked([]);
+        onToast(`${ids.length} 件の${podcast ? "音声つきの" : ""}日報を作り始めました。左の日報に進み具合が出ます`);
+      }),
+    );
+  };
   const copyUrls = (ids: number[]) => {
     const urls = ids.map((id) => readings.find((r) => r.id === id)?.url).filter((u): u is string => !!u);
     api.copyText(urls.join("\n")).then(() => onToast(`${urls.length} 件の URL をコピーしました。NotebookLM のソースの追加（ウェブサイト）に貼ってください`), report);
@@ -5681,6 +5747,8 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
         [matches(e, "studyForget"), () => (forgetting === r.id ? (setForgetting(null), run(() => api.deleteReading(r.id))) : setForgetting(r.id))],
         [matches(e, "studyTags"), () => setTagsFor(r.id)],
         [matches(e, "studyCopy"), () => copyUrls(picked.length > 0 ? picked : [r.id])],
+        [matches(e, "studyDigest"), () => makeDigestOf(picked.length > 0 ? picked : [r.id], false)],
+        [matches(e, "studyPodcast"), () => makeDigestOf(picked.length > 0 ? picked : [r.id], true)],
         [matches(e, "studyKeep"), () => run(() => api.setReadingKept(r.id, !r.kept))],
       ];
       const hit = acts.find(([yes]) => yes);
@@ -5723,19 +5791,40 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
           </button>
         ))}
         <div className="section-title">日報</div>
-        {(digests?.digests.length ?? 0) === 0 && <span className="muted small-text digest-hint">毎朝、前の日に保存した読みものを HTML のアーティファクトにまとめます（{keyLabel(keyOf("palette"))} から今すぐも）</span>}
-        {digests?.digests.map((d) => {
-          // Made (open it), being made in a session (show it), or failed (again).
-          const making = !d.url && !d.error && d.session_id;
+        {digestRows.length === 0 && <span className="muted small-text digest-hint">毎朝、前の日に保存した読みものを HTML のアーティファクトにまとめます（{keyLabel(keyOf("palette"))} から今すぐも）。選んだ読みものからも、音声つきでも作れます</span>}
+        {digestRows.map((row) => {
+          if ("day" in row) {
+            const d = row.day;
+            // Made (open it), being made in a session (show it), or failed (again).
+            const making = !d.url && !d.error && d.session_id;
+            return (
+              <button
+                key={row.key}
+                className="filter-row"
+                title={d.url ? `${d.url} をブラウザで開く` : making ? "作業のセッションがまとめています（押すとそのセッションを開く）" : `まとめられませんでした：${d.error}（押すともう一度）`}
+                onClick={() => (d.url ? onBrowser(d.url) : making ? onSession(making) : run(() => api.makeDigest(d.day)))}
+              >
+                <span className="grow">{dayLabel(d.day)}</span>
+                <span className="muted">{digests?.running === d.day || making ? "まとめています…" : d.url ? "開く" : "失敗・もう一度"}</span>
+              </button>
+            );
+          }
+          const p = row.picked;
+          // Being made here (its stage), then in a session (show it), made (open it), or failed (again).
+          const making = !p.url && !p.error && !p.stage && p.session_id;
+          const names = p.readings.map((id) => readings.find((r) => r.id === id)?.title ?? "（消した読みもの）").join("\n");
           return (
             <button
-              key={d.day}
+              key={row.key}
               className="filter-row"
-              title={d.url ? `${d.url} をブラウザで開く` : making ? "作業のセッションがまとめています（押すとそのセッションを開く）" : `まとめられませんでした：${d.error}（押すともう一度）`}
-              onClick={() => (d.url ? onBrowser(d.url) : making ? onSession(making) : run(() => api.makeDigest(d.day)))}
+              title={`${names}\n\n${p.url ? `${p.url} をブラウザで開く` : p.stage ? p.stage : making ? "作業のセッションがまとめています（押すとそのセッションを開く）" : `作れませんでした：${p.error}（押すともう一度）`}`}
+              disabled={!!p.stage}
+              onClick={() => (p.url ? onBrowser(p.url) : making ? onSession(making) : run(() => api.retryPickedDigest(p.id)))}
             >
-              <span className="grow">{dayLabel(d.day)}</span>
-              <span className="muted">{digests.running === d.day || making ? "まとめています…" : d.url ? "開く" : "失敗・もう一度"}</span>
+              <span className="grow ellipsis">
+                {timeDayLabel(p.made_at)} 選んだ {p.readings.length} 件{p.podcast ? "・音声つき" : ""}
+              </span>
+              <span className="muted">{p.stage ? `${p.stage}…` : making ? "まとめています…" : p.url ? "開く" : "失敗・もう一度"}</span>
             </button>
           );
         })}
@@ -5776,6 +5865,16 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
             <button className="primary small" onClick={() => onRead(picked)}>
               まとめて読む <span className="kbd">{keyLabel(keyOf("studyRead"))}</span>
             </button>
+            <button className="small" title="選んだ読みものを 1 つの日報（HTML のアーティファクト）にまとめます" onClick={() => makeDigestOf(picked, false)}>
+              日報を作る <span className="kbd">{keyLabel(keyOf("studyDigest"))}</span>
+            </button>
+            <button
+              className="small"
+              title={digests?.has_gemini_key ? "1 件ずつ解説するポッドキャストを埋め込んだ日報を作ります（Gemini の音声合成）" : "設定の「学習」で Gemini の API キーを入れると作れます"}
+              onClick={() => makeDigestOf(picked, true)}
+            >
+              音声つきで作る <span className="kbd">{keyLabel(keyOf("studyPodcast"))}</span>
+            </button>
             <button className="small" onClick={() => copyUrls(picked)}>
               URL をコピー（NotebookLM 用） <span className="kbd">{keyLabel(keyOf("studyCopy"))}</span>
             </button>
@@ -5785,7 +5884,7 @@ function ReadingsPage({ readings, sort, digests, opened, run, report, onRead, on
           </div>
         ) : (
           <p className="muted hint readings-hint">
-            入れ方：ページで {keyLabel(keyOf("bookmark"))}、リンクを ⌥ クリック、X ではブックマークのボタン。O'Reilly の本のページなら本として目次ごと入ります。{keyLabel(keyOf("studyPick"))} で選ぶと、まとめて読めます。
+            入れ方：ページで {keyLabel(keyOf("bookmark"))}、リンクを ⌥ クリック、X ではブックマークのボタン。O'Reilly の本のページなら本として目次ごと入ります。{keyLabel(keyOf("studyPick"))} で選ぶと、まとめて読んだり、日報（{keyLabel(keyOf("studyDigest"))}）や音声つきの日報（{keyLabel(keyOf("studyPodcast"))}）にしたりできます。選ばなければカーソルの行が対象です。
           </p>
         )}
         <div className="content" ref={list}>
@@ -6520,7 +6619,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
                       <span className="row-title ellipsis">{w.session ? sessionLabel(w.session) : (w.todo?.title ?? w.review?.title)}</span>
                     </span>
                     <span className="ask-line" title={w.line}>
-                      {w.line}
+                      <span>{w.line}</span>
                     </span>
                     <span className="work-line muted small-text">
                       <span className="ellipsis">{[w.todo?.parent_id ? `親 #${w.todo.parent_id}` : null, w.session ? placeOf(w.session) : null, w.session ? ago(w.session.state_at) : null].filter(Boolean).join(" · ")}</span>
@@ -6834,6 +6933,14 @@ export default function App() {
     else if (side) focusSoon(workTabId(side.session_id));
     setFocusTyping(parent ? "right" : "left");
   };
+  /// 作業 at a todo from the Todo page (o, 作業で開く): its session resumed
+  /// there when it has ended, as the pane's 「再開する」 does.
+  const workOnTodo = (id: number) => {
+    openWork({ todo: id });
+    const todo = allTodos.find((t) => t.id === id);
+    const session = todo && mainSession(todo);
+    if (session?.state === "ended") ensureWorkTab(session, true);
+  };
   const openWorkRef = useRef(openWork);
   openWorkRef.current = openWork;
   // 作業's right side also shows pages opened beside the session (a
@@ -7055,19 +7162,25 @@ export default function App() {
     setTerminalLinkOpener((url, front) => openTerminalLinkRef.current(url, front));
     return () => setTerminalLinkOpener(null);
   }, []);
-  /// ⌘⇧L in terminal `id`: the addresses it shows, to pick one from in ⌘K's box.
-  /// ⌘K opened on a list of its own: a terminal's links (back to `terminal` on Esc), or the sessions.
-  const [paletteStart, setPaletteStart] = useState<{ command: Command; terminal?: string } | null>(null);
-  const pickTerminalLink = (id: string) => {
-    const links = terminalLinks(id);
+  /// ⌘⇧L in a terminal or a page: the addresses it shows, to pick one from in ⌘K's box.
+  /// ⌘K opened on a list of its own: a terminal's or a page's links (back to
+  /// that `terminal` or `tab` on Esc), or the sessions.
+  const [paletteStart, setPaletteStart] = useState<{ command: Command; terminal?: string; tab?: string } | null>(null);
+  const pickLink = (links: { url: string; text?: string }[], from: { terminal: string } | { tab: string }) => {
     setPaletteStart({
-      terminal: id,
-      command: { key: "terminalLinks", label: "ターミナルのリンク", run: () => {}, items: () => links.map(({ url, text }) => ({ key: url, label: text ?? url, hint: text && url, run: () => openTerminalLink(url, false), alt: () => openTerminalLink(url, true) })) },
+      ...from,
+      command: {
+        key: "links",
+        label: "terminal" in from ? "ターミナルのリンク" : "ページのリンク",
+        run: () => {},
+        // A terminal's open beside it (⌘Enter: in the browser space); a page's in a new tab.
+        items: () => links.map(({ url, text }) => ({ key: url, label: text ?? url, hint: text && url, run: () => openTerminalLink(url, !("terminal" in from)), alt: () => openTerminalLink(url, true) })),
+      },
     });
     setDialog("palette");
   };
-  const pickTerminalLinkRef = useRef(pickTerminalLink);
-  pickTerminalLinkRef.current = pickTerminalLink;
+  const pickLinkRef = useRef(pickLink);
+  pickLinkRef.current = pickLink;
   const togglePalette = () => setDialog((d) => (d === "palette" ? null : "palette"));
   const paletteRef = useRef(togglePalette);
   paletteRef.current = togglePalette;
@@ -7459,6 +7572,7 @@ export default function App() {
       // A notification's PR: opened by the user, so it takes the keyboard.
       listen<{ url: string }>(OPEN_URL_EVENT, ({ payload }) => openRef.current(payload.url)),
       listen(OPENED_EVENT, () => takeOpened()),
+      listen<{ tab: string; links: { url: string; text?: string }[] }>(PAGE_LINKS_EVENT, ({ payload }) => pickLinkRef.current(payload.links, { tab: payload.tab })),
       listen(OPEN_NEW_TODO_EVENT, () => {
         dialogFromPage.current = true;
         setDialog("add");
@@ -7762,7 +7876,7 @@ export default function App() {
       const terminal = matches(e, "terminalLinks") ? (e.target as HTMLElement).closest<HTMLElement>("[data-terminal]")?.dataset.terminal : undefined;
       if (terminal) {
         e.preventDefault();
-        pickTerminalLinkRef.current(terminal);
+        pickLinkRef.current(terminalLinks(terminal), { terminal });
         return;
       }
       if (matches(e, "sessions")) {
@@ -7912,6 +8026,9 @@ export default function App() {
   const repoLanes = buildLanes(shownTodos, "repo", shownTodos);
   // Free group names in use, offered beside repositories when picking.
   const groups = [...new Set(allTodos.flatMap((t) => t.repos).filter((r) => !isGithubRepo(r)))].sort();
+  /// The session an artifact was made in, by its name (where no todo names it).
+  const sessionNames = new Map([...allTodos.flatMap((t) => t.sessions), ...(board?.inbox ?? [])].map((s) => [s.session_id, sessionLabel(s)]));
+  const madeIn = (a: Artifact) => (a.session_id && sessionNames.get(a.session_id)) || null;
   const allSessions = [...allTodos.flatMap(liveSessions), ...(board?.inbox ?? []).filter((s) => s.state !== "ended")];
   /// A terminal's title: the session it shows, as the session list names it.
   const sessionTitle = (id: string) => (board ? (sessionItemsOf(board).find((i) => i.session.session_id === id)?.session.title ?? null) : null);
@@ -7997,6 +8114,8 @@ export default function App() {
       if (url) openInBrowser(url);
     },
     help: () => setDialog("keys"),
+    // カンバン → リスト → Doing, as the toolbar's buttons go (a DB has no Doing).
+    nextView: () => (openDb ? setLayout(layout === "board" ? "list" : "board") : doingView ? showTodos("board") : layout === "board" ? showTodos("list") : setView("doing")),
     parent: (id) => {
       const parent = allTodos.find((t) => t.id === id)?.parent_id;
       if (parent != null) openTodo(parent);
@@ -8009,7 +8128,7 @@ export default function App() {
     // A todo with sessions: 作業 at it; without, the launch sheet.
     work: (id) => {
       const todo = allTodos.find((t) => t.id === id);
-      if (todo && (todo.sessions.length > 0 || allTodos.some((c) => c.parent_id === id && c.sessions.length > 0))) return openWork({ todo: id });
+      if (todo && (todo.sessions.length > 0 || allTodos.some((c) => c.parent_id === id && c.sessions.length > 0))) return workOnTodo(id);
       openTodo(id);
       setDialog("start");
     },
@@ -8175,6 +8294,7 @@ export default function App() {
     { key: "digestYesterday", label: `昨日（${dayLabel(localDay(-1))}）の日報を作る`, run: () => run(() => api.makeDigest(localDay(-1))) },
     { key: "digestToday", label: "今日の日報を今作る（今日保存した読みもの）", run: () => run(() => api.makeDigest(localDay(0))) },
     ...(board?.digests.digests ?? []).flatMap((d) => (d.url ? [{ key: `digest:${d.day}`, label: `日報：${dayLabel(d.day)}`, run: () => openInBrowser(d.url!) }] : [])),
+    ...(board?.digests.picked ?? []).flatMap((p) => (p.url ? [{ key: `picked:${p.id}`, label: `日報：${timeDayLabel(p.made_at)} 選んだ ${p.readings.length} 件${p.podcast ? "・音声つき" : ""}`, run: () => openInBrowser(p.url!) }] : [])),
     ...(studyReading && studyReadingShown
       ? [
           {
@@ -8556,6 +8676,7 @@ export default function App() {
                       allTodos={allTodos}
                       waiting={waiting}
                       artifacts={board?.artifacts ?? []}
+                      madeIn={madeIn}
                       local={local}
                       groups={groups}
                       databases={databases}
@@ -8565,7 +8686,7 @@ export default function App() {
                       setStatus={setStatus}
                       onOpenTodo={openTodo}
                       onStart={() => setDialog("start")}
-                      onWork={() => openWork({ todo: selectedTodo.id })}
+                      onWork={() => workOnTodo(selectedTodo.id)}
                       onClose={() => setSelection(null)}
                     />
                   </div>
@@ -8778,7 +8899,7 @@ export default function App() {
           )}
           {space === "artifacts" && board && (
             <main className="main">
-              <ArtifactsPage artifacts={board.artifacts} todos={allTodos} report={report} run={run} onOpenTodo={goTodo} />
+              <ArtifactsPage artifacts={board.artifacts} todos={allTodos} madeIn={madeIn} report={report} run={run} onOpenTodo={goTodo} />
             </main>
           )}
         </div>
@@ -8861,6 +8982,7 @@ export default function App() {
             onLoadHerdr={loadHerdr}
             onPickHerdr={pickHerdr}
             hasTypesafeKey={!!board?.reading_sort.has_key}
+            hasGeminiKey={!!board?.digests.has_gemini_key}
             jevCredit={board?.jev_spend.credit ?? null}
             run={run}
             report={report}
@@ -8880,9 +9002,10 @@ export default function App() {
             onRead={(id) => readReadings([id])}
             onClose={() => {
               setDialog(null);
-              // Back to the terminal the links were picked from (a link picked takes the keyboard after).
-              const from = paletteStart?.terminal;
-              if (from) requestAnimationFrame(() => focusTerminal(from));
+              // Back to the terminal or page the links were picked from (a link picked takes the keyboard after).
+              const { terminal, tab } = paletteStart ?? {};
+              if (terminal) requestAnimationFrame(() => focusTerminal(terminal));
+              else if (tab) requestAnimationFrame(() => giveKeys(tab, report));
             }}
           />
         )}

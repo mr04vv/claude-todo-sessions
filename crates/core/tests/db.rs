@@ -366,8 +366,8 @@ fn planning_splits_any_todo_into_subtasks() {
         assert!(body.contains(tool), "{tool}: {body}");
     }
     assert!(body.contains("AskUserQuestion"), "asks where to start them: {body}");
-    // A Cloud subtask is told things with SendMessage, not handed to the user.
-    assert!(body.contains("SendMessage") && body.contains("ListAgents") && !body.contains("送れないので"), "{body}");
+    // A Cloud subtask is told things through the app, as a herdr one is: SendMessage does not reach it.
+    assert!(!body.contains("SendMessage") && !body.contains("ListAgents") && !body.contains("送れないので"), "{body}");
     // A custom prompt is planned too.
     let c = db.update_todo(t.id, TodoPatch { prompt: Some("分けて進めたい".into()), ..Default::default() }).unwrap();
     let body = c.prompt_body(true);
@@ -640,6 +640,68 @@ fn a_digest_s_session_is_off_the_lists() {
         .unwrap();
     let db = Db::open(&db_path(&dir)).unwrap();
     assert!(db.get_session("sess-0").unwrap().unwrap().hidden);
+}
+
+#[test]
+fn a_digest_of_readings_picked_by_hand_is_kept_as_it_is_made() {
+    let (_d, db) = open();
+    let picked = |id| db.picked_digests().unwrap().into_iter().find(|p| p.id == id).unwrap();
+    let page = db.add_picked_digest(&[3, 1], false, "ページを読んでいます").unwrap();
+    let podcast = db.add_picked_digest(&[2], true, "ページを読んでいます").unwrap();
+    assert_eq!(db.picked_digests().unwrap().iter().map(|p| p.id).collect::<Vec<_>>(), [podcast, page], "newest first");
+    let p = picked(page);
+    assert_eq!((p.readings, p.podcast, p.stage.as_deref(), p.url, p.error), (vec![3, 1], false, Some("ページを読んでいます"), None, None), "the readings in the order picked");
+    db.set_picked_stage(podcast, "音声を作っています（2/3）").unwrap();
+    assert_eq!(picked(podcast).stage.as_deref(), Some("音声を作っています（2/3）"));
+    db.fail_picked_digest(podcast, "Gemini の API キーがありません").unwrap();
+    assert_eq!((picked(podcast).stage, picked(podcast).error.as_deref()), (None, Some("Gemini の API キーがありません")));
+    db.register_session("sess-9", "/home", "読みものの日報（選んだ 2 件）", None).unwrap();
+    db.start_picked_digest(page, "sess-9").unwrap();
+    assert!(db.get_session("sess-9").unwrap().unwrap().hidden, "its session is off the lists");
+    assert_eq!((picked(page).stage, picked(page).session_id.as_deref()), (None, Some("sess-9")), "the session makes the page now");
+    assert!(db.digest_made_by("sess-9", "https://claude.ai/artifact/xyz").unwrap(), "what it publishes is the page");
+    assert_eq!(picked(page).url.as_deref(), Some("https://claude.ai/artifact/xyz"));
+    assert!(!db.digest_made_by("sess-9", "https://claude.ai/artifact/later").unwrap(), "the first one published stays");
+}
+
+#[test]
+fn a_digest_is_what_its_session_publishes_not_a_file_it_writes() {
+    let (_d, db) = open();
+    db.start_digest("2026-10-18", "sess-1").unwrap();
+    let picked = db.add_picked_digest(&[1], false, "ページを読んでいます").unwrap();
+    db.start_picked_digest(picked, "sess-2").unwrap();
+    for session in ["sess-1", "sess-2"] {
+        assert!(!db.digest_made_by(session, "/private/tmp/scratchpad/20261019-reading-digest.html").unwrap(), "the html skill's file, written before publishing");
+        assert!(db.digest_made_by(session, "https://claude.ai/artifact/abc").unwrap());
+    }
+    assert_eq!(db.digest("2026-10-18").unwrap().unwrap().url.as_deref(), Some("https://claude.ai/artifact/abc"));
+    assert_eq!(db.picked_digests().unwrap()[0].url.as_deref(), Some("https://claude.ai/artifact/abc"));
+}
+
+#[test]
+fn a_picked_digest_made_again_is_the_same_one_from_scratch() {
+    let (_d, db) = open();
+    let id = db.add_picked_digest(&[2, 1], true, "ページを読んでいます").unwrap();
+    db.start_picked_digest(id, "sess-1").unwrap();
+    db.fail_picked_digest(id, "止まっていました").unwrap();
+    db.restart_picked_digest(id, "ページを読んでいます").unwrap();
+    let all = db.picked_digests().unwrap();
+    assert_eq!(all.len(), 1, "no second one");
+    let p = &all[0];
+    assert_eq!((p.readings.clone(), p.podcast, p.stage.as_deref(), p.error.clone(), p.session_id.clone(), p.url.clone()), (vec![2, 1], true, Some("ページを読んでいます"), None, None, None));
+}
+
+#[test]
+fn picked_digests_left_half_made_are_failed_at_launch() {
+    let (_d, db) = open();
+    let left = db.add_picked_digest(&[1], true, "台本を書いています").unwrap();
+    let made = db.add_picked_digest(&[2], false, "ページを読んでいます").unwrap();
+    db.start_picked_digest(made, "sess-1").unwrap();
+    db.fail_unfinished_picked_digests("Shosai が途中で終わりました").unwrap();
+    let all = db.picked_digests().unwrap();
+    let of = |id| all.iter().find(|p| p.id == id).unwrap();
+    assert_eq!((of(left).stage.as_deref(), of(left).error.as_deref()), (None, Some("Shosai が途中で終わりました")));
+    assert_eq!(of(made).error, None, "a page a session makes is left to it");
 }
 
 #[test]
@@ -1341,6 +1403,33 @@ fn artifacts_are_kept_once_newest_first_with_their_todo() {
     assert_eq!((all[1].title.as_deref(), all[1].todo_id, all[1].kind), (Some("比較表"), Some(t.id), cts_core::ArtifactKind::Artifact));
     db.delete_todo(t.id).unwrap();
     assert_eq!(db.artifacts().unwrap()[1].todo_id, None, "it outlives its todo");
+}
+
+#[test]
+fn linking_a_session_links_what_it_made_to_the_todo_too() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("調査")).unwrap();
+    let other = db.create_todo(new_todo("別")).unwrap();
+    db.record_session("s1", "/w", SessionState::Idle).unwrap();
+    let made = |url: &str, todo_id| cts_core::NewArtifact { url: url.into(), title: None, kind: cts_core::ArtifactKind::Artifact, session_id: Some("s1".into()), todo_id };
+    db.add_artifact(made("https://claude.ai/artifact/a", None)).unwrap();
+    db.add_artifact(made("https://claude.ai/artifact/b", Some(other.id))).unwrap();
+    db.link_session("s1", t.id).unwrap();
+    let todo_of = |url: &str| db.artifacts().unwrap().into_iter().find(|a| a.url == url).unwrap().todo_id;
+    assert_eq!(todo_of("https://claude.ai/artifact/a"), Some(t.id));
+    assert_eq!(todo_of("https://claude.ai/artifact/b"), Some(other.id), "one linked already stays");
+}
+
+#[test]
+fn an_artifact_is_linked_to_a_todo_by_hand_and_taken_off_it() {
+    let (_d, db) = open();
+    let t = db.create_todo(new_todo("調査")).unwrap();
+    db.add_artifact(cts_core::NewArtifact { url: "https://claude.ai/artifact/a".into(), title: None, kind: cts_core::ArtifactKind::Artifact, session_id: None, todo_id: None }).unwrap();
+    let id = db.artifacts().unwrap()[0].id;
+    db.link_artifact(id, Some(t.id)).unwrap();
+    assert_eq!(db.artifacts().unwrap()[0].todo_id, Some(t.id));
+    db.link_artifact(id, None).unwrap();
+    assert_eq!(db.artifacts().unwrap()[0].todo_id, None);
 }
 
 #[test]

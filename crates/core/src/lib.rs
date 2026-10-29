@@ -14,6 +14,7 @@ pub mod slack;
 pub mod tags;
 pub mod transcript;
 pub mod translate;
+pub mod tts;
 pub mod usage;
 
 use std::path::Path;
@@ -168,8 +169,8 @@ impl Todo {
             format!("これは{span}計画用の todo です。ここでは実装せず、詳細を詰めたあと、作業ごとにサブタスクを todo-sessions の create_todo で登録してください（parent_id={id}、repos はそのサブタスクのリポジトリ1つ、cwd はそのリポジトリのローカルのフォルダ、memo にそのサブタスクの実装方針と完了条件）。"),
             format!("登録したら、決めたこと（方針・決定事項・完了条件）を set_plan で todo #{id} の計画に書いてください。サブタスクのセッションは、これを最初から知った状態で始まります。"),
             "どのサブタスクを、どこで（Cloud か herdr、Claude か Codex）始めるかを AskUserQuestion で確かめてから、start_subtask で始めてください（既定は、GitHub のリポジトリがあれば Cloud、なければ herdr）。".into(),
-            "始めたあとも、このセッションは指揮役として残ってください。サブタスクの出来事（返事待ち・Cloud のサブタスクのひと区切り・CI 失敗・修正依頼・Done）は、このセッションにメッセージで届きます。計画で答えられる質問は reply_to_subtask で答え、CI 失敗と修正依頼は fix_subtask で直させてください。次のことは自分で決めず、escalate で理由を添えて私に回してください：計画に書いていない仕様の選択／お金・権限・データの削除に関わる判断／同じサブタスクで2回直させても CI が通らないとき。".into(),
-            "Cloud のサブタスクへは、Claude Code の SendMessage で直接送ってください（宛先は ListAgents に出る、そのサブタスクのセッション。reply_to_subtask は herdr のサブタスク用です）。私に中継を頼む必要はありません。向こうからこのセッションへは返事が来ないので、ひと区切りしたことはこのセッションにメッセージで届きます。ただし、Cloud のサブタスクが選択肢の画面（AskUserQuestion）で止まったときは SendMessage では答えられないので、答えの案を添えて escalate で私に回してください。".into(),
+            "始めたあとも、このセッションは指揮役として残ってください。サブタスクの出来事（返事待ち・ひと区切り（最後の発言つき。文章で質問して止まったときも）・CI 失敗・修正依頼・Done）は、このセッションにメッセージで届きます。計画で答えられる質問は reply_to_subtask で答え、CI 失敗と修正依頼は fix_subtask で直させてください。次のことは自分で決めず、escalate で理由を添えて私に回してください：計画に書いていない仕様の選択／お金・権限・データの削除に関わる判断／同じサブタスクで2回直させても CI が通らないとき。".into(),
+            "Cloud のサブタスクへも reply_to_subtask で送れます。私に中継を頼む必要はありません。ただし、Cloud のサブタスクが選択肢の画面（AskUserQuestion）で止まったときはメッセージでは答えられないので、答えの案を添えて escalate で私に回してください。".into(),
             "答えたこと・させたこと・決めたことは log_progress で残してください。サブタスクが全部 Done になったら、終わったことを私に知らせてください。".into(),
         ]
         .join("\n\n")
@@ -327,6 +328,22 @@ pub struct Digest {
     pub error: Option<String>,
     pub made_at: i64,
     /// The session making it (the artifact it publishes is the digest).
+    pub session_id: Option<String>,
+}
+
+/// A 日報 of readings picked by hand, with a podcast of them if asked for:
+/// what is being done while it is made (`stage`), then the session making
+/// the page, then the page's link, or why it was not made.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PickedDigest {
+    pub id: i64,
+    /// The readings' ids, in the order picked.
+    pub readings: Vec<i64>,
+    pub podcast: bool,
+    pub stage: Option<String>,
+    pub url: Option<String>,
+    pub error: Option<String>,
+    pub made_at: i64,
     pub session_id: Option<String>,
 }
 
@@ -780,6 +797,17 @@ CREATE TABLE IF NOT EXISTS database_todos (
 -- A day's readings summed up (its 日報, a Claude Docs document), or why that failed.
 CREATE TABLE IF NOT EXISTS digests (
     day TEXT PRIMARY KEY,
+    url TEXT,
+    error TEXT,
+    made_at INTEGER NOT NULL,
+    session_id TEXT
+);
+-- A 日報 of readings picked by hand (PickedDigest); readings are their ids, comma-separated.
+CREATE TABLE IF NOT EXISTS picked_digests (
+    id INTEGER PRIMARY KEY,
+    readings TEXT NOT NULL,
+    podcast INTEGER NOT NULL DEFAULT 0,
+    stage TEXT,
     url TEXT,
     error TEXT,
     made_at INTEGER NOT NULL,
@@ -1404,7 +1432,76 @@ impl Db {
     /// An artifact session `session_id` published: the digest it makes, if it
     /// makes one (and has none yet); whether it was.
     pub fn digest_made_by(&self, session_id: &str, url: &str) -> Result<bool> {
-        Ok(self.conn.execute("UPDATE digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])? > 0)
+        // Published, not a file: the html skill's page is written to a file first.
+        if !url.starts_with("https://") {
+            return Ok(false);
+        }
+        let day = self.conn.execute("UPDATE digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])?;
+        let picked = self.conn.execute("UPDATE picked_digests SET url = ?2, error = NULL WHERE session_id = ?1 AND url IS NULL", params![session_id, url])?;
+        Ok(day + picked > 0)
+    }
+
+    /// A 日報 of `readings` (ids, in the order picked) to make, its podcast too
+    /// if `podcast`, at `stage`; its id.
+    pub fn add_picked_digest(&self, readings: &[i64], podcast: bool, stage: &str) -> Result<i64> {
+        let ids = readings.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+        self.conn.execute("INSERT INTO picked_digests (readings, podcast, stage, made_at) VALUES (?1, ?2, ?3, ?4)", params![ids, podcast, stage, now()])?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Picked digest `id` to make again, from scratch, at `stage`.
+    pub fn restart_picked_digest(&self, id: i64, stage: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE picked_digests SET stage = ?2, url = NULL, error = NULL, session_id = NULL, made_at = ?3 WHERE id = ?1",
+            params![id, stage, now()],
+        )?;
+        Ok(())
+    }
+
+    /// What is being done for picked digest `id`.
+    pub fn set_picked_stage(&self, id: i64, stage: &str) -> Result<()> {
+        self.conn.execute("UPDATE picked_digests SET stage = ?2 WHERE id = ?1", params![id, stage])?;
+        Ok(())
+    }
+
+    /// Picked digest `id`'s page being made in session `session_id`, which is
+    /// off the lists as a day's digest's is.
+    pub fn start_picked_digest(&self, id: i64, session_id: &str) -> Result<()> {
+        self.conn.execute("UPDATE picked_digests SET stage = NULL, session_id = ?2 WHERE id = ?1", params![id, session_id])?;
+        self.hide_session(session_id)
+    }
+
+    /// Why picked digest `id` was not made.
+    pub fn fail_picked_digest(&self, id: i64, why: &str) -> Result<()> {
+        self.conn.execute("UPDATE picked_digests SET stage = NULL, error = ?2 WHERE id = ?1", params![id, why])?;
+        Ok(())
+    }
+
+    /// The picked digests still being made by the app (not by a session), as
+    /// failed for `why`: the app ended while it made them.
+    pub fn fail_unfinished_picked_digests(&self, why: &str) -> Result<()> {
+        self.conn.execute("UPDATE picked_digests SET stage = NULL, error = ?1 WHERE stage IS NOT NULL", [why])?;
+        Ok(())
+    }
+
+    /// The digests of readings picked by hand, the newest first.
+    pub fn picked_digests(&self) -> Result<Vec<PickedDigest>> {
+        let mut stmt = self.conn.prepare("SELECT id, readings, podcast, stage, url, error, made_at, session_id FROM picked_digests ORDER BY made_at DESC, id DESC")?;
+        let picked = stmt
+            .query_map([], |r| {
+                Ok(PickedDigest {
+                    id: r.get(0)?,
+                    readings: r.get::<_, String>(1)?.split(',').filter_map(|id| id.parse().ok()).collect(),
+                    podcast: r.get(2)?,
+                    stage: r.get(3)?,
+                    url: r.get(4)?,
+                    error: r.get(5)?,
+                    made_at: r.get(6)?,
+                    session_id: r.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(picked)
     }
 
     pub fn digest(&self, day: &str) -> Result<Option<Digest>> {
@@ -1565,6 +1662,9 @@ impl Db {
         }
         self.conn
             .execute("UPDATE sessions SET todo_id = ?2 WHERE session_id = ?1", params![id, todo_id])?;
+        // What it made before it was linked goes with it.
+        self.conn
+            .execute("UPDATE artifacts SET todo_id = ?2 WHERE session_id = ?1 AND todo_id IS NULL", params![id, todo_id])?;
         self.update_todo(todo_id, TodoPatch { status: Some(Status::Doing), ..Default::default() })?;
         Ok(())
     }
@@ -1744,6 +1844,12 @@ impl Db {
 
     /// Takes an artifact off the list. Its row stays, so finding it again in
     /// its session's record does not bring it back.
+    /// Puts an artifact under a todo (None: under none).
+    pub fn link_artifact(&self, id: i64, todo_id: Option<i64>) -> Result<()> {
+        self.conn.execute("UPDATE artifacts SET todo_id = ?2 WHERE id = ?1", params![id, todo_id])?;
+        Ok(())
+    }
+
     pub fn forget_artifact(&self, id: i64) -> Result<()> {
         self.conn.execute("UPDATE artifacts SET gone = 1 WHERE id = ?1", [id])?;
         Ok(())
