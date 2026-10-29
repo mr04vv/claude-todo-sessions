@@ -293,6 +293,8 @@ export default function BrowserWindow() {
         [matches(e, "nextTab"), () => step(1)],
         [matches(e, "sidePane"), () => active && keysToTab(active, active.id, report)],
         [matches(e, "askChatGpt"), () => active && !active.pinned && void api.browserAsk(active.id).catch(report)],
+        // ⌘⇧S: the page shown, to read in 学習 (the main window comes up with it).
+        [matches(e, "studyThis"), () => active && !active.pinned && void api.browserBookmark(active.id, true).catch(report)],
         // ⌘1–⌘6 (but ⌘4, this window): the main window, at that space.
         ...MAIN_SPACES.map(([action, space]): [boolean, () => void] => [matches(e, action), () => void api.mainWindowShow(space).catch(report)]),
       ];

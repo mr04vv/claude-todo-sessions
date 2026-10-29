@@ -6794,8 +6794,8 @@ export default function App() {
       ...list.filter((r) => !prev.some((t) => t.id === readingTabId(r.id))).map((r): BrowserTab => ({ id: readingTabId(r.id), url: readingUrl(r), openedFor: r.url, title: r.title, loading: true, nav: 0, area: "study", reading: r.id })),
     ]);
   /// Opens readings to read, the first shown with the keyboard (as tabs on the left).
-  const readReadings = (ids: number[]) => {
-    const list = ids.map((id) => readings.find((r) => r.id === id)).filter((r): r is Reading => !!r);
+  const readReadings = (ids: number[]) => readList(ids.map((id) => readings.find((r) => r.id === id)).filter((r): r is Reading => !!r));
+  const readList = (list: Reading[]) => {
     if (list.length === 0) return;
     readingTabs(list);
     ensurePinned(study.right);
@@ -6805,6 +6805,8 @@ export default function App() {
     setStudy((s) => ({ ...s, open: [...new Set([...s.open, ...list.map((r) => r.id)])], active: first, view: "read" }));
     setSpace("study");
   };
+  const readListRef = useRef(readList);
+  readListRef.current = readList;
   // The readings open before a restart come back once the board has them.
   const boardLoaded = board !== null;
   useEffect(() => {
@@ -7128,11 +7130,12 @@ export default function App() {
   const onSplitRightRef = useRef(onSplitRight);
   onSplitRightRef.current = onSplitRight;
 
-  /// ⌘⇧D: the page shown keeps itself to read (a book's with its contents).
-  const bookmarkShown = () => {
+  /// ⌘⇧D: the page shown keeps itself to read (a book's with its contents);
+  /// ⌘⇧S (`study`) also reads it in 学習.
+  const bookmarkShown = (study = false) => {
     const tab = browserShown ? activeTab : studyReading ? studyLeft : undefined;
     if (!tab || tab.term || tab.pinned || !/^https?:\/\//.test(tab.url)) return false;
-    api.browserBookmark(tab.id).catch(report);
+    api.browserBookmark(tab.id, study).catch(report);
     return true;
   };
   const bookmarkShownRef = useRef(bookmarkShown);
@@ -7580,10 +7583,11 @@ export default function App() {
       listen<{ path: string; name: string }>(BROWSER_DOWNLOADED_EVENT, ({ payload }) => setDownloaded(payload)),
       listen<PageDialogAsk>(PAGE_DIALOG_EVENT, ({ payload }) => setPageDialog(payload)),
       listen<SiteAsk>(SITE_PERMISSION_EVENT, ({ payload }) => setSiteAsk(payload)),
-      // A page kept itself to read: said at the bottom.
-      listen<{ title: string; kind: ReadingKind; chapters: number }>(READING_ADDED_EVENT, ({ payload }) =>
-        showToastRef.current(payload.kind === "book" ? `本として読みものに入れました（目次 ${payload.chapters} 章）：${payload.title}` : `読みものに入れました：${payload.title}`),
-      ),
+      // A page kept itself to read: said at the bottom, and read in 学習 when asked (⌘⇧S).
+      listen<{ reading: Reading; study: boolean }>(READING_ADDED_EVENT, ({ payload: { reading: r, study } }) => {
+        showToastRef.current(r.kind === "book" ? `本として読みものに入れました（目次 ${r.chapters.length} 章）：${r.title}` : `読みものに入れました：${r.title}`);
+        if (study) readListRef.current([r]);
+      }),
       listen<{ space: Space }>(SPACE_EVENT, ({ payload }) => goSpaceRef.current(payload.space)),
       listen(BROWSER_OPEN_NEW_TAB_EVENT, () => openNewTab()),
       listen<{ tab: string; delta: number }>(BROWSER_SWITCH_TAB_EVENT, ({ payload }) =>
@@ -7928,6 +7932,7 @@ export default function App() {
         // The browser's page, while it has the typing (in 作業's list ⌘⇧A puts its row away).
         ["archive", () => typingSideRef.current === "pane" && archiveShownRef.current()],
         ["bookmark", () => bookmarkShownRef.current()],
+        ["studyThis", () => bookmarkShownRef.current(true)],
         ["prevTab", () => switchRef.current(-1)],
         ["nextTab", () => switchRef.current(1)],
         ["newTodo", () => setDialog("add")],
@@ -8343,7 +8348,7 @@ export default function App() {
           },
         ]
       : []),
-    ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: bookmarkShown }] : []),
+    ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: () => bookmarkShown() }, { key: "studyThis", label: "表示中のページを学習で読む", hint: keyLabel(keyOf("studyThis")), run: () => bookmarkShown(true) }] : []),
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
     { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
     { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
@@ -8849,7 +8854,7 @@ export default function App() {
                   ))}
                 </div>
                 {studyLeft ? (
-                  <TabView key={studyLeft.id} tab={studyLeft} covered={covered} report={report} onAddress={(url) => setTabUrl(studyLeft.id, url)} keep={studyRightTab?.id} keysOn={focusTyping === "left"} onBookmark={studyLeft.reading === undefined ? bookmarkShown : undefined} />
+                  <TabView key={studyLeft.id} tab={studyLeft} covered={covered} report={report} onAddress={(url) => setTabUrl(studyLeft.id, url)} keep={studyRightTab?.id} keysOn={focusTyping === "left"} onBookmark={studyLeft.reading === undefined ? () => bookmarkShown() : undefined} />
                 ) : (
                   <div className="pane-empty">読みものを左の一覧から選んでください。</div>
                 )}
