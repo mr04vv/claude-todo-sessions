@@ -16,6 +16,7 @@ pub mod transcript;
 pub mod translate;
 pub mod tts;
 pub mod usage;
+pub mod x_video;
 
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

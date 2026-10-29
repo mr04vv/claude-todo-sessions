@@ -7157,8 +7157,10 @@ export default function App() {
   };
   // A terminal's links open beside it on 作業's right (⌘-click, Enter in
   // ⌘⇧L's list), or in the browser space (⌘⇧-click, ⌘Enter; a terminal
-  // outside 作業 too); with ctrl, in the default browser.
-  const openTerminalLink = (url: string, browser: boolean) => (browser || space !== "work" || opensOutside() ? openInBrowser(url) : openBeside(url));
+  // outside 作業 too); with ctrl, in the default browser. A Slack permalink
+  // opens in the Slack app.
+  const openTerminalLink = (url: string, browser: boolean) =>
+    SLACK_PERMALINK.test(url) ? void api.openLink(url).catch(report) : browser || space !== "work" || opensOutside() ? openInBrowser(url) : openBeside(url);
   const openTerminalLinkRef = useRef(openTerminalLink);
   openTerminalLinkRef.current = openTerminalLink;
   useEffect(() => {

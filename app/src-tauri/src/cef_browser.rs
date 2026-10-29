@@ -289,6 +289,11 @@ pub fn split(key: &str) -> (&str, &str) {
     key.split_once(':').unwrap_or(("main", key))
 }
 
+/// Runs `f` with tab `tab`'s view, on the main thread (as its caller is).
+pub fn with_view<R>(tab: &str, f: impl FnOnce(&NSView) -> R) -> Option<R> {
+    with_tab(tab, |b| view_of(b).map(f)).flatten()
+}
+
 fn with_tab<R>(tab: &str, f: impl FnOnce(&Browser) -> R) -> Option<R> {
     TABS.with(|t| t.borrow().get(tab).map(f))
 }
@@ -804,6 +809,7 @@ pub fn set_hidden(app: &AppHandle, win: &str, only: Option<&str>, except: &[Stri
 pub fn close(app: &AppHandle, tab: &str) -> Result<(), String> {
     let tab = tab.to_string();
     on_main(app, move || {
+        crate::x_video::tab_closed(&tab);
         if let Some(browser) = TABS.with(|t| t.borrow_mut().remove(&tab)) {
             if let Some(host) = browser.host() {
                 host.close_browser(1);
