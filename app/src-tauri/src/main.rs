@@ -10,6 +10,7 @@ mod readings;
 mod slack;
 mod terminal;
 mod translate;
+mod x_video;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -1840,6 +1841,14 @@ fn page_message(app: &AppHandle, tab: &str, url: &tauri::Url) {
         Some("translate") => return translate::on_blocks(app, tab, &param("b")),
         Some("translate-selection") => return translate::on_selection(app, tab, param("i").parse().unwrap_or(0), param("t")),
         Some("translated") => return translate::on_translated(app, tab, param("on") == "1"),
+        // The video in the middle of X's view (x_video.rs), or none, or one coming.
+        Some("x-video") => {
+            let num = |name: &str| param(name).parse().unwrap_or(0.0);
+            let spot = x_video::Spot { x: num("x"), y: num("y"), width: num("w"), height: num("h"), viewport_width: num("vw"), top: num("t") };
+            return x_video::show(app, tab, param("i"), spot);
+        }
+        Some("x-video-hide") => return x_video::hide(tab),
+        Some("x-video-ahead") => return x_video::prefetch(app, param("i")),
         // A post on X's home timeline, to fold away if not about engineering.
         Some("x-post") => return readings::on_post(app, tab, param("i"), param("t")),
         // Kept to read (⌘⇧D, a link ⌥-clicked, X's bookmark button): the page keeps the keyboard.
@@ -1928,6 +1937,10 @@ fn page_setup_scripts(app: &AppHandle) -> Vec<String> {
 
 /// A tab's page began or finished loading.
 fn tab_load(app: &AppHandle, tab: &str, url: String, loading: bool) {
+    // A page leaving takes X's video player (x_video.rs) with it.
+    if loading {
+        x_video::hide(tab);
+    }
     // The page begins without the keys and the focus mode, which are set by eval. At the
     // start of a load as well as its end: a page slow to finish (a session's, just opened)
     // would leave the app's keys (⌃h ⌃l) dead until then.

@@ -40,6 +40,9 @@
   const ASK_CHATGPT = "todo-sessions://ask-chatgpt";
   const CHAPTER_READ = "todo-sessions://chapter-read";
   const X_POST = "todo-sessions://x-post";
+  const X_VIDEO = "todo-sessions://x-video";
+  const X_VIDEO_HIDE = "todo-sessions://x-video-hide";
+  const X_VIDEO_AHEAD = "todo-sessions://x-video-ahead";
   const NEW_TODO = "todo-sessions://new-todo";
   const ZOOM_IN = "todo-sessions://zoom-in";
   const ZOOM_OUT = "todo-sessions://zoom-out";
@@ -399,6 +402,80 @@
     },
     true,
   );
+  // X's videos (and GIFs) are H.264, which this browser cannot play: the app
+  // lays a player that can (x_video.rs) over the one nearest the middle of
+  // the view once the scrolling stops, and moves it with the page as it
+  // scrolls, until it leaves the view. The videos coming are found ahead.
+  const VIDEO_PLAYER = '[data-testid="videoPlayer"]';
+  const VIDEO_SETTLE_MS = 250;
+  const VIDEO_CHECK_MS = 150;
+  let videoSent = X_VIDEO_HIDE;
+  let playing = null;
+  let lastScroll = 0;
+  let following = false;
+  const videosAhead = new Set();
+  const tellVideo = (message) => {
+    if (message === videoSent) return;
+    videoSent = message;
+    send(message);
+  };
+  const videoIdOf = (player) => {
+    const post = player.closest("article");
+    return (post && postIdOf(post)) ?? location.pathname.match(/\/status\/(\d+)/)?.[1];
+  };
+  // The bottom of what stays at the top of the page over the video (X's header).
+  const headerBottom = (r) => {
+    for (let e = document.elementFromPoint(r.x + r.width / 2, 1); e && e !== document.body; e = e.parentElement) {
+      if (/sticky|fixed/.test(getComputedStyle(e).position)) return Math.max(0, e.getBoundingClientRect().bottom);
+    }
+    return 0;
+  };
+  const videoAt = (id, player) => {
+    const r = player.getBoundingClientRect();
+    const top = headerBottom(r);
+    if (r.bottom <= top || r.top >= innerHeight) return null;
+    return `${X_VIDEO}?i=${id}&x=${r.x}&y=${r.y}&w=${r.width}&h=${r.height}&vw=${innerWidth}&t=${top}`;
+  };
+  // As the page scrolls: the player with its video (X reuses a post's cell for another).
+  const followVideo = () => {
+    following = false;
+    const message = playing && videoIdOf(playing.player) === playing.id && videoAt(playing.id, playing.player);
+    if (!message) playing = null;
+    tellVideo(message || X_VIDEO_HIDE);
+  };
+  const videoMoved = () => {
+    lastScroll = Date.now();
+    if (!following) {
+      following = true;
+      requestAnimationFrame(followVideo);
+    }
+  };
+  // Once settled: the video nearest the middle; and the ones in view or next, found ahead.
+  const checkVideos = () => {
+    let nearest = null;
+    let distance = Infinity;
+    for (const player of document.querySelectorAll(VIDEO_PLAYER)) {
+      const r = player.getBoundingClientRect();
+      if (!r.width || r.top > innerHeight * 2 || r.bottom < 0) continue;
+      const id = videoIdOf(player);
+      if (id && !videosAhead.has(id)) {
+        videosAhead.add(id);
+        send(`${X_VIDEO_AHEAD}?i=${id}`);
+      }
+      const d = Math.abs((r.top + r.bottom) / 2 - innerHeight / 2);
+      if (id && r.top < innerHeight && d < distance) [nearest, distance] = [{ id, player }, d];
+    }
+    if (Date.now() - lastScroll < VIDEO_SETTLE_MS) return;
+    const message = nearest && videoAt(nearest.id, nearest.player);
+    playing = message ? nearest : null;
+    tellVideo(message || X_VIDEO_HIDE);
+  };
+  if (!FRAME && X_HOST.test(location.hostname)) {
+    window.addEventListener("scroll", videoMoved, { capture: true, passive: true });
+    window.addEventListener("resize", videoMoved);
+    // Checked over and over: X's posts come in, and its pages change, without a load.
+    setInterval(checkVideos, VIDEO_CHECK_MS);
+  }
   // On X's home timeline, a post not about engineering folds away to a line
   // saying so (a click shows it): the app asks TypeSafe's Jev about each one
   // and answers with __todoSessionsPostVerdict. A post without text stays.
