@@ -14,7 +14,7 @@ import { allKeys, matches, matchesCombo } from "./keymap";
 import { KittyFlags, kittyChord } from "./kitty";
 import { asOutside } from "./outside";
 import { findUrls } from "./links";
-import { osc52Text } from "./osc52";
+import { osc52Text, unwrapCopied } from "./osc52";
 
 /// A command to run, where, and what to call its tab (`TerminalRun` in main.rs).
 export interface TerminalRun {
@@ -110,6 +110,24 @@ function gridComposition(term: Terminal) {
 /// Big enough for xterm.js to take a replayed step as one whole row.
 const WHEEL_STEP_PX = 1000;
 const EXITED_NOTE = "\r\n\x1b[2m[終了しました]\x1b[0m\r\n";
+
+/// How long after a drag herdr's copy is waited for: tries, and the time between them.
+const COPY_WAIT_TRIES = 10;
+const COPY_WAIT_MS = 50;
+
+/// Waits for a copy since the clipboard's change count was `before`, and puts
+/// it again with Claude Code's wrapped lines joined. No copy, nothing changes.
+async function unwrapCopyAfter(before: Promise<number>) {
+  const start = await before;
+  for (let i = 0; i < COPY_WAIT_TRIES; i++) {
+    await new Promise((r) => setTimeout(r, COPY_WAIT_MS));
+    if ((await invoke<number>("clipboard_change_count")) === start) continue;
+    const text = await invoke<string>("read_clipboard");
+    const joined = unwrapCopied(text);
+    if (joined !== text) await invoke("copy_text", { text: joined });
+    return;
+  }
+}
 
 /// Each terminal outlives its view, so switching tabs or hiding the pane
 /// keeps what it printed; output that arrives meanwhile is written anyway.
@@ -301,10 +319,10 @@ function entryFor(id: string, look: Look): Entry {
       opened = /^https?:\/\//.test(url) ? { url, y, x: buffer.cursorX } : null;
       return false;
     });
-    // A program's copy (herdr's selection): xterm.js drops OSC 52, so it goes to the clipboard here.
+    // A program's copy (herdr's selection): xterm.js drops OSC 52, so it goes to the clipboard here, Claude Code's wrapped lines joined.
     term.parser.registerOscHandler(52, (data) => {
       const text = osc52Text(data);
-      if (text) invoke("copy_text", { text }).catch((err) => console.error("OSC 52 copy failed", err));
+      if (text) invoke("copy_text", { text: unwrapCopied(text) }).catch((err) => console.error("OSC 52 copy failed", err));
       return true;
     });
     term.registerLinkProvider({
@@ -378,6 +396,14 @@ function entryFor(id: string, look: Look): Entry {
     term.onResize(({ cols, rows }) => void invoke("term_resize", { id, cols, rows }).catch(() => {}));
     const host = document.createElement("div");
     host.className = "terminal-host";
+    // herdr copies a dragged selection with pbcopy itself (no OSC 52 reaches here), so a copy
+    // made by the drag is read back and put again with Claude Code's wrapped lines joined.
+    let countAtPress: Promise<number> | null = null;
+    host.addEventListener("mousedown", () => { countAtPress = invoke<number>("clipboard_change_count"); }, true);
+    host.addEventListener("mouseup", () => {
+      if (countAtPress) void unwrapCopyAfter(countAtPress).catch((err) => console.error("unwrapping herdr's copy failed", err));
+      countAtPress = null;
+    }, true);
     host.dataset.terminal = id;
     e = { term, fit, host, started: false, look, title: "", marked };
     const entry = e;
