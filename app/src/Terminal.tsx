@@ -14,7 +14,7 @@ import { allKeys, matches, matchesCombo } from "./keymap";
 import { KittyFlags, kittyChord } from "./kitty";
 import { asOutside } from "./outside";
 import { findUrls } from "./links";
-import { osc52Text } from "./osc52";
+import { osc52Text, unwrapCopied } from "./osc52";
 
 /// A command to run, where, and what to call its tab (`TerminalRun` in main.rs).
 export interface TerminalRun {
@@ -301,10 +301,10 @@ function entryFor(id: string, look: Look): Entry {
       opened = /^https?:\/\//.test(url) ? { url, y, x: buffer.cursorX } : null;
       return false;
     });
-    // A program's copy (herdr's selection): xterm.js drops OSC 52, so it goes to the clipboard here.
+    // A program's copy (herdr's selection): xterm.js drops OSC 52, so it goes to the clipboard here, Claude Code's wrapped lines joined.
     term.parser.registerOscHandler(52, (data) => {
       const text = osc52Text(data);
-      if (text) invoke("copy_text", { text }).catch((err) => console.error("OSC 52 copy failed", err));
+      if (text) invoke("copy_text", { text: unwrapCopied(text) }).catch((err) => console.error("OSC 52 copy failed", err));
       return true;
     });
     term.registerLinkProvider({
