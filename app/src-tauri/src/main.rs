@@ -50,6 +50,9 @@ const ISSUE_SYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// Folders (under $HOME) whose direct children are checkouts, besides the ghq root.
 // ponytail: fixed list; make it a setting if more roots are needed.
 const EXTRA_REPO_ROOTS: &[&str] = &["Works/Atrae"];
+/// Folder (under $HOME) a quick claude without one starts in: Claude Code
+/// never keeps its trust of $HOME itself, so it would ask at every start there.
+const QUICK_DIR: &str = "src";
 /// Terminal app hosting herdr, brought forward when a session is focused there.
 const TERMINAL_APP: &str = "Ghostty";
 
@@ -509,12 +512,20 @@ fn quick_agent_run(prompt: Option<&str>, cwd: Option<String>, title: Option<Stri
     run
 }
 
+/// Where a quick run starts: `cwd` when it is a folder, else QUICK_DIR under
+/// `home`, else `home` itself.
+fn quick_cwd(cwd: Option<String>, home: &std::path::Path) -> String {
+    let quick = home.join(QUICK_DIR);
+    let fallback = if quick.is_dir() { quick } else { home.to_path_buf() };
+    cwd.filter(|c| std::path::Path::new(c).is_dir()).unwrap_or_else(|| fallback.to_string_lossy().to_string())
+}
+
 fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -> TerminalRun {
     let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
     let session = uuid::Uuid::new_v4().to_string();
     let first = prompt.map(|p| format!(" {}", launch::shell_quote(p))).unwrap_or_default();
     TerminalRun {
-        cwd: cwd.filter(|c| std::path::Path::new(c).is_dir()).unwrap_or_else(|| home().to_string_lossy().to_string()),
+        cwd: quick_cwd(cwd, &home()),
         title: title.or_else(|| prompt.map(|p| p.chars().take(24).collect())).unwrap_or_else(|| "claude".into()),
         command: format!("claude --session-id {session}{first}"),
         session: Some(session),
@@ -3282,6 +3293,19 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
         let out = output_within(Command::new("echo").arg("hi"), Duration::from_secs(5)).unwrap();
         assert_eq!(out.stdout, b"hi\n");
+    }
+
+    #[test]
+    fn a_quick_claude_without_a_folder_starts_in_the_quick_folder() {
+        let home = std::env::temp_dir().join(format!("shosai-quick-{}", std::process::id()));
+        let quick = home.join(QUICK_DIR);
+        std::fs::create_dir_all(&quick).unwrap();
+        assert_eq!(quick_cwd(None, &home), quick.to_string_lossy());
+        assert_eq!(quick_cwd(Some("/no/such/folder".into()), &home), quick.to_string_lossy(), "nor in a folder that is gone");
+        assert_eq!(quick_cwd(Some(home.to_string_lossy().into()), &home), home.to_string_lossy(), "but in one it is given");
+        std::fs::remove_dir(&quick).unwrap();
+        assert_eq!(quick_cwd(None, &home), home.to_string_lossy(), "home when it is gone");
+        std::fs::remove_dir(&home).unwrap();
     }
 
     #[test]
