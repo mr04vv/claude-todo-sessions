@@ -59,8 +59,11 @@ done
 # Signed with the user's own code signing certificate when there is one, so
 # a rebuild stays the same app to the Keychain (its items kept for Shosai
 # alone); ad hoc without one, as Tauri signs it. The new parts need it too.
-# The identity is SHOSAI_SIGNING_IDENTITY, else the first Apple Development one.
+# The identity is SHOSAI_SIGNING_IDENTITY, else the first Apple Development
+# one, else a self-signed one named LOCAL_IDENTITY (not trusted, so not -v).
+LOCAL_IDENTITY="Shosai Local Signing"
 IDENTITY="${SHOSAI_SIGNING_IDENTITY:-$(security find-identity -v -p codesigning | sed -n 's/.*"\(Apple Development: .*\)"$/\1/p' | head -1)}"
+if [ -z "$IDENTITY" ] && security find-identity -p codesigning | grep -qF "\"$LOCAL_IDENTITY\""; then IDENTITY="$LOCAL_IDENTITY"; fi
 if [ -n "$IDENTITY" ] && security find-identity -p codesigning | grep -qF "\"$IDENTITY\""; then SIGN="$IDENTITY"; else SIGN=-; fi
 echo "signing with: $SIGN"
 if [ "$SIGN" = - ]; then
@@ -68,15 +71,18 @@ if [ "$SIGN" = - ]; then
 else
   # Under the Hardened Runtime (no code slipped in at launch, only libraries
   # signed by the same team), inner parts first; SHOSAI_HARDENED=0 leaves it out.
+  # A self-signed certificate has no team, so it is left out by default there.
+  HARDENED=1
+  [ "$SIGN" = "$LOCAL_IDENTITY" ] && HARDENED=0
   RUNTIME=(--options runtime)
-  [ "${SHOSAI_HARDENED:-1}" = 0 ] && RUNTIME=()
+  [ "${SHOSAI_HARDENED:-$HARDENED}" = 0 ] && RUNTIME=()
   ENT=app/src-tauri/entitlements
-  codesign --force --deep "${RUNTIME[@]}" --sign "$SIGN" "$FW/$FRAMEWORK"
+  codesign --force --deep ${RUNTIME[@]+"${RUNTIME[@]}"} --sign "$SIGN" "$FW/$FRAMEWORK"
   for kind in "" " (GPU)" " (Renderer)" " (Plugin)" " (Alerts)"; do
-    codesign --force "${RUNTIME[@]}" --entitlements "$ENT/helper.plist" --sign "$SIGN" "$FW/$MAIN Helper$kind.app"
+    codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --entitlements "$ENT/helper.plist" --sign "$SIGN" "$FW/$MAIN Helper$kind.app"
   done
-  codesign --force "${RUNTIME[@]}" --entitlements "$ENT/helper.plist" --sign "$SIGN" "$APP/Contents/MacOS/todo-sessions-helper"
-  codesign --force "${RUNTIME[@]}" --entitlements "$ENT/app.plist" --sign "$SIGN" "$APP"
+  codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --entitlements "$ENT/helper.plist" --sign "$SIGN" "$APP/Contents/MacOS/todo-sessions-helper"
+  codesign --force ${RUNTIME[@]+"${RUNTIME[@]}"} --entitlements "$ENT/app.plist" --sign "$SIGN" "$APP"
 fi
 codesign --verify --deep --strict "$APP"
 echo "$APP"
