@@ -381,6 +381,19 @@ fn copy_text(text: String) -> Result<(), String> {
     status.success().then_some(()).ok_or_else(|| format!("pbcopy failed: {status}"))
 }
 
+/// How many times the clipboard has changed, to tell whether something was copied since.
+#[tauri::command]
+fn clipboard_change_count() -> isize {
+    objc2_app_kit::NSPasteboard::generalPasteboard().changeCount()
+}
+
+/// The clipboard's text, through pbpaste.
+#[tauri::command(async)]
+fn read_clipboard() -> Result<String, String> {
+    let out = cli("pbpaste").output().map_err(err)?;
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned()).ok_or_else(|| format!("pbpaste failed: {}", out.status))
+}
+
 /// Focuses the herdr pane running this session, if any, and brings the
 /// terminal forward. Returns false when herdr does not host it.
 fn focus_in_herdr(session_id: &str) -> bool {
@@ -3157,6 +3170,8 @@ fn main() {
             unlink_session,
             take_opened,
             copy_text,
+            clipboard_change_count,
+            read_clipboard,
             open_session,
             sync_now,
             quick_claude,

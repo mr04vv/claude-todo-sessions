@@ -29,7 +29,7 @@ uuid = { version = "1", features = ["v4"] }
 # NSWorkspace / NSNotification: the Mac going to sleep and waking (power.rs).
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSGeometry", "NSNotification", "NSString", "NSUserNotification"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSApplication", "NSEvent", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSRunningApplication", "NSApplication", "NSEvent", "NSPasteboard", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
 # WKWebView: X's videos (H.264, which the Chromium here cannot play) laid over the page (x_video.rs).
 objc2-web-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-app-kit", "WKWebView", "WKWebViewConfiguration"] }
 # The in-app browser is Chromium (CEF), not the system's WebKit, whose scrolling on claude.ai jumped back.
