@@ -166,7 +166,32 @@ fn is_font_file(file: &str, family: &str, bold: bool) -> bool {
     name.to_lowercase() == family.replace(' ', "").to_lowercase() && style.to_lowercase() == wanted
 }
 
+/// The OpenType table holding glyphs as SVG documents (Noto Color Emoji's).
+const SVG_TABLE: &[u8; 4] = b"SVG ";
+/// An sfnt's table directory: 12 bytes of header, then 16 per table.
+const SFNT_HEADER_LEN: usize = 12;
+const SFNT_RECORD_LEN: usize = 16;
+
+/// Whether the font (or a font of the collection) draws glyphs from SVG.
+/// WebKit parses a glyph's SVG again each time it paints it, so a terminal
+/// showing such glyphs stalls the page on every repaint (as on showing 作業).
+fn has_svg_glyphs(data: &[u8]) -> bool {
+    let u16_at = |at: usize| data.get(at..at + 2).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize);
+    let u32_at = |at: usize| data.get(at..at + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let has_table = |font: usize| {
+        let count = u16_at(font + 4).unwrap_or(0);
+        (0..count).any(|i| data.get(font + SFNT_HEADER_LEN + i * SFNT_RECORD_LEN..).is_some_and(|r| r.starts_with(SVG_TABLE)))
+    };
+    if data.starts_with(b"ttcf") {
+        let count = u32_at(8).unwrap_or(0);
+        return (0..count).filter_map(|i| u32_at(12 + i * 4)).any(has_table);
+    }
+    has_table(0)
+}
+
 /// The file of an installed font, for the terminal to load as the page cannot.
+/// A font drawing its glyphs from SVG is left out (`has_svg_glyphs`): the
+/// page falls back to the system's emoji font.
 #[tauri::command(async)]
 pub fn user_font(family: String, bold: bool) -> Result<tauri::ipc::Response, String> {
     let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
@@ -181,7 +206,11 @@ pub fn user_font(family: String, bold: bool) -> Result<tauri::ipc::Response, Str
     // The smallest format first.
     files.sort_by_key(|p| FONT_EXTENSIONS.iter().position(|x| p.extension().is_some_and(|e| e.eq_ignore_ascii_case(x))));
     let path = files.first().ok_or_else(|| format!("{family} のファイルが見つかりません"))?;
-    Ok(tauri::ipc::Response::new(std::fs::read(path).map_err(err)?))
+    let data = std::fs::read(path).map_err(err)?;
+    if has_svg_glyphs(&data) {
+        return Err(format!("{family} は SVG の字形を持つので読み込みません（WebKit の描画が遅くなるため）"));
+    }
+    Ok(tauri::ipc::Response::new(data))
 }
 
 const GHOSTTY_CLI: &str = "/Applications/Ghostty.app/Contents/MacOS/ghostty";
@@ -278,6 +307,33 @@ mod tests {
         assert!(!is_font_file("JetBrainsMono-Bold.ttf", "JetBrains Mono", false));
         assert!(!is_font_file("JetBrainsMonoNL-Regular.ttf", "JetBrains Mono", false));
         assert!(!is_font_file("JetBrainsMono-Regular.txt", "JetBrains Mono", false));
+    }
+
+    /// An sfnt with tables `tags` (their records only), as a font file starts.
+    fn sfnt(tags: &[&[u8; 4]]) -> Vec<u8> {
+        let mut data = vec![0, 1, 0, 0];
+        data.extend((tags.len() as u16).to_be_bytes());
+        data.extend([0; 6]);
+        for tag in tags {
+            data.extend(*tag);
+            data.extend([0; 12]);
+        }
+        data
+    }
+
+    #[test]
+    fn tells_fonts_drawing_glyphs_with_svg() {
+        assert!(has_svg_glyphs(&sfnt(&[b"cmap", b"SVG ", b"head"])));
+        assert!(!has_svg_glyphs(&sfnt(&[b"cmap", b"glyf", b"head"])));
+        // A collection: any of its fonts.
+        let font = sfnt(&[b"SVG "]);
+        let mut ttc = b"ttcf".to_vec();
+        ttc.extend([0, 1, 0, 0]);
+        ttc.extend(1u32.to_be_bytes());
+        ttc.extend(16u32.to_be_bytes());
+        ttc.extend(font);
+        assert!(has_svg_glyphs(&ttc));
+        assert!(!has_svg_glyphs(b"not a font"));
     }
 
     #[test]
