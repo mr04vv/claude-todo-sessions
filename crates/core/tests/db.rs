@@ -1715,3 +1715,17 @@ fn slack_bookmarks_stay_until_taken_off_whatever_happens_to_the_mentions() {
     db.unbookmark_slack("C2", "102.0").unwrap();
     assert_eq!(db.slack_bookmarks().unwrap(), vec![cts_core::SlackBookmark { ..bookmark("C1", "101.0") }]);
 }
+
+#[test]
+fn watched_herdr_workspaces_outlive_the_app() {
+    let (dir, db) = open();
+    db.watch_herdr_workspace("implement", "w1").unwrap();
+    db.watch_herdr_workspace("implement", "w2").unwrap();
+    db.watch_herdr_workspace("review", "w1").unwrap();
+    db.set_herdr_watched("implement", &cts_core::herdr::Watched::from([("w2".into(), true)])).unwrap();
+    drop(db);
+    let db = Db::open(&db_path(&dir)).unwrap();
+    let watched = db.herdr_watched().unwrap();
+    assert_eq!(watched["implement"], cts_core::herdr::Watched::from([("w2".into(), true)]), "w1 closed, w2's agent seen");
+    assert_eq!(watched["review"], cts_core::herdr::Watched::from([("w1".into(), false)]));
+}

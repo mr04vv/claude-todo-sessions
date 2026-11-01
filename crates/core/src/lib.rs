@@ -662,6 +662,12 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS marker_checked (
     session_id TEXT PRIMARY KEY
 );
+CREATE TABLE IF NOT EXISTS herdr_watched (
+    herdr_session TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    ran INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (herdr_session, workspace)
+);
 CREATE TABLE IF NOT EXISTS review_sessions (
     session_id TEXT PRIMARY KEY,
     pr_url TEXT NOT NULL,
@@ -1965,6 +1971,37 @@ impl Db {
     pub fn mark_marker_checked(&self, id: &str) -> Result<()> {
         self.conn
             .execute("INSERT OR IGNORE INTO marker_checked (session_id) VALUES (?1)", [id])?;
+        Ok(())
+    }
+
+    /// A herdr workspace the app opened, to close once its agent has exited
+    /// (kept here so an app restart in between does not forget it).
+    pub fn watch_herdr_workspace(&self, session: &str, workspace: &str) -> Result<()> {
+        self.conn
+            .execute("INSERT OR IGNORE INTO herdr_watched (herdr_session, workspace) VALUES (?1, ?2)", [session, workspace])?;
+        Ok(())
+    }
+
+    /// The watched workspaces, by herdr session.
+    pub fn herdr_watched(&self) -> Result<std::collections::HashMap<String, herdr::Watched>> {
+        let mut stmt = self.conn.prepare("SELECT herdr_session, workspace, ran FROM herdr_watched")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?)))?;
+        let mut by_session = std::collections::HashMap::<String, herdr::Watched>::new();
+        for row in rows {
+            let (session, workspace, ran) = row?;
+            by_session.entry(session).or_default().insert(workspace, ran);
+        }
+        Ok(by_session)
+    }
+
+    /// Replaces the herdr session's watched workspaces with `watched`.
+    pub fn set_herdr_watched(&self, session: &str, watched: &herdr::Watched) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM herdr_watched WHERE herdr_session = ?1", [session])?;
+        for (workspace, ran) in watched {
+            tx.execute("INSERT INTO herdr_watched (herdr_session, workspace, ran) VALUES (?1, ?2, ?3)", params![session, workspace, ran])?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
