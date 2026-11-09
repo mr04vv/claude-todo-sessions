@@ -5447,7 +5447,6 @@ function SettingsDialog({ cloudTarget, onCloudTarget, terminalTarget, onTerminal
             />
           </div>
         </section>
-        <SlackSettings report={report} />
         <section>
           <h3>保存したログイン</h3>
           {logins === null && <p className="muted">Keychain を見ています…</p>}
@@ -5531,7 +5530,6 @@ const SPACES: { key: Space; label: string; icon: IconName; action: Action; group
   { key: "work", label: "作業", icon: "terminal", action: "spaceWork", group: "場" },
   { key: "study", label: "学習", icon: "book", action: "spaceStudy", group: "場" },
   { key: "browser", label: "ブラウザ", icon: "globe", action: "spaceBrowser", group: "場" },
-  { key: "slack", label: "Slack", icon: "chat", action: "spaceSlack", group: "届く" },
   { key: "artifacts", label: "成果物", icon: "open", action: "spaceArtifacts", group: "届く" },
 ];
 const RAIL_GROUPS = ["場", "届く"] as const;
@@ -6685,7 +6683,7 @@ export default function App() {
   const [board, setBoard] = useState<Board | null>(null);
   const [selection, setSelection] = useState<Selection>(null);
   // The space shown (⌘1–⌘6), kept across restarts.
-  const [space, setSpaceState] = useState<Space>(() => load(SPACE_KEY, SPACE_KEYS.filter((k) => k !== "browser"), "manage"));
+  const [space, setSpaceState] = useState<Space>(() => load(SPACE_KEY, SPACE_KEYS.filter((k) => k !== "browser" && k !== "slack"), "manage"));
   const spaceRef = useRef(space);
   spaceRef.current = space;
   const setSpace = (s: Space) => {

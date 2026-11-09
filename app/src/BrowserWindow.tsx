@@ -57,7 +57,6 @@ const MAIN_SPACES: [Action, string][] = [
   ["spaceManage", "manage"],
   ["spaceWork", "work"],
   ["spaceStudy", "study"],
-  ["spaceSlack", "slack"],
   ["spaceArtifacts", "artifacts"],
 ];
 
