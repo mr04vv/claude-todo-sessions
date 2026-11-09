@@ -371,12 +371,23 @@ fn open_url(url: &str) -> Result<(), String> {
     status.success().then_some(()).ok_or_else(|| format!("open {url} failed: {status}"))
 }
 
+/// The locale pbcopy/pbpaste need to take and give UTF-8.
+const UTF8_LOCALE: &str = "en_US.UTF-8";
+
+/// pbcopy/pbpaste with a UTF-8 locale: opened from the Finder the app has no
+/// LANG, and they then use a legacy encoding that garbles or drops Japanese.
+fn pasteboard_cli(program: &str) -> Command {
+    let mut cmd = cli(program);
+    cmd.env("LANG", UTF8_LOCALE);
+    cmd
+}
+
 /// Puts `text` on the clipboard, through pbcopy: the WebView's clipboard API
 /// is not sure to be let in.
 #[tauri::command(async)]
 fn copy_text(text: String) -> Result<(), String> {
     use std::io::Write;
-    let mut pbcopy = cli("pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(err)?;
+    let mut pbcopy = pasteboard_cli("pbcopy").stdin(std::process::Stdio::piped()).spawn().map_err(err)?;
     pbcopy.stdin.take().ok_or("pbcopy: 入力を渡せません")?.write_all(text.as_bytes()).map_err(err)?;
     let status = pbcopy.wait().map_err(err)?;
     status.success().then_some(()).ok_or_else(|| format!("pbcopy failed: {status}"))
@@ -391,7 +402,7 @@ fn clipboard_change_count() -> isize {
 /// The clipboard's text, through pbpaste.
 #[tauri::command(async)]
 fn read_clipboard() -> Result<String, String> {
-    let out = cli("pbpaste").output().map_err(err)?;
+    let out = pasteboard_cli("pbpaste").output().map_err(err)?;
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned()).ok_or_else(|| format!("pbpaste failed: {}", out.status))
 }
 
@@ -3290,6 +3301,15 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pbcopy_and_pbpaste_get_a_utf8_locale() {
+        // Launched from the Finder the app has no LANG, and pbcopy/pbpaste then
+        // read and write a legacy encoding: Japanese came back garbled or empty.
+        let cmd = pasteboard_cli("pbpaste");
+        let lang = cmd.get_envs().find(|(k, _)| *k == "LANG").and_then(|(_, v)| v);
+        assert_eq!(lang, Some(std::ffi::OsStr::new(UTF8_LOCALE)));
+    }
 
     #[test]
     fn a_command_that_hangs_is_killed_after_the_timeout() {
