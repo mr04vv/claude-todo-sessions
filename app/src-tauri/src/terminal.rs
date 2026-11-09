@@ -116,7 +116,18 @@ pub fn term_close(terms: State<'_, Terminals>, id: String) -> Result<(), String>
 const GHOSTTY_CONFIGS: &[&str] = &[".config/ghostty/config", "Library/Application Support/com.mitchellh.ghostty/config"];
 /// Where Ghostty looks for a theme by name: the user's own, then its built-in ones.
 const GHOSTTY_THEME_DIRS: &[&str] = &[".config/ghostty/themes", "Library/Application Support/com.mitchellh.ghostty/themes"];
-const GHOSTTY_BUILTIN_THEMES: &str = "/Applications/Ghostty.app/Contents/Resources/ghostty/themes";
+const GHOSTTY_BUILTIN_THEMES: &str = "Contents/Resources/ghostty/themes";
+/// Where Ghostty.app is: put there by hand or Homebrew, or by Home Manager (Nix) under the home folder.
+const GHOSTTY_SYSTEM_APP: &str = "/Applications/Ghostty.app";
+const GHOSTTY_HOME_MANAGER_APP: &str = "Applications/Home Manager Apps/Ghostty.app";
+
+fn ghostty_app(home: &std::path::Path) -> Option<std::path::PathBuf> {
+    [std::path::PathBuf::from(GHOSTTY_SYSTEM_APP), home.join(GHOSTTY_HOME_MANAGER_APP)].into_iter().find(|p| p.exists())
+}
+
+fn home_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
+}
 
 /// `key = value` lines of a Ghostty config, in order, quotes dropped.
 fn parse_config(text: &str) -> Vec<(String, String)> {
@@ -137,11 +148,11 @@ fn theme_name(value: &str) -> &str {
 /// colors override it as in Ghostty. The page reads what it can use.
 #[tauri::command(async)]
 pub fn ghostty_config() -> Vec<(String, String)> {
-    let home = std::path::PathBuf::from(std::env::var_os("HOME").unwrap_or_default());
+    let home = home_dir();
     let config: Vec<_> = GHOSTTY_CONFIGS.iter().filter_map(|p| std::fs::read_to_string(home.join(p)).ok()).flat_map(|t| parse_config(&t)).collect();
     let theme = config.iter().rev().find(|(k, _)| k == "theme").map(|(_, v)| theme_name(v).to_string());
     let theme_text = theme.and_then(|name| {
-        let dirs = GHOSTTY_THEME_DIRS.iter().map(|d| home.join(d)).chain([std::path::PathBuf::from(GHOSTTY_BUILTIN_THEMES)]);
+        let dirs = GHOSTTY_THEME_DIRS.iter().map(|d| home.join(d)).chain(ghostty_app(&home).map(|a| a.join(GHOSTTY_BUILTIN_THEMES)));
         dirs.map(|d| d.join(&name)).find_map(|p| std::fs::read_to_string(p).ok())
     });
     theme_text.map(|t| parse_config(&t)).unwrap_or_default().into_iter().chain(config.into_iter().filter(|(k, _)| k != "theme")).collect()
@@ -213,7 +224,7 @@ pub fn user_font(family: String, bold: bool) -> Result<tauri::ipc::Response, Str
     Ok(tauri::ipc::Response::new(data))
 }
 
-const GHOSTTY_CLI: &str = "/Applications/Ghostty.app/Contents/MacOS/ghostty";
+const GHOSTTY_CLI: &str = "Contents/MacOS/ghostty";
 
 /// Ghostty's escapes in a keybind's text (`\x01`, `\n`, ...), as its
 /// `+list-keybinds` prints them with the backslash doubled.
@@ -269,7 +280,8 @@ fn parse_keybinds(out: &str) -> Vec<(String, String)> {
 /// terminal to send the same; none without Ghostty.
 #[tauri::command(async)]
 pub fn ghostty_keybinds() -> Vec<(String, String)> {
-    match std::process::Command::new(GHOSTTY_CLI).arg("+list-keybinds").output() {
+    let Some(app) = ghostty_app(&home_dir()) else { return Vec::new() };
+    match std::process::Command::new(app.join(GHOSTTY_CLI)).arg("+list-keybinds").output() {
         Ok(out) => parse_keybinds(&String::from_utf8_lossy(&out.stdout)),
         Err(_) => Vec::new(),
     }
@@ -348,6 +360,19 @@ mod tests {
                 ("ctrl+up".to_string(), "\x1b[1;5A".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn finds_ghostty_installed_by_home_manager() {
+        let home = std::env::temp_dir().join(format!("shosai-ghostty-{}", std::process::id()));
+        let app = home.join(GHOSTTY_HOME_MANAGER_APP);
+        std::fs::create_dir_all(&app).unwrap();
+        let found = ghostty_app(&home);
+        std::fs::remove_dir_all(&home).unwrap();
+        // One in /Applications comes first, so this holds only on a machine without it.
+        if !std::path::Path::new(GHOSTTY_SYSTEM_APP).exists() {
+            assert_eq!(found, Some(app));
+        }
     }
 
     #[test]
