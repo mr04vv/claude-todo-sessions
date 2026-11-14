@@ -1,0 +1,16 @@
+{
+  "name": "todo-sessions",
+  "version": "0.1.32",
+  "description": "Link todos and GitHub issues to Claude Code or Codex sessions",
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.codex.json",
+  "hooks": "./hooks/codex.json",
+  "interface": {
+    "displayName": "Todo Sessions",
+    "shortDescription": "Link todos and coding sessions",
+    "longDescription": "Manage todos and link them to Claude Code or Codex sessions on this Mac.",
+    "developerName": "Todo Sessions",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"]
+  }
+}

@@ -9,7 +9,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-const INSTRUCTIONS: &str = "Manage todos linked to Claude Code sessions, and orchestrate a parent todo's subtasks \
+const INSTRUCTIONS: &str = "Manage todos linked to Claude Code or Codex sessions, and orchestrate a parent todo's subtasks \
 (set_plan, start_subtask, reply_to_subtask, fix_subtask, escalate, log_progress). \
 The current session_id is given in the session context by the SessionStart hook.";
 

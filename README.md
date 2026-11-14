@@ -31,12 +31,14 @@ cargo test
 ## インストール
 
 ```sh
-cargo build --release
+scripts/install-cts.sh
 claude plugin marketplace add /path/to/claude-todo-sessions
 claude plugin install todo-sessions@claude-todo-sessions
+codex plugin marketplace add /path/to/claude-todo-sessions
+codex plugin add todo-sessions@todo-sessions
 ```
 
-インストール時には `target/release/cts` がプラグインのキャッシュにコピーされます。ビルドし直した場合は、`plugin/.claude-plugin/plugin.json` の version を上げてからプラグインを更新してください。
+`scripts/install-cts.sh` は `cts` をリリースビルドし、`~/.local/bin/cts` にインストールします。プラグイン内のラッパーはこのバイナリを呼び出します。ビルドし直した場合はインストールスクリプトを再実行し、`plugin/.claude-plugin/plugin.json` と `plugin/.codex-plugin/plugin.json` の version を上げてからプラグインを更新してください。
 
 開発中は、インストールせずに次のように直接読み込むこともできます。
 

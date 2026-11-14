@@ -12,19 +12,19 @@ struct Input {
     agent_id: Option<String>,
 }
 
-pub fn run(event: &str) -> Result<(), String> {
+pub fn run(event: &str, agent: cts_core::Agent) -> Result<(), String> {
     let mut raw = String::new();
     std::io::stdin().read_to_string(&mut raw).map_err(|e| e.to_string())?;
     let input: Input = serde_json::from_str(&raw).map_err(|e| format!("hook input: {e}"))?;
     let db = crate::open_db()?;
-    if let Some(context) = handle(&db, event, &input)? {
+    if let Some(context) = handle(&db, event, agent, &input)? {
         print!("{context}");
     }
     Ok(())
 }
 
 /// Returns text to add to the session context (SessionStart only).
-fn handle(db: &Db, event: &str, i: &Input) -> Result<Option<String>, String> {
+fn handle(db: &Db, event: &str, agent: cts_core::Agent, i: &Input) -> Result<Option<String>, String> {
     let state = match event {
         "session-start" => SessionState::Idle,
         "user-prompt-submit" => {
@@ -44,6 +44,9 @@ fn handle(db: &Db, event: &str, i: &Input) -> Result<Option<String>, String> {
         other => return Err(format!("unknown hook event: {other}")),
     };
     db.record_session(&i.session_id, &i.cwd, state).map_err(|e| e.to_string())?;
+    if event == "session-start" && agent != cts_core::Agent::Claude {
+        db.set_session_agent(&i.session_id, agent).map_err(|e| e.to_string())?;
+    }
     Ok((event == "session-start").then(|| {
         format!(
             "claude-todo-sessions: this session's session_id is {}. Pass it as session_id when calling the link_session tool.",
@@ -64,7 +67,7 @@ mod tests {
     fn events_map_to_states_and_only_session_start_prints() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("db.sqlite")).unwrap();
-        let ctx = handle(&db, "session-start", &input(None)).unwrap().unwrap();
+        let ctx = handle(&db, "session-start", cts_core::Agent::Claude, &input(None)).unwrap().unwrap();
         assert!(ctx.contains("s1"));
         for (event, want) in [
             ("user-prompt-submit", SessionState::Running),
@@ -73,19 +76,28 @@ mod tests {
             ("stop", SessionState::Idle),
             ("session-end", SessionState::Ended),
         ] {
-            assert_eq!(handle(&db, event, &input(Some("hi"))).unwrap(), None);
+            assert_eq!(handle(&db, event, cts_core::Agent::Claude, &input(Some("hi"))).unwrap(), None);
             assert_eq!(db.get_session("s1").unwrap().unwrap().state, want, "{event}");
         }
-        assert!(handle(&db, "bogus", &input(None)).is_err());
+        assert!(handle(&db, "bogus", cts_core::Agent::Claude, &input(None)).is_err());
     }
 
     #[test]
     fn a_subagents_finished_tool_leaves_the_question_waiting() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("db.sqlite")).unwrap();
-        handle(&db, "notification", &input(None)).unwrap();
+        handle(&db, "notification", cts_core::Agent::Claude, &input(None)).unwrap();
         let subagent = Input { agent_id: Some("a1".into()), ..input(None) };
-        handle(&db, "post-tool-use", &subagent).unwrap();
+        handle(&db, "post-tool-use", cts_core::Agent::Claude, &subagent).unwrap();
         assert_eq!(db.get_session("s1").unwrap().unwrap().state, SessionState::NeedsInput);
+    }
+
+    #[test]
+    fn a_codex_session_start_records_the_agent() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::open(&dir.path().join("db.sqlite")).unwrap();
+        handle(&db, "session-start", cts_core::Agent::Codex, &input(None)).unwrap();
+
+        assert_eq!(db.get_session("s1").unwrap().unwrap().agent, cts_core::Agent::Codex);
     }
 }

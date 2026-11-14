@@ -1,6 +1,6 @@
 ---
 name: todo
-description: Link this Claude Code session to a todo, or list, create and update todos. Use when the user mentions a todo, a GitHub issue to track, or asks to link this session.
+description: Link this Claude Code or Codex session to a todo, or list, create and update todos. Use when the user mentions a todo, a GitHub issue to track, or asks to link this session.
 ---
 
 Use the `todo-sessions` MCP tools.

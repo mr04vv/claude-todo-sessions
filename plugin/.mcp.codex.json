@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "todo-sessions": {
+      "command": "${PLUGIN_ROOT}/bin/cts",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

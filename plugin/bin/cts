@@ -1,1 +1,21 @@
-../../target/release/cts
+#!/bin/sh
+
+set -eu
+
+default_cts_bin="${HOME}/.local/bin/cts"
+
+if [ -n "${CTS_BIN:-}" ]; then
+  cts_bin="$CTS_BIN"
+elif [ -x "$default_cts_bin" ]; then
+  cts_bin="$default_cts_bin"
+else
+  echo "cts is not installed. Run scripts/install-cts.sh from the claude-todo-sessions repository." >&2
+  exit 127
+fi
+
+if [ ! -x "$cts_bin" ]; then
+  echo "cts is not executable: $cts_bin" >&2
+  exit 126
+fi
+
+exec "$cts_bin" "$@"

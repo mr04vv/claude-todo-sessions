@@ -10,7 +10,7 @@ const DB_ENV: &str = "CTS_DB";
 const DATA_DIR: &str = "Library/Application Support/claude-todo-sessions";
 const DB_FILE: &str = "db.sqlite";
 const LOG_FILE: &str = "cts.log";
-const USAGE: &str = "usage: cts mcp | cts cloud sync | cts hook <session-start|user-prompt-submit|notification|post-tool-use|stop|session-end>";
+const USAGE: &str = "usage: cts mcp | cts cloud sync | cts hook <session-start|user-prompt-submit|notification|post-tool-use|stop|session-end> [claude|codex]";
 
 fn data_dir() -> PathBuf {
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
@@ -45,7 +45,8 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["mcp"] => mcp::run(),
-        ["hook", event] => hook::run(event),
+        ["hook", event] => hook::run(event, cts_core::Agent::Claude),
+        ["hook", event, "codex"] => hook::run(event, cts_core::Agent::Codex),
         ["cloud", "sync"] => cloud::run(),
         _ => Err(USAGE.into()),
     };
