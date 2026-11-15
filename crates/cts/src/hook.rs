@@ -1,4 +1,5 @@
 use std::io::Read;
+use std::process::{Command, Stdio};
 
 use cts_core::{Db, SessionState};
 use serde::Deserialize;
@@ -12,9 +13,60 @@ struct Input {
     agent_id: Option<String>,
 }
 
+const HERDR_REPORT_SOURCE: &str = "claude-todo-sessions";
+
+struct HerdrSessionReport {
+    program: String,
+    args: Vec<String>,
+}
+
+fn herdr_session_report(
+    session_id: &str,
+    env: impl Fn(&str) -> Option<String>,
+) -> Option<HerdrSessionReport> {
+    if env("HERDR_ENV").as_deref() != Some("1") {
+        return None;
+    }
+    let pane = env("HERDR_PANE_ID")?;
+    let program = env("HERDR_BIN_PATH")?;
+    Some(HerdrSessionReport {
+        program,
+        args: [
+            "pane",
+            "report-agent-session",
+            &pane,
+            "--source",
+            HERDR_REPORT_SOURCE,
+            "--agent",
+            "codex",
+            "--agent-session-id",
+            session_id,
+        ]
+        .map(str::to_string)
+        .to_vec(),
+    })
+}
+
+fn report_codex_session_to_herdr(session_id: &str) {
+    let Some(report) = herdr_session_report(session_id, |key| std::env::var(key).ok()) else {
+        return;
+    };
+    if let Err(e) = Command::new(&report.program)
+        .args(&report.args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        crate::report_error(&format!("herdr session report: {e}"));
+    }
+}
+
 pub fn run(event: &str, agent: cts_core::Agent) -> Result<(), String> {
     let mut raw = String::new();
-    std::io::stdin().read_to_string(&mut raw).map_err(|e| e.to_string())?;
+    std::io::stdin()
+        .read_to_string(&mut raw)
+        .map_err(|e| e.to_string())?;
     let input: Input = serde_json::from_str(&raw).map_err(|e| format!("hook input: {e}"))?;
     let db = crate::open_db()?;
     if let Some(context) = handle(&db, event, agent, &input)? {
@@ -24,12 +76,18 @@ pub fn run(event: &str, agent: cts_core::Agent) -> Result<(), String> {
 }
 
 /// Returns text to add to the session context (SessionStart only).
-fn handle(db: &Db, event: &str, agent: cts_core::Agent, i: &Input) -> Result<Option<String>, String> {
+fn handle(
+    db: &Db,
+    event: &str,
+    agent: cts_core::Agent,
+    i: &Input,
+) -> Result<Option<String>, String> {
     let state = match event {
         "session-start" => SessionState::Idle,
         "user-prompt-submit" => {
             let prompt = i.prompt.as_deref().unwrap_or_default();
-            db.on_prompt(&i.session_id, &i.cwd, prompt).map_err(|e| e.to_string())?;
+            db.on_prompt(&i.session_id, &i.cwd, prompt)
+                .map_err(|e| e.to_string())?;
             return Ok(None);
         }
         "notification" => SessionState::NeedsInput,
@@ -43,9 +101,12 @@ fn handle(db: &Db, event: &str, agent: cts_core::Agent, i: &Input) -> Result<Opt
         "session-end" => SessionState::Ended,
         other => return Err(format!("unknown hook event: {other}")),
     };
-    db.record_session(&i.session_id, &i.cwd, state).map_err(|e| e.to_string())?;
+    db.record_session(&i.session_id, &i.cwd, state)
+        .map_err(|e| e.to_string())?;
     if event == "session-start" && agent != cts_core::Agent::Claude {
-        db.set_session_agent(&i.session_id, agent).map_err(|e| e.to_string())?;
+        db.set_session_agent(&i.session_id, agent)
+            .map_err(|e| e.to_string())?;
+        report_codex_session_to_herdr(&i.session_id);
     }
     Ok((event == "session-start").then(|| {
         format!(
@@ -60,14 +121,21 @@ mod tests {
     use super::*;
 
     fn input(prompt: Option<&str>) -> Input {
-        Input { session_id: "s1".into(), cwd: "/w".into(), prompt: prompt.map(Into::into), agent_id: None }
+        Input {
+            session_id: "s1".into(),
+            cwd: "/w".into(),
+            prompt: prompt.map(Into::into),
+            agent_id: None,
+        }
     }
 
     #[test]
     fn events_map_to_states_and_only_session_start_prints() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("db.sqlite")).unwrap();
-        let ctx = handle(&db, "session-start", cts_core::Agent::Claude, &input(None)).unwrap().unwrap();
+        let ctx = handle(&db, "session-start", cts_core::Agent::Claude, &input(None))
+            .unwrap()
+            .unwrap();
         assert!(ctx.contains("s1"));
         for (event, want) in [
             ("user-prompt-submit", SessionState::Running),
@@ -76,8 +144,15 @@ mod tests {
             ("stop", SessionState::Idle),
             ("session-end", SessionState::Ended),
         ] {
-            assert_eq!(handle(&db, event, cts_core::Agent::Claude, &input(Some("hi"))).unwrap(), None);
-            assert_eq!(db.get_session("s1").unwrap().unwrap().state, want, "{event}");
+            assert_eq!(
+                handle(&db, event, cts_core::Agent::Claude, &input(Some("hi"))).unwrap(),
+                None
+            );
+            assert_eq!(
+                db.get_session("s1").unwrap().unwrap().state,
+                want,
+                "{event}"
+            );
         }
         assert!(handle(&db, "bogus", cts_core::Agent::Claude, &input(None)).is_err());
     }
@@ -87,9 +162,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::open(&dir.path().join("db.sqlite")).unwrap();
         handle(&db, "notification", cts_core::Agent::Claude, &input(None)).unwrap();
-        let subagent = Input { agent_id: Some("a1".into()), ..input(None) };
+        let subagent = Input {
+            agent_id: Some("a1".into()),
+            ..input(None)
+        };
         handle(&db, "post-tool-use", cts_core::Agent::Claude, &subagent).unwrap();
-        assert_eq!(db.get_session("s1").unwrap().unwrap().state, SessionState::NeedsInput);
+        assert_eq!(
+            db.get_session("s1").unwrap().unwrap().state,
+            SessionState::NeedsInput
+        );
     }
 
     #[test]
@@ -98,6 +179,41 @@ mod tests {
         let db = Db::open(&dir.path().join("db.sqlite")).unwrap();
         handle(&db, "session-start", cts_core::Agent::Codex, &input(None)).unwrap();
 
-        assert_eq!(db.get_session("s1").unwrap().unwrap().agent, cts_core::Agent::Codex);
+        assert_eq!(
+            db.get_session("s1").unwrap().unwrap().agent,
+            cts_core::Agent::Codex
+        );
+    }
+
+    #[test]
+    fn a_codex_session_start_reports_its_id_to_the_current_herdr_pane() {
+        let report = herdr_session_report("s1", |key| match key {
+            "HERDR_ENV" => Some("1".into()),
+            "HERDR_PANE_ID" => Some("w1:p1".into()),
+            "HERDR_BIN_PATH" => Some("/opt/herdr".into()),
+            _ => None,
+        })
+        .unwrap();
+
+        assert_eq!(report.program, "/opt/herdr");
+        assert_eq!(
+            report.args,
+            [
+                "pane",
+                "report-agent-session",
+                "w1:p1",
+                "--source",
+                "claude-todo-sessions",
+                "--agent",
+                "codex",
+                "--agent-session-id",
+                "s1",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_session_outside_herdr_is_not_reported() {
+        assert!(herdr_session_report("s1", |_| None).is_none());
     }
 }
