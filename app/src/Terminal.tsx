@@ -14,7 +14,7 @@ import { allKeys, matches, matchesCombo } from "./keymap";
 import { KittyFlags, kittyChord } from "./kitty";
 import { asOutside } from "./outside";
 import { findUrls } from "./links";
-import { osc52Text, unwrapCopied } from "./osc52";
+import { inOrder, osc52Text, paneGeometry, unwrapCopied, type Cell, type HerdrLayout, type PaneGeometry } from "./osc52";
 
 /// A command to run, where, and what to call its tab (`TerminalRun` in main.rs).
 export interface TerminalRun {
@@ -42,6 +42,8 @@ export const terminalApi = {
   setInApp: (on: boolean) => invoke<void>("set_in_app_terminal", { on }),
   /// The Claude session a herdr session shows (its focused pane), if any.
   herdrFocused: (name: string) => invoke<string | null>("herdr_focused", { name }),
+  /// The pane layout of the tab a herdr session shows, null when herdr does not say.
+  herdrLayout: (name: string) => invoke<HerdrLayout | null>("herdr_layout", { name }),
 };
 
 /// Names a session as the app's lists do (null: no name known), for a terminal's title.
@@ -117,13 +119,13 @@ const COPY_WAIT_MS = 50;
 
 /// Waits for a copy since the clipboard's change count was `before`, and puts
 /// it again with Claude Code's wrapped lines joined. No copy, nothing changes.
-async function unwrapCopyAfter(before: Promise<number>) {
+async function unwrapCopyAfter(before: Promise<number>, geometry: Promise<PaneGeometry | undefined>) {
   const start = await before;
   for (let i = 0; i < COPY_WAIT_TRIES; i++) {
     await new Promise((r) => setTimeout(r, COPY_WAIT_MS));
     if ((await invoke<number>("clipboard_change_count")) === start) continue;
     const text = await invoke<string>("read_clipboard");
-    const joined = unwrapCopied(text);
+    const joined = unwrapCopied(text, await geometry);
     if (joined !== text) await invoke("copy_text", { text: joined });
     return;
   }
@@ -136,6 +138,8 @@ interface Entry {
   fit: FitAddon;
   host: HTMLDivElement;
   started: boolean;
+  /// The herdr session it attaches to, once started.
+  herdr: string | null;
   look: Look;
   /// The window title the program set (OSC 0 / 2), as Ghostty shows it.
   title: string;
@@ -398,14 +402,41 @@ function entryFor(id: string, look: Look): Entry {
     host.className = "terminal-host";
     // herdr copies a dragged selection with pbcopy itself (no OSC 52 reaches here), so a copy
     // made by the drag is read back and put again with Claude Code's wrapped lines joined.
-    let countAtPress: Promise<number> | null = null;
-    host.addEventListener("mousedown", () => { countAtPress = invoke<number>("clipboard_change_count"); }, true);
-    host.addEventListener("mouseup", () => {
-      if (countAtPress) void unwrapCopyAfter(countAtPress).catch((err) => console.error("unwrapping herdr's copy failed", err));
-      countAtPress = null;
+    // The pane's width and where the selection began in it come from herdr's layout and the mouse's cells.
+    const cellAt = (ev: MouseEvent): Cell => {
+      const screen = term.element?.querySelector<HTMLElement>(".xterm-screen")?.getBoundingClientRect();
+      if (!screen) return { col: 0, row: 0 };
+      return { col: Math.floor(((ev.clientX - screen.left) / screen.width) * term.cols), row: Math.floor(((ev.clientY - screen.top) / screen.height) * term.rows) };
+    };
+    let press: { count: Promise<number>; cell: Cell; layout: Promise<HerdrLayout | null> } | null = null;
+    host.addEventListener("mousedown", (ev) => {
+      const herdr = entries.get(id)?.herdr;
+      press = {
+        count: invoke<number>("clipboard_change_count"),
+        cell: cellAt(ev),
+        layout: herdr ? terminalApi.herdrLayout(herdr).catch(() => null) : Promise.resolve(null),
+      };
+    }, true);
+    host.addEventListener("mouseup", (ev) => {
+      if (press) {
+        const { count, cell, layout } = press;
+        const release = cellAt(ev);
+        const geometry = layout.then((l): PaneGeometry | undefined => {
+          const g = l && paneGeometry(l, { cols: term.cols, rows: term.rows }, cell, release);
+          if (!g) return undefined;
+          // The row the selection ended on, whole: the last line of the copy may be cut inside its first word.
+          const [from, to] = inOrder(cell, release);
+          const left = from.col - (g.startCol ?? 0);
+          const buffer = term.buffer.active;
+          const endRowText = buffer.getLine(buffer.viewportY + to.row)?.translateToString(true, left, left + (g.width ?? 0));
+          return { ...g, endRowText };
+        });
+        void unwrapCopyAfter(count, geometry).catch((err) => console.error("unwrapping herdr's copy failed", err));
+      }
+      press = null;
     }, true);
     host.dataset.terminal = id;
-    e = { term, fit, host, started: false, look, title: "", marked };
+    e = { term, fit, host, started: false, herdr: null, look, title: "", marked };
     const entry = e;
     term.onTitleChange((title) => (entry.title = title));
     entries.set(id, e);
@@ -494,6 +525,7 @@ export function TerminalView({ id, run, report }: { id: string; run: TerminalRun
     if (takeFocusWish(id)) invoke("term_focus").catch(() => {}).finally(() => e.term.focus());
     if (!e.started) {
       e.started = true;
+      e.herdr = run.herdr;
       invoke("term_open", { id, command: run.command, cwd: run.cwd, cols: e.term.cols, rows: e.term.rows }).catch((err) => {
         e.term.write(`\r\n${String(err)}\r\n`);
         report(err);
