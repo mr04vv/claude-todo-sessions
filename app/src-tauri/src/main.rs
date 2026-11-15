@@ -33,6 +33,9 @@ const DESKTOP_SESSIONS_DIR: &str = "Library/Application Support/Claude/claude-co
 const WATCH_INTERVAL: Duration = Duration::from_secs(3);
 /// herdr's agent states are read every this many watch ticks (they are cheap).
 const HERDR_EVERY_TICKS: u32 = 3;
+/// A session just started in herdr can reach the DB before `agent list` sees it.
+const HERDR_ATTACH_RETRIES: usize = 6;
+const HERDR_ATTACH_RETRY_INTERVAL: Duration = Duration::from_millis(200);
 /// `claude agents --json` runs every this many watch ticks: it starts Node
 /// (about 0.4 s), and hooks and herdr already report most state changes.
 const AGENTS_EVERY_TICKS: u32 = 10;
@@ -53,6 +56,10 @@ const EXTRA_REPO_ROOTS: &[&str] = &["Works/Atrae"];
 /// Folder (under $HOME) a quick claude without one starts in: Claude Code
 /// never keeps its trust of $HOME itself, so it would ask at every start there.
 const QUICK_DIR: &str = "src";
+/// A quick Codex waits at most this long for Haiku to choose its checkout.
+const QUICK_CWD_TIMEOUT: Duration = Duration::from_secs(20);
+const QUICK_CWD_MODEL: &str = "haiku";
+const QUICK_REPO_ALIAS_MIN_CHARS: usize = 4;
 /// Terminal app hosting herdr, brought forward when a session is focused there.
 const TERMINAL_APP: &str = "Ghostty";
 
@@ -448,6 +455,19 @@ fn focus_herdr_pane(session_id: &str) -> Option<String> {
     cli("herdr").args(["--session", &name, "agent", "focus", &pane]).status().is_ok_and(|s| s.success()).then_some(name)
 }
 
+/// Finds a value that may appear shortly after another process reports it.
+fn retry_find<T>(interval: Duration, attempts: usize, mut find: impl FnMut() -> Option<T>) -> Option<T> {
+    for attempt in 0..attempts {
+        if let Some(found) = find() {
+            return Some(found);
+        }
+        if attempt + 1 < attempts {
+            std::thread::sleep(interval);
+        }
+    }
+    None
+}
+
 /// What happened under a (parent) todo, newest first: its 経過.
 #[tauri::command(async)]
 fn todo_events(state: State<AppState>, todo_id: i64) -> Result<Vec<cts_core::TodoEvent>, String> {
@@ -493,10 +513,11 @@ fn fix_in_session(state: State<AppState>, session_id: String, todo_id: i64) -> R
 
 /// Opens a session in `target`: "herdr" focuses its pane, "desktop" opens
 /// Claude Desktop, and none tries herdr first for local sessions.
-/// Opens a new herdr workspace running a plain `claude`, outside any todo:
-/// a quick question at home, or a PR review in its repository's folder.
+/// Opens a new herdr workspace running Claude or Codex, outside any todo:
+/// a quick session at home, or a PR review in its repository's folder.
 #[tauri::command(async)]
 fn quick_claude(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> Result<(), String> {
+    let cwd = quick_agent_cwd(prompt.as_deref(), cwd, agent);
     let TerminalRun { cwd, title: label, command, .. } = quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default());
     // Started behind: neither herdr's view nor the terminal app comes forward (opening it does).
     start_in_herdr(&state, &cwd, &label, &command, false, false).or_else(|herdr_err| start_in_ghostty(&cwd, &command).map_err(|e| format!("{herdr_err} / {e}")))
@@ -521,6 +542,87 @@ fn quick_agent_run(prompt: Option<&str>, cwd: Option<String>, title: Option<Stri
     run
 }
 
+fn quick_repos() -> Vec<LocalRepo> {
+    let Some(root) = ghq_root() else { return Vec::new() };
+    let mut repos = Vec::new();
+    for owner in std::fs::read_dir(root.join("github.com")).into_iter().flatten().flatten() {
+        let owner_name = owner.file_name().to_string_lossy().to_string();
+        for path in git_dirs(&owner.path()) {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            repos.push(LocalRepo { key: format!("{owner_name}/{name}"), path: path.to_string_lossy().into_owned() });
+        }
+    }
+    repos.sort_by(|a, b| a.key.to_lowercase().cmp(&b.key.to_lowercase()));
+    repos
+}
+
+fn prompt_contains_repo(prompt: &str, repo: &str) -> bool {
+    let prompt = prompt.to_lowercase();
+    let repo = repo.to_lowercase();
+    prompt.match_indices(&repo).any(|(at, found)| {
+        let before = prompt[..at].chars().next_back();
+        let after = prompt[at + found.len()..].chars().next();
+        let part = |c: Option<char>| c.is_some_and(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
+        !part(before) && !part(after)
+    })
+}
+
+fn repo_named_in_prompt(prompt: &str, repos: &[LocalRepo]) -> Option<String> {
+    let matches: Vec<&LocalRepo> = repos
+        .iter()
+        .filter(|repo| {
+            let name = repo.key.rsplit('/').next().unwrap_or(&repo.key);
+            let alias = name.rsplit(['-', '_']).next().filter(|alias| alias.chars().count() >= QUICK_REPO_ALIAS_MIN_CHARS);
+            prompt_contains_repo(prompt, &repo.key)
+                || prompt_contains_repo(prompt, name)
+                || alias.is_some_and(|alias| prompt_contains_repo(prompt, alias))
+        })
+        .collect();
+    (matches.len() == 1).then(|| matches[0].path.clone())
+}
+
+fn chosen_repo(answer: &serde_json::Value, repos: &[LocalRepo]) -> Option<String> {
+    let path = answer["path"].as_str().filter(|p| !p.is_empty())?;
+    repos.iter().find(|repo| repo.path == path).map(|repo| repo.path.clone())
+}
+
+fn ask_quick_repo(prompt: &str, repos: &[LocalRepo]) -> Result<Option<String>, String> {
+    let choices: Vec<&str> = std::iter::once("").chain(repos.iter().map(|repo| repo.path.as_str())).collect();
+    let schema = serde_json::json!({
+        "type": "object",
+        "properties": { "path": { "type": "string", "enum": choices } },
+        "required": ["path"],
+        "additionalProperties": false
+    });
+    let candidates = repos.iter().map(|repo| format!("- {}: {}", repo.key, repo.path)).collect::<Vec<_>>().join("\n");
+    let ask = format!(
+        "次の依頼を実行する作業ディレクトリを、候補から1つ選んでください。依頼が特定のリポジトリを明確に指していない場合は path を空文字にしてください。\n\n候補:\n{candidates}\n\n依頼:\n<prompt>{prompt}</prompt>"
+    );
+    let answer = ask::claude_within(&ask, Some(&schema), Some(QUICK_CWD_MODEL), None, QUICK_CWD_TIMEOUT)?;
+    Ok(chosen_repo(&answer, repos))
+}
+
+fn quick_agent_cwd(prompt: Option<&str>, cwd: Option<String>, agent: Option<cts_core::Agent>) -> Option<String> {
+    if cwd.is_some() || agent != Some(cts_core::Agent::Codex) {
+        return cwd;
+    }
+    let prompt = prompt.map(str::trim).filter(|p| !p.is_empty())?;
+    let repos = quick_repos();
+    if let Some(path) = repo_named_in_prompt(prompt, &repos) {
+        return Some(path);
+    }
+    if repos.is_empty() {
+        return None;
+    }
+    match ask_quick_repo(prompt, &repos) {
+        Ok(path) => path,
+        Err(e) => {
+            eprintln!("quick Codex cwd: {e}");
+            None
+        }
+    }
+}
+
 /// Where a quick run starts: `cwd` when it is a folder, else QUICK_DIR under
 /// `home`, else `home` itself.
 fn quick_cwd(cwd: Option<String>, home: &std::path::Path) -> String {
@@ -543,15 +645,16 @@ fn quick_run(prompt: Option<&str>, cwd: Option<String>, title: Option<String>) -
 }
 
 /// The in-app terminal's versions of starting a todo's session, a quick
-/// claude and reopening a session (see `terminal.rs`).
+/// unlinked session and reopening a session (see `terminal.rs`).
 #[tauri::command(async)]
 fn terminal_start(state: State<AppState>, todo_id: i64, options: Option<StartOptions>) -> Result<TerminalRun, String> {
     Ok(via_herdr(&state, prepare_terminal(&state, todo_id, &options.unwrap_or_default(), None)?, false, is_subtask(&state, Some(todo_id))))
 }
 
 #[tauri::command(async)]
-fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> TerminalRun {
-    via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()), false, false)
+fn terminal_quick(state: State<AppState>, prompt: Option<String>, cwd: Option<String>, title: Option<String>, agent: Option<cts_core::Agent>, options: Option<StartOptions>) -> Result<TerminalRun, String> {
+    let cwd = quick_agent_cwd(prompt.as_deref(), cwd, agent);
+    Ok(via_herdr(&state, quick_agent_run(prompt.as_deref(), cwd, title, agent, &options.unwrap_or_default()), false, false))
 }
 
 /// The in-app terminal's sessions run in herdr when one runs (so they go on
@@ -587,7 +690,8 @@ fn herdr_attach_run(name: String) -> TerminalRun {
 /// looking at it: a session running outside herdr is not started twice), None.
 #[tauri::command(async)]
 fn terminal_resume(state: State<AppState>, session_id: String, desktop: bool, attach_only: Option<bool>) -> Result<Option<TerminalRun>, String> {
-    if let Some(name) = focus_herdr_pane(&session_id) {
+    let attempts = if attach_only == Some(true) { HERDR_ATTACH_RETRIES } else { 1 };
+    if let Some(name) = retry_find(HERDR_ATTACH_RETRY_INTERVAL, attempts, || focus_herdr_pane(&session_id)) {
         return Ok(Some(herdr_attach_run(name)));
     }
     if attach_only == Some(true) {
@@ -3340,6 +3444,46 @@ mod tests {
         std::fs::remove_dir(&quick).unwrap();
         assert_eq!(quick_cwd(None, &home), home.to_string_lossy(), "home when it is gone");
         std::fs::remove_dir(&home).unwrap();
+    }
+
+    #[test]
+    fn a_repo_named_in_a_quick_prompt_is_picked_without_asking() {
+        let repos = vec![
+            LocalRepo { key: "mr04vv/claude-todo-sessions".into(), path: "/src/claude-todo-sessions".into() },
+            LocalRepo { key: "Atrae/wevox-cerberus".into(), path: "/src/wevox-cerberus".into() },
+        ];
+
+        assert_eq!(repo_named_in_prompt("cerberusのリポジトリに移動して", &repos).as_deref(), Some("/src/wevox-cerberus"));
+        assert_eq!(repo_named_in_prompt("この設計について相談したい", &repos), None);
+    }
+
+    #[test]
+    fn an_ambiguous_repo_name_is_left_for_haiku() {
+        let repos = vec![
+            LocalRepo { key: "wevox/cerberus".into(), path: "/src/cerberus".into() },
+            LocalRepo { key: "example/cerberus".into(), path: "/work/cerberus".into() },
+        ];
+
+        assert_eq!(repo_named_in_prompt("cerberusを直して", &repos), None);
+    }
+
+    #[test]
+    fn haikus_repo_choice_must_be_one_of_the_candidates() {
+        let repos = vec![LocalRepo { key: "wevox/cerberus".into(), path: "/src/cerberus".into() }];
+        assert_eq!(chosen_repo(&serde_json::json!({"path": "/src/cerberus"}), &repos).as_deref(), Some("/src/cerberus"));
+        assert_eq!(chosen_repo(&serde_json::json!({"path": "/tmp/not-offered"}), &repos), None);
+        assert_eq!(chosen_repo(&serde_json::json!({"path": ""}), &repos), None);
+    }
+
+    #[test]
+    fn finding_a_just_started_herdr_agent_is_retried() {
+        let mut calls = 0;
+        let found = retry_find(Duration::ZERO, 3, || {
+            calls += 1;
+            (calls == 3).then_some("implement".to_string())
+        });
+        assert_eq!(found.as_deref(), Some("implement"));
+        assert_eq!(calls, 3);
     }
 
     #[test]

@@ -31,7 +31,7 @@ export const terminalApi = {
   /// Registers a session for the todo and returns the command that starts it.
   start: (todoId: number, options?: { model?: string; effort?: string }) =>
     invoke<TerminalRun>("terminal_start", { todoId, options: options ?? null }),
-  /// `agent` "codex" runs Codex instead of Claude (a PR review).
+  /// `agent` "codex" runs Codex instead of Claude.
   quick: (prompt: string, cwd?: string, title?: string, agent?: "claude" | "codex", options?: { model?: string; effort?: string }) =>
     invoke<TerminalRun>("terminal_quick", { prompt, cwd: cwd ?? null, title: title ?? null, agent: agent ?? null, options: options ?? null }),
   /// A session running in herdr comes back as attaching herdr (its pane

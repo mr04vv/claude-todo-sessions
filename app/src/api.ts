@@ -521,7 +521,7 @@ export const api = {
   setTodoDatabase: (todoId: number, databaseId: number | null) => invoke<void>("set_todo_database", { todoId, databaseId }),
   linkSession: (sessionId: string, todoId: number) => invoke<void>("link_session", { sessionId, todoId }),
   unlinkSession: (sessionId: string) => invoke<void>("unlink_session", { sessionId }),
-  /// A plain claude in herdr, at home unless `cwd` is given.
+  /// A plain Claude or Codex session in herdr, at home unless `cwd` is given.
   /// Translates a tab's page where it is, or puts it back.
   browserTranslate: (tab: string, on: boolean) => invoke<void>("browser_translate", { tab, on }),
   /// Opens a file an artifact is, with its app.

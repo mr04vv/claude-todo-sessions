@@ -4912,21 +4912,22 @@ function ImportDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => vo
   );
 }
 
-/// A throwaway claude in a new herdr workspace at home, with an optional first prompt.
-function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
+/// A throwaway Claude or Codex session in a new herdr workspace at home.
+function QuickSessionDialog({ run, onClose }: { run: (f: () => Promise<unknown>) => void; onClose: () => void }) {
   const [prompt, setPrompt] = useState("");
+  const [agent, setAgent] = useState<Agent>("claude");
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => ref.current?.focus(), []);
   const terminal = useContext(TerminalContext);
   const start = () =>
     run(async () => {
-      if (terminal) terminal.open(await terminalApi.quick(prompt));
-      else await api.quickClaude(prompt);
+      if (terminal) terminal.open(await terminalApi.quick(prompt, undefined, undefined, agent));
+      else await api.quickClaude(prompt, undefined, undefined, agent);
       onClose();
     });
   return (
     <Modal
-      title="ちょっと Claude"
+      title="セッションを開始"
       onClose={onClose}
       footer={
         <>
@@ -4941,6 +4942,13 @@ function QuickClaudeDialog({ run, onClose }: { run: (f: () => Promise<unknown>) 
         </>
       }
     >
+      <div className="segmented" role="group" aria-label="起動するエージェント">
+        {(["claude", "codex"] as const).map((choice) => (
+          <button key={choice} className={agent === choice ? "on" : ""} aria-pressed={agent === choice} onClick={() => setAgent(choice)}>
+            {choice === "claude" ? "Claude" : "Codex"}
+          </button>
+        ))}
+      </div>
       <label className="field">
         <span>最初のプロンプト（空なら何も送らずに起動）</span>
         <textarea
@@ -6582,8 +6590,8 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
           ))}
         </select>
         <span className="grow" />
-        <button data-row={QUICK_ROW} className={`ghost small${shownCursor === QUICK_ROW ? " cursor" : ""}`} onClick={onQuick} title="todo に紐づけずに claude を開く">
-          <Icon name="spark" size={12} /> ちょっと Claude
+        <button data-row={QUICK_ROW} className={`ghost small${shownCursor === QUICK_ROW ? " cursor" : ""}`} onClick={onQuick} title="todo に紐づけずにセッションを開始する">
+          <Icon name="spark" size={12} /> セッションを開始
         </button>
       </div>
       <div className="rail-body">
@@ -6654,7 +6662,7 @@ function WorkRail({ board, waiting, pick, child, closed, listKeys, sort, order, 
         <section>
           <div className="section-title">作業中</div>
           {workRows.length === 0 && words.length > 0 && <p className="muted hint">「{query.trim()}」に当たるものはありません。</p>}
-          {workRows.length === 0 && words.length === 0 && <p className="muted hint">動いているセッションはありません。管理で todo を任せるか、ちょっと Claude で始めると、ここに並びます。</p>}
+          {workRows.length === 0 && words.length === 0 && <p className="muted hint">動いているセッションはありません。管理で todo を任せるか、「セッションを開始」から始めると、ここに並びます。</p>}
           <ul className="rows work-cards">
             {workRows.flatMap((r, i) => {
               // Heads where the span changes, the list ordered by a time.
@@ -8350,7 +8358,7 @@ export default function App() {
       : []),
     ...(browserShown && activeTab && !activeTab.term && !activeTab.pinned ? [{ key: "bookmark", label: "表示中のページを読みものに入れる", hint: keyLabel(keyOf("bookmark")), run: () => bookmarkShown() }, { key: "studyThis", label: "表示中のページを学習で読む", hint: keyLabel(keyOf("studyThis")), run: () => bookmarkShown(true) }] : []),
     { key: "import", label: "自分に割り当てられた issue を取り込む", run: () => setDialog("import") },
-    { key: "quick", label: "ちょっと Claude（todo に紐づけずに起動）", run: () => setDialog("quick") },
+    { key: "quick", label: "セッションを開始（todo に紐づけずに起動）", run: () => setDialog("quick") },
     { key: "sync", label: "GitHub とクラウドを今すぐ同期", run: syncAll },
     ...(filterCount(todoFilter) > 0 ? [{ key: "clearFilter", label: "フィルターを外す", run: () => setTodoFilter(NO_FILTER, true) }] : []),
     { key: "newTab", label: "ブラウザで新しいタブを開く", hint: keyLabel(keyOf("newTab")), run: openNewTab },
@@ -8930,7 +8938,7 @@ export default function App() {
           />
         )}
         {dialog === "import" && <ImportDialog run={run} onClose={() => setDialog(null)} />}
-        {dialog === "quick" && <QuickClaudeDialog run={run} onClose={() => setDialog(null)} />}
+        {dialog === "quick" && <QuickSessionDialog run={run} onClose={() => setDialog(null)} />}
         {toast && (
           <div className="toast" role="status">
             {toast}
