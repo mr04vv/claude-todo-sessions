@@ -130,6 +130,14 @@ pub fn find_pane(agents: &Value, session_id: &str) -> Option<String> {
         .map(Into::into)
 }
 
+/// The pane layout of the tab herdr shows, from `herdr api snapshot` JSON:
+/// `{area, panes: [{pane_id, rect}], ...}`.
+pub fn focused_layout(snapshot: &Value) -> Option<Value> {
+    let snapshot = &snapshot["result"]["snapshot"];
+    let tab = &snapshot["focused_tab_id"];
+    snapshot["layouts"].as_array()?.iter().find(|l| &l["tab_id"] == tab).cloned()
+}
+
 /// Workspace id of the agent whose Claude (or Codex) session id matches,
 /// from `herdr agent list` JSON, for closing it.
 pub fn find_workspace(agents: &Value, session_id: &str) -> Option<String> {
@@ -191,6 +199,19 @@ mod tests {
         let with_default: Vec<String> = ["implement", "default"].map(String::from).to_vec();
         assert_eq!(pick_session(&with_default, None).as_deref(), Some("default"));
         assert_eq!(pick_session(&[], Some("review")), None);
+    }
+
+    #[test]
+    fn the_layout_of_the_focused_tab_is_the_one_shown() {
+        let snapshot = serde_json::json!({"result": {"snapshot": {
+            "focused_tab_id": "w2:t1",
+            "layouts": [
+                {"tab_id": "w1:t1", "area": {"width": 10}},
+                {"tab_id": "w2:t1", "area": {"width": 145}},
+            ],
+        }}});
+        assert_eq!(focused_layout(&snapshot).unwrap()["area"]["width"], 145);
+        assert_eq!(focused_layout(&serde_json::json!({"result": {"snapshot": {"focused_tab_id": "gone", "layouts": []}}})), None);
     }
 
     #[test]

@@ -1534,6 +1534,14 @@ fn herdr_focused(name: String) -> Option<String> {
     cts_core::herdr::agent_states(&agents).into_iter().find(|a| a.focused).map(|a| a.session_id)
 }
 
+/// The pane layout of the tab herdr session `name` shows, to put a drag's
+/// copy back with the wrapped lines joined at the pane's width.
+#[tauri::command(async)]
+fn herdr_layout(name: String) -> Option<serde_json::Value> {
+    let out = cli("herdr").args(["--session", &name, "api", "snapshot"]).output().ok()?;
+    cts_core::herdr::focused_layout(&serde_json::from_slice(&out.stdout).ok()?)
+}
+
 #[tauri::command]
 async fn gh_prs() -> Result<PrLists, String> {
     tauri::async_runtime::spawn_blocking(|| Ok(PrLists { review: review_requests()?, mine: my_prs()? }))
@@ -3258,6 +3266,7 @@ fn main() {
             site_permissions,
             forget_site_permission,
             herdr_focused,
+            herdr_layout,
             codex_models,
             claude_models,
             readings::add_reading,
